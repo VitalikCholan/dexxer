@@ -1,0 +1,18 @@
+# Rust / Anchor
+target/
+.anchor/
+test-ledger/
+# Node
+node_modules/
+.expo/
+dist/
+*.log
+# Secrets / keys
+*.json.key
+keypairs/
+.env
+.env.*
+# OS / IDE
+.DS_Store
+.idea/
+.vscode/
