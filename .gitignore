@@ -34,3 +34,7 @@ spikes/**/Cargo.lock
 spikes/**/yarn.lock
 spikes/*/README.md
 spikes/*/tsconfig.json
+
+# template-shipped agent skills (removed, see PR #1)
+app/.agents/
+app/skills-lock.json
