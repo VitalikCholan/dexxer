@@ -23,7 +23,7 @@ fn div_ceil(a: u128, b: u128) -> Result<u128, MathError> {
     if b == 0 {
         return Err(MathError::DivisionByZero);
     }
-    a.checked_add(b - 1)
+    a.checked_add(b.checked_sub(1).ok_or(MathError::Overflow)?)
         .ok_or(MathError::Overflow)
         .map(|x| x / b)
 }
@@ -34,8 +34,8 @@ fn to_i64(x: i128) -> Result<i64, MathError> {
     i64::try_from(x).map_err(|_| MathError::Overflow)
 }
 
-// notional округлюється **вгору**: більший notional ⇒ більші комісії й вимоги ⇒ на користь пулу
-// (тест `notional_10_sol_at_150` ділиться без остачі).
+// Notional rounds up: larger notional means larger fees and requirements, in the pool's favour.
+// (Test `notional_10_sol_at_150` divides evenly.)
 pub fn notional(size: u64, price: u64) -> Result<u64, MathError> {
     let raw = (size as u128)
         .checked_mul(price as u128)
@@ -45,8 +45,12 @@ pub fn notional(size: u64, price: u64) -> Result<u64, MathError> {
 
 pub fn upnl(side: Side, size: u64, entry: u64, mark: u64) -> Result<i64, MathError> {
     let diff: i128 = match side {
-        Side::Long => mark as i128 - entry as i128,
-        Side::Short => entry as i128 - mark as i128,
+        Side::Long => (mark as i128)
+            .checked_sub(entry as i128)
+            .ok_or(MathError::Overflow)?,
+        Side::Short => (entry as i128)
+            .checked_sub(mark as i128)
+            .ok_or(MathError::Overflow)?,
     };
     let raw = (size as i128)
         .checked_mul(diff)
@@ -76,6 +80,7 @@ pub fn equity(margin: u64, upnl: i64, close_fee: u64) -> Result<i64, MathError> 
     )
 }
 
+/// `margin > notional` (leverage below 1x) has no liquidation price — `Err(InvalidInput)`.
 pub fn liq_price(
     side: Side,
     entry: u64,
@@ -84,14 +89,14 @@ pub fn liq_price(
     mmr_bps: u32,
 ) -> Result<u64, MathError> {
     let n = notional(size, entry)? as u128;
-    if n == 0 || size == 0 {
+    if n == 0 {
         return Err(MathError::DivisionByZero);
     }
     if (margin as u128) > n {
         return Err(MathError::InvalidInput);
     }
-    // 1/lev_eff = margin / notional;  liq_long = entry * (1 - margin/n + mmr) ;  liq_short = entry * (1 + margin/n - mmr)
-    // все в bps через u128: term = entry * (BPS*n - margin*BPS + mmr*n) / (BPS*n)
+    // 1/lev_eff = margin / notional; liq_long = entry * (1 - margin/n + mmr); liq_short = entry * (1 + margin/n - mmr)
+    // All in bps via u128: term = entry * (BPS*n - margin*BPS + mmr*n) / (BPS*n)
     let e = entry as u128;
     let m_bps = (margin as u128)
         .checked_mul(BPS)
@@ -113,7 +118,7 @@ pub fn liq_price(
             .ok_or(MathError::InvalidInput)?,
     };
     let raw = e.checked_mul(num).ok_or(MathError::Overflow)?;
-    // long: ліквідаційна ціна вище (раніше) = ceil; short: нижче (раніше) = floor — на користь пулу
+    // Long: liquidation price higher (sooner) = ceil; short: lower (sooner) = floor — in the pool's favour.
     let out = match side {
         Side::Long => div_ceil(raw, base)?,
         Side::Short => raw / base,
@@ -149,7 +154,7 @@ pub fn vwap_entry(
     to_u64(div_ceil(
         a.checked_add(b).ok_or(MathError::Overflow)?,
         total,
-    )?) // entry вгору → менший uPnL для лонгу; для шорту — політика в risk.rs (тут єдине правило: ceil)
+    )?) // Entry rounds up — smaller uPnL for long; for short, policy in risk.rs (here: ceil always)
 }
 
 /// Mark EMA over index (spec §3.4): `prev + alpha * (sample - prev)`, alpha in bps.
@@ -159,7 +164,7 @@ pub fn ema(prev: u64, sample: u64, alpha_bps: u32) -> Result<u64, MathError> {
     }
     let a = alpha_bps as u128;
     let raw = (prev as u128)
-        .checked_mul(BPS - a)
+        .checked_mul(BPS.checked_sub(a).ok_or(MathError::Overflow)?)
         .ok_or(MathError::Overflow)?
         .checked_add((sample as u128).checked_mul(a).ok_or(MathError::Overflow)?)
         .ok_or(MathError::Overflow)?;
