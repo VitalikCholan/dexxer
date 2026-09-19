@@ -173,7 +173,7 @@ impl World {
 impl Trader {
     pub fn trade_accounts(&self, w: &World, signer: &Pubkey) -> Vec<AccountMeta> {
         vec![
-            AccountMeta::new(*signer, true),
+            AccountMeta::new_readonly(*signer, true), // Trade.signer is not `mut`
             AccountMeta::new_readonly(w.config, false),
             AccountMeta::new(w.market, false),
             AccountMeta::new(w.risk, false),
