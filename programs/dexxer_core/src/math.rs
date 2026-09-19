@@ -40,6 +40,23 @@ mod tests {
     fn required_margin_10x() { assert_eq!(required_margin(1_500_000_000, 1000).unwrap(), 150_000_000); }
 
     #[test]
+    fn required_margin_rounds_up() {
+        // 1_000_001 * 10% = 100_000.1 → 100_001
+        assert_eq!(required_margin(1_000_001, 1000).unwrap(), 100_001);
+    }
+
+    #[test]
+    fn equity_adds_upnl_subtracts_fee() {
+        // margin 150 + upnl 150 - close fee 0.6 = 299.4 (all 1e6)
+        assert_eq!(equity(150_000_000, 150_000_000, 600_000).unwrap(), 299_400_000);
+    }
+
+    #[test]
+    fn equity_can_be_negative() {
+        assert_eq!(equity(100, -250, 10).unwrap(), -160);
+    }
+
+    #[test]
     fn liq_price_long_10x_mmr5() {
         // entry 150, lev 10 → 1/lev = 0.10, mmr 0.05 → liq = 150 * (1 - 0.10 + 0.05) = 142.5
         assert_eq!(liq_price(Side::Long, P, S, 150_000_000, 500).unwrap(), 142_500_000);
