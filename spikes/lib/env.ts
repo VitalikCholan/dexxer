@@ -22,6 +22,7 @@ export async function routerStatus(account: PublicKey): Promise<{ isDelegated: b
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "getDelegationStatus", params: [account.toBase58()] }),
   });
+  if (!r.ok) throw new Error(`getDelegationStatus HTTP ${r.status} from ${ROUTER}`);
   const body = await r.json();
   if (body.error) throw new Error(body.error.message);
   return body.result;
@@ -33,7 +34,10 @@ export async function rpcIdentity(url: string): Promise<PublicKey> {
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "getIdentity", params: [] }),
   });
-  return new PublicKey((await r.json()).result.identity);
+  if (!r.ok) throw new Error(`getIdentity HTTP ${r.status} from ${url}`);
+  const body = await r.json();
+  if (body.error) throw new Error(body.error.message);
+  return new PublicKey(body.result.identity);
 }
 
 export function assert(cond: unknown, msg: string): asserts cond {
