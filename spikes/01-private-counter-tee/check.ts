@@ -105,28 +105,38 @@ const permissionPDA = permissionPdaFromAccount(counterPDA);
 const VAULT_ID = EPHEMERAL_VAULT_ID; // SDK export, matches ephemeral_rollups_sdk::consts::EPHEMERAL_VAULT_ID used by lib.rs and the example test's hardcoded VAULT_ID constant.
 
 // 3. init permission + set private (ER)
-await sendRpc(
-  erProgram.methods.initPermission().accountsPartial({
-    authority: user.publicKey,
-    counter: counterPDA,
-    permission: permissionPDA,
-    magicProgram: MAGIC_PROGRAM_ID,
-    permissionProgram: PERMISSION_PROGRAM_ID,
-    ephemeralVault: VAULT_ID,
-  }),
-  "initPermission",
-);
-await sendRpc(
-  erProgram.methods.setPrivacy(true).accountsPartial({
-    authority: user.publicKey,
-    counter: counterPDA,
-    permission: permissionPDA,
-    magicProgram: MAGIC_PROGRAM_ID,
-    permissionProgram: PERMISSION_PROGRAM_ID,
-    ephemeralVault: VAULT_ID,
-  }),
-  "setPrivacy(true)",
-);
+// Client-side idempotency guard: init_permission is a program-level no-op once
+// the permission account has lamports, but re-submitting it (and setPrivacy)
+// against an already-private, already-incremented account hit a real ER-side
+// error on a second cold run (see RESULT.md / task-3-report.md). Checking for
+// the permission account first avoids resubmitting both instructions at all.
+const permInfo = await teeConnUser.getAccountInfo(permissionPDA);
+if (permInfo !== null) {
+  console.log("permission exists — skipping init/setPrivacy");
+} else {
+  await sendRpc(
+    erProgram.methods.initPermission().accountsPartial({
+      authority: user.publicKey,
+      counter: counterPDA,
+      permission: permissionPDA,
+      magicProgram: MAGIC_PROGRAM_ID,
+      permissionProgram: PERMISSION_PROGRAM_ID,
+      ephemeralVault: VAULT_ID,
+    }),
+    "initPermission",
+  );
+  await sendRpc(
+    erProgram.methods.setPrivacy(true).accountsPartial({
+      authority: user.publicKey,
+      counter: counterPDA,
+      permission: permissionPDA,
+      magicProgram: MAGIC_PROGRAM_ID,
+      permissionProgram: PERMISSION_PROGRAM_ID,
+      ephemeralVault: VAULT_ID,
+    }),
+    "setPrivacy(true)",
+  );
+}
 await sendRpc(erProgram.methods.increment().accounts({ counter: counterPDA }), "increment");
 
 // 4. owner can read

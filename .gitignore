@@ -25,3 +25,12 @@ spikes/**/target/
 spikes/**/node_modules/
 spikes/.env
 !spikes/.env.example
+
+# Vendor content copied in from cloned example repos — keep on disk for
+# reference, never track (check.ts, RESULT.md, programs/, Anchor.toml,
+# tests/, package.json are the deliverables that stay tracked)
+spikes/*/app/
+spikes/**/Cargo.lock
+spikes/**/yarn.lock
+spikes/*/README.md
+spikes/*/tsconfig.json
