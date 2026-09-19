@@ -2,8 +2,8 @@
 // endpoint fire when running from React Native / Hermes?
 //
 // Trigger a change from outside the app while this is listening, e.g.:
-//   npx tsx spikes/01-private-counter-tee/check.ts
-// (it increments the connected wallet's counter). Expect the callback to
+//   tap "Run Check 8 (increment)" — it increments this same wallet's counter
+// (Check 8 must be onboarded first). Expect the callback to
 // fire within 60 s (LISTEN_TIMEOUT_MS); latency in ms is shown once it does.
 import { useEffect, useRef, useState } from 'react'
 import { Button, Text, View } from 'react-native'
@@ -19,7 +19,7 @@ const LISTEN_TIMEOUT_MS = 60_000
 export function Check10() {
   const { account, connect, signMessage } = useMobileWallet()
   const [out, setOut] = useState(
-    'Tap Run, then trigger a change from outside the app (e.g. `npx tsx spikes/01-private-counter-tee/check.ts`). Listens for 60s.',
+    'Tap Run, then within 60 s tap "Run Check 8 (increment)" above — it mutates this wallet’s counter (Onboard first).',
   )
   const [busy, setBusy] = useState(false)
   const connRef = useRef<Connection | null>(null)

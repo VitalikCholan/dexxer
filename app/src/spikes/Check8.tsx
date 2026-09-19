@@ -1,68 +1,203 @@
 // Check 8: MWA signs a transaction whose blockhash comes from the TEE, and
 // the signed transaction is accepted by the TEE.
 //
-// Precondition: the connected wallet's pubkey must already own a delegated,
-// private `private-counter` PDA (seed [b"counter", owner]) on the TEE ER —
-// run spikes/01-private-counter-tee/check.ts once against this exact pubkey
-// (export the Mock Wallet's keypair and use it as the `user` key for that
-// script), or otherwise add this pubkey as an `EphemeralPermission` member.
-// Record on RESULT.md which path was actually used.
+// Self-contained: "Onboard" creates and delegates a private-counter PDA for
+// the connected wallet (initialize + delegate on L1, init_permission +
+// set_privacy on the TEE ER — the last two ARE ER-blockhash transactions
+// signed by MWA, which is the point of this check). "Run Check 8" then
+// sends `increment` with an ER blockhash. No key export needed.
 //
-// If this fails with a program/permission error (not a signing/transport
-// error), that is still a valid, informative result: it shows MWA can sign
-// a transaction built against an ER blockhash and the TEE will accept the
-// signature — the raw error is displayed below either way.
+// Program: spikes/01-private-counter-tee (deployed to devnet, task-3-report.md).
+// Account layouts: spikes/01-private-counter-tee/target/idl/private_counter.json.
 import { useState } from 'react'
 import { Button, Text, View } from 'react-native'
-import { Connection, PublicKey, Transaction, TransactionInstruction } from '@solana/web3.js'
-import { getAuthToken } from '@magicblock-labs/ephemeral-rollups-sdk'
+import { Connection, PublicKey, SystemProgram, Transaction, TransactionInstruction } from '@solana/web3.js'
+import {
+  DELEGATION_PROGRAM_ID,
+  EPHEMERAL_VAULT_ID,
+  MAGIC_PROGRAM_ID,
+  PERMISSION_PROGRAM_ID,
+  delegateBufferPdaFromDelegatedAccountAndOwnerProgram,
+  delegationMetadataPdaFromDelegatedAccount,
+  delegationRecordPdaFromDelegatedAccount,
+  getAuthToken,
+  permissionPdaFromAccount,
+} from '@magicblock-labs/ephemeral-rollups-sdk'
 import { useMobileWallet } from '@wallet-ui/react-native-web3js'
-import { TEE_RPC } from '../lib/solana'
+import { TEE_RPC, baseConn } from '../lib/solana'
 
-// spikes/01-private-counter-tee, deployed to devnet (see task-3-report.md).
 const PROGRAM_ID = new PublicKey('2DvXCXzp56aFw8JsHrMuiRwZWizZjxwaqzYo2ADKH2W7')
+// Devnet TEE validator identity (spikes/.env, verified by spikes/00-identity.ts).
+const TEE_VALIDATOR = new PublicKey('MTEWGuqxUpYZGFJQcp8tLN7x5v9BSeoFHYWQQ3n3xzo')
+const ROUTER = 'https://devnet-router.magicblock.app/'
 
-// 8-byte Anchor discriminator for the `increment` instruction, taken from
-// spikes/01-private-counter-tee/target/idl/private_counter.json.
-const INCREMENT_DISCRIMINATOR = Uint8Array.from([11, 18, 104, 9, 104, 174, 59, 33])
+// Anchor discriminators from target/idl/private_counter.json.
+const DISC = {
+  initialize: [175, 175, 109, 31, 13, 152, 155, 237],
+  delegate: [90, 147, 75, 178, 85, 88, 4, 137],
+  initPermission: [66, 14, 153, 250, 187, 36, 179, 236],
+  setPrivacy: [120, 77, 9, 207, 149, 140, 138, 129],
+  increment: [11, 18, 104, 9, 104, 174, 59, 33],
+}
 
-const PRECONDITION_NOTE =
-  'Precondition: this wallet’s pubkey must already own a delegated, private counter ' +
-  '(Task 3 check.ts run against this pubkey, or added as a permission member). ' +
-  'A program/permission error below is still a valid result for this check.'
+function ix(keys: { pubkey: PublicKey; isSigner: boolean; isWritable: boolean }[], data: number[]) {
+  return new TransactionInstruction({ programId: PROGRAM_ID, keys, data: Buffer.from(data) })
+}
+
+async function routerStatus(account: PublicKey): Promise<{ isDelegated: boolean; fqdn?: string }> {
+  const r = await fetch(ROUTER, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'getDelegationStatus', params: [account.toBase58()] }),
+  })
+  const body = await r.json()
+  if (body.error) throw new Error(body.error.message)
+  return body.result
+}
 
 export function Check8() {
   const { account, connect, signTransaction, signMessage } = useMobileWallet()
-  const [out, setOut] = useState(PRECONDITION_NOTE)
+  const [out, setOut] = useState('Step 1: Onboard (3 MWA prompts). Step 2: Run Check 8.')
   const [busy, setBusy] = useState(false)
+
+  async function withWallet() {
+    const wallet = account ?? (await connect())
+    const owner = wallet.address
+    const [counter] = PublicKey.findProgramAddressSync([Buffer.from('counter'), owner.toBuffer()], PROGRAM_ID)
+    return { owner, counter }
+  }
+
+  async function signAndSend(conn: Connection, owner: PublicKey, instructions: TransactionInstruction[], label: string) {
+    const tx = new Transaction().add(...instructions)
+    tx.feePayer = owner
+    tx.recentBlockhash = (await conn.getLatestBlockhash()).blockhash
+    const signed = await signTransaction(tx) // MWA bottom sheet
+    const sig = await conn.sendRawTransaction(signed.serialize())
+    await conn.confirmTransaction(sig, 'confirmed')
+    return `${label}: ${sig}`
+  }
+
+  async function teeConnFor(owner: PublicKey) {
+    const auth = await getAuthToken(TEE_RPC, owner, (m) => signMessage(m))
+    return new Connection(`${TEE_RPC}?token=${auth.token}`, 'confirmed')
+  }
+
+  async function onboard() {
+    setBusy(true)
+    const log: string[] = []
+    try {
+      const { owner, counter } = await withWallet()
+      log.push(`owner ${owner.toBase58()}`, `counter ${counter.toBase58()}`)
+      setOut(log.join('\n'))
+
+      // L1: initialize (skip if exists)
+      const info = await baseConn.getAccountInfo(counter)
+      if (!info) {
+        log.push(
+          await signAndSend(
+            baseConn,
+            owner,
+            [
+              ix(
+                [
+                  { pubkey: counter, isSigner: false, isWritable: true },
+                  { pubkey: owner, isSigner: true, isWritable: true },
+                  { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
+                ],
+                DISC.initialize,
+              ),
+            ],
+            'initialize (L1)',
+          ),
+        )
+      } else log.push('initialize: exists, skipped')
+      setOut(log.join('\n'))
+
+      // L1: delegate to TEE validator (skip if already delegated)
+      const after = info ?? (await baseConn.getAccountInfo(counter))
+      if (!after || !after.owner.equals(DELEGATION_PROGRAM_ID)) {
+        log.push(
+          await signAndSend(
+            baseConn,
+            owner,
+            [
+              ix(
+                [
+                  { pubkey: owner, isSigner: true, isWritable: false },
+                  { pubkey: delegateBufferPdaFromDelegatedAccountAndOwnerProgram(counter, PROGRAM_ID), isSigner: false, isWritable: true },
+                  { pubkey: delegationRecordPdaFromDelegatedAccount(counter), isSigner: false, isWritable: true },
+                  { pubkey: delegationMetadataPdaFromDelegatedAccount(counter), isSigner: false, isWritable: true },
+                  { pubkey: counter, isSigner: false, isWritable: true },
+                  { pubkey: TEE_VALIDATOR, isSigner: false, isWritable: false },
+                  { pubkey: PROGRAM_ID, isSigner: false, isWritable: false },
+                  { pubkey: DELEGATION_PROGRAM_ID, isSigner: false, isWritable: false },
+                  { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
+                ],
+                DISC.delegate,
+              ),
+            ],
+            'delegate (L1)',
+          ),
+        )
+      } else log.push('delegate: already delegated, skipped')
+      setOut(log.join('\n'))
+
+      // Router: wait for TEE placement
+      let st = await routerStatus(counter)
+      for (let i = 0; i < 20 && !st.isDelegated; i++) {
+        await new Promise((r) => setTimeout(r, 1000))
+        st = await routerStatus(counter)
+      }
+      log.push(`router: delegated=${st.isDelegated} fqdn=${st.fqdn}`)
+      setOut(log.join('\n'))
+      if (!st.isDelegated) throw new Error('router never reported delegated')
+
+      // ER: init_permission + set_privacy(true) — signed by MWA with ER blockhash
+      const tee = await teeConnFor(owner)
+      const permission = permissionPdaFromAccount(counter)
+      const permKeys = [
+        { pubkey: owner, isSigner: true, isWritable: true },
+        { pubkey: counter, isSigner: false, isWritable: true },
+        { pubkey: permission, isSigner: false, isWritable: true },
+        { pubkey: PERMISSION_PROGRAM_ID, isSigner: false, isWritable: false },
+        { pubkey: EPHEMERAL_VAULT_ID, isSigner: false, isWritable: true },
+        { pubkey: MAGIC_PROGRAM_ID, isSigner: false, isWritable: false },
+      ]
+      const permInfo = await tee.getAccountInfo(permission)
+      if (permInfo === null) {
+        log.push(
+          await signAndSend(
+            tee,
+            owner,
+            [ix(permKeys, DISC.initPermission), ix(permKeys, [...DISC.setPrivacy, 1])],
+            'initPermission+setPrivacy (ER blockhash)',
+          ),
+        )
+      } else log.push('permission: exists, skipped')
+      log.push('ONBOARD DONE')
+      setOut(log.join('\n'))
+    } catch (e) {
+      log.push('ONBOARD FAIL ' + String(e))
+      setOut(log.join('\n'))
+    } finally {
+      setBusy(false)
+    }
+  }
 
   async function run() {
     setBusy(true)
     setOut('running…')
     try {
-      const wallet = account ?? (await connect())
-      const owner = wallet.address
-
-      // Wallet signs the TEE auth challenge (one MWA prompt).
-      const auth = await getAuthToken(TEE_RPC, owner, (m) => signMessage(m))
-      const tee = new Connection(`${TEE_RPC}?token=${auth.token}`, 'confirmed')
-
-      const [counter] = PublicKey.findProgramAddressSync([Buffer.from('counter'), owner.toBuffer()], PROGRAM_ID)
-
-      const tx = new Transaction().add(
-        new TransactionInstruction({
-          programId: PROGRAM_ID,
-          keys: [{ pubkey: counter, isSigner: false, isWritable: true }],
-          data: Buffer.from(INCREMENT_DISCRIMINATOR),
-        }),
+      const { owner, counter } = await withWallet()
+      const tee = await teeConnFor(owner)
+      const t0 = Date.now()
+      const line = await signAndSend(
+        tee,
+        owner,
+        [ix([{ pubkey: counter, isSigner: false, isWritable: true }], DISC.increment)],
+        'increment (ER blockhash)',
       )
-      tx.feePayer = owner
-      tx.recentBlockhash = (await tee.getLatestBlockhash()).blockhash // ER blockhash, not L1
-
-      const signed = await signTransaction(tx) // MWA bottom sheet prompt
-      const sig = await tee.sendRawTransaction(signed.serialize())
-      await tee.confirmTransaction(sig, 'confirmed')
-      setOut(`CHECK 8 PASS ${sig}`)
+      setOut(`CHECK 8 PASS ${Date.now() - t0}ms\n${line}`)
     } catch (e) {
       setOut('CHECK 8 FAIL ' + String(e))
     } finally {
@@ -73,7 +208,8 @@ export function Check8() {
   return (
     <View style={{ gap: 8 }}>
       <Text style={{ fontWeight: '600' }}>Check 8: MWA signs ER-blockhash tx</Text>
-      <Button title="Run Check 8" onPress={() => void run()} disabled={busy} />
+      <Button title="Onboard (init + delegate + permission)" onPress={() => void onboard()} disabled={busy} />
+      <Button title="Run Check 8 (increment)" onPress={() => void run()} disabled={busy} />
       <Text selectable>{out}</Text>
     </View>
   )
