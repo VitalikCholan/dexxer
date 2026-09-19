@@ -1,0 +1,87 @@
+// Check 10: does `onAccountChange` over the token-authenticated TEE WS
+// endpoint fire when running from React Native / Hermes?
+//
+// Trigger a change from outside the app while this is listening, e.g.:
+//   npx tsx spikes/01-private-counter-tee/check.ts
+// (it increments the connected wallet's counter). Expect the callback to
+// fire within ~30s; latency in ms is shown once it does.
+import { useEffect, useRef, useState } from 'react'
+import { Button, Text, View } from 'react-native'
+import { Connection, PublicKey } from '@solana/web3.js'
+import { getAuthToken } from '@magicblock-labs/ephemeral-rollups-sdk'
+import { useMobileWallet } from '@wallet-ui/react-native-web3js'
+import { TEE_RPC } from '../lib/solana'
+
+const PROGRAM_ID = new PublicKey('2DvXCXzp56aFw8JsHrMuiRwZWizZjxwaqzYo2ADKH2W7')
+const TEE_WS = TEE_RPC.replace(/^https/, 'wss')
+const LISTEN_TIMEOUT_MS = 60_000
+
+export function Check10() {
+  const { account, connect, signMessage } = useMobileWallet()
+  const [out, setOut] = useState(
+    'Tap Run, then trigger a change from outside the app (e.g. `npx tsx spikes/01-private-counter-tee/check.ts`). Listens for 60s.',
+  )
+  const [busy, setBusy] = useState(false)
+  const connRef = useRef<Connection | null>(null)
+  const subIdRef = useRef<number | null>(null)
+  const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  function cleanup() {
+    if (timeoutRef.current !== null) {
+      clearTimeout(timeoutRef.current)
+      timeoutRef.current = null
+    }
+    if (connRef.current && subIdRef.current !== null) {
+      connRef.current.removeAccountChangeListener(subIdRef.current).catch(() => {})
+    }
+    connRef.current = null
+    subIdRef.current = null
+  }
+
+  useEffect(() => cleanup, [])
+
+  async function run() {
+    cleanup()
+    setBusy(true)
+    setOut('connecting…')
+    try {
+      const wallet = account ?? (await connect())
+      const owner = wallet.address
+      const auth = await getAuthToken(TEE_RPC, owner, (m) => signMessage(m))
+      const tee = new Connection(`${TEE_RPC}?token=${auth.token}`, {
+        wsEndpoint: `${TEE_WS}?token=${auth.token}`,
+        commitment: 'confirmed',
+      })
+      connRef.current = tee
+
+      const [counter] = PublicKey.findProgramAddressSync([Buffer.from('counter'), owner.toBuffer()], PROGRAM_ID)
+
+      const t0 = Date.now()
+      setOut(`subscribed to ${counter.toBase58()}, waiting for a change…`)
+      const subId = tee.onAccountChange(counter, (info) => {
+        setOut(`CHECK 10 PASS update after ${Date.now() - t0}ms, ${info.data.length} bytes`)
+        cleanup()
+        setBusy(false)
+      })
+      subIdRef.current = subId
+
+      timeoutRef.current = setTimeout(() => {
+        setOut(`CHECK 10 FAIL no update within ${LISTEN_TIMEOUT_MS}ms — consider a 1s poll fallback (spec §5.5)`)
+        cleanup()
+        setBusy(false)
+      }, LISTEN_TIMEOUT_MS)
+    } catch (e) {
+      setOut('CHECK 10 FAIL ' + String(e))
+      cleanup()
+      setBusy(false)
+    }
+  }
+
+  return (
+    <View style={{ gap: 8 }}>
+      <Text style={{ fontWeight: '600' }}>Check 10: WS accountSubscribe with token</Text>
+      <Button title="Run Check 10" onPress={() => void run()} disabled={busy} />
+      <Text selectable>{out}</Text>
+    </View>
+  )
+}

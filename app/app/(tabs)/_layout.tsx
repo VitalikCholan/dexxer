@@ -28,6 +28,13 @@ export default function TabLayout() {
           tabBarIcon: ({ color }) => <UiIconSymbol size={28} name="ladybug.fill" color={color} />,
         }}
       />
+      <Tabs.Screen
+        name="spikes"
+        options={{
+          title: 'Spikes',
+          tabBarIcon: ({ color }) => <UiIconSymbol size={28} name="ladybug.fill" color={color} />,
+        }}
+      />
     </Tabs>
   )
 }
