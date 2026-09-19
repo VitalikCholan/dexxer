@@ -24,7 +24,10 @@ pub fn feed_pda(oracle_program: &Pubkey, lazer_feed_id: &str) -> Pubkey {
 }
 
 fn rd<const N: usize>(d: &[u8], o: usize) -> Result<[u8; N]> {
-    d.get(o..o + N)
+    let end = o
+        .checked_add(N)
+        .ok_or_else(|| error!(DexxerError::InvalidOracleAccount))?;
+    d.get(o..end)
         .and_then(|s| s.try_into().ok())
         .ok_or_else(|| error!(DexxerError::InvalidOracleAccount))
 }
@@ -83,7 +86,9 @@ pub fn parse_price_update(data: &[u8]) -> Result<OraclePrice> {
     let divisor = 10i128
         .checked_pow(expo.unsigned_abs())
         .ok_or_else(|| error!(DexxerError::MathOverflow))?;
-    let price_1e6 = price_scaled / divisor; // Truncate down for index entry; direction neutralizes client slippage guard
+    let price_1e6 = price_scaled
+        .checked_div(divisor)
+        .ok_or_else(|| error!(DexxerError::InvalidOracleAccount))?; // Truncate down for index entry; direction neutralizes client slippage guard
     require!(
         price_1e6 > 0 && price_1e6 <= u64::MAX as i128,
         DexxerError::InvalidOracleAccount
@@ -95,10 +100,16 @@ pub fn parse_price_update(data: &[u8]) -> Result<OraclePrice> {
             .checked_mul(10_000)
             .ok_or_else(|| error!(DexxerError::MathOverflow))?;
         let price_u128 = price as u128;
+        let price_minus_one = price_u128
+            .checked_sub(1)
+            .ok_or_else(|| error!(DexxerError::InvalidOracleAccount))?;
         let ceil_result = numerator
-            .checked_add(price_u128.saturating_sub(1))
+            .checked_add(price_minus_one)
             .ok_or_else(|| error!(DexxerError::MathOverflow))?;
-        (ceil_result / price_u128).min(u32::MAX as u128) as u32
+        let result = ceil_result
+            .checked_div(price_u128)
+            .ok_or_else(|| error!(DexxerError::InvalidOracleAccount))?;
+        result.min(u32::MAX as u128) as u32
     };
 
     Ok(OraclePrice {
@@ -119,7 +130,10 @@ pub fn read_price(
     require_keys_eq!(*feed.owner, config.oracle_program, DexxerError::WrongFeed);
     let p = parse_price_update(&feed.try_borrow_data()?)?;
     require!(p.posted_slot > 0, DexxerError::StaleOracle);
-    let age = clock.unix_timestamp.saturating_sub(p.publish_time);
+    let age = clock
+        .unix_timestamp
+        .checked_sub(p.publish_time)
+        .ok_or_else(|| error!(DexxerError::StaleOracle))?;
     require!(
         age >= 0 && (age as u64) <= market.max_staleness_secs,
         DexxerError::StaleOracle
