@@ -56,7 +56,7 @@ async function routerStatus(account: PublicKey): Promise<{ isDelegated: boolean;
 }
 
 export function Check8() {
-  const { account, connect, signTransaction, signMessage } = useMobileWallet()
+  const { account, connect, signTransaction, signAndSendTransaction, signMessage } = useMobileWallet()
   const [out, setOut] = useState('Step 1: Onboard (3 MWA prompts). Step 2: Run Check 8.')
   const [busy, setBusy] = useState(false)
 
@@ -76,14 +76,36 @@ export function Check8() {
     return `${String(e)}\n${(err?.stack ?? '').split('\n').slice(0, 6).join('\n')}`
   }
 
-  async function signAndSend(conn: Connection, owner: PublicKey, instructions: TransactionInstruction[], label: string) {
+  // L1: let the wallet send (it fetches/sends immediately, so the blockhash
+  // cannot expire during the MWA round-trip). The provider cluster is devnet.
+  async function sendL1(owner: PublicKey, instructions: TransactionInstruction[], label: string) {
     const tx = new Transaction().add(...instructions)
     tx.feePayer = owner
-    tx.recentBlockhash = (await conn.getLatestBlockhash()).blockhash
-    const signed = await signTransaction(tx) // MWA bottom sheet
-    const sig = await conn.sendRawTransaction(signed.serialize())
-    await conn.confirmTransaction(sig, 'confirmed')
+    const { blockhash, lastValidBlockHeight } = await baseConn.getLatestBlockhash()
+    tx.recentBlockhash = blockhash
+    const slot = await baseConn.getSlot()
+    const sig = await signAndSendTransaction(tx, slot) // MWA bottom sheet; wallet submits
+    await baseConn.confirmTransaction({ signature: sig, blockhash, lastValidBlockHeight }, 'confirmed')
     return `${label}: ${sig}`
+  }
+
+  // ER: we must sign via MWA and send to the TEE ourselves. ER blockhashes age
+  // fast (ER slots are ~10–50 ms), so the MWA prompt latency is measured — an
+  // expiry here is itself the Check 8 finding (spec risk #7).
+  async function sendEr(tee: Connection, owner: PublicKey, instructions: TransactionInstruction[], label: string) {
+    const tx = new Transaction().add(...instructions)
+    tx.feePayer = owner
+    const t0 = Date.now()
+    tx.recentBlockhash = (await tee.getLatestBlockhash()).blockhash
+    const signed = await signTransaction(tx) // MWA bottom sheet
+    const tSigned = Date.now() - t0
+    try {
+      const sig = await tee.sendRawTransaction(signed.serialize(), { skipPreflight: true })
+      await tee.confirmTransaction(sig, 'confirmed')
+      return `${label}: ${sig} (blockhash→signed ${tSigned} ms, total ${Date.now() - t0} ms)`
+    } catch (e) {
+      throw new Error(`${label} failed after blockhash→signed ${tSigned} ms: ${String(e)}`)
+    }
   }
 
   async function teeConnFor(owner: PublicKey) {
@@ -103,8 +125,7 @@ export function Check8() {
       const info = await baseConn.getAccountInfo(counter)
       if (!info) {
         log.push(
-          await signAndSend(
-            baseConn,
+          await sendL1(
             owner,
             [
               ix(
@@ -126,8 +147,7 @@ export function Check8() {
       const after = info ?? (await baseConn.getAccountInfo(counter))
       if (!after || !after.owner.equals(DELEGATION_PROGRAM_ID)) {
         log.push(
-          await signAndSend(
-            baseConn,
+          await sendL1(
             owner,
             [
               ix(
@@ -175,7 +195,7 @@ export function Check8() {
       const permInfo = await tee.getAccountInfo(permission)
       if (permInfo === null) {
         log.push(
-          await signAndSend(
+          await sendEr(
             tee,
             owner,
             [ix(permKeys, DISC.initPermission), ix(permKeys, [...DISC.setPrivacy, 1])],
@@ -201,7 +221,7 @@ export function Check8() {
       const { owner, counter } = await withWallet(log)
       const tee = await teeConnFor(owner)
       const t0 = Date.now()
-      const line = await signAndSend(
+      const line = await sendEr(
         tee,
         owner,
         [ix([{ pubkey: counter, isSigner: false, isWritable: true }], DISC.increment)],

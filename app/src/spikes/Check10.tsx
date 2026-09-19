@@ -46,7 +46,7 @@ export function Check10() {
     setOut('connecting…')
     try {
       const wallet = account ?? (await connect())
-      const owner = wallet.address
+      const owner = wallet.address instanceof PublicKey ? wallet.address : new PublicKey(String(wallet.address)) // hook returns base58 string at runtime
       const auth = await getAuthToken(TEE_RPC, owner, (m) => signMessage(m))
       const tee = new Connection(`${TEE_RPC}?token=${auth.token}`, {
         wsEndpoint: `${TEE_WS}?token=${auth.token}`,
@@ -54,7 +54,7 @@ export function Check10() {
       })
       connRef.current = tee
 
-      const [counter] = PublicKey.findProgramAddressSync([Buffer.from('counter'), owner.toBuffer()], PROGRAM_ID)
+      const [counter] = PublicKey.findProgramAddressSync([new TextEncoder().encode('counter'), owner.toBytes()], PROGRAM_ID)
 
       const t0 = Date.now()
       setOut(`subscribed to ${counter.toBase58()}, waiting for a change…`)
