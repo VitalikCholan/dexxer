@@ -360,6 +360,8 @@ Blockhash — з того з'єднання, куди шлемо. `skipPreflight
 
 ### 5.4 Session key
 
+> **Рантайм-знахідки MWA (check 8, 19.09.2026):** `useMobileWallet().account.address` — base58-рядок, не `PublicKey` (типи брешуть); `signMessages` повертає `message ‖ signature` (169 байт), для TEE-челенджу брати останні 64 байти з ed25519-верифікацією; L1-транзакції з MWA — тільки `signAndSendTransaction` (гаманець шле сам, інакше blockhash протухає за round-trip); ER-транзакції — `signTransactions` + власна відправка на TEE-ендпоінт (бюджет ≈1.6–4.6 с). Helper: `app/src/spikes/mwa.ts`.
+
 Генерується локально; secret у SecureStore. Реєструється в MWA-tx онбордингу. `session_expiry` 7 днів + `actions_left` (урок GMX One-Click). Прострочено → MWA `set_session` у ER. Fee payer ER-tx — session key після lamports top-up (підтверджено, check 9, 19.09.2026: свіжий ключ після top-up був payer'ом і єдиним підписантом ER-tx, `meta.err: null`). Втрата телефона → owner робить `set_session(new)`.
 
 **Членство в permission ≠ право на дію (check 9, 19.09.2026).** Три різні перевірки, які легко сплутати: (1) видача auth-token (`getAuthToken`) — лише підпис, членство не перевіряється, токен отримує будь-хто; (2) **читання** permissioned-акаунта — гейтиться членством, не-member бачить `null`; (3) **сабміт і виконання tx** — не гейтиться нічим, крім логіки самої інструкції. У check 9 session key не був членом (читання давало `null`), але його tx успішно змінила лічильник. Наслідок для нас: session key має бути **і** в `members` (щоб клієнт читав `Position`/`UserAccount`), **і** перевірений у програмі через `UserAccount.session_key` + `session_expiry` + `actions_left` — одного членства мало, воно нічого не забороняє.
@@ -371,7 +373,7 @@ Blockhash — з того з'єднання, куди шлемо. `skipPreflight
 | Connect | MWA | Seeker detection; Digital Asset Links `dexxer.xyz/.well-known/assetlinks.json` — обов'язково |
 | Onboard / Deposit | base | фаусет → одна MWA-tx |
 | Trade | tee: `Market.mark`, `free_margin`; index | слайдер плеча з відстанню до ліквідації у %, size, side, slippage, повна вартість до підтвердження |
-| Position | tee: WS `Position` (fallback poll 1 с) | size, entry, mark, uPnL, liq price, «crank перевірено N с тому»; close / add margin / decrease |
+| Position | tee: WS `Position` (check 10 PASS — WS основний; poll 1 с лише при реконекті) | size, entry, mark, uPnL, liq price, «crank перевірено N с тому»; close / add margin / decrease |
 | History | tee: `DisclosureQueue`; base: `Disclosure` | «розкрито / розкриється через …» |
 | Settings | — | revoke сесії, видалити акаунт і дані, TEE-статус, push toggle |
 
@@ -383,7 +385,7 @@ Blockhash — з того з'єднання, куди шлемо. `skipPreflight
 
 ### 5.7 Навантаження на Seeker
 
-Тонкий клієнт: рендер + підпис. Ризики не CPU: WASM `@phala/dcap-qvl` у Hermes (немає WebAssembly), батарея у фоні, розриви мережі (`ManagedWebsocket`-патерн: реконект з backoff, повтор підписок, snapshot).
+Тонкий клієнт: рендер + підпис. Ризики не CPU: батарея у фоні, розриви мережі (WASM `@phala/dcap-qvl` у Hermes — перевірено, працює: check 11) (`ManagedWebsocket`-патерн: реконект з backoff, повтор підписок, snapshot).
 
 ---
 
@@ -456,8 +458,8 @@ Solana MCP `program_autofixer` — на кожну зміну програми �
 | 3 | Scheduler у TEE нестабільний | ліквідації | `crank-fallback` на Railway | тиждень 2 |
 | 4 | Tx з приватними акаунтами видно не-member'ам | ламає демо | **АКТИВОВАНО (check 6, 19.09.2026).** Метадані (факт, слот, час, успіх, fee, CU) не гейтяться; список підписів по program id відкритий усім. Мітигація: (а) однакова форма tx для всіх дій — ззовні `open`, `close`, `add_margin` нерозрізнювані; (б) cover traffic — `crank_tick` кожну ~1 с є природним chaff'ом, і торгова tx за самими метаданими нерозрізнювана від тіку кранка; (в) чесно описати канал у README і в §2.3. **Спільний sponsor-payer сам по собі не допомагає** — витік іде від списку підписів program id, а не від payer'а | тиждень 0 → постійно |
 | 5 | Delegation Actions не дають один MWA-підпис | UX | два підписи | тиждень 1 |
-| 6 | `dcap-qvl` WASM не працює в Hermes | довіра | шим WASM або v1 з чесним підписом | тиждень 3 |
-| 7 | MWA не підписує tx з ER-blockhash | `set_session` | ротація через L1 + Magic-flow; довша сесія | тиждень 1 |
+| 6 | ~~`dcap-qvl` WASM не працює в Hermes~~ **ЗАКРИТО (check 11, 19.09.2026):** `verifyTeeRpcIntegrity` виконується на Hermes за ~3.2 с без шимів | довіра | allowlist MRTD/RTMR лишається v1 | — |
+| 7 | ~~MWA не підписує tx з ER-blockhash~~ **ЗАКРИТО (check 8, 19.09.2026):** MWA-підпис tx з ER-blockhash прийнято TEE; blockhash→підпис 1.6–4.6 с | `set_session` | `set_session` через MWA на ER — ок; трейди — session key. L1-транзакції з MWA слати через `signAndSendTransaction` (blockhash протухає за round-trip) | — |
 | 8 | Смерть devnet-tee під час демо | демо | записане відео + `mb-stack` резерв | тиждень 4 |
 | 9 | Соло, 4 тижні | усе | порядок жертв | постійно |
 | 10 | Colosseum забороняє код до 28.09 | тиждень 0 | перевірити 19.09; тиждень 0 = spikes | 19.09 |
