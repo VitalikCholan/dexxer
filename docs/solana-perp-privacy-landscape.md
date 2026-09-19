@@ -47,7 +47,7 @@ Cloak додає **четвертий шар — приватний облік**
 |---|---|---|
 | **Jupiter Perps** | JLP, ~$1.3–2.5B | Найглибший пул Solana; 5 ринків; комісії 6 bps open + 6 bps close + price impact + borrow (~13%/рік при util 10%, до 35% при util >80%); **відкриття асинхронне** — програма створює request, permissioned keeper виконує fill |
 | **GMTrade** (ex-GMXSOL) | Multi-pool GM Pool / GLV | Форк GMX V2 за голосуванням GMX DAO, mainnet з березня 2025; **#1 на Solana за 30-денним обсягом**; ~90 ринків: крипта + forex + товари + індекси + акції через Chainlink Data Streams; заявлені ~0.5 bps комісії; ізоляція ризику LP по ринках |
-| **Flash.Trade** | FLP / токен FAF | Pool-to-peer; до 100x (реально 20x на частині активів); крипта, forex, золото; market/limit/SL/TP. **Найвідкритіший технічно:** `flash-perpetuals` — форк офіційної `solana-labs/perpetuals`; `flash-sdk-rust` для читання ончейн-стану; `examples-v2` (MIT, липень 2026); **форк `magicblock-labs/session-keys` і `magicblock-grpc-example`** — тобто живий Solana-перп уже інтегрований з MagicBlock; плюс власний MCP-сервер для агентів і форк Yellowstone для індексації |
+| **Flash.Trade** | FLP / токен FAF | Pool-to-peer; до 100x (реально 20x на частині активів); крипта, forex, золото; market/limit/SL/TP. **Програма закрита** (репо `flash-perpetuals` публічно не існує); `flash-sdk-rust` для читання ончейн-стану; `examples-v2` (MIT, липень 2026); **форк `magicblock-labs/session-keys` і `magicblock-grpc-example`** — тобто живий Solana-перп уже інтегрований з MagicBlock; плюс власний MCP-сервер для агентів і форк Yellowstone для індексації |
 | **Adrena** | ALP | Третій за обсягом на Solana у 2025; до 100x; без ліквідаційних комісій |
 
 ### 1.2 Central Limit Order Book (CLOB)
@@ -244,9 +244,9 @@ Cloak додає **четвертий шар — приватний облік**
 | Кандидат | Ліцензія / стан | Для чого |
 |---|---|---|
 | **Percolator** | Відкритий; educational, not audited; Anchor v2 / Pinocchio | **Основа**, якщо лягає |
-| **`solana-labs/perpetuals`** → форки Flash, Adrena | Apache-2.0; оригінал архівний (3 роки, Anchor ~0.26), аудит-звіт у репо, ~5.5K рядків | Референс пулової математики; форк — якщо Percolator не ляже; перевірити відкритість і свіжість Adrena |
+| **`solana-labs/perpetuals`** → форки Flash, Adrena | Apache-2.0; оригінал архівний (3 роки, Anchor ~0.26), аудит-звіт у репо, ~5.5K рядків | Лише формули + аудит-звіт. Форки Flash і Adrena закриті (`AdrenaFoundation/perpetuals` — archived 2024 копія solana-labs) |
 | **Drift `protocol-v2`** (→ velocity-exchange) | Відкритий; десятки тисяч рядків; Rust 1.70 / Solana 1.16; перехідний стан після експлойту | Довідник з ліквідацій і страхового фонду, не база |
-| **Brute** (`divi2806/brute`, 2026) | Ліцензія невідома; хакатонна якість | Референс сучасного тулчейну (Pyth Hermes + ончейн-верифікація, індексер, TP/SL keeper) |
+| **Brute** (`divi2806/brute`, 2026) | **LICENSE відсутній → all rights reserved; код не брати**; хакатонна якість | Референс сучасного тулчейну (Pyth Hermes + ончейн-верифікація, індексер, TP/SL keeper) |
 | **Syntx** (`psyto/syntx`) | Apache-2.0; Anchor 0.30.1 | Приклад CPI-інтеграції з Percolator; готові VenueAdapter'и |
 
 **Що міняє власне ядро:** омнібус був потрібен лише тому, що позиції жили на чужому venue. Якщо ядро своє — позиції є акаунтами нашої програми і делегуються в PER напряму; приватність природна, без агрегації, request state machine, двошарової ліквідації й розподілу ADL. Натомість повертається ризик пулу, потреба в капіталі й страховому фонді — і тут senior/junior-модель Percolator — найкраща відповідь.
