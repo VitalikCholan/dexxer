@@ -10,6 +10,7 @@ import { Button, Text, View } from 'react-native'
 import { Connection, PublicKey } from '@solana/web3.js'
 import { getAuthToken } from '@magicblock-labs/ephemeral-rollups-sdk'
 import { useMobileWallet } from '@wallet-ui/react-native-web3js'
+import { pickSignature, toPublicKey } from './mwa'
 import { TEE_RPC } from '../lib/solana'
 
 const PROGRAM_ID = new PublicKey('2DvXCXzp56aFw8JsHrMuiRwZWizZjxwaqzYo2ADKH2W7')
@@ -17,7 +18,7 @@ const TEE_WS = TEE_RPC.replace(/^https/, 'wss')
 const LISTEN_TIMEOUT_MS = 60_000
 
 export function Check10() {
-  const { account, connect, signMessage } = useMobileWallet()
+  const { account, connect, signMessages } = useMobileWallet()
   const [out, setOut] = useState(
     'Tap Run, then within 60 s tap "Run Check 8 (increment)" above — it mutates this wallet’s counter (Onboard first).',
   )
@@ -46,8 +47,8 @@ export function Check10() {
     setOut('connecting…')
     try {
       const wallet = account ?? (await connect())
-      const owner = wallet.address instanceof PublicKey ? wallet.address : new PublicKey(String(wallet.address)) // hook returns base58 string at runtime
-      const auth = await getAuthToken(TEE_RPC, owner, (m) => signMessage(m))
+      const owner = toPublicKey(wallet.address)
+      const auth = await getAuthToken(TEE_RPC, owner, async (m) => pickSignature(m, await signMessages(m), owner))
       const tee = new Connection(`${TEE_RPC}?token=${auth.token}`, {
         wsEndpoint: `${TEE_WS}?token=${auth.token}`,
         commitment: 'confirmed',

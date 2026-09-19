@@ -25,6 +25,7 @@ import {
 } from '@magicblock-labs/ephemeral-rollups-sdk'
 import { useMobileWallet } from '@wallet-ui/react-native-web3js'
 import { TEE_RPC, baseConn } from '../lib/solana'
+import { pickSignature, toPublicKey } from './mwa'
 
 const PROGRAM_ID = new PublicKey('2DvXCXzp56aFw8JsHrMuiRwZWizZjxwaqzYo2ADKH2W7')
 // Devnet TEE validator identity (spikes/.env, verified by spikes/00-identity.ts).
@@ -56,7 +57,7 @@ async function routerStatus(account: PublicKey): Promise<{ isDelegated: boolean;
 }
 
 export function Check8() {
-  const { account, connect, signTransaction, signAndSendTransaction, signMessage } = useMobileWallet()
+  const { account, connect, signTransactions, signAndSendTransaction, signMessages } = useMobileWallet()
   const [out, setOut] = useState('Step 1: Onboard (3 MWA prompts). Step 2: Run Check 8.')
   const [busy, setBusy] = useState(false)
 
@@ -64,7 +65,7 @@ export function Check8() {
     log.push(`typeof connect=${typeof connect} account=${account ? 'set' : 'undefined'}`)
     const wallet = account ?? (await connect())
     log.push(`wallet.address type=${typeof wallet.address} ctor=${(wallet.address as any)?.constructor?.name}`)
-    const owner = wallet.address instanceof PublicKey ? wallet.address : new PublicKey(String(wallet.address))
+    const owner = toPublicKey(wallet.address)
     log.push(`Buffer=${typeof Buffer} from=${typeof (globalThis as any).Buffer?.from}`)
     const seed = new TextEncoder().encode('counter')
     const [counter] = PublicKey.findProgramAddressSync([seed, owner.toBytes()], PROGRAM_ID)
@@ -97,7 +98,7 @@ export function Check8() {
     tx.feePayer = owner
     const t0 = Date.now()
     tx.recentBlockhash = (await tee.getLatestBlockhash()).blockhash
-    const signed = await signTransaction(tx) // MWA bottom sheet
+    const signed = await signTransactions(tx) // MWA bottom sheet
     const tSigned = Date.now() - t0
     try {
       const sig = await tee.sendRawTransaction(signed.serialize(), { skipPreflight: true })
@@ -108,8 +109,11 @@ export function Check8() {
     }
   }
 
-  async function teeConnFor(owner: PublicKey) {
-    const auth = await getAuthToken(TEE_RPC, owner, (m) => signMessage(m))
+  async function teeConnFor(owner: PublicKey, log?: string[]) {
+    const auth = await getAuthToken(TEE_RPC, owner, async (m) => {
+      const signed = await signMessages(m) // MWA bottom sheet
+      return pickSignature(m, signed, owner, (line) => log?.push(line))
+    })
     return new Connection(`${TEE_RPC}?token=${auth.token}`, 'confirmed')
   }
 
@@ -182,7 +186,7 @@ export function Check8() {
       if (!st.isDelegated) throw new Error('router never reported delegated')
 
       // ER: init_permission + set_privacy(true) — signed by MWA with ER blockhash
-      const tee = await teeConnFor(owner)
+      const tee = await teeConnFor(owner, log)
       const permission = permissionPdaFromAccount(counter)
       const permKeys = [
         { pubkey: owner, isSigner: true, isWritable: true },
@@ -219,7 +223,7 @@ export function Check8() {
     setOut('running…')
     try {
       const { owner, counter } = await withWallet(log)
-      const tee = await teeConnFor(owner)
+      const tee = await teeConnFor(owner, log)
       const t0 = Date.now()
       const line = await sendEr(
         tee,
