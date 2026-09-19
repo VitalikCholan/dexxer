@@ -1,5 +1,9 @@
 use dexxer_core::{errors::DexxerError, state::*};
-use dexxer_litesvm::{apk, assert_custom_error, ixs, setup::World, Harness};
+use dexxer_litesvm::{
+    apk, assert_custom_error, ixs,
+    setup::{World, SEED_AMOUNT},
+    Harness,
+};
 use solana_keypair::Keypair;
 use solana_signer::Signer;
 
@@ -18,12 +22,11 @@ fn bootstrap_creates_config_market_pool_and_seeds_liquidity() {
     );
     assert_eq!(m.mark, 0);
     let p: Pool = h.account(&w.pool);
-    // Task 6 switches to SEED_AMOUNT
-    assert_eq!(p.capital_total, 0);
-    assert_eq!(p.protocol_liquidity, 0);
+    assert_eq!(p.capital_total, SEED_AMOUNT);
+    assert_eq!(p.protocol_liquidity, SEED_AMOUNT);
     assert_eq!(
         dexxer_litesvm::token_ix::token_balance(&h.svm, &w.pool_ata),
-        0
+        SEED_AMOUNT
     );
 }
 

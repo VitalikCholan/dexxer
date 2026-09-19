@@ -74,6 +74,8 @@ pub enum DexxerError {
     AmountZero,
     #[msg("invalid parameters")]
     InvalidParams,
+    #[msg("faucet daily limit exceeded")]
+    FaucetLimit,
 }
 
 impl From<MathError> for anchor_lang::error::Error {

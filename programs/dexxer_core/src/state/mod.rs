@@ -1,5 +1,6 @@
 pub mod config;
 pub mod disclosure;
+pub mod faucet;
 pub mod market;
 pub mod market_risk;
 pub mod pool;
@@ -7,6 +8,7 @@ pub mod position;
 pub mod user;
 pub use config::*;
 pub use disclosure::*;
+pub use faucet::*;
 pub use market::*;
 pub use market_risk::*;
 pub use pool::*;

@@ -1243,6 +1243,7 @@ version = "0.1.0"
 dependencies = [
  "anchor-lang",
  "dexxer_core",
+ "ephemeral-rollups-sdk",
  "litesvm",
  "solana-account 4.3.2",
  "solana-clock 3.1.1",

@@ -7,6 +7,7 @@ publish = false
 [dependencies]
 litesvm = "=0.16.0"
 anchor-lang = "=1.0.2"
+ephemeral-rollups-sdk = { version = "=0.16.2", features = ["anchor", "access-control"] }
 dexxer_core = { path = "../../programs/dexxer_core", features = ["no-entrypoint"] }
 solana-pubkey = "4"
 solana-keypair = "3"

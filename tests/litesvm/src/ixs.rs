@@ -1,6 +1,6 @@
 use crate::{
     apk, pdas, pk,
-    setup::World,
+    setup::{Trader, World},
     token_ix::{ata, ATA_PROGRAM, RENT, SYSTEM, TOKEN},
 };
 use anchor_lang::InstructionData;
@@ -125,5 +125,83 @@ pub fn seed_pool(admin: &Pubkey, wd: &World, amount: u64) -> Instruction {
             r(&TOKEN),
         ],
         data: ix::SeedPool { amount }.data(),
+    }
+}
+pub fn faucet_init(owner: &Pubkey, wd: &World, amount: u64) -> Instruction {
+    Instruction {
+        program_id: prog(),
+        accounts: vec![
+            s(owner),
+            r(&wd.config),
+            w(&pdas::faucet(owner)),
+            w(&wd.mint),
+            r(&pdas::mint_auth()),
+            w(&ata(owner, &wd.mint)),
+            r(&SYSTEM),
+            r(&TOKEN),
+        ],
+        data: ix::FaucetInit { amount }.data(),
+    }
+}
+pub fn faucet_mint(owner: &Pubkey, wd: &World, amount: u64) -> Instruction {
+    Instruction {
+        program_id: prog(),
+        accounts: vec![
+            rs(owner),
+            r(&wd.config),
+            w(&pdas::faucet(owner)),
+            w(&wd.mint),
+            r(&pdas::mint_auth()),
+            w(&ata(owner, &wd.mint)),
+            r(&TOKEN),
+        ],
+        data: ix::FaucetMint { amount }.data(),
+    }
+}
+pub fn init_user(owner: &Pubkey, wd: &World) -> Instruction {
+    Instruction {
+        program_id: prog(),
+        accounts: vec![
+            s(owner),
+            r(&wd.config),
+            r(&wd.market),
+            w(&pdas::user(owner)),
+            w(&pdas::position(owner, &wd.market)),
+            w(&pdas::dq(owner)),
+            r(&SYSTEM),
+        ],
+        data: ix::InitUser {}.data(),
+    }
+}
+pub fn set_session(
+    signer: &Pubkey,
+    t: &Trader,
+    session: &Pubkey,
+    expiry: i64,
+    actions: u32,
+) -> Instruction {
+    Instruction {
+        program_id: prog(),
+        accounts: vec![rs(signer), w(&t.user)],
+        data: ix::SetSession {
+            session_key: apk(*session),
+            expiry,
+            actions,
+        }
+        .data(),
+    }
+}
+pub fn credit_deposit(signer: &Pubkey, t: &Trader, wd: &World, amount: u64) -> Instruction {
+    Instruction {
+        program_id: prog(),
+        accounts: vec![
+            rs(signer),
+            w(&t.user),
+            w(&wd.pool),
+            w(&ata(signer, &wd.mint)),
+            w(&wd.pool_ata),
+            r(&TOKEN),
+        ],
+        data: ix::CreditDeposit { amount }.data(),
     }
 }

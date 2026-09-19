@@ -58,4 +58,24 @@ pub mod dexxer_core {
     pub fn seed_pool(ctx: Context<SeedPool>, amount: u64) -> Result<()> {
         admin::seed_pool(ctx, amount)
     }
+    pub fn faucet_init(ctx: Context<FaucetInit>, amount: u64) -> Result<()> {
+        user::faucet_init(ctx, amount)
+    }
+    pub fn faucet_mint(ctx: Context<FaucetMint>, amount: u64) -> Result<()> {
+        user::faucet_mint(ctx, amount)
+    }
+    pub fn init_user(ctx: Context<InitUser>) -> Result<()> {
+        user::init_user(ctx)
+    }
+    pub fn set_session(
+        ctx: Context<SetSession>,
+        session_key: Pubkey,
+        expiry: i64,
+        actions: u32,
+    ) -> Result<()> {
+        user::set_session(ctx, session_key, expiry, actions)
+    }
+    pub fn credit_deposit(ctx: Context<CreditDeposit>, amount: u64) -> Result<()> {
+        user::credit_deposit(ctx, amount)
+    }
 }
