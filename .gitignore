@@ -38,3 +38,15 @@ spikes/*/tsconfig.json
 # template-shipped agent skills (removed, see PR #1)
 app/.agents/
 app/skills-lock.json
+
+# spike template leftovers (untracked since PR #1)
+spikes/*/.gitignore
+spikes/*/.prettierignore
+spikes/*/migrations/
+spikes/05-crank-tee/tests/
+spikes/06-magic-action/tests/
+
+# week-1 local test keys / fixtures built from devnet dumps
+tests/er/.keys/
+tests/er/fixtures/*.so
+tests/er/node_modules/
