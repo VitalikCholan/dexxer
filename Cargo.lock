@@ -1221,8 +1221,18 @@ dependencies = [
 name = "dexxer_core"
 version = "0.1.0"
 dependencies = [
+ "anchor-attribute-access-control",
+ "anchor-attribute-account",
+ "anchor-attribute-constant",
+ "anchor-attribute-error",
+ "anchor-attribute-event",
+ "anchor-attribute-program",
+ "anchor-derive-accounts",
+ "anchor-derive-serde",
+ "anchor-derive-space",
  "anchor-lang",
  "anchor-spl",
+ "anchor-syn",
  "ephemeral-rollups-sdk",
  "proptest",
 ]

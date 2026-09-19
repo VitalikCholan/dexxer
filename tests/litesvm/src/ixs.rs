@@ -1,7 +1,7 @@
 use crate::{
     apk, pdas, pk,
     setup::World,
-    token_ix::{ata, ATA_PROGRAM, SYSTEM, TOKEN},
+    token_ix::{ata, ATA_PROGRAM, RENT, SYSTEM, TOKEN},
 };
 use anchor_lang::InstructionData;
 use dexxer_core::{instruction as ix, state::MarketParams};
@@ -19,6 +19,9 @@ fn r(p: &Pubkey) -> AccountMeta {
 }
 fn s(p: &Pubkey) -> AccountMeta {
     AccountMeta::new(*p, true)
+}
+fn rs(p: &Pubkey) -> AccountMeta {
+    AccountMeta::new_readonly(*p, true)
 }
 
 pub fn init_config(
@@ -38,9 +41,7 @@ pub fn init_config(
             r(&pdas::mint_auth()),
             r(&SYSTEM),
             r(&TOKEN),
-            r(&solana_pubkey::pubkey!(
-                "SysvarRent111111111111111111111111111111111"
-            )),
+            r(&RENT),
         ],
         data: ix::InitConfig {
             crank: apk(*crank),
@@ -94,21 +95,21 @@ pub fn set_params(
 ) -> Instruction {
     Instruction {
         program_id: prog(),
-        accounts: vec![s(admin), r(config), w(market)],
+        accounts: vec![rs(admin), r(config), w(market)],
         data: ix::SetParams { params }.data(),
     }
 }
 pub fn pause(admin: &Pubkey, config: &Pubkey) -> Instruction {
     Instruction {
         program_id: prog(),
-        accounts: vec![s(admin), w(config)],
+        accounts: vec![rs(admin), w(config)],
         data: ix::Pause {}.data(),
     }
 }
 pub fn unpause(admin: &Pubkey, config: &Pubkey) -> Instruction {
     Instruction {
         program_id: prog(),
-        accounts: vec![s(admin), w(config)],
+        accounts: vec![rs(admin), w(config)],
         data: ix::Unpause {}.data(),
     }
 }
@@ -116,7 +117,7 @@ pub fn seed_pool(admin: &Pubkey, wd: &World, amount: u64) -> Instruction {
     Instruction {
         program_id: prog(),
         accounts: vec![
-            s(admin),
+            rs(admin),
             r(&wd.config),
             w(&wd.pool),
             w(&ata(admin, &wd.mint)),
