@@ -93,6 +93,17 @@ pub mod dexxer_core {
     pub fn close_position(ctx: Context<Trade>, limit_price: u64) -> Result<()> {
         trade::close_position(ctx, limit_price)
     }
+    pub fn increase_position(
+        ctx: Context<Trade>,
+        add_size: u64,
+        add_margin: u64,
+        limit_price: u64,
+    ) -> Result<()> {
+        trade::increase_position(ctx, add_size, add_margin, limit_price)
+    }
+    pub fn decrease_position(ctx: Context<Trade>, close_size: u64, limit_price: u64) -> Result<()> {
+        trade::decrease_position(ctx, close_size, limit_price)
+    }
     pub fn crank_tick<'info>(ctx: Context<'info, CrankTick<'info>>) -> Result<()> {
         crank::crank_tick(ctx)
     }

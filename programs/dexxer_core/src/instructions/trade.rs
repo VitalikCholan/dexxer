@@ -202,6 +202,224 @@ pub fn close_position(mut ctx: Context<Trade>, limit_price: u64) -> Result<()> {
     Ok(())
 }
 
+pub fn increase_position(
+    mut ctx: Context<Trade>,
+    add_size: u64,
+    add_margin: u64,
+    limit_price: u64,
+) -> Result<()> {
+    let clock = Clock::get()?;
+    let a = &mut ctx.accounts;
+    require!(!a.config.paused, DexxerError::Paused);
+    require!(!a.market.paused_open, DexxerError::OpenPaused);
+    require!(
+        a.position.state == PositionState::Open,
+        DexxerError::PositionNotOpen
+    );
+    require!(add_size > 0, DexxerError::AmountZero);
+    assert_trader(&a.signer.key(), &mut a.user_account, clock.unix_timestamp)?;
+    let px = read_price(&a.feed.to_account_info(), &a.market, &a.config, &clock)?;
+    check_open_quality(&px, &a.market)?;
+    let side = a.position.side;
+    match side {
+        Side::Long => require!(px.price <= limit_price, DexxerError::SlippageExceeded),
+        Side::Short => require!(px.price >= limit_price, DexxerError::SlippageExceeded),
+    }
+    let new_size = a
+        .position
+        .size
+        .checked_add(add_size)
+        .ok_or(DexxerError::MathOverflow)?;
+    let new_margin = a
+        .position
+        .margin
+        .checked_add(add_margin)
+        .ok_or(DexxerError::MathOverflow)?;
+    let new_entry = math::vwap_entry(a.position.size, a.position.entry, add_size, px.price)?;
+    // OI check on the delta only: pretend the existing exposure is not there.
+    let old_notional = math::notional(a.position.size, a.position.entry)?;
+    let r0 = &a.market_risk;
+    let mut risk_view = MarketRisk {
+        version: r0.version,
+        market: r0.market,
+        oi_long: r0.oi_long,
+        oi_short: r0.oi_short,
+        open_positions: r0.open_positions,
+        bump: r0.bump,
+    };
+    match side {
+        Side::Long => {
+            risk_view.oi_long = risk_view
+                .oi_long
+                .checked_sub(old_notional)
+                .ok_or(DexxerError::MathOverflow)?
+        }
+        Side::Short => {
+            risk_view.oi_short = risk_view
+                .oi_short
+                .checked_sub(old_notional)
+                .ok_or(DexxerError::MathOverflow)?
+        }
+    }
+    let chk = risk::check_open(
+        &a.market, &risk_view, &a.pool, side, new_size, new_margin, new_entry,
+    )?;
+    let delta_notional = math::notional(add_size, px.price)?;
+    let fee = math::fee(delta_notional, a.market.open_fee_bps as u32)?;
+    let cost = add_margin
+        .checked_add(fee)
+        .ok_or(DexxerError::MathOverflow)?;
+    require!(
+        a.user_account.free_margin >= cost,
+        DexxerError::InsufficientMargin
+    );
+    let u = &mut a.user_account;
+    u.free_margin = u
+        .free_margin
+        .checked_sub(cost)
+        .ok_or(DexxerError::MathOverflow)?;
+    u.locked_margin = u
+        .locked_margin
+        .checked_add(add_margin)
+        .ok_or(DexxerError::MathOverflow)?;
+    let pool = &mut a.pool;
+    pool.locked_total = pool
+        .locked_total
+        .checked_add(add_margin)
+        .ok_or(DexxerError::MathOverflow)?;
+    pool.fees_accrued = pool
+        .fees_accrued
+        .checked_add(fee)
+        .ok_or(DexxerError::MathOverflow)?;
+    let r = &mut a.market_risk;
+    match side {
+        Side::Long => {
+            r.oi_long = r
+                .oi_long
+                .checked_add(delta_notional)
+                .ok_or(DexxerError::MathOverflow)?
+        }
+        Side::Short => {
+            r.oi_short = r
+                .oi_short
+                .checked_add(delta_notional)
+                .ok_or(DexxerError::MathOverflow)?
+        }
+    }
+    let p = &mut a.position;
+    p.size = new_size;
+    p.margin = new_margin;
+    p.entry = new_entry;
+    p.liq_price = chk.liq_price;
+    p.liq_ticks = 0;
+    Ok(())
+}
+
+pub fn decrease_position(mut ctx: Context<Trade>, close_size: u64, limit_price: u64) -> Result<()> {
+    let clock = Clock::get()?;
+    let a = &mut ctx.accounts;
+    require!(
+        a.position.state == PositionState::Open,
+        DexxerError::PositionNotOpen
+    );
+    require!(
+        close_size > 0 && close_size <= a.position.size,
+        DexxerError::InvalidInput
+    );
+    assert_trader(&a.signer.key(), &mut a.user_account, clock.unix_timestamp)?;
+    let px = read_price(&a.feed.to_account_info(), &a.market, &a.config, &clock)?;
+    match a.position.side {
+        Side::Long => require!(px.price >= limit_price, DexxerError::SlippageExceeded),
+        Side::Short => require!(px.price <= limit_price, DexxerError::SlippageExceeded),
+    }
+    let market_key = a.market.key();
+    if close_size == a.position.size {
+        let fee_bps = a.market.close_fee_bps as u32;
+        let delay = a.config.disclosure_delay_slots;
+        finalize_close(
+            market_key,
+            &mut a.market_risk,
+            &mut a.pool,
+            &mut a.user_account,
+            &mut a.position,
+            px.price,
+            fee_bps,
+            CloseReason::User,
+            &clock,
+            delay,
+        )?;
+        return Ok(());
+    }
+    let remaining = a
+        .position
+        .size
+        .checked_sub(close_size)
+        .ok_or(DexxerError::MathOverflow)?;
+    require!(
+        remaining >= a.market.min_size,
+        DexxerError::PositionTooSmall
+    );
+    // Floor: the remainder keeps the rounding, in the pool's favour.
+    let released = ((a.position.margin as u128)
+        .checked_mul(close_size as u128)
+        .ok_or(DexxerError::MathOverflow)?)
+    .checked_div(a.position.size as u128)
+    .ok_or(DexxerError::MathOverflow)? as u64;
+    let pnl = math::decrease_pnl(
+        a.position.side,
+        a.position.size,
+        close_size,
+        a.position.entry,
+        px.price,
+    )?;
+    let fee = math::fee(
+        math::notional(close_size, px.price)?,
+        a.market.close_fee_bps as u32,
+    )?;
+    let s = risk::settle(released, pnl, fee)?;
+    risk::settle_into_pool(&mut a.pool, released, &s, false)?;
+    let u = &mut a.user_account;
+    u.free_margin = u
+        .free_margin
+        .checked_add(s.to_user)
+        .ok_or(DexxerError::MathOverflow)?;
+    u.locked_margin = u
+        .locked_margin
+        .checked_sub(released)
+        .ok_or(DexxerError::MathOverflow)?;
+    let closed_notional = math::notional(close_size, a.position.entry)?;
+    let r = &mut a.market_risk;
+    match a.position.side {
+        Side::Long => {
+            r.oi_long = r
+                .oi_long
+                .checked_sub(closed_notional)
+                .ok_or(DexxerError::MathOverflow)?
+        }
+        Side::Short => {
+            r.oi_short = r
+                .oi_short
+                .checked_sub(closed_notional)
+                .ok_or(DexxerError::MathOverflow)?
+        }
+    }
+    let p = &mut a.position;
+    p.size = remaining;
+    p.margin = p
+        .margin
+        .checked_sub(released)
+        .ok_or(DexxerError::MathOverflow)?;
+    // IMR is an *initial* margin requirement: check the remainder at entry, so a
+    // pro-rata release keeps leverage unchanged; mark-based health is crank_tick's job (MMR).
+    let rem_notional = math::notional(p.size, p.entry)?;
+    require!(
+        p.margin >= math::required_margin(rem_notional, a.market.imr_bps)?,
+        DexxerError::InsufficientMargin
+    );
+    p.liq_price = math::liq_price(p.side, p.entry, p.size, p.margin, a.market.mmr_bps).unwrap_or(0);
+    Ok(())
+}
+
 /// Shared by close_position, decrease_position (full) and crank liquidation.
 #[allow(clippy::too_many_arguments)]
 pub fn finalize_close(

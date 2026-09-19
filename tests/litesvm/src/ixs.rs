@@ -229,6 +229,42 @@ pub fn close_position(signer: &Pubkey, t: &Trader, w: &World, limit_price: u64) 
         data: ix::ClosePosition { limit_price }.data(),
     }
 }
+pub fn increase_position(
+    signer: &Pubkey,
+    t: &Trader,
+    w: &World,
+    add_size: u64,
+    add_margin: u64,
+    limit_price: u64,
+) -> Instruction {
+    Instruction {
+        program_id: prog(),
+        accounts: t.trade_accounts(w, signer),
+        data: ix::IncreasePosition {
+            add_size,
+            add_margin,
+            limit_price,
+        }
+        .data(),
+    }
+}
+pub fn decrease_position(
+    signer: &Pubkey,
+    t: &Trader,
+    w: &World,
+    close_size: u64,
+    limit_price: u64,
+) -> Instruction {
+    Instruction {
+        program_id: prog(),
+        accounts: t.trade_accounts(w, signer),
+        data: ix::DecreasePosition {
+            close_size,
+            limit_price,
+        }
+        .data(),
+    }
+}
 pub fn crank_tick(crank: &Pubkey, wd: &World, candidates: &[&Trader]) -> Instruction {
     // `crank: Signer<'info>` in `CrankTick` carries no `#[account(mut)]`, so the
     // client-side meta must be a readonly signer, not writable (`s`).
