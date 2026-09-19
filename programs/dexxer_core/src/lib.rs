@@ -14,7 +14,7 @@ pub mod risk;
 pub mod state;
 pub mod token;
 use instructions::*;
-use state::MarketParams;
+use state::{MarketParams, Side};
 declare_id!("G2okX5Bae4CxfK8vzso1Ecc96QUv7E3P4YvxaZnaYXoV");
 
 #[ephemeral]
@@ -77,5 +77,20 @@ pub mod dexxer_core {
     }
     pub fn credit_deposit(ctx: Context<CreditDeposit>, amount: u64) -> Result<()> {
         user::credit_deposit(ctx, amount)
+    }
+    pub fn open_position(
+        ctx: Context<Trade>,
+        side: Side,
+        size: u64,
+        margin: u64,
+        limit_price: u64,
+    ) -> Result<()> {
+        trade::open_position(ctx, side, size, margin, limit_price)
+    }
+    pub fn add_margin(ctx: Context<Trade>, amount: u64) -> Result<()> {
+        trade::add_margin(ctx, amount)
+    }
+    pub fn close_position(ctx: Context<Trade>, limit_price: u64) -> Result<()> {
+        trade::close_position(ctx, limit_price)
     }
 }

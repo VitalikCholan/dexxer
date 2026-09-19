@@ -1,5 +1,7 @@
 use crate::{ixs, pdas, token_ix::*, Harness};
 use dexxer_core::state::MarketParams;
+use solana_account::Account;
+use solana_instruction::AccountMeta;
 use solana_keypair::Keypair;
 use solana_pubkey::Pubkey;
 use solana_signer::Signer;
@@ -126,4 +128,59 @@ pub struct Trader {
     pub position: Pubkey,
     pub dq: Pubkey,
     pub ata: Pubkey,
+}
+
+impl World {
+    /// Writes a 134-byte PriceUpdateV2 feed owned by `oracle_program` (layout from spikes/04, exponent +8).
+    pub fn set_price(
+        &self,
+        h: &mut Harness,
+        price_1e6: u64,
+        conf_bps: u32,
+        publish_time: i64,
+        posted_slot: u64,
+    ) {
+        let price: i64 = (price_1e6 as i128 * 100) as i64; // 1e6 -> 1e8 (expo +8)
+        let conf: u64 = ((price as u128 * conf_bps as u128) / 10_000) as u64;
+        let mut d = vec![234u8, 161, 14, 36, 172, 239, 15, 232];
+        d.extend_from_slice(&[0u8; 32]);
+        d.push(1);
+        d.extend_from_slice(&[0xc6u8; 32]);
+        d.extend_from_slice(&price.to_le_bytes());
+        d.extend_from_slice(&conf.to_le_bytes());
+        d.extend_from_slice(&8i32.to_le_bytes());
+        d.extend_from_slice(&publish_time.to_le_bytes());
+        d.extend_from_slice(&publish_time.to_le_bytes());
+        d.extend_from_slice(&price.to_le_bytes());
+        d.extend_from_slice(&conf.to_le_bytes());
+        d.extend_from_slice(&posted_slot.to_le_bytes());
+        d.push(0);
+        h.svm
+            .set_account(
+                self.feed,
+                Account {
+                    lamports: 10_000_000,
+                    data: d,
+                    owner: self.oracle_program,
+                    executable: false,
+                    rent_epoch: 0,
+                },
+            )
+            .unwrap();
+    }
+}
+
+impl Trader {
+    pub fn trade_accounts(&self, w: &World, signer: &Pubkey) -> Vec<AccountMeta> {
+        vec![
+            AccountMeta::new(*signer, true),
+            AccountMeta::new_readonly(w.config, false),
+            AccountMeta::new(w.market, false),
+            AccountMeta::new(w.risk, false),
+            AccountMeta::new(w.pool, false),
+            AccountMeta::new(self.user, false),
+            AccountMeta::new(self.position, false),
+            AccountMeta::new_readonly(w.feed, false),
+        ]
+    }
 }

@@ -1235,6 +1235,7 @@ dependencies = [
  "anchor-syn",
  "ephemeral-rollups-sdk",
  "proptest",
+ "solana-keccak-hasher 3.1.0",
 ]
 
 [[package]]

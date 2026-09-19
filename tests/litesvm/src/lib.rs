@@ -85,3 +85,25 @@ pub fn assert_custom_error(r: &Result<TransactionMetadata, FailedTransactionMeta
         "expected custom error {code}, got: {e}"
     );
 }
+
+/// protocol_liquidity + Σ free + Σ pos.margin + fees + insurance == capital_total == vault balance.
+/// Shared across Task 7 (trade), 8 (liquidation) and 9/10 (decrease/crank) tests.
+pub fn assert_invariant(h: &Harness, w: &setup::World, traders: &[&setup::Trader]) {
+    let pool: dexxer_core::state::Pool = h.account(&w.pool);
+    let mut sum = pool.protocol_liquidity + pool.fees_accrued + pool.insurance;
+    for t in traders {
+        let u: dexxer_core::state::UserAccount = h.account(&t.user);
+        let p: dexxer_core::state::Position = h.account(&t.position);
+        sum += u.free_margin
+            + if p.state == dexxer_core::state::PositionState::Open {
+                p.margin
+            } else {
+                0
+            };
+    }
+    assert_eq!(sum, pool.capital_total);
+    assert_eq!(
+        pool.capital_total,
+        token_ix::token_balance(&h.svm, &w.pool_ata)
+    );
+}

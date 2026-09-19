@@ -4,7 +4,10 @@ use crate::{
     token_ix::{ata, ATA_PROGRAM, RENT, SYSTEM, TOKEN},
 };
 use anchor_lang::InstructionData;
-use dexxer_core::{instruction as ix, state::MarketParams};
+use dexxer_core::{
+    instruction as ix,
+    state::{MarketParams, Side},
+};
 use solana_instruction::{AccountMeta, Instruction};
 use solana_pubkey::Pubkey;
 
@@ -189,6 +192,41 @@ pub fn set_session(
             actions,
         }
         .data(),
+    }
+}
+pub fn open_position(
+    signer: &Pubkey,
+    t: &Trader,
+    w: &World,
+    side: Side,
+    size: u64,
+    margin: u64,
+    limit_price: u64,
+) -> Instruction {
+    Instruction {
+        program_id: prog(),
+        accounts: t.trade_accounts(w, signer),
+        data: ix::OpenPosition {
+            side,
+            size,
+            margin,
+            limit_price,
+        }
+        .data(),
+    }
+}
+pub fn add_margin(signer: &Pubkey, t: &Trader, w: &World, amount: u64) -> Instruction {
+    Instruction {
+        program_id: prog(),
+        accounts: t.trade_accounts(w, signer),
+        data: ix::AddMargin { amount }.data(),
+    }
+}
+pub fn close_position(signer: &Pubkey, t: &Trader, w: &World, limit_price: u64) -> Instruction {
+    Instruction {
+        program_id: prog(),
+        accounts: t.trade_accounts(w, signer),
+        data: ix::ClosePosition { limit_price }.data(),
     }
 }
 pub fn credit_deposit(signer: &Pubkey, t: &Trader, wd: &World, amount: u64) -> Instruction {

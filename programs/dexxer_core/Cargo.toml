@@ -20,6 +20,11 @@ unexpected_cfgs = "allow"
 anchor-lang = "=1.0.2"
 anchor-spl = { version = "=1.0.2", features = ["token", "associated_token"] }
 ephemeral-rollups-sdk = { version = "=0.16.2", features = ["anchor", "access-control"] }
+# anchor-lang 1.0.2 does not re-export solana_program::keccak (its solana_program
+# shim only re-exports the decomposed crates it lists); pull the hasher directly.
+# Version already resolved transitively (via ephemeral-rollups-sdk's solana-program
+# dependency), so this adds no new entry to the dependency graph.
+solana-keccak-hasher = "3.1.0"
 # pinned: anchor-lang 1.0.2 requires ^1.0.2 and 1.2.0 macros break mint:: codegen
 anchor-syn = "=1.0.2"
 anchor-derive-accounts = "=1.0.2"
