@@ -171,6 +171,67 @@ fn decrease_full_equals_close() {
 }
 
 #[test]
+fn close_after_increase_keeps_oi_ledger_exact() {
+    // Regression for a Task 10 randomized-sequence finding (step 155, seed
+    // 0xDEADBEEF): `increase_position` updates `entry` to a VWAP that rounds
+    // up, and `finalize_close`/`decrease_position` used to recompute the OI
+    // decrement as `notional(size, entry)` off that rounded entry. Because
+    // `notional` itself also rounds up, the recompute can exceed the ledger's
+    // true remaining balance (double rounding), underflowing `checked_sub`
+    // and failing the whole crank tx / close — even though the position and
+    // pool are perfectly healthy. `Position.oi_notional` now tracks the exact
+    // contribution in lock-step at open/increase/decrease, so this must
+    // always succeed. (`add_size`/`add_price` below are chosen, via offline
+    // search, to reproduce a positive recompute-vs-ledger drift.)
+    let mut h = Harness::new();
+    let w = World::bootstrap(&mut h);
+    h.warp(100, NOW);
+    w.set_price(&mut h, P150, 5, NOW, 100);
+    let t = w.new_trader(&mut h, 2_000_000_000);
+    h.send(
+        &[ixs::open_position(
+            &t.kp.pubkey(),
+            &t,
+            &w,
+            Side::Long,
+            SOL10,
+            M150,
+            P150,
+        )],
+        &[&t.kp],
+    )
+    .unwrap();
+    let add_size: u64 = 7_000_000_001;
+    let add_price: u64 = 160_000_003;
+    w.set_price(&mut h, add_price, 5, NOW, 101);
+    h.send(
+        &[ixs::increase_position(
+            &t.kp.pubkey(),
+            &t,
+            &w,
+            add_size,
+            400_000_000,
+            u64::MAX,
+        )],
+        &[&t.kp],
+    )
+    .unwrap();
+    let p: Position = h.account(&t.position);
+    assert_eq!(p.entry, 154_117_649, "VWAP entry rounds up");
+    // Before the fix: notional(p.size, p.entry) = 2_620_000_034 > the ledger's
+    // tracked 2_620_000_022 (open_notional 1_500_000_000 + delta_notional
+    // 1_120_000_022) — a 12 base-unit shortfall that underflowed `checked_sub`.
+    h.send(&[ixs::close_position(&t.kp.pubkey(), &t, &w, 0)], &[&t.kp])
+        .unwrap();
+    assert_eq!(
+        h.account::<Position>(&t.position).state,
+        PositionState::Closed
+    );
+    assert_eq!(h.account::<MarketRisk>(&w.risk).oi_long, 0);
+    assert_invariant(&h, &w, &[&t]);
+}
+
+#[test]
 fn decrease_leaving_dust_or_undermargined_remainder_rejected() {
     let mut h = Harness::new();
     let w = World::bootstrap(&mut h);

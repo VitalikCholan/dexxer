@@ -130,6 +130,8 @@ pub fn open_position(
     p.opened_slot = clock.slot;
     p.liq_ticks = 0;
     p.closed = None;
+    // Exact at open: entry == px.price, so notional(size, entry) == entry_notional.
+    p.oi_notional = entry_notional;
     seed_mark(&mut a.market, px.price, clock.slot);
     Ok(())
 }
@@ -312,6 +314,12 @@ pub fn increase_position(
     p.entry = new_entry;
     p.liq_price = chk.liq_price;
     p.liq_ticks = 0;
+    // Track the exact OI contribution in lock-step with the ledger above
+    // (delta_notional, not a recompute off the rounded VWAP entry).
+    p.oi_notional = p
+        .oi_notional
+        .checked_add(delta_notional)
+        .ok_or(DexxerError::MathOverflow)?;
     Ok(())
 }
 
@@ -387,19 +395,27 @@ pub fn decrease_position(mut ctx: Context<Trade>, close_size: u64, limit_price: 
         .locked_margin
         .checked_sub(released)
         .ok_or(DexxerError::MathOverflow)?;
-    let closed_notional = math::notional(close_size, a.position.entry)?;
+    // Pro-rata share of the position's own tracked OI contribution (floor,
+    // pool-favouring, same direction as `released` margin above) — not a
+    // recompute off the stored entry, which would suffer the same VWAP
+    // double-rounding underflow risk as `finalize_close` (see Position::oi_notional).
+    let closed_oi = ((a.position.oi_notional as u128)
+        .checked_mul(close_size as u128)
+        .ok_or(DexxerError::MathOverflow)?)
+    .checked_div(a.position.size as u128)
+    .ok_or(DexxerError::MathOverflow)? as u64;
     let r = &mut a.market_risk;
     match a.position.side {
         Side::Long => {
             r.oi_long = r
                 .oi_long
-                .checked_sub(closed_notional)
+                .checked_sub(closed_oi)
                 .ok_or(DexxerError::MathOverflow)?
         }
         Side::Short => {
             r.oi_short = r
                 .oi_short
-                .checked_sub(closed_notional)
+                .checked_sub(closed_oi)
                 .ok_or(DexxerError::MathOverflow)?
         }
     }
@@ -408,6 +424,10 @@ pub fn decrease_position(mut ctx: Context<Trade>, close_size: u64, limit_price: 
     p.margin = p
         .margin
         .checked_sub(released)
+        .ok_or(DexxerError::MathOverflow)?;
+    p.oi_notional = p
+        .oi_notional
+        .checked_sub(closed_oi)
         .ok_or(DexxerError::MathOverflow)?;
     // IMR is an *initial* margin requirement: check the remainder at entry, so a
     // pro-rata release keeps leverage unchanged; mark-based health is crank_tick's job (MMR).
@@ -447,24 +467,30 @@ pub fn finalize_close(
         .locked_margin
         .checked_sub(pos.margin)
         .ok_or(DexxerError::MathOverflow)?;
-    let entry_notional = math::notional(pos.size, pos.entry)?;
-    // OI is decremented by the same entry-notional it was incremented with at
-    // open; underflow here means an accounting bug and must fail loudly, not
-    // clamp silently.
+    // OI is decremented by the position's own tracked contribution
+    // (`pos.oi_notional`, maintained in lock-step at open/increase/decrease),
+    // NOT by recomputing `notional(pos.size, pos.entry)`: `entry` is a VWAP
+    // that rounds up on every `increase_position`, and re-rounding `notional`
+    // on top of that can produce a value larger than what is actually left in
+    // the ledger, underflowing `checked_sub` and failing the whole crank tx
+    // (every candidate in the batch, not just this one) even though nothing
+    // is actually wrong. `oi_notional` is exact by construction, so this
+    // subtraction can only fail on a genuine accounting bug.
     match pos.side {
         Side::Long => {
             risk_acc.oi_long = risk_acc
                 .oi_long
-                .checked_sub(entry_notional)
+                .checked_sub(pos.oi_notional)
                 .ok_or(DexxerError::MathOverflow)?
         }
         Side::Short => {
             risk_acc.oi_short = risk_acc
                 .oi_short
-                .checked_sub(entry_notional)
+                .checked_sub(pos.oi_notional)
                 .ok_or(DexxerError::MathOverflow)?
         }
     }
+    pos.oi_notional = 0;
     risk_acc.open_positions = risk_acc
         .open_positions
         .checked_sub(1)

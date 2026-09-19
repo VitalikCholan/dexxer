@@ -89,6 +89,12 @@ pub fn assert_custom_error(r: &Result<TransactionMetadata, FailedTransactionMeta
 /// protocol_liquidity + Σ free + Σ pos.margin + fees + insurance == capital_total == vault balance.
 /// Shared across Task 7 (trade), 8 (liquidation) and 9/10 (decrease/crank) tests.
 pub fn assert_invariant(h: &Harness, w: &setup::World, traders: &[&setup::Trader]) {
+    assert_invariant_ctx(h, w, traders, "");
+}
+
+/// Same as `assert_invariant`, but every assertion message is prefixed with `ctx`
+/// (e.g. `"step {step}: "`) so a randomized-sequence failure names the failing step.
+pub fn assert_invariant_ctx(h: &Harness, w: &setup::World, traders: &[&setup::Trader], ctx: &str) {
     let pool: dexxer_core::state::Pool = h.account(&w.pool);
     let mut sum = pool.protocol_liquidity + pool.fees_accrued + pool.insurance;
     for t in traders {
@@ -101,9 +107,10 @@ pub fn assert_invariant(h: &Harness, w: &setup::World, traders: &[&setup::Trader
                 0
             };
     }
-    assert_eq!(sum, pool.capital_total);
+    assert_eq!(sum, pool.capital_total, "{ctx}sum != capital_total");
     assert_eq!(
         pool.capital_total,
-        token_ix::token_balance(&h.svm, &w.pool_ata)
+        token_ix::token_balance(&h.svm, &w.pool_ata),
+        "{ctx}capital_total != vault balance"
     );
 }

@@ -3,7 +3,7 @@
 // Deterministic PRNG (seed 0xDEADBEEF) so a failure reproduces exactly.
 use dexxer_core::{math, state::*};
 use dexxer_litesvm::{
-    assert_invariant, ixs,
+    assert_invariant_ctx, ixs,
     setup::{Trader, World},
     Harness,
 };
@@ -45,7 +45,14 @@ fn random_sequences_keep_pool_invariants() {
     .unwrap();
     h.warp(slot, ts);
     w.set_price(&mut h, price, 5, ts, slot);
-    let mut traders: Vec<Trader> = (0..4).map(|_| w.new_trader(&mut h, 2_000_000_000)).collect();
+    let mut traders: Vec<Trader> = (0..4)
+        .map(|_| w.new_trader(&mut h, 2_000_000_000))
+        .collect();
+    // Tracks, per trader index, whether a Closed position has already triggered
+    // a replacement trader — a position cannot reopen after closing in week 1
+    // (mark_committed is week 3), so any trader that becomes Closed (via a
+    // user close/decrease-to-zero OR a crank liquidation) is replaced exactly once.
+    let mut replaced: Vec<bool> = vec![false; traders.len()];
 
     // Per-kind success/attempt counters for the final report.
     let mut opened_ok = 0u32;
@@ -59,6 +66,7 @@ fn random_sequences_keep_pool_invariants() {
     let mut close_ok = 0u32;
     let mut close_attempt = 0u32;
     let mut crank_ok = 0u32;
+    let mut liquidated = 0u32;
 
     for step in 0..300u32 {
         slot += 1;
@@ -76,7 +84,15 @@ fn random_sequences_keep_pool_invariants() {
             0 | 1 if st == PositionState::Empty => {
                 opened_attempt += 1;
                 let notional = math::notional(size, price).unwrap();
-                let margin = notional / 10 + rng.below(notional / 2 + 1);
+                // Half the time bias the margin near the 10 % IMR floor (10-15 %
+                // of notional) so a subsequent adverse price move plus crank has
+                // a real chance to push the position under MMR and liquidate it;
+                // otherwise keep the original wide 10-60 % range.
+                let margin = if rng.below(2) == 0 {
+                    notional / 10 + rng.below(notional / 20 + 1)
+                } else {
+                    notional / 10 + rng.below(notional / 2 + 1)
+                };
                 let r = h.send(
                     &[ixs::open_position(
                         &traders[i].kp.pubkey(),
@@ -167,14 +183,25 @@ fn random_sequences_keep_pool_invariants() {
                     price.saturating_sub(delta).max(50_000_000)
                 };
                 w.set_price(&mut h, price, 5, ts, slot);
+                let was_open: Vec<bool> = traders
+                    .iter()
+                    .map(|t| h.account::<Position>(&t.position).state == PositionState::Open)
+                    .collect();
                 let all: Vec<&Trader> = traders.iter().collect();
                 h.send(&[ixs::crank_tick(&w.crank.pubkey(), &w, &all)], &[&w.crank])
-                    .expect("crank must not fail");
+                    .unwrap_or_else(|e| panic!("step {step}: crank must not fail: {e:?}"));
+                for (idx, t) in traders.iter().enumerate() {
+                    if was_open[idx]
+                        && h.account::<Position>(&t.position).state == PositionState::Closed
+                    {
+                        liquidated += 1;
+                    }
+                }
                 crank_ok += 1;
             }
         }
         let refs: Vec<&Trader> = traders.iter().collect();
-        assert_invariant(&h, &w, &refs);
+        assert_invariant_ctx(&h, &w, &refs, &format!("step {step}: "));
         // OI == Σ notional at entry over open positions
         let (mut ol, mut os) = (0u64, 0u64);
         for t in &traders {
@@ -215,15 +242,23 @@ fn random_sequences_keep_pool_invariants() {
                 }
             }
         }
-        // closed traders are replaced (Closed → Empty needs mark_committed, week 3)
-        if h.account::<Position>(&traders[i].position).state == PositionState::Closed
-            && traders.len() < 12
-        {
-            traders.push(w.new_trader(&mut h, 2_000_000_000));
+        // Any trader that is now Closed (user close/decrease-to-zero, or a crank
+        // liquidation) is replaced exactly once (Closed → Empty needs
+        // mark_committed, week 3, so it cannot reopen and must be swapped in).
+        for idx in 0..traders.len() {
+            if !replaced[idx]
+                && h.account::<Position>(&traders[idx].position).state == PositionState::Closed
+            {
+                replaced[idx] = true;
+                if traders.len() < 12 {
+                    traders.push(w.new_trader(&mut h, 2_000_000_000));
+                    replaced.push(false);
+                }
+            }
         }
     }
     println!(
-        "ops: open {}/{} add_margin {}/{} increase {}/{} decrease {}/{} close {}/{} crank {}",
+        "ops: open {}/{} add_margin {}/{} increase {}/{} decrease {}/{} close {}/{} crank {} liquidated {}",
         opened_ok,
         opened_attempt,
         add_margin_ok,
@@ -234,8 +269,10 @@ fn random_sequences_keep_pool_invariants() {
         decrease_attempt,
         close_ok,
         close_attempt,
-        crank_ok
+        crank_ok,
+        liquidated
     );
+    assert!(liquidated > 0, "no liquidation occurred in 300 steps");
     let pool: Pool = h.account(&w.pool);
     println!(
         "final: protocol_liquidity {} fees {} insurance {} bad_debt {}",
