@@ -239,7 +239,12 @@ pub fn increase_position(
         .ok_or(DexxerError::MathOverflow)?;
     let new_entry = math::vwap_entry(a.position.size, a.position.entry, add_size, px.price)?;
     // OI check on the delta only: pretend the existing exposure is not there.
-    let old_notional = math::notional(a.position.size, a.position.entry)?;
+    // Use the position's own tracked `oi_notional`, not a recompute of
+    // `notional(size, entry)` off the stored (VWAP, rounds-up) entry — the same
+    // double-rounding class fixed in `finalize_close`/`decrease_position`: after
+    // a prior increase, that recompute can exceed the ledger's true remaining
+    // contribution and underflow `checked_sub` here, spuriously rejecting a
+    // perfectly legitimate increase with MathOverflow.
     let r0 = &a.market_risk;
     let mut risk_view = MarketRisk {
         version: r0.version,
@@ -253,13 +258,13 @@ pub fn increase_position(
         Side::Long => {
             risk_view.oi_long = risk_view
                 .oi_long
-                .checked_sub(old_notional)
+                .checked_sub(a.position.oi_notional)
                 .ok_or(DexxerError::MathOverflow)?
         }
         Side::Short => {
             risk_view.oi_short = risk_view
                 .oi_short
-                .checked_sub(old_notional)
+                .checked_sub(a.position.oi_notional)
                 .ok_or(DexxerError::MathOverflow)?
         }
     }

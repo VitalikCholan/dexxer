@@ -232,6 +232,81 @@ fn close_after_increase_keeps_oi_ledger_exact() {
 }
 
 #[test]
+fn second_increase_after_vwap_rounding_is_accepted() {
+    // Regression for a Task 10 fix-round-2 finding: `increase_position`'s
+    // OI-cap check ("pretend the existing exposure is not there") used to
+    // recompute `notional(position.size, position.entry)` off the stored
+    // (VWAP, rounds-up) entry and subtract that from a `risk_view` copy of
+    // the ledger. After a prior increase has rounded `entry` up, that
+    // recompute can exceed the ledger's true remaining contribution — the
+    // same double-rounding class as `close_after_increase_keeps_oi_ledger_exact`
+    // above — underflowing `checked_sub` and rejecting a second, perfectly
+    // legitimate increase with a spurious MathOverflow. `increase_position`
+    // now reads `position.oi_notional` (exact by construction) instead, so a
+    // second increase after the first has rounded the entry must succeed.
+    let mut h = Harness::new();
+    let w = World::bootstrap(&mut h);
+    h.warp(100, NOW);
+    w.set_price(&mut h, P150, 5, NOW, 100);
+    let t = w.new_trader(&mut h, 2_000_000_000);
+    h.send(
+        &[ixs::open_position(
+            &t.kp.pubkey(),
+            &t,
+            &w,
+            Side::Long,
+            SOL10,
+            M150,
+            P150,
+        )],
+        &[&t.kp],
+    )
+    .unwrap();
+    let add_price: u64 = 160_000_003;
+    w.set_price(&mut h, add_price, 5, NOW, 101);
+    h.send(
+        &[ixs::increase_position(
+            &t.kp.pubkey(),
+            &t,
+            &w,
+            7_000_000_001,
+            400_000_000,
+            u64::MAX,
+        )],
+        &[&t.kp],
+    )
+    .unwrap();
+    assert_eq!(
+        h.account::<Position>(&t.position).entry,
+        154_117_649,
+        "VWAP entry rounds up"
+    );
+    // Second increase at the same price: before the fix, the OI-cap check's
+    // recompute (2_620_000_034) exceeded the ledger's tracked contribution
+    // (2_620_000_022), underflowing `checked_sub` and rejecting this call.
+    h.send(
+        &[ixs::increase_position(
+            &t.kp.pubkey(),
+            &t,
+            &w,
+            10_000_000,
+            200_000,
+            u64::MAX,
+        )],
+        &[&t.kp],
+    )
+    .unwrap();
+    let p: Position = h.account(&t.position);
+    assert_eq!(p.state, PositionState::Open);
+    assert_eq!(
+        h.account::<MarketRisk>(&w.risk).oi_long,
+        p.oi_notional,
+        "OI ledger must equal the sum of open positions' tracked oi_notional"
+    );
+    assert_invariant(&h, &w, &[&t]);
+}
+
+#[test]
 fn decrease_leaving_dust_or_undermargined_remainder_rejected() {
     let mut h = Harness::new();
     let w = World::bootstrap(&mut h);
