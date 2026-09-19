@@ -4,7 +4,14 @@ use anchor_lang::{
 };
 use anchor_spl::token::{self, Mint, MintTo, Token, TokenAccount};
 use ephemeral_rollups_sdk::{
-    access_control::structs::EphemeralPermission, ephemeral_accounts::rent,
+    access_control::{
+        instructions::CreateEphemeralPermissionCpi,
+        structs::{EphemeralMembersArgs, EphemeralPermission, PERMISSION_SEED},
+    },
+    anchor::delegate,
+    consts::{EPHEMERAL_VAULT_ID, MAGIC_PROGRAM_ID, PERMISSION_PROGRAM_ID},
+    cpi::DelegateConfig,
+    ephemeral_accounts::rent,
 };
 
 use crate::{errors::DexxerError, state::*, token::transfer_signed_by_owner};
@@ -273,5 +280,139 @@ pub fn credit_deposit(ctx: Context<CreditDeposit>, amount: u64) -> Result<()> {
         .capital_total
         .checked_add(amount)
         .ok_or(DexxerError::MathOverflow)?;
+    Ok(())
+}
+
+// spec §8 Q2: delegate the three user-scoped PDAs to the TEE validator. Seeds
+// already pin `owner` on `user_account`/`position`/`disclosure_queue`, so no
+// extra `has_one` check is needed before delegating them.
+#[delegate]
+#[derive(Accounts)]
+pub struct DelegateUser<'info> {
+    #[account(mut)]
+    pub owner: Signer<'info>,
+    #[account(seeds = [CONFIG_SEED], bump = config.bump)]
+    pub config: Account<'info, Config>,
+    /// CHECK: market key for the position seed
+    #[account(seeds = [MARKET_SEED, &SOL_SYMBOL], bump)]
+    pub market: UncheckedAccount<'info>,
+    /// CHECK: delegated
+    #[account(mut, del, seeds = [USER_SEED, owner.key().as_ref()], bump)]
+    pub user_account: UncheckedAccount<'info>,
+    /// CHECK: delegated
+    #[account(mut, del, seeds = [POSITION_SEED, owner.key().as_ref(), market.key().as_ref()], bump)]
+    pub position: UncheckedAccount<'info>,
+    /// CHECK: delegated
+    #[account(mut, del, seeds = [DQ_SEED, owner.key().as_ref()], bump)]
+    pub disclosure_queue: UncheckedAccount<'info>,
+}
+pub fn delegate_user(ctx: Context<DelegateUser>) -> Result<()> {
+    let o = ctx.accounts.owner.key();
+    let m = ctx.accounts.market.key();
+    ctx.accounts.delegate_user_account(
+        &ctx.accounts.owner,
+        &[USER_SEED, o.as_ref()],
+        DelegateConfig {
+            validator: Some(ctx.accounts.config.tee_validator),
+            ..Default::default()
+        },
+    )?;
+    ctx.accounts.delegate_position(
+        &ctx.accounts.owner,
+        &[POSITION_SEED, o.as_ref(), m.as_ref()],
+        DelegateConfig {
+            validator: Some(ctx.accounts.config.tee_validator),
+            ..Default::default()
+        },
+    )?;
+    ctx.accounts.delegate_disclosure_queue(
+        &ctx.accounts.owner,
+        &[DQ_SEED, o.as_ref()],
+        DelegateConfig {
+            validator: Some(ctx.accounts.config.tee_validator),
+            ..Default::default()
+        },
+    )?;
+    Ok(())
+}
+
+// spec §8 Q2: create the ER-side `EphemeralPermission` account for each of the
+// three delegated PDAs. Week 1: public (`is_private: false`, no members) —
+// week 2 flips this to private with `[owner, session, crank]` members.
+#[derive(Accounts)]
+pub struct InitPermissions<'info> {
+    #[account(mut)]
+    pub owner: Signer<'info>,
+    #[account(seeds = [MARKET_SEED, &market.symbol], bump = market.bump)]
+    pub market: Account<'info, Market>,
+    #[account(mut, seeds = [USER_SEED, owner.key().as_ref()], bump = user_account.bump, has_one = owner @ DexxerError::Unauthorized)]
+    pub user_account: Account<'info, UserAccount>,
+    // Boxed: with the market/user_account/permission accounts alongside them,
+    // Position + DisclosureQueue blow the SBF stack frame in `try_accounts`
+    // (same reason as `InitUser` above).
+    #[account(mut, seeds = [POSITION_SEED, owner.key().as_ref(), market.key().as_ref()], bump = position.bump, has_one = owner @ DexxerError::Unauthorized)]
+    pub position: Box<Account<'info, Position>>,
+    #[account(mut, seeds = [DQ_SEED, owner.key().as_ref()], bump = disclosure_queue.bump, has_one = owner @ DexxerError::Unauthorized)]
+    pub disclosure_queue: Box<Account<'info, DisclosureQueue>>,
+    /// CHECK: permission PDAs under the permission program
+    #[account(mut, seeds = [PERMISSION_SEED, user_account.key().as_ref()], bump, seeds::program = PERMISSION_PROGRAM_ID)]
+    pub user_permission: UncheckedAccount<'info>,
+    /// CHECK:
+    #[account(mut, seeds = [PERMISSION_SEED, position.key().as_ref()], bump, seeds::program = PERMISSION_PROGRAM_ID)]
+    pub position_permission: UncheckedAccount<'info>,
+    /// CHECK:
+    #[account(mut, seeds = [PERMISSION_SEED, disclosure_queue.key().as_ref()], bump, seeds::program = PERMISSION_PROGRAM_ID)]
+    pub dq_permission: UncheckedAccount<'info>,
+    /// CHECK:
+    #[account(address = PERMISSION_PROGRAM_ID)]
+    pub permission_program: UncheckedAccount<'info>,
+    /// CHECK:
+    #[account(mut, address = EPHEMERAL_VAULT_ID)]
+    pub ephemeral_vault: UncheckedAccount<'info>,
+    /// CHECK:
+    #[account(address = MAGIC_PROGRAM_ID)]
+    pub magic_program: UncheckedAccount<'info>,
+}
+pub fn init_permissions(ctx: Context<InitPermissions>) -> Result<()> {
+    let o = ctx.accounts.owner.key();
+    let m = ctx.accounts.market.key();
+    let ub = [ctx.accounts.user_account.bump];
+    let pb = [ctx.accounts.position.bump];
+    let db = [ctx.accounts.disclosure_queue.bump];
+    let triples: [(AccountInfo, AccountInfo, Vec<&[u8]>); 3] = [
+        (
+            ctx.accounts.user_account.to_account_info(),
+            ctx.accounts.user_permission.to_account_info(),
+            vec![USER_SEED, o.as_ref(), &ub],
+        ),
+        (
+            ctx.accounts.position.to_account_info(),
+            ctx.accounts.position_permission.to_account_info(),
+            vec![POSITION_SEED, o.as_ref(), m.as_ref(), &pb],
+        ),
+        (
+            ctx.accounts.disclosure_queue.to_account_info(),
+            ctx.accounts.dq_permission.to_account_info(),
+            vec![DQ_SEED, o.as_ref(), &db],
+        ),
+    ];
+    for (acc, perm, seeds) in triples.iter() {
+        if perm.lamports() > 0 {
+            continue; // idempotent: already created
+        }
+        CreateEphemeralPermissionCpi {
+            payer: acc.clone(),
+            permissioned_account: acc.clone(),
+            permission: perm.clone(),
+            vault: ctx.accounts.ephemeral_vault.to_account_info(),
+            magic_program: ctx.accounts.magic_program.to_account_info(),
+            permission_program: ctx.accounts.permission_program.to_account_info(),
+            args: EphemeralMembersArgs {
+                is_private: false,
+                members: vec![],
+            },
+        }
+        .invoke_signed(&[seeds.as_slice()])?;
+    }
     Ok(())
 }

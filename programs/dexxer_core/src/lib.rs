@@ -107,4 +107,16 @@ pub mod dexxer_core {
     pub fn crank_tick<'info>(ctx: Context<'info, CrankTick<'info>>) -> Result<()> {
         crank::crank_tick(ctx)
     }
+    pub fn delegate_market(ctx: Context<DelegateMarket>) -> Result<()> {
+        admin::delegate_market(ctx)
+    }
+    pub fn delegate_pool(ctx: Context<DelegatePool>) -> Result<()> {
+        admin::delegate_pool(ctx)
+    }
+    pub fn delegate_user(ctx: Context<DelegateUser>) -> Result<()> {
+        user::delegate_user(ctx)
+    }
+    pub fn init_permissions(ctx: Context<InitPermissions>) -> Result<()> {
+        user::init_permissions(ctx)
+    }
 }
