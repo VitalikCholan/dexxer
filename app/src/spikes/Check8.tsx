@@ -41,7 +41,7 @@ const DISC = {
 }
 
 function ix(keys: { pubkey: PublicKey; isSigner: boolean; isWritable: boolean }[], data: number[]) {
-  return new TransactionInstruction({ programId: PROGRAM_ID, keys, data: Buffer.from(data) })
+  return new TransactionInstruction({ programId: PROGRAM_ID, keys, data: Buffer.from(Uint8Array.from(data)) })
 }
 
 async function routerStatus(account: PublicKey): Promise<{ isDelegated: boolean; fqdn?: string }> {
@@ -60,11 +60,20 @@ export function Check8() {
   const [out, setOut] = useState('Step 1: Onboard (3 MWA prompts). Step 2: Run Check 8.')
   const [busy, setBusy] = useState(false)
 
-  async function withWallet() {
+  async function withWallet(log: string[]) {
+    log.push(`typeof connect=${typeof connect} account=${account ? 'set' : 'undefined'}`)
     const wallet = account ?? (await connect())
-    const owner = wallet.address
-    const [counter] = PublicKey.findProgramAddressSync([Buffer.from('counter'), owner.toBuffer()], PROGRAM_ID)
+    log.push(`wallet.address type=${typeof wallet.address} ctor=${(wallet.address as any)?.constructor?.name}`)
+    const owner = wallet.address instanceof PublicKey ? wallet.address : new PublicKey(String(wallet.address))
+    log.push(`Buffer=${typeof Buffer} from=${typeof (globalThis as any).Buffer?.from}`)
+    const seed = new TextEncoder().encode('counter')
+    const [counter] = PublicKey.findProgramAddressSync([seed, owner.toBytes()], PROGRAM_ID)
     return { owner, counter }
+  }
+
+  function errText(e: unknown) {
+    const err = e as { message?: string; stack?: string }
+    return `${String(e)}\n${(err?.stack ?? '').split('\n').slice(0, 6).join('\n')}`
   }
 
   async function signAndSend(conn: Connection, owner: PublicKey, instructions: TransactionInstruction[], label: string) {
@@ -86,7 +95,7 @@ export function Check8() {
     setBusy(true)
     const log: string[] = []
     try {
-      const { owner, counter } = await withWallet()
+      const { owner, counter } = await withWallet(log)
       log.push(`owner ${owner.toBase58()}`, `counter ${counter.toBase58()}`)
       setOut(log.join('\n'))
 
@@ -177,7 +186,7 @@ export function Check8() {
       log.push('ONBOARD DONE')
       setOut(log.join('\n'))
     } catch (e) {
-      log.push('ONBOARD FAIL ' + String(e))
+      log.push('ONBOARD FAIL ' + errText(e))
       setOut(log.join('\n'))
     } finally {
       setBusy(false)
@@ -186,9 +195,10 @@ export function Check8() {
 
   async function run() {
     setBusy(true)
+    const log: string[] = []
     setOut('running…')
     try {
-      const { owner, counter } = await withWallet()
+      const { owner, counter } = await withWallet(log)
       const tee = await teeConnFor(owner)
       const t0 = Date.now()
       const line = await signAndSend(
@@ -199,7 +209,7 @@ export function Check8() {
       )
       setOut(`CHECK 8 PASS ${Date.now() - t0}ms\n${line}`)
     } catch (e) {
-      setOut('CHECK 8 FAIL ' + String(e))
+      setOut([...log, 'CHECK 8 FAIL ' + errText(e)].join('\n'))
     } finally {
       setBusy(false)
     }
