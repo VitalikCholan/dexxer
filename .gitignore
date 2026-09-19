@@ -19,3 +19,9 @@ keypairs/
 
 # SDD scratch
 .superpowers/
+
+spikes/keys/
+spikes/**/target/
+spikes/**/node_modules/
+spikes/.env
+!spikes/.env.example

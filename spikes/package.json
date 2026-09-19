@@ -1,0 +1,17 @@
+{
+  "name": "dexxer-spikes",
+  "private": true,
+  "type": "module",
+  "scripts": { "check": "tsx" },
+  "dependencies": {
+    "@coral-xyz/anchor": "0.32.1",
+    "@magicblock-labs/ephemeral-rollups-sdk": "0.17.0",
+    "@magicblock-labs/gum-sdk": "latest",
+    "@pythnetwork/pyth-solana-receiver": "latest",
+    "@solana/spl-token": "^0.4.14",
+    "@solana/web3.js": "^1.98.0",
+    "dotenv": "^16.4.0",
+    "tweetnacl": "^1.0.3"
+  },
+  "devDependencies": { "tsx": "^4.19.0", "typescript": "^5.6.0" }
+}
