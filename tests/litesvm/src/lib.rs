@@ -1,6 +1,12 @@
+pub mod ixs;
+pub mod pdas;
+pub mod setup;
 pub mod token_ix;
 
-use litesvm::{types::{FailedTransactionMetadata, TransactionMetadata}, LiteSVM};
+use litesvm::{
+    types::{FailedTransactionMetadata, TransactionMetadata},
+    LiteSVM,
+};
 use solana_instruction::Instruction;
 use solana_keypair::Keypair;
 use solana_message::Message;
@@ -10,8 +16,12 @@ use solana_transaction::Transaction;
 
 pub const SO_PATH: &str = "../../target/deploy/dexxer_core.so";
 
-pub fn pk(p: anchor_lang::prelude::Pubkey) -> Pubkey { Pubkey::new_from_array(p.to_bytes()) }
-pub fn apk(p: Pubkey) -> anchor_lang::prelude::Pubkey { anchor_lang::prelude::Pubkey::new_from_array(p.to_bytes()) }
+pub fn pk(p: anchor_lang::prelude::Pubkey) -> Pubkey {
+    Pubkey::new_from_array(p.to_bytes())
+}
+pub fn apk(p: Pubkey) -> anchor_lang::prelude::Pubkey {
+    anchor_lang::prelude::Pubkey::new_from_array(p.to_bytes())
+}
 
 pub struct Harness {
     pub svm: LiteSVM,
@@ -27,12 +37,22 @@ impl Harness {
             .expect("run `anchor build` first: target/deploy/dexxer_core.so");
         let payer = Keypair::new();
         svm.airdrop(&payer.pubkey(), 100_000_000_000).unwrap();
-        Self { svm, payer, program_id }
+        Self {
+            svm,
+            payer,
+            program_id,
+        }
     }
 
-    pub fn fund(&mut self, who: &Pubkey, lamports: u64) { self.svm.airdrop(who, lamports).unwrap(); }
+    pub fn fund(&mut self, who: &Pubkey, lamports: u64) {
+        self.svm.airdrop(who, lamports).unwrap();
+    }
 
-    pub fn send(&mut self, ixs: &[Instruction], signers: &[&Keypair]) -> Result<TransactionMetadata, FailedTransactionMetadata> {
+    pub fn send(
+        &mut self,
+        ixs: &[Instruction],
+        signers: &[&Keypair],
+    ) -> Result<TransactionMetadata, FailedTransactionMetadata> {
         let bh = self.svm.latest_blockhash();
         let msg = Message::new_with_blockhash(ixs, Some(&self.payer.pubkey()), &bh);
         let mut all: Vec<&Keypair> = vec![&self.payer];
@@ -59,6 +79,9 @@ impl Harness {
 /// Assert a failed tx carries the given Anchor custom error code (6000 + index).
 pub fn assert_custom_error(r: &Result<TransactionMetadata, FailedTransactionMetadata>, code: u32) {
     let e = r.as_ref().err().expect("expected failure").err.to_string();
-    assert!(e.contains(&format!("custom program error: {:#x}", code)) || e.contains(&format!("Custom({})", code)),
-        "expected custom error {code}, got: {e}");
+    assert!(
+        e.contains(&format!("custom program error: {:#x}", code))
+            || e.contains(&format!("Custom({})", code)),
+        "expected custom error {code}, got: {e}"
+    );
 }
