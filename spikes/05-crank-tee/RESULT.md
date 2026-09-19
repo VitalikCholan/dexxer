@@ -9,6 +9,21 @@ Decision: spec §3.5 crank cadence confirmed working; scheduler ticks land notic
 1000 ms interval (observed ≈1.35 ticks/s), so any §3.5 liquidation-crank cadence budget should treat 1000 ms as
 a *floor request*, not a guaranteed period — see Finding below.
 
+## Accepted vs executed
+
+These are two distinct claims and the evidence for each is different:
+
+- **Schedule tx accepted**: the ER `scheduleIncrement` transaction
+  (`27yoVEtAeVBJ6QAVRQ8zvXi3dgjQTRFAaLZzAVg9HV3i3wKvWgcX7M5fJeKYf1jQKwdT7e8VbfhDYbvZDnwpiTJr`) confirmed on the
+  TEE ER with no preflight or execution error. This alone only proves the scheduler CPI was accepted into the
+  ER's task queue — it does *not* prove anything actually fired later.
+- **Scheduler actually executing**: proven separately, by the 20 one-second samples of `counter.count` on the
+  ER connection showing monotonically increasing values (`c0=2` → `29` over 20 s, i.e. 27 observed increments)
+  and, per the cleanup probe below, the count reaching exactly `30` (the requested `iterations`) and then going
+  static. A schedule tx landing on-chain would not by itself move `counter.count` — only the delegation
+  program's crank executor actually invoking `increment` does that, so the sampled increments are direct
+  evidence of on-validator scheduled execution, not just of the request being queued.
+
 ## Deploy
 
 - Toolchain: `anchor-cli 1.0.2`, `solana-cli 3.1.10`, `rustc 1.89.0`, `ephemeral-rollups-sdk = 0.16.0` (git rev
@@ -70,15 +85,71 @@ samples (t+1s .. t+20s):
 `ticks = samples[19] - c0 = 29 - 2 = 27` → **CHECK 5 PASS** (`>= 12` required).
 
 **Finding**: the observed cadence (27 ticks / 20 s ≈ 1.35 ticks/s, ≈740 ms average inter-tick spacing) is
-faster than the requested `execution_interval_millis = 1000`. The scheduler CPI's requested interval is a
-lower bound on submission spacing under load, not a guaranteed exact period — likely because the crank
-executor batches/pipelines pending scheduled tasks rather than sleeping a full 1000 ms between each tick. For
-spec §3.5 (liquidation crank cadence), this means the engine should budget for *at least* the requested rate,
-not assume ticks land exactly on the requested boundary; downstream logic (e.g. a liquidation check that
-compares "time since last tick") must not assume a fixed 1000 ms delta between ticks.
+faster than the requested `execution_interval_millis = 1000`.
+
+**Ruling out a duplicate/leftover schedule as the cause.** A plausible alternative explanation for an
+above-requested tick rate is two overlapping schedules firing concurrently (e.g. a leftover crank from a prior
+run of this script plus the new one). This is ruled out by the run's own log, not just by argument:
+- `check.ts` printed an `initialize sig`
+  (`5WSHd223ksEBzzH3vgwC6vXaem6tKaeTYGgw37JKcYa85DPNnbFWvGEmCBeFnQ1CXS6RaU5Gvr5BJkP4j1d9j554`), meaning the
+  `counter` PDA did not exist yet at the start of this run and was created fresh by this script.
+- The PDA is derived only from `["counter"]` under `program.programId`, and `program.programId` is a fresh id
+  written by `anchor keys sync` at the start of this task
+  (`Ctj6Hz5RG8cPDgmrDPKGjqKVNdHi7x7hmhKshy5wsNyA`) — a key that has never been deployed or used before this
+  task. So there is no prior program deployment under which a stale schedule against this exact PDA could
+  exist.
+- Consequently the single `scheduleIncrement` call in this run is the *only* schedule that has ever touched
+  this counter, and the 27 observed ticks are attributable to it alone, not to a second overlapping task.
+- Independent confirmation (cleanup probe below): the counter stopped incrementing at exactly `30`, the
+  requested `iterations` value. If a second schedule had also been running against the same PDA, the total
+  would very likely have exceeded 30 (two independent 30-iteration schedules racing to increment the same
+  account) rather than landing on exactly 30.
+
+With duplication ruled out, the above-requested rate is attributed to the scheduler CPI's requested interval
+acting as a **hypothesis**, not a confirmed cause: `execution_interval_millis` may function as a lower bound /
+scheduling hint under the crank executor's batching or pipelining behavior rather than a guaranteed exact
+period between individual tick executions. This spike does not have instrumentation on the validator side to
+confirm the executor's internal scheduling algorithm — only the client-observable effect (faster-than-requested
+ticks) is established fact. For spec §3.5 (liquidation crank cadence), the practical implication either way is
+the same: budget for *at least* the requested rate (ticks can arrive sooner), and don't have downstream logic
+assume a fixed delta between ticks.
 
 The full 30-iteration schedule was not exhausted within the 20 s observation window (29 of 30 increments
-observed) — consistent with the counter's `count > 1000 → reset to 0` guard never firing during this run.
+observed at t+20s) — consistent with the counter's `count > 1000 → reset to 0` guard never firing during this
+run. See "Task cleanup" below for confirmation that it exhausted shortly after.
+
+## Task cleanup
+
+`check.ts` has no cancel/undelegate step — by design, since the goal was to observe the scheduler firing, not
+to tear the task down. A follow-up read-only probe (not committed, run ~2 hours after the original
+`check.ts` execution, no new schedule issued) sampled the same counter twice, 8 s apart:
+
+```
+sample 1: 30 2026-09-19T05:38:14.970Z
+sample 2 (+8s): 30 2026-09-19T05:38:23.984Z
+delta: 0
+```
+
+**The task exhausted**: the counter is static at `30`, exactly the requested `iterations` value, and is no
+longer moving. There is nothing lingering to cancel — the scheduled task self-terminated after its 30th
+execution, as `ScheduleTaskArgs.iterations` implies.
+
+**A re-run of this script is unaffected either way.** `check.ts` derives the program id fresh via
+`anchor keys sync` (a new keypair, hence a new on-chain program id) each time this spike directory is rebuilt
+from the vendored example, and the counter PDA is derived from `["counter"]` *under that program id*. A fresh
+deploy therefore gets a fresh, empty counter PDA regardless of whether the previous run's schedule has
+exhausted or not — there is no shared mutable state between runs beyond `user`'s SOL balance (transaction
+fees only, no rent recovered since `initialize` uses `init_if_needed` and the account is never closed).
+
+## Design note for spec §3.5
+
+The vendored `increment` instruction is fully permissionless — `Increment<'info>` takes only `counter` (see
+`programs/crank-counter/src/lib.rs`), with no signer and no check that the caller is the delegation program's
+crank executor (e.g. no `crank_signer_pda` / CPI-caller validation). This is fine for a spike that only needs
+to observe ticks, but a real liquidation crank must not copy this pattern as-is: the production instruction
+needs to validate the caller is the expected crank signer (reject direct, non-crank invocations), since an
+unauthenticated `increment`-shaped instruction on a liquidation-relevant account would let any signer trigger
+liquidation logic out of band.
 
 ## check.ts stdout
 
