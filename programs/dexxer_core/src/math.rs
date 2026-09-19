@@ -14,45 +14,208 @@ pub const SIZE_SCALE: u128 = 1_000_000_000;
 pub const BPS: u128 = 10_000;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Side { Long, Short }
+pub enum Side {
+    Long,
+    Short,
+}
 
-pub fn notional(_size: u64, _price: u64) -> Result<u64, MathError> { unimplemented!() }
-pub fn upnl(_side: Side, _size: u64, _entry: u64, _mark: u64) -> Result<i64, MathError> { unimplemented!() }
-pub fn fee(_notional: u64, _bps: u32) -> Result<u64, MathError> { unimplemented!() }
-pub fn required_margin(_notional: u64, _imr_bps: u32) -> Result<u64, MathError> { unimplemented!() }
-pub fn equity(_margin: u64, _upnl: i64, _close_fee: u64) -> Result<i64, MathError> { unimplemented!() }
-/// `margin > notional` (leverage below 1x) has no liquidation price — `Err(InvalidInput)`.
-pub fn liq_price(_side: Side, _entry: u64, _size: u64, _margin: u64, _mmr_bps: u32) -> Result<u64, MathError> { unimplemented!() }
-pub fn is_liquidatable(_equity: i64, _notional: u64, _mmr_bps: u32) -> bool { unimplemented!() }
-pub fn vwap_entry(_old_size: u64, _old_entry: u64, _add_size: u64, _add_price: u64) -> Result<u64, MathError> { unimplemented!() }
+fn div_ceil(a: u128, b: u128) -> Result<u128, MathError> {
+    if b == 0 {
+        return Err(MathError::DivisionByZero);
+    }
+    a.checked_add(b - 1)
+        .ok_or(MathError::Overflow)
+        .map(|x| x / b)
+}
+fn to_u64(x: u128) -> Result<u64, MathError> {
+    u64::try_from(x).map_err(|_| MathError::Overflow)
+}
+fn to_i64(x: i128) -> Result<i64, MathError> {
+    i64::try_from(x).map_err(|_| MathError::Overflow)
+}
+
+// notional округлюється **вгору**: більший notional ⇒ більші комісії й вимоги ⇒ на користь пулу
+// (тест `notional_10_sol_at_150` ділиться без остачі).
+pub fn notional(size: u64, price: u64) -> Result<u64, MathError> {
+    let raw = (size as u128)
+        .checked_mul(price as u128)
+        .ok_or(MathError::Overflow)?;
+    to_u64(div_ceil(raw, SIZE_SCALE)?)
+}
+
+pub fn upnl(side: Side, size: u64, entry: u64, mark: u64) -> Result<i64, MathError> {
+    let diff: i128 = match side {
+        Side::Long => mark as i128 - entry as i128,
+        Side::Short => entry as i128 - mark as i128,
+    };
+    let raw = (size as i128)
+        .checked_mul(diff)
+        .ok_or(MathError::Overflow)?;
+    // округлення до нуля для прибутку, від нуля для збитку → на користь пулу
+    let q = raw / SIZE_SCALE as i128;
+    let r = raw % SIZE_SCALE as i128;
+    let adj = if r < 0 { q - 1 } else { q };
+    to_i64(adj)
+}
+
+pub fn fee(notional: u64, bps: u32) -> Result<u64, MathError> {
+    let raw = (notional as u128)
+        .checked_mul(bps as u128)
+        .ok_or(MathError::Overflow)?;
+    to_u64(div_ceil(raw, BPS)?)
+}
+
+pub fn required_margin(notional: u64, imr_bps: u32) -> Result<u64, MathError> {
+    fee(notional, imr_bps)
+}
+
+pub fn equity(margin: u64, upnl: i64, close_fee: u64) -> Result<i64, MathError> {
+    to_i64(
+        (margin as i128)
+            .checked_add(upnl as i128)
+            .ok_or(MathError::Overflow)?
+            .checked_sub(close_fee as i128)
+            .ok_or(MathError::Overflow)?,
+    )
+}
+
+pub fn liq_price(
+    side: Side,
+    entry: u64,
+    size: u64,
+    margin: u64,
+    mmr_bps: u32,
+) -> Result<u64, MathError> {
+    let n = notional(size, entry)? as u128;
+    if n == 0 || size == 0 {
+        return Err(MathError::DivisionByZero);
+    }
+    if (margin as u128) > n {
+        return Err(MathError::InvalidInput);
+    }
+    // 1/lev_eff = margin / notional;  liq_long = entry * (1 - margin/n + mmr) ;  liq_short = entry * (1 + margin/n - mmr)
+    // все в bps через u128: term = entry * (BPS*n - margin*BPS + mmr*n) / (BPS*n)
+    let e = entry as u128;
+    let m_bps = (margin as u128)
+        .checked_mul(BPS)
+        .ok_or(MathError::Overflow)?; // margin * BPS
+    let mmr_n = (mmr_bps as u128)
+        .checked_mul(n)
+        .ok_or(MathError::Overflow)?; // mmr * n
+    let base = BPS.checked_mul(n).ok_or(MathError::Overflow)?; // BPS * n
+    let num = match side {
+        Side::Long => base
+            .checked_sub(m_bps)
+            .ok_or(MathError::Overflow)?
+            .checked_add(mmr_n)
+            .ok_or(MathError::Overflow)?,
+        Side::Short => base
+            .checked_add(m_bps)
+            .ok_or(MathError::Overflow)?
+            .checked_sub(mmr_n)
+            .ok_or(MathError::InvalidInput)?,
+    };
+    let raw = e.checked_mul(num).ok_or(MathError::Overflow)?;
+    // long: ліквідаційна ціна вище (раніше) = ceil; short: нижче (раніше) = floor — на користь пулу
+    let out = match side {
+        Side::Long => div_ceil(raw, base)?,
+        Side::Short => raw / base,
+    };
+    to_u64(out)
+}
+
+pub fn is_liquidatable(equity: i64, notional: u64, mmr_bps: u32) -> bool {
+    match fee(notional, mmr_bps) {
+        Ok(req) => (equity as i128) < req as i128,
+        Err(_) => true,
+    }
+}
+
+pub fn vwap_entry(
+    old_size: u64,
+    old_entry: u64,
+    add_size: u64,
+    add_price: u64,
+) -> Result<u64, MathError> {
+    let total = (old_size as u128)
+        .checked_add(add_size as u128)
+        .ok_or(MathError::Overflow)?;
+    if total == 0 {
+        return Err(MathError::DivisionByZero);
+    }
+    let a = (old_size as u128)
+        .checked_mul(old_entry as u128)
+        .ok_or(MathError::Overflow)?;
+    let b = (add_size as u128)
+        .checked_mul(add_price as u128)
+        .ok_or(MathError::Overflow)?;
+    to_u64(div_ceil(
+        a.checked_add(b).ok_or(MathError::Overflow)?,
+        total,
+    )?) // entry вгору → менший uPnL для лонгу; для шорту — політика в risk.rs (тут єдине правило: ceil)
+}
+
 /// Mark EMA over index (spec §3.4): `prev + alpha * (sample - prev)`, alpha in bps.
-pub fn ema(_prev: u64, _sample: u64, _alpha_bps: u32) -> Result<u64, MathError> { unimplemented!() }
+pub fn ema(prev: u64, sample: u64, alpha_bps: u32) -> Result<u64, MathError> {
+    if alpha_bps as u128 > BPS {
+        return Err(MathError::InvalidInput);
+    }
+    let a = alpha_bps as u128;
+    let raw = (prev as u128)
+        .checked_mul(BPS - a)
+        .ok_or(MathError::Overflow)?
+        .checked_add((sample as u128).checked_mul(a).ok_or(MathError::Overflow)?)
+        .ok_or(MathError::Overflow)?;
+    to_u64(raw / BPS)
+}
+
 /// Realised PnL of a partial close: the share of the position's uPnL that
 /// `size_close` out of `size_total` carries. Full close (`size_close == size_total`)
 /// must equal `upnl(side, size_total, entry, exit)`.
-pub fn decrease_pnl(_side: Side, _size_total: u64, _size_close: u64, _entry: u64, _exit: u64) -> Result<i64, MathError> { unimplemented!() }
+pub fn decrease_pnl(
+    side: Side,
+    size_total: u64,
+    size_close: u64,
+    entry: u64,
+    exit: u64,
+) -> Result<i64, MathError> {
+    if size_close > size_total {
+        return Err(MathError::InvalidInput);
+    }
+    upnl(side, size_close, entry, exit)
+}
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use proptest::prelude::*;
 
-    const P: u64 = 150_000_000;      // $150.000000
-    const S: u64 = 10_000_000_000;   // 10 SOL
+    const P: u64 = 150_000_000; // $150.000000
+    const S: u64 = 10_000_000_000; // 10 SOL
 
     #[test]
-    fn notional_10_sol_at_150() { assert_eq!(notional(S, P).unwrap(), 1_500_000_000); } // $1500
+    fn notional_10_sol_at_150() {
+        assert_eq!(notional(S, P).unwrap(), 1_500_000_000);
+    } // $1500
 
     #[test]
-    fn upnl_long_up_10pct() { assert_eq!(upnl(Side::Long, S, P, 165_000_000).unwrap(), 150_000_000); }
+    fn upnl_long_up_10pct() {
+        assert_eq!(upnl(Side::Long, S, P, 165_000_000).unwrap(), 150_000_000);
+    }
     #[test]
-    fn upnl_short_up_10pct() { assert_eq!(upnl(Side::Short, S, P, 165_000_000).unwrap(), -150_000_000); }
+    fn upnl_short_up_10pct() {
+        assert_eq!(upnl(Side::Short, S, P, 165_000_000).unwrap(), -150_000_000);
+    }
 
     #[test]
-    fn fee_rounds_up() { assert_eq!(fee(1_000_001, 6).unwrap(), 601); } // 1_000_001*6/10_000 = 600.0006 → 601
+    fn fee_rounds_up() {
+        assert_eq!(fee(1_000_001, 6).unwrap(), 601);
+    } // 1_000_001*6/10_000 = 600.0006 → 601
 
     #[test]
-    fn required_margin_10x() { assert_eq!(required_margin(1_500_000_000, 1000).unwrap(), 150_000_000); }
+    fn required_margin_10x() {
+        assert_eq!(required_margin(1_500_000_000, 1000).unwrap(), 150_000_000);
+    }
 
     #[test]
     fn required_margin_rounds_up() {
@@ -63,7 +226,10 @@ mod tests {
     #[test]
     fn equity_adds_upnl_subtracts_fee() {
         // margin 150 + upnl 150 - close fee 0.6 = 299.4 (all 1e6)
-        assert_eq!(equity(150_000_000, 150_000_000, 600_000).unwrap(), 299_400_000);
+        assert_eq!(
+            equity(150_000_000, 150_000_000, 600_000).unwrap(),
+            299_400_000
+        );
     }
 
     #[test]
@@ -74,11 +240,17 @@ mod tests {
     #[test]
     fn liq_price_long_10x_mmr5() {
         // entry 150, lev 10 → 1/lev = 0.10, mmr 0.05 → liq = 150 * (1 - 0.10 + 0.05) = 142.5
-        assert_eq!(liq_price(Side::Long, P, S, 150_000_000, 500).unwrap(), 142_500_000);
+        assert_eq!(
+            liq_price(Side::Long, P, S, 150_000_000, 500).unwrap(),
+            142_500_000
+        );
     }
     #[test]
     fn liq_price_short_10x_mmr5() {
-        assert_eq!(liq_price(Side::Short, P, S, 150_000_000, 500).unwrap(), 157_500_000);
+        assert_eq!(
+            liq_price(Side::Short, P, S, 150_000_000, 500).unwrap(),
+            157_500_000
+        );
     }
 
     #[test]
@@ -98,7 +270,9 @@ mod tests {
     }
 
     #[test]
-    fn vwap_two_equal_lots() { assert_eq!(vwap_entry(S, P, S, 160_000_000).unwrap(), 155_000_000); }
+    fn vwap_two_equal_lots() {
+        assert_eq!(vwap_entry(S, P, S, 160_000_000).unwrap(), 155_000_000);
+    }
 
     #[test]
     fn ema_half_alpha_is_midpoint() {
@@ -109,15 +283,23 @@ mod tests {
     #[test]
     fn decrease_pnl_long_partial() {
         // long 10 SOL @ 150, close 4 SOL @ 165 → 4 * 15 = +60
-        assert_eq!(decrease_pnl(Side::Long, S, 4_000_000_000, P, 165_000_000).unwrap(), 60_000_000);
+        assert_eq!(
+            decrease_pnl(Side::Long, S, 4_000_000_000, P, 165_000_000).unwrap(),
+            60_000_000
+        );
     }
     #[test]
     fn decrease_pnl_short_partial() {
-        assert_eq!(decrease_pnl(Side::Short, S, 4_000_000_000, P, 165_000_000).unwrap(), -60_000_000);
+        assert_eq!(
+            decrease_pnl(Side::Short, S, 4_000_000_000, P, 165_000_000).unwrap(),
+            -60_000_000
+        );
     }
 
     #[test]
-    fn overflow_is_error() { assert_eq!(notional(u64::MAX, u64::MAX), Err(MathError::Overflow)); }
+    fn overflow_is_error() {
+        assert_eq!(notional(u64::MAX, u64::MAX), Err(MathError::Overflow));
+    }
 
     proptest! {
         #[test]
