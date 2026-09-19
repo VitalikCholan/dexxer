@@ -59,6 +59,7 @@ function decodePriceUpdateV2(data: Buffer) {
   } else {
     throw new Error(`unexpected VerificationLevel tag ${verificationTag}`);
   }
+  const verificationTagRaw = verificationTag;
   const feedId = Buffer.from(data.subarray(o, o + 32));
   o += 32;
   const price = data.readBigInt64LE(o);
@@ -80,6 +81,7 @@ function decodePriceUpdateV2(data: Buffer) {
   return {
     writeAuthority,
     verificationLevel,
+    verificationTagRaw,
     priceMessage: { feedId, price, conf, exponent, publishTime, prevPublishTime, emaPrice, emaConf },
     postedSlot,
   };
@@ -97,6 +99,10 @@ async function read(conn: Connection, label: string) {
   const age = now - Number(acc.priceMessage.publishTime);
   console.log(label, {
     owner: info.owner.toBase58(),
+    accountDataLength: info.data.length,
+    writeAuthority: acc.writeAuthority.toBase58(),
+    verificationLevelTag: acc.verificationTagRaw,
+    numSignatures: acc.verificationLevel.kind === "partial" ? acc.verificationLevel.numSignatures : undefined,
     price: acc.priceMessage.price.toString(),
     expo: acc.priceMessage.exponent,
     conf: acc.priceMessage.conf.toString(),
