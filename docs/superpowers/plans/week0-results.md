@@ -1,18 +1,31 @@
-# Week 0 results (fill by 27.09)
+# Week 0 results (filled 19.09.2026)
 
 | # | Check | Status | Evidence | Decision applied |
 |---|---|---|---|---|
-| 1 | private-counter TEE, non-member denied | | spikes/01/RESULT.md | |
-| 2 | eSPL in TEE | | spikes/02/RESULT.md | |
-| 3 | L1 read-only clone | | spikes/03/RESULT.md | |
-| 4 | Oracle fresh in TEE | | spikes/04/RESULT.md | |
-| 5 | Scheduler ticks | | spikes/05/RESULT.md | |
-| 6 | Tx visibility | | spikes/01/RESULT.md | |
-| 7 | Magic Action + escrow check | | spikes/06/RESULT.md | |
-| 8 | MWA signs ER blockhash | | spikes/08/RESULT.md | |
-| 9 | Session key payer | | spikes/07/RESULT.md | |
-| 10 | WS token in RN | | spikes/08/RESULT.md | |
-| 11 | TDX attestation in Hermes | | spikes/08/RESULT.md | |
+| 1 | private-counter TEE, non-member denied | PASS | `spikes/01-private-counter-tee/RESULT.md`. Program `2DvXCXzp56aFw8JsHrMuiRwZWizZjxwaqzYo2ADKH2W7`, counter PDA `GUrqtjuVRoRYxfeDWpwTNn5xb9vSSBWTZ7KpMfMUdzuJ`, delegate sig `43EgR5v185rby9hR8m28Pcjahig25G2fZbRkemSydUePtvsdgRHNd5SNjfiazBiaRKZCpcweKPyhhauLtMTQMsb4`; owner read 48 bytes, stranger read `null`, no-token read `null` (HTTP 200, `result.value: null`, no error object) | §2.1 permission model confirmed. Client must treat `null` as ambiguous between "not a member" and "does not exist" |
+| 2 | eSPL in TEE | PASS | `spikes/02-espl-tee/RESULT.md`. Mint `44FTm7zsYePyuBzLmQDjxk53eioxqzkdEW28FEPnSNBk` (6 dec); ER `transferSpl` sig `2CZHv9YUCN9Gmo3QQcdHj6md1L1oSLnSaTSaraS4jxENMXpWa36SEkjPUUjvRVNdLLA2Qnpz8nGAvgX7z5sQLtHS`; balances user 500,000,000 → 400,000,000, pool 0 → 100,000,000; stranger `getAccount(userAta)` → `TokenAccountNotFoundError` / raw `value: null` | Risk #1 not triggered, Plan B (own escrow vault) not needed. §2.1 rule 2 kept as-is, with a note that eSPL owner-scoping is a bonus we do not rely on (A7) |
+| 3 | L1 read-only clone | PASS (fresh clone) | `spikes/03-l1-readonly-clone/RESULT.md`. Program `Gn3UvsXPdWrBJGmz3sxYSgFjF9pJy8b92cpSanMKYCCJ`, config PDA `4cdN75h3sZ4me9pZT4g4ZXAuGHaxc3J1LsazkxS3niWr`; counter 0 → 5 → 12: first `increment_by_config` read `config.step = 5` off the non-delegated L1 account, then after L1 `set_step(7)` (sig `2TutEEq1fFKMZoCoNUKPMUtFbYRpqQNM4KHE8zeTzG5HwijCZexNbTeChsxyVkG9rJ3h2cVEZfSYQeYTrP6kb8qK`) the next ER tx already saw `7` — fresh clone, not stale; confirmed by an independent second run | Risk #2 downgraded: a non-delegated read-only L1 account is safe to read from ER instructions, no re-delegation trigger needed |
+| 4 | Oracle fresh in TEE | PASS | `spikes/04-oracle-tee/RESULT.md`. Feed `ENYwebBThHzmzwPLAQvCucUTsjyfBSZdD9ViXksS4jPu` = PDA `["price_feed","pyth-lazer","6"]` under `PriCems5tHihc6UDXDjzjeawomAwBduWMGAi8ZUjppd`. TEE read #1: `price=11282999668, expo=8, conf=0, publishTime=1789795444, postedSlot=317241243, age=0s`, account 134 bytes, `writeAuthority=11111111111111111111111111111111`. Base read: `price=0, postedSlot=0` (dead) | Liquidation design not blocked. Oracle rules hardened into §3.3 / §4.4: PDA-derivation identity, `price / 10^exponent`, `conf == 0` → reject opens, staleness by ER `Clock`/`publish_time` (A5) |
+| 5 | Scheduler ticks | PASS | `spikes/05-crank-tee/RESULT.md`. Program `Ctj6Hz5RG8cPDgmrDPKGjqKVNdHi7x7hmhKshy5wsNyA`, schedule sig `27yoVEtAeVBJ6QAVRQ8zvXi3dgjQTRFAaLZzAVg9HV3i3wKvWgcX7M5fJeKYf1jQKwdT7e8VbfhDYbvZDnwpiTJr`; **27 ticks in 20 s** at requested `execution_interval_millis = 1000` (≈740 ms average spacing); counter stopped at exactly the requested 30 iterations | Risk #3 not triggered. Requested interval is a floor, not a period → hysteresis counted in ticks; production `crank_tick` must validate the crank signer PDA and have a cancel path (A6) |
+| 6 | Tx visibility | **FAIL** | `spikes/01-private-counter-tee/RESULT.md` (Check 6 section). `getTransaction("3AGUL9ajNUUcLDKrtXmj9wLCusJzs16SWTVmsE3SvhyaSCMVA6ukkL4ctvnAirjD2EMq5BNrxQPsmqTFpkDK9xYa")` returns non-null to stranger **and** to no-token caller: `slot 317219812`, `blockTime 1789794373`, `meta.err null`, `fee 0`, `computeUnitsConsumed 0`; `accountKeys`/`instructions`/`logMessages`/balances all `[]`. `getSignaturesForAddress(PROGRAM_ID)` returns the program's full signature list to a stranger. `getSignaturesForAddress(PDA)` = `[]` — for the owner too (ER does not index by PDA) | **Risk #4 activated.** Leak model §2.3 rewritten with what is actually visible; mitigation = uniform tx shape + crank chaff + honest README; shared payer explicitly does not help (A1, A2) |
+| 7 | Magic Action + escrow check | PASS | `spikes/06-magic-action/RESULT.md`. Program `6Tm2qGHSsmYhaCtLmWf7TQ2VBi84s2bzuzrHKGFePoxR`; ER commit+action sig `2mfdiacoXjiFEaZrLxwy2xio3f1EfS8wAmGLMDANTG16UAyJDk2496NfF3jgrBEYHV5jGX3KKoqAL9bqZHS78kT6`, base commit sig `3vwcYnLKSDtnCd36xVWdTHDd1qdb9zn5jEsjLU4hceW69DhGNDWVV7dzP8cvZJoTfpu6oACXvQ2cJ6JN7iTPAM9b`; leaderboard `highScore` 0 → 3, ER-tx → L1 effect 4.702 s; direct call rejected (`Missing signature for public key [7tSuwoRxtbwiccZo93NnDnMKqxSUhSBjtMp2DrKuL5wh]`). Root cause of the prior `Unauthorized`: on-chain CPI passed 5 accounts, struct declared 4 | 13F path unblocked. Hard rule: every `#[action]` context declares `source_program` (`address = crate::ID`) in order `[...data, source_program, escrow_auth, escrow]` (A4) |
+| 8 | MWA signs ER blockhash | PENDING (emulator) | `spikes/08-mobile-checks/RESULT.md` — screens committed and typecheck clean; no emulator run yet | Risk #7 still open |
+| 9 | Session key payer | PASS | `spikes/07-session-payer/RESULT.md`. Session `8Fn3roFL9f9i4h3rCQa1yMohT4NiAN8pdu9oxjk4wQhQ` funded with 5,000,000 lamports via `createSessionV2`; ER `increment` sig `4qja4Y9miUxehE72up7Ak9rUtipEVwa59xQfzcBpcSdkMXg23a9Z744A3zy9FEGDszdj3oLbewQhKu8PNmiB74XV`, session = sole signer + fee payer, `meta.fee 0`, `meta.err null`; counter 4 → 5 read via the member's token; session's **own** token could not read the counter (`null`) | Session key as ER payer confirmed. Bigger finding: permission membership gates **reads only** — `getAuthToken` is signature-only and tx submission/execution is ungated, so every ER instruction must enforce its own auth (A3) |
+| 10 | WS token in RN | PENDING (emulator) | `spikes/08-mobile-checks/RESULT.md` | §5.5 WS-vs-poll decision still open |
+| 11 | TDX attestation in Hermes | PENDING (emulator) | `spikes/08-mobile-checks/RESULT.md` | Risk #6 still open |
 
-Spec changes required: <list, or "none">
-Week 1 plan may start: yes/no
+Folder mapping: 1 и 6 → `spikes/01-private-counter-tee`, 2 → `spikes/02-espl-tee`, 3 → `spikes/03-l1-readonly-clone`, 4 → `spikes/04-oracle-tee`, 5 → `spikes/05-crank-tee`, 7 → `spikes/06-magic-action`, 9 → `spikes/07-session-payer`, 8/10/11 → `spikes/08-mobile-checks`.
+
+Spec changes required:
+
+- A1 — §2.3 leak model: row "ER RPC не-member" replaced with what check 6 actually measured (program-id signature list + `getTransaction` metadata visible; account keys, instructions, logs, balances hidden), plus a note that `getSignaturesForAddress(PDA)` is empty even for the owner.
+- A2 — §7.1 risk #4: marked **АКТИВОВАНО (check 6)**; mitigation = uniform tx shape + crank-tick cover traffic + honest disclosure; shared payer alone explicitly does not help.
+- A3 — §5.4 + §4.4 + §4.2 intro: `EphemeralPermission` gates reads only; `getAuthToken` is signature-only; tx submission is ungated; every ER instruction enforces its own auth (check 9).
+- A4 — §4.2 (`write_commitment`, `reveal`/`write_disclosure`) + §4.4: `#[action]` contexts must declare `source_program` (`address = crate::ID`) in order `[...data, source_program, escrow_auth, escrow]` (check 7, SDK 0.16.2).
+- A5 — §3.3 + §4.4 `oracle.rs`: feed identity by PDA derivation, `exponent = +8` → `price / 10^exponent`, `conf == 0` → hard reject for opens, `posted_slot` is an ER slot, account is 134 bytes (check 4).
+- A6 — §3.5 + §3.3 table: requested crank interval is a floor (27 ticks / 20 s at 1000 ms); hysteresis in ticks, not seconds; production `crank_tick` validates the crank signer PDA and needs a cancel path (check 5).
+- A7 — §2.1 note under rule 2: check 2 showed eSPL ER balances are owner-scoped at the RPC layer; the "margin is accounting, not tokens" rule stays unchanged.
+- A8 — §6.1: Solana pin stays 3.1.9, Node → 24.18.x, note that spikes ran on solana-cli 3.1.10 / Node 24.18.0 (compatible); `.nvmrc` → `24.18.0`.
+- A9 — §8: open questions 1 (deposit → `credit_deposit` link), 2 (permission on 3 PDAs in one Delegation Actions tx), 3 (rent for `Position` + `DisclosureQueue`) are **not** closed by week 0 → week 1, days 1–2.
+
+Week 1 plan may start: yes, умовно — A3 і A5 внести до першого рядка `oracle.rs` / guards.

@@ -96,6 +96,8 @@ Hedge mode / кілька позицій на ринок · limit/TP/SL · fundi
 1. Жоден акаунт із полями позиції не має commit-policy до закриття. `Market`/`Pool` не містять per-user даних. `MarketRisk` і `DisclosureQueue` не комітяться взагалі.
 2. Маржа — **облік, не токени.** `open`/`close`/`add_margin` не торкаються жодного токен-акаунта, лише приватних PDA. Токени рухаються тільки на депозиті й виводі, які й так публічні на L1. Причина: eATA належить eSPL-програмі → на ньому не створити `EphemeralPermission`, і трансфер user → pool на кожне відкриття видав би маржу й час.
 
+   *Check 2 (19.09.2026):* eSPL-баланси в ER виявилися owner-scoped уже на рівні RPC — чужий `getAccount` з власним валідним TEE-токеном повертає `null` (`TokenAccountNotFoundError`), тобто токен-акаунт іншого власника невидимий навіть як баланс. Це сильніше за нашу мінімальну вимогу, але **правило лишається незмінним**: приватність маржі не будуємо на цій поведінці eSPL — вона не наша, не документована як гарантія і може змінитися; трансфер на кожне відкриття все одно видав би час дії через метадані tx (§2.3).
+
 ### 2.2 Маршрутизація
 
 | Флоу | Підписант | Куди | Що | Відмова |
@@ -115,12 +117,14 @@ Hedge mode / кілька позицій на ринок · limit/TP/SL · fundi
 | Канал | Видно | Приховано |
 |---|---|---|
 | L1 (Solscan) | депозит (гаманець, сума, час), вивід, факт делегації (PDA owner = `DELeGGvXpWV2fqJUhqcF5ZSYMS4JTLjteaAMARRSaeSh`), 5-хв агрегат `Pool`, `locked_margin` у `UserAccount` (5 хв), commitment-хеші, `Disclosure` після reveal | усе про позицію: ринок, сторона, розмір, entry, PnL, liq price, funding, факт наявності позиції |
-| ER RPC не-member | нічого — усі акаунти permissioned | усе |
+| ER RPC не-member | **метадані транзакцій (check 6, 19.09.2026):** `getSignaturesForAddress(PROGRAM_ID)` повертає будь-кому (з токеном і без) повний список підписів програми — `signature`, `slot`, `blockTime`, `err`, `confirmationStatus`; `getTransaction(sig)` по відомому підпису повертає `slot`, `blockTime`, `meta.err`/`status`, `meta.fee`, `computeUnitsConsumed`. Тобто факт, час і успіх дії видно | вміст акаунтів (`getAccountInfo` на permissioned PDA → `null`) і вміст tx: `accountKeys`, `instructions`, `logMessages`, `preBalances`/`postBalances`, token-баланси — усі порожні; `recentBlockhash` занулений |
 | eSPL трансфери в ER | тільки депозит/вивід | маржа на open/close |
 | Global Vault | сумарний баланс усіх | — |
 | Непряме | `вивід − депозит` = PnL за період; `locked_margin × max_lev` = верхня межа розміру | — |
 
 Залишковий витік `locked_margin` можна прибрати комітом `UserAccount` лише при виводі/виході (ціна — втрата locked margin при смерті ER). v1: вибір юзера в налаштуваннях.
+
+**Витік метаданих tx (check 6, 19.09.2026).** `getSignaturesForAddress` по **PDA** повертає порожній масив `[]` — але й власнику теж, тобто ER просто не індексує за адресою PDA; як сигнал приватності цей метод нічого не доводить. Надійний сигнал власник/не-власник — `getAccountInfo` (check 1). Реальний канал — **program id**: він публічний, і його список підписів відкритий усім, разом із таймінгом. Ховати сам факт активності ми не вміємо; ховаємо лише її зміст. Див. ризик №4 у §7.1.
 
 ---
 
@@ -161,10 +165,19 @@ liq_price
 | open/close fee | 6 bps |
 | liquidation fee | 100 bps notional |
 | oi_cap | 30% капіталу пулу на сторону |
-| max_staleness | 2 с (~5 слотів) |
-| max_conf | 50 bps |
-| ema_alpha | під період 1–2 с |
-| гістерезис | 2 тики |
+| max_staleness | 2 с — рахувати за ER `Clock` / `publish_time`, **не** за `posted_slot` (check 4, 19.09.2026) |
+| max_conf | 50 bps; `conf == 0` = «не заповнено» → hard reject на відкриття (check 4) |
+| ema_alpha | під період 1–2 с; фактичний інтервал кранка плаває, див. §3.5 |
+| гістерезис | 2 **тики** (не секунди — інтервал тіка не фіксований, check 5, 19.09.2026) |
+
+**Оракул SOL/USD — виміряне (check 4, 19.09.2026).** Feed `ENYwebBThHzmzwPLAQvCucUTsjyfBSZdD9ViXksS4jPu` = PDA із seeds `["price_feed", "pyth-lazer", "6"]` під `PriCems5tHihc6UDXDjzjeawomAwBduWMGAi8ZUjppd`.
+
+- **Ідентичність фіду — лише через деривацію PDA** від `Config.oracle_program` + seeds. `writeAuthority` у даних акаунта — System Program (`1111…1111`), тобто ніколи не ставиться; як доказ походження він непридатний.
+- **`exponent` зберігається як `+8`**, не `−8`: ціна = `price / 10^exponent` (raw `11282999668`, expo `8` → ≈ $112.83). Ніколи не `price × 10^exponent`.
+- **`conf` був `0` на кожному читанні** (base і TEE). Нуль трактуємо як «не заповнено», а не як «нульова невизначеність» → жорстка відмова на `open`/`increase`; на закриття й ліквідацію — не блокує.
+- **`posted_slot` — це слот ER** (~317 млн проти ~500 млн на L1). Порівнювати його з L1-слотом не можна; staleness рахуємо за ER `Clock` і `publish_time`.
+- Розмір акаунта — **134 байти**: 133 за IDL `PriceUpdateV2` (`verificationLevel` = `Full`) + 1 кінцевий байт `0x00` невідомого призначення. Декодування полів до `posted_slot` включно він не зачіпає, але парсер має читати за офсетами, не за довжиною.
+- На base devnet той самий акаунт існує, але мертвий (`price = 0`, `posted_slot = 0`, owner — Pyth receiver). Свіжий він **лише всередині TEE** (owner — `PriCems…`, `age = 0 с`).
 
 ### 3.4 Mark vs index
 
@@ -175,6 +188,13 @@ Index — Pyth Lazer через Pricing Oracle. Mark — EMA(index) у `Market.m
 Цикл ~1 с: (1) оракул + валідація; stale → скіп ліквідацій, mark не оновлюється; (2) mark-EMA; (3) кандидати з бакетів `±δ` від mark у `MarketRisk`; (4) `equity < MMR × notional` два тики → `liquidate`: закриття за mark, liq fee у пул, лишок → `free_margin`, `ClosedRecord{Liquidated}`; (5) bad debt → `Pool.insurance`, далі капітал, `bad_debt_total` публічний через коміт; (6) одна форма tx з плановими діями.
 
 Тригер — MagicBlock scheduler; fallback — `scripts/crank-fallback` з ключем `Config.crank`.
+
+**Виміряне на devnet-tee (check 5, 19.09.2026):** при запиті `execution_interval_millis = 1000` за 20 с відбулося **27 тіків** (~740 мс середнього інтервалу, ≈1.35 тіка/с). Тобто запитаний інтервал — це **підлога, не період**: тіки приходять раніше, ніж замовлено, і рівний крок не гарантований. Наслідки, обов'язкові до виконання:
+
+- будь-який гістерезис і будь-яке «через N секунд» — рахувати **в тіках**, а не в секундах; нічого нижче за течією не має права припускати фіксовану дельту між тіками;
+- бюджет CU/квот рахувати від **верхньої** межі частоти, а не від запитаної;
+- продуктовий `crank_tick` **зобов'язаний** валідувати, що викликач — очікуваний crank signer PDA делегаційної програми (вендорний приклад цього не робить: його `increment` permissionless, будь-хто може викликати ліквідаційну логіку поза чергою);
+- у продукту має бути **cancel-шлях** для запланованої задачі — у спайку його не було, задача просто самозавершилася після 30-ї ітерації.
 
 ### 3.6 Інваріанти (proptest + LiteSVM)
 
@@ -264,6 +284,8 @@ pub struct ClosedRecord {
 
 ### 4.2 Інструкції
 
+**Колонка «Підписант» — обов'язкова явна перевірка в коді, не опис.** `EphemeralPermission` гейтить **лише читання** акаунтів; сабміт і виконання транзакції не гейтяться зовсім, а `getAuthToken` видається будь-якому ключу з валідним підписом і членства не перевіряє (check 9, 19.09.2026). Тобто не-member спокійно надсилає tx у ER і мутує permissioned-акаунт, якщо сама інструкція його не зупинила. Кожна ER-інструкція сама доводить право підписанта: `has_one`/`constraint` проти `Config.crank`, `Position.owner`, `UserAccount.session_key`, плюс `session_expiry` і `actions_left`.
+
 | Інструкція | Шар | Підписант | Guards |
 |---|---|---|---|
 | `init_config`, `init_market`, `init_pool`, `set_params`, `pause`, `unpause` | L1 | admin | — |
@@ -280,9 +302,9 @@ pub struct ClosedRecord {
 | `close_position` | ER | session | `Open`, оракул, slippage → `ClosedRecord`, `Closed` |
 | `crank_tick` | ER | crank | оракул, EMA, ≤16 remaining_accounts, MMR + гістерезис |
 | `commit_aggregate` | ER | crank | `MagicIntentBundleBuilder`: `Pool`, `UserAccount[]`, `Market` при зміні; `add_post_commit_actions(write_commitment)` для `Closed && !commitment_written` |
-| `write_commitment` | L1 (Magic Action) | injected escrow signer — **обов'язкова перевірка** | seeds `[b"commit", nonce]` |
+| `write_commitment` | L1 (Magic Action) | injected escrow signer — **обов'язкова перевірка** | seeds `[b"commit", nonce]`; контекст `#[action]` **мусить** оголосити `source_program` (`address = crate::ID`) перед `escrow_auth`/`escrow` (check 7, 19.09.2026) |
 | `mark_committed` | ER | crank | `ClosedRecord` → `DisclosureQueue`, `Position → Empty` |
-| `reveal` | ER → L1 (Magic Action) | crank | `slot ≥ reveal_after_slot` → `write_disclosure`, запис видаляється з черги |
+| `reveal` | ER → L1 (Magic Action) | crank | `slot ≥ reveal_after_slot` → `write_disclosure`, запис видаляється з черги; у `write_disclosure` той самий обов'язковий `source_program` (check 7) |
 | `withdraw` | ER → L1 | owner | `free_margin ≥ amount` → eSPL withdraw |
 | `undelegate_user` | ER → L1 | owner | `Empty`, черга порожня → скраб → `commit_and_undelegate` |
 
@@ -297,13 +319,20 @@ programs/dexxer_core/src/
   lib.rs            #[ephemeral] #[program]
   state/            config, market, market_risk, pool, user, position, disclosure
   instructions/     admin/, user/, trade/, crank/, disclosure/
-  math.rs           формули §3.2, округлення, decimals
+  math.rs           чисті формули §3.2 + liq_price + ema, округлення, decimals
   oracle.rs         читання Pricing Oracle + валідація
-  risk.rs           IMR/MMR, liq_price, бакети
+  risk.rs           перевірки IMR/MMR, бакети, вибір кандидатів — поверх math.rs
   errors.rs
 ```
 
+**Межа `math.rs` / `risk.rs`.** `math.rs` — чисті формули без Anchor-типів і без політики: `notional`, `upnl`, `fee`, `required_margin`, `equity`, `vwap_entry`, `decrease_pnl`, **`liq_price`**, **`ema`** (mark-EMA §3.4). Усі ставки — `u32` bps, проміжні `u128`, кожен крок `checked_*`, округлення на користь пулу. `risk.rs` — політика поверх них: перевірки IMR/MMR, `is_liquidatable` у контексті ринку, бакети `MarketRisk`, вибір ≤16 кандидатів на тік. `math.rs` повертає `MathError`; конвертація в `anchor_lang::error::Error` — через `From<MathError>` → `DexxerError` в `errors.rs`, щоб формули не знали про Anchor.
+
+**`oracle.rs` — з check 4 (19.09.2026).** Feed перевіряти **деривацією PDA** `["price_feed", "pyth-lazer", <symbol>]` під `Config.oracle_program`, не по `writeAuthority` (він = System Program, порожній). Ціна = `price / 10^exponent`, `exponent` на цьому фіді `+8`. `conf == 0` → відмова на відкриття. Staleness — за ER `Clock`/`publish_time`; `posted_slot` — ER-слот, з L1-слотом не порівнюється. Акаунт 134 байти (133 IDL + 1 хвостовий) — читати за офсетами, не валідувати за довжиною.
+
 Anchor-правила: `has_one`/`seeds`/`bump`/`constraint` на кожному акаунті; `init_if_needed` не використовувати; `program_id` оракула — з `Config`; `remaining_accounts` валідувати явно; `version: u8` у кожному PDA.
+
+- **Кожна ER-інструкція сама перевіряє підписанта.** `EphemeralPermission` гейтить тільки читання; ні `getAuthToken`, ні сабміт tx членства не перевіряють (check 9, 19.09.2026). Тому авторизація — завжди в логіці програми: `has_one`/`constraint` проти `Config.crank`, `Position.owner`, `UserAccount.session_key`, плюс `session_expiry` і `actions_left`. «Акаунт permissioned» ніколи не є підставою пропустити перевірку.
+- **Кожен `#[action]`-контекст оголошує `source_program`.** Порядок акаунтів обов'язково `[...дані, source_program, escrow_auth, escrow]`, і `source_program` пінимо `#[account(address = crate::ID)]`. Делегаційна програма вставляє id програми-призначення окремим акаунтом при CPI-диспатчі, а макрос `#[action]` (SDK 0.16.2) дописує лише `escrow_auth`/`escrow`. Без явного поля всі акаунти після даних зсуваються на один, і дія відхиляє сама себе як `Unauthorized` (check 7, 19.09.2026 — саме так падав `update_leaderboard` у спайку).
 
 ---
 
@@ -331,7 +360,9 @@ Blockhash — з того з'єднання, куди шлемо. `skipPreflight
 
 ### 5.4 Session key
 
-Генерується локально; secret у SecureStore. Реєструється в MWA-tx онбордингу. `session_expiry` 7 днів + `actions_left` (урок GMX One-Click). Прострочено → MWA `set_session` у ER. Fee payer ER-tx — session key після lamports top-up (ASSUMPTION №9). Втрата телефона → owner робить `set_session(new)`.
+Генерується локально; secret у SecureStore. Реєструється в MWA-tx онбордингу. `session_expiry` 7 днів + `actions_left` (урок GMX One-Click). Прострочено → MWA `set_session` у ER. Fee payer ER-tx — session key після lamports top-up (підтверджено, check 9, 19.09.2026: свіжий ключ після top-up був payer'ом і єдиним підписантом ER-tx, `meta.err: null`). Втрата телефона → owner робить `set_session(new)`.
+
+**Членство в permission ≠ право на дію (check 9, 19.09.2026).** Три різні перевірки, які легко сплутати: (1) видача auth-token (`getAuthToken`) — лише підпис, членство не перевіряється, токен отримує будь-хто; (2) **читання** permissioned-акаунта — гейтиться членством, не-member бачить `null`; (3) **сабміт і виконання tx** — не гейтиться нічим, крім логіки самої інструкції. У check 9 session key не був членом (читання давало `null`), але його tx успішно змінила лічильник. Наслідок для нас: session key має бути **і** в `members` (щоб клієнт читав `Position`/`UserAccount`), **і** перевірений у програмі через `UserAccount.session_key` + `session_expiry` + `actions_left` — одного членства мало, воно нічого не забороняє.
 
 ### 5.5 Екрани й стани
 
@@ -360,7 +391,9 @@ Blockhash — з того з'єднання, куди шлемо. `skipPreflight
 
 ### 6.1 Тулчейн
 
-Solana 3.1.9 · Rust 1.89.0 · Anchor 1.0.2 · `ephemeral-rollups-sdk` 0.16.2 · TS SDK 0.17.0 · Node 24.10 · `@magicblock-labs/ephemeral-validator` 0.13.7. Версії звіряти з `Cargo.toml` engine-examples.
+Solana 3.1.9 · Rust 1.89.0 · Anchor 1.0.2 · `ephemeral-rollups-sdk` 0.16.2 · TS SDK 0.17.0 · Node 24.18.x · `@magicblock-labs/ephemeral-validator` 0.13.7. Версії звіряти з `Cargo.toml` engine-examples.
+
+Пін Solana лишається **3.1.9**. Примітка: спайки 19.09 фактично виконувалися на `solana-cli` 3.1.10 і Node 24.18.0 — сумісно, розбіжностей не виявлено; пін не рухаємо, `.nvmrc` = `24.18.0`.
 
 ### 6.2 Репозиторій
 
@@ -421,7 +454,7 @@ Solana MCP `program_autofixer` — на кожну зміну програми �
 | 1 | eSPL у TEE не працює або депозит L1 → `credit_deposit` не зв'язується | блокер кастоді | План Б: власний escrow-vault на L1; `deposit` пише `free_margin` до делегації; поповнення = undelegate → deposit → redelegate | тиждень 0 |
 | 2 | ER не читає неделеговані L1-акаунти | архітектурний | усе, що читає ER-інструкція, — делеговане | тиждень 0 |
 | 3 | Scheduler у TEE нестабільний | ліквідації | `crank-fallback` на Railway | тиждень 2 |
-| 4 | Tx з приватними акаунтами видно не-member'ам | ламає демо | перевірити; спільний sponsor-payer, однакова форма; README | тиждень 0 |
+| 4 | Tx з приватними акаунтами видно не-member'ам | ламає демо | **АКТИВОВАНО (check 6, 19.09.2026).** Метадані (факт, слот, час, успіх, fee, CU) не гейтяться; список підписів по program id відкритий усім. Мітигація: (а) однакова форма tx для всіх дій — ззовні `open`, `close`, `add_margin` нерозрізнювані; (б) cover traffic — `crank_tick` кожну ~1 с є природним chaff'ом, і торгова tx за самими метаданими нерозрізнювана від тіку кранка; (в) чесно описати канал у README і в §2.3. **Спільний sponsor-payer сам по собі не допомагає** — витік іде від списку підписів program id, а не від payer'а | тиждень 0 → постійно |
 | 5 | Delegation Actions не дають один MWA-підпис | UX | два підписи | тиждень 1 |
 | 6 | `dcap-qvl` WASM не працює в Hermes | довіра | шим WASM або v1 з чесним підписом | тиждень 3 |
 | 7 | MWA не підписує tx з ER-blockhash | `set_session` | ротація через L1 + Magic-flow; довша сесія | тиждень 1 |
@@ -478,9 +511,9 @@ Solana MCP `program_autofixer` — на кожну зміну програми �
 
 ## 8. Відкриті питання (закриваються тижнем 0, не документом)
 
-1. Механізм зв'язку депозиту на L1 з `credit_deposit` в ER (eSPL callback? наш crank читає L1 події?) — перевірка №2.
-2. Чи можна створити `EphemeralPermission` на трьох PDA в одній Delegation Actions-транзакції — перевірка №1.
-3. Розмір `Position` + `DisclosureQueue` та рента при онбордингу — порахувати після перевірки №1.
+1. Механізм зв'язку депозиту на L1 з `credit_deposit` в ER (eSPL callback? наш crank читає L1 події?) — **НЕ закрито тижнем 0.** Check 2 довів лише механіку eSPL (`delegateSpl` + `transferSpl` у TEE, баланси сходяться), але самого зв'язку «депозит на L1 → нарахування в ER» не перевіряв. → тиждень 1, дні 1–2.
+2. Чи можна створити `EphemeralPermission` на трьох PDA в одній Delegation Actions-транзакції — **НЕ закрито тижнем 0.** Check 1 створив permission на **одному** PDA; три в одній tx не пробували. → тиждень 1, дні 1–2.
+3. Розмір `Position` + `DisclosureQueue` та рента при онбордингу — **НЕ закрито тижнем 0**, бо структури ще не зафіксовані в коді. Порахувати після §4.1 → тиждень 1, дні 1–2.
 4. Чи потрібен `MarketRisk.buckets` на MVP-обсязі — лишити структуру, заповнювати лінійно.
 5. Formatting `Disclosure` для explorer — чи достатньо `getProgramAccounts` по discriminator без індексера при десятках записів.
 
