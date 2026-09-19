@@ -15,10 +15,11 @@ is the skeleton to fill in after that run — see "How to run" below.
 
 ## Check 8 — MWA signs a transaction whose blockhash comes from the TEE
 
-Precondition used (record which): PENDING — run on emulator
-  - [ ] ran `spikes/01-private-counter-tee/check.ts` once with the emulator wallet's
-        exported pubkey as the `user` keypair, or
-  - [ ] added the emulator wallet's pubkey as an `EphemeralPermission` member on an
+Precondition: shared **step 0** in "How to run" below (same counter PDA for the app and
+for `spikes/01-private-counter-tee/check.ts`). Record which of its two variants was used:
+PENDING — run on emulator
+  - [ ] Mock Wallet keypair exported to `spikes/keys/user.json`, `check.ts` ran once
+  - [ ] emulator wallet's pubkey added as an `EphemeralPermission` member on an
         existing counter
 
 Result: PENDING — run on emulator
@@ -53,6 +54,21 @@ Result: PENDING — run on emulator
 
 From `/Users/vitalikcholan/Projects/mobile_perp_dex`:
 
+**0. Shared precondition — do this first, both Check 8 and Check 10 depend on it.**
+Check 8 and Check 10 must operate on the **same** counter PDA the app derives from the
+connected Mock Wallet's pubkey. The spike script derives its PDA from `spikes/keys/user.json`,
+so those two identities have to be the same key:
+
+- export the Mock Wallet (fakewallet) keypair from the emulator and write it to
+  `spikes/keys/user.json`, then run `npx tsx spikes/01-private-counter-tee/check.ts` once —
+  it will `initialize`/`delegate`/`initPermission`/`setPrivacy` **that** counter, and every
+  later `check.ts` run increments the same PDA;
+- alternative, if the Mock Wallet key cannot be exported: add the emulator wallet's pubkey as
+  an `EphemeralPermission` member on an existing counter, and make the app derive that
+  counter's PDA instead.
+
+Record which of the two was used in the Check 8 section above.
+
 1. Create and boot an AVD (Pixel 7, arm64 on Apple Silicon, API 34):
    ```
    npx solana-mobile@latest emu create local_phone --device pixel_7 --start --tune
@@ -70,8 +86,9 @@ From `/Users/vitalikcholan/Projects/mobile_perp_dex`:
    Wallet), then open the **Spikes** tab ("Week-0 mobile checks").
 5. Tap **Run Check 8**, **Run Check 10**, **Run Check 11** in turn (Check 10 needs a
    trigger from outside the app while it's listening — from the repo root:
-   `npx tsx spikes/01-private-counter-tee/check.ts`, which increments the connected
-   wallet's counter).
+   `npx tsx spikes/01-private-counter-tee/check.ts`, which increments the counter
+   set up in **step 0**; if step 0 was skipped, the script increments a different PDA
+   than the one the app is watching and Check 10 will time out for the wrong reason).
 6. Copy each screen's `selectable` output text (long-press to select/copy on
    Android) into the corresponding section above, along with the emulator/wallet
    versions.

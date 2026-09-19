@@ -4,7 +4,7 @@
 // Trigger a change from outside the app while this is listening, e.g.:
 //   npx tsx spikes/01-private-counter-tee/check.ts
 // (it increments the connected wallet's counter). Expect the callback to
-// fire within ~30s; latency in ms is shown once it does.
+// fire within 60 s (LISTEN_TIMEOUT_MS); latency in ms is shown once it does.
 import { useEffect, useRef, useState } from 'react'
 import { Button, Text, View } from 'react-native'
 import { Connection, PublicKey } from '@solana/web3.js'
