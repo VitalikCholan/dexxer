@@ -163,8 +163,33 @@ this is the load-bearing leak)
 ```
 `FAIL: stranger: getTransaction hidden` — `tx.result` is **not** `null`; HTTP 200, no `error` object.
 
-**`getTransaction` on the known `increment` signature — no token at all:** byte-identical to the stranger
-response above (same `slot`, `blockTime`, `meta.err: null`). `FAIL: no-token: getTransaction hidden`.
+**`getTransaction` on the known `increment` signature — no token at all:** (full JSON, not truncated —
+byte-identical to the stranger response above, re-verified by a fresh direct `curl` against the unauthenticated
+endpoint)
+```json
+{
+  "jsonrpc": "2.0", "id": 1,
+  "result": {
+    "slot": 317219812,
+    "transaction": {
+      "signatures": ["3AGUL9ajNUUcLDKrtXmj9wLCusJzs16SWTVmsE3SvhyaSCMVA6ukkL4ctvnAirjD2EMq5BNrxQPsmqTFpkDK9xYa"],
+      "message": {
+        "header": {"numRequiredSignatures": 0, "numReadonlySignedAccounts": 0, "numReadonlyUnsignedAccounts": 0},
+        "accountKeys": [], "recentBlockhash": "11111111111111111111111111111111", "instructions": []
+      }
+    },
+    "meta": {
+      "err": null, "status": {"Ok": null}, "fee": 0,
+      "preBalances": [], "postBalances": [], "innerInstructions": [], "logMessages": [],
+      "preTokenBalances": [], "postTokenBalances": [], "rewards": [],
+      "loadedAddresses": {"writable": [], "readonly": []}, "returnData": null,
+      "computeUnitsConsumed": 0, "costUnits": 0
+    },
+    "blockTime": 1789794373
+  }
+}
+```
+`FAIL: no-token: getTransaction hidden` — `tx.result` is **not** `null`; HTTP 200, no `error` object.
 
 **`getSignaturesForAddress` on the counter PDA — no token:**
 ```
