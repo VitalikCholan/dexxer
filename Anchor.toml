@@ -8,7 +8,7 @@ resolution = true
 skip-lint = false
 
 [programs.localnet]
-dexxer_core = "Htuaqktaa4MkdBS3nbFcoRZuVdLHowZknpW35EokXXxT"
+dexxer_core = "G2okX5Bae4CxfK8vzso1Ecc96QUv7E3P4YvxaZnaYXoV"
 
 [provider]
 cluster = "localnet"

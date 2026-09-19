@@ -5,10 +5,15 @@
 ### Тулчейн-гейт
 
 - `anchor-cli 1.0.2`, `solana-cli 3.1.9` (jsonrpc), CLI-бінарник `solana 3.1.10`, `cargo 1.89.0` — відповідають правилу.
-- **Знахідка**: у `target/deploy/` на цій машині немає keypair-файлу, що відповідає `declare_id!("Htuaqktaa4MkdBS3nbFcoRZuVdLHowZknpW35EokXXxT")` (файл гітігнорений, ніде в репо не знайдено). `anchor build` без прапорця завжди генерує новий випадковий keypair і падає на звірці з `declare_id`. Це не залежить від змін цієї задачі — відтворюється навіть при видаленому keypair-файлі. Робочий обхід: `anchor build --ignore-keys` (скомпільований `.so` містить program ID із `declare_id!` у вихідному коді, а не з keypair-файлу — для LiteSVM і деплою через Delegation це не впливає; впливає лише на `anchor deploy`/`anchor keys sync` до появи справжнього keypair-файлу для цього ID).
+- **Знахідка (виправлено)**: у `target/deploy/` на цій машині не було keypair-файлу, що відповідав би первісному `declare_id!("Htuaqktaa4MkdBS3nbFcoRZuVdLHowZknpW35EokXXxT")` — ніде в репо (програмний ID ніколи не деплоївся: тиждень 0 деплоїв лише spike-програми). Виправлено `anchor keys sync` — деталі й новий program id у розділі «Program id» нижче. Звичайний `anchor build` (без прапорців) тепер працює.
 - **Знахідка (nightly для litesvm)**: `litesvm =0.16.0` з пінами з брифу не компілюється на pinned stable `1.89.0` — транзитивний `solana-syscalls 4.2.2` (тягнеться через `solana-builtins`/`solana-bpf-loader-program`, обов'язкова, не вимкнена фіча `agave-unstable-api`) використовує unstable `MaybeUninit::write_copy_of_slice` (`#![feature(maybe_uninit_write_slice)]`) без власного `#![feature(...)]`-гейту — апстрім-баг у крейті, опублікованому 28.08.2026; полагоджений у `solana-syscalls 4.3.0` (опубліковано 18.09.2026), але жодна опублікована версія `litesvm` (перевірено `0.16.0`, `0.15.2`, `0.14.0`) ще не підняла пін до `>=4.3.0` — всі резолвляться рівно в `4.2.2`. `litesvm 0.13.1` (і старіше) конфліктує напряму з `ephemeral-rollups-sdk =0.16.2` (через `solana-instruction`), тому недоступний для цього воркспейсу незалежно від бага.
   - Спроба `RUSTC_BOOTSTRAP=1` на pinned stable не допомагає: сам крейт не декларує `#![feature(...)]`, тому компілятор відмовляє навіть у bootstrap-режимі.
-  - **Робоче рішення**: встановлено датований nightly `rustup toolchain install nightly-2026-09-18` (не чіпаючи кореневий `rust-toolchain.toml`, який лишається `1.89.0` — використовується для збірки самої програми). LiteSVM-тести запускати командою `cargo +nightly-2026-09-18 test -p dexxer_litesvm --test smoke` (а не голим `cargo test`). Записано також у `docs/superpowers/plans/2026-09-19-week1-core.md` → Global Constraints, оскільки стосується всіх наступних задач тижня 1, що писатимуть LiteSVM-тести.
+  - Перевірено, чи `cargo update -p solana-syscalls --precise 4.3.0` дає резолвитись без зміни версії `litesvm` (caret `^4.2.1` дозволяє `4.3.0` формально) — **не резолвиться**: `litesvm 0.16.0` сам напряму пінить `solana-hash = "~4.5.0"` (тільда, патч-апдейти в межах 4.5.x), а `solana-syscalls 4.3.0` вимагає `solana-hash ^4.6.0` — два прямі requirements ОДНОГО крейту (`litesvm 0.16.0`) стають взаємно нерозв'язними; `--precise` тут не допомагає, бо конфлікт не в глибині графа, а в самому маніфесті `litesvm`. Немає жодної опублікованої версії `litesvm` новішої за `0.16.0`, яка підняла б цей пін.
+  - **Робоче рішення (лишається)**: встановлено датований nightly `rustup toolchain install nightly-2026-09-18` (не чіпаючи кореневий `rust-toolchain.toml`, який лишається `1.89.0` — використовується для збірки самої програми). LiteSVM-тести запускати командою `cargo +nightly-2026-09-18 test -p dexxer_litesvm --test smoke` (а не голим `cargo test`). Записано також у `docs/superpowers/plans/2026-09-19-week1-core.md` → Global Constraints, оскільки стосується всіх наступних задач тижня 1, що писатимуть LiteSVM-тести.
+
+### Program id
+
+`anchor keys sync` виконано: `declare_id!` у `programs/dexxer_core/src/lib.rs` і `[programs.localnet] dexxer_core` у `Anchor.toml` переписані на pubkey наявного локального `target/deploy/dexxer_core-keypair.json` — **`G2okX5Bae4CxfK8vzso1Ecc96QUv7E3P4YvxaZnaYXoV`** (замінив первісний `Htuaqktaa4MkdBS3nbFcoRZuVdLHowZknpW35EokXXxT`, для якого keypair ніколи не існував). Keypair-файл: `target/deploy/dexxer_core-keypair.json`, гітігнорений (`target/`) — **треба зберегти саме на цій машині** до week 2, коли буде вирішено питання постійного зберігання program-keypair (наприклад окреме безпечне сховище або комітований `keys/` каталог поза `target/`). Звичайний `anchor build` (без `--ignore-keys`) тепер проходить без помилок.
 
 ### Точні піни `tests/litesvm`, що зібралися (nightly-2026-09-18, `rustc 1.100.0-nightly 330d31712 2026-09-17`)
 
@@ -47,9 +52,9 @@ solana-transaction v4.1.6
 ### Верифікація
 
 ```
-$ anchor build --ignore-keys 2>&1 | tail -3
+$ anchor build 2>&1 | tail -3   # після anchor keys sync — без --ignore-keys
     Finished `release` profile [optimized] target(s) in 0.12s
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.12s
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.13s
      Running unittests src/lib.rs (.../target/debug/deps/dexxer_core-30a6190c17446746)
 # exit 0, target/deploy/dexxer_core.so створено
 
