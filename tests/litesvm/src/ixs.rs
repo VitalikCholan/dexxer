@@ -229,6 +229,27 @@ pub fn close_position(signer: &Pubkey, t: &Trader, w: &World, limit_price: u64) 
         data: ix::ClosePosition { limit_price }.data(),
     }
 }
+pub fn crank_tick(crank: &Pubkey, wd: &World, candidates: &[&Trader]) -> Instruction {
+    // `crank: Signer<'info>` in `CrankTick` carries no `#[account(mut)]`, so the
+    // client-side meta must be a readonly signer, not writable (`s`).
+    let mut accounts = vec![
+        rs(crank),
+        r(&wd.config),
+        w(&wd.market),
+        w(&wd.risk),
+        w(&wd.pool),
+        r(&wd.feed),
+    ];
+    for t in candidates {
+        accounts.push(w(&t.position));
+        accounts.push(w(&t.user));
+    }
+    Instruction {
+        program_id: prog(),
+        accounts,
+        data: ix::CrankTick {}.data(),
+    }
+}
 pub fn credit_deposit(signer: &Pubkey, t: &Trader, wd: &World, amount: u64) -> Instruction {
     Instruction {
         program_id: prog(),

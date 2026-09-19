@@ -1234,6 +1234,7 @@ dependencies = [
  "anchor-spl",
  "anchor-syn",
  "ephemeral-rollups-sdk",
+ "magicblock-magic-program-api",
  "proptest",
  "solana-keccak-hasher 3.1.0",
 ]
