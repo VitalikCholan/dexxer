@@ -95,3 +95,36 @@ Identity ER-валідатора (`getIdentity` на `http://127.0.0.1:7799`) �
 Валідатор лишено працювати у фоні (pid у `.superpowers/sdd/2026-09-19-week1-core/mb-stack.pid`) для наступних задач тижня 1; перезапуск — між задачами за потреби.
 
 **Побічна знахідка (виправлено окремим комітом)**: mb-stack пише свій локальний стан, включно з `validator-keypair.json`, у `magicblock-test-storage/` у корені репозиторію. Додано в `.gitignore`.
+
+## Task 2: стани, помилки, розміри (Q3)
+
+### Структури й помилки
+
+Усі акаунти програми (`Config`, `Market`+`MarketParams`, `MarketRisk`, `Pool`, `UserAccount`, `Position`+`ClosedRecord`, `DisclosureQueue`, `DisclosureCommitment`, `Disclosure`) додано в `programs/dexxer_core/src/state/{config,market,market_risk,pool,user,position,disclosure}.rs` з `#[derive(InitSpace)]` — точно за брифом, без додаткових/пропущених полів. `math::Side` перенесено в `state/position.rs` (додано `AnchorSerialize, AnchorDeserialize, InitSpace`) і ре-експортовано з `math.rs` через `pub use crate::state::Side;` — усі 22 тести `math` лишились незмінними й зеленими. `DexxerError` розширено з трьох наявних варіантів (`MathOverflow, DivisionByZero, InvalidInput`) до повного списку §4.3 (мінус `DuplicateDeposit`, плюс `PoolInsolvent`, `InvalidCandidate`, `InvalidOracleAccount`, `AmountZero`) — порядок варіантів зафіксовано, коди `6000..` тепер стабільні для майбутніх LiteSVM-тестів.
+
+`Cargo.toml`: додано `anchor-spl = { version = "=1.0.2", features = ["token", "associated_token"] }`. Обидві фічі підтверджено в опублікованому маніфесті `anchor-spl 1.0.2` (фічі `token` і `associated_token` існують дослівно, як у брифі) — резолвиться і компілюється без правок. `idl-build` розширено до `["anchor-lang/idl-build", "anchor-spl/idl-build"]`.
+
+### Розміри й L1-рента (відповідь на spec §8 Q3)
+
+Тест `state::size_tests::print_sizes_for_spec_q3` (`cargo test -p dexxer_core --lib size_tests -- --nocapture`) друкує:
+
+```
+UserAccount 110 B, Position 257 B, DisclosureQueue 1156 B; L1 rent total 13272720 lamports; ER permission prefund 7264 lamports x3
+```
+
+Розбивка по акаунтах (розмір з 8-байтним дискримінатором Anchor; L1-рента за формулою `Rent::default()`: 3480 лампорт/байт-рік × 2 роки = `(space + 128) × 6960`):
+
+| Акаунт | Розмір, B | L1-рента, lamports | L1-рента, SOL |
+|---|---|---|---|
+| `UserAccount` | 110 | 1 656 480 | 0.00165648 |
+| `Position` | 257 | 2 679 600 | 0.0026796 |
+| `DisclosureQueue` | 1156 | 8 936 640 | 0.00893664 |
+| **Разом** | | **13 272 720** | **0.01327272** |
+
+`Position` (257 B) і `DisclosureQueue` (1156 B) вкладаються у ліміти брифу (< 400 B і < 1300 B відповідно); `Market` (з дискримінатором) — 148 B, теж під лімітом (< 300 B).
+
+ER-акаунти в PER оплачуються за іншою формулою (`ephemeral_accounts::rent`: 32 лампорт/байт, не 3480/байт-рік) — суттєво дешевше L1: `Position` в ER коштувала б `(257 + 60) × 32 = 10 144` лампорт замість 2 679 600 на L1.
+
+Окремо — префандинг permission-акаунта Access Control Program (`EphemeralPermission::size_of(3)` для трьох членів `[owner, session, crank]`, через `ephemeral_accounts::rent`): **7264 lamports** (0.000007264 SOL) за один permission-акаунт. У брифі позначено «x3», бо кожен делегований PDA позиції потребує власного permission-акаунта — на депозит під делегацію потрібно тримати попереднє фінансування трьох таких акаунтів: 3 × 7264 = **21 792 lamports** (0.000021792 SOL) сумарно.
+
+**Висновок для Q3**: L1-рента за весь ланцюжок акаунтів користувача (`UserAccount` + `Position` + `DisclosureQueue`) — ≈0.0133 SOL, і ще ≈0.0000218 SOL на префандинг трьох ER permission-акаунтів під делегацію. Разом онбординг одного користувача (акаунти під Delegation Program на L1, без токенних eATA) коштує ≈0.0133 SOL рента + мізерний ER-префандинг — на порядки менше за очікування з відкритого питання спеки.

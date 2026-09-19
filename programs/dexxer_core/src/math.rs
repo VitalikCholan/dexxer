@@ -8,16 +8,11 @@
 // All rate parameters are `u32` bps. Intermediates are `u128`, every step
 // `checked_*`, rounding always in favour of the pool.
 use crate::errors::MathError;
+pub use crate::state::Side;
 
 pub const PRICE_SCALE: u128 = 1_000_000;
 pub const SIZE_SCALE: u128 = 1_000_000_000;
 pub const BPS: u128 = 10_000;
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Side {
-    Long,
-    Short,
-}
 
 fn div_ceil(a: u128, b: u128) -> Result<u128, MathError> {
     if b == 0 {
