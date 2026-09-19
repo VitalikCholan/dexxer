@@ -230,11 +230,27 @@ pub fn finalize_close(
         .checked_sub(pos.margin)
         .ok_or(DexxerError::MathOverflow)?;
     let entry_notional = math::notional(pos.size, pos.entry)?;
+    // OI is decremented by the same entry-notional it was incremented with at
+    // open; underflow here means an accounting bug and must fail loudly, not
+    // clamp silently.
     match pos.side {
-        Side::Long => risk_acc.oi_long = risk_acc.oi_long.saturating_sub(entry_notional),
-        Side::Short => risk_acc.oi_short = risk_acc.oi_short.saturating_sub(entry_notional),
+        Side::Long => {
+            risk_acc.oi_long = risk_acc
+                .oi_long
+                .checked_sub(entry_notional)
+                .ok_or(DexxerError::MathOverflow)?
+        }
+        Side::Short => {
+            risk_acc.oi_short = risk_acc
+                .oi_short
+                .checked_sub(entry_notional)
+                .ok_or(DexxerError::MathOverflow)?
+        }
     }
-    risk_acc.open_positions = risk_acc.open_positions.saturating_sub(1);
+    risk_acc.open_positions = risk_acc
+        .open_positions
+        .checked_sub(1)
+        .ok_or(DexxerError::MathOverflow)?;
     user.nonce = user.nonce.checked_add(1).ok_or(DexxerError::MathOverflow)?;
     // week 3 may replace this salt source with VRF/TEE randomness
     let salt = hashv(&[
