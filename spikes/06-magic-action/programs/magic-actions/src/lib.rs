@@ -1,0 +1,226 @@
+use anchor_lang::prelude::*;
+use anchor_lang::Discriminator;
+use ephemeral_rollups_sdk::anchor::{action, commit, delegate, ephemeral};
+use ephemeral_rollups_sdk::cpi::DelegateConfig;
+use ephemeral_rollups_sdk::ephem::{CallHandler, MagicIntentBundleBuilder};
+use ephemeral_rollups_sdk::{ActionArgs, ShortAccountMeta};
+
+declare_id!("6Tm2qGHSsmYhaCtLmWf7TQ2VBi84s2bzuzrHKGFePoxR");
+
+pub const COUNTER_SEED: &[u8] = b"counter";
+pub const LEADERBOARD_SEED: &[u8] = b"leaderboard";
+/// Escrow index used by `ActionArgs::new` when scheduling post-commit actions.
+pub const ACTION_ESCROW_INDEX: u8 = 255;
+
+#[error_code]
+pub enum ErrorCode {
+    #[msg("Unauthorized")]
+    Unauthorized,
+}
+
+#[ephemeral]
+#[program]
+pub mod magic_actions {
+    use super::*;
+
+    pub fn initialize(ctx: Context<Initialize>) -> Result<()> {
+        let counter = &mut ctx.accounts.counter;
+        counter.count = 0;
+        let leaderboard = &mut ctx.accounts.leaderboard;
+        leaderboard.high_score = 0;
+
+        msg!("Counter Initialized!");
+        Ok(())
+    }
+
+    pub fn increment(ctx: Context<Increment>) -> Result<()> {
+        let counter = &mut ctx.accounts.counter;
+        counter.count += 1;
+        msg!("PDA {} count: {}", counter.key(), counter.count);
+        Ok(())
+    }
+
+    pub fn update_leaderboard(ctx: Context<UpdateLeaderboard>) -> Result<()> {
+        let leaderboard = &mut ctx.accounts.leaderboard;
+        let counter_info = &mut ctx.accounts.counter.to_account_info();
+        let mut data: &[u8] = &counter_info.try_borrow_data()?;
+        let counter = Counter::try_deserialize(&mut data)?;
+
+        if counter.count > leaderboard.high_score {
+            leaderboard.high_score = counter.count;
+        }
+
+        msg!(
+            "Leaderboard updated! High score: {}",
+            leaderboard.high_score
+        );
+        Ok(())
+    }
+
+    pub fn delegate(ctx: Context<DelegateCounter>) -> Result<()> {
+        ctx.accounts.delegate_pda(
+            &ctx.accounts.payer,
+            &[COUNTER_SEED],
+            DelegateConfig {
+                // Optionally set a specific validator from the first remaining account
+                validator: ctx.remaining_accounts.first().map(|acc| acc.key()),
+                ..Default::default()
+            },
+        )?;
+        Ok(())
+    }
+
+    pub fn undelegate(ctx: Context<UndelegateCounter>) -> Result<()> {
+        MagicIntentBundleBuilder::new(
+            ctx.accounts.payer.to_account_info(),
+            ctx.accounts.magic_context.to_account_info(),
+            ctx.accounts.magic_program.to_account_info(),
+        )
+        .commit_and_undelegate(&[ctx.accounts.counter.to_account_info()])
+        .build_and_invoke()?;
+        Ok(())
+    }
+
+    pub fn commit_and_update_leaderboard(ctx: Context<CommitAndUpdateLeaderboard>) -> Result<()> {
+        // Build the post-commit action that updates the leaderboard on base layer
+        let instruction_data =
+            anchor_lang::InstructionData::data(&crate::instruction::UpdateLeaderboard {});
+        let action_args = ActionArgs::new(instruction_data);
+        let action_accounts = vec![
+            ShortAccountMeta {
+                pubkey: ctx.accounts.leaderboard.key().to_bytes().into(),
+                is_writable: true,
+            },
+            ShortAccountMeta {
+                pubkey: ctx.accounts.counter.key().to_bytes().into(),
+                is_writable: false,
+            },
+        ];
+        let action = CallHandler {
+            destination_program: crate::ID,
+            accounts: action_accounts,
+            args: action_args,
+            // Signer that pays transaction fees for the action from its escrow PDA
+            escrow_authority: ctx.accounts.payer.to_account_info(),
+            compute_units: 200_000,
+        };
+
+        MagicIntentBundleBuilder::new(
+            ctx.accounts.payer.to_account_info(),
+            ctx.accounts.magic_context.to_account_info(),
+            ctx.accounts.magic_program.to_account_info(),
+        )
+        .commit(&[ctx.accounts.counter.to_account_info()])
+        .add_post_commit_actions([action])
+        .build_and_invoke()?;
+
+        Ok(())
+    }
+}
+
+#[derive(Accounts)]
+pub struct Initialize<'info> {
+    #[account(init_if_needed, payer = user, space = 8 + 8, seeds = [COUNTER_SEED], bump)]
+    pub counter: Account<'info, Counter>,
+    #[account(init_if_needed, payer = user, space = 8 + 8, seeds = [LEADERBOARD_SEED], bump)]
+    pub leaderboard: Account<'info, Leaderboard>,
+    #[account(mut)]
+    pub user: Signer<'info>,
+    pub system_program: Program<'info, System>,
+}
+
+#[derive(Accounts)]
+pub struct Increment<'info> {
+    #[account(mut, seeds = [COUNTER_SEED], bump)]
+    pub counter: Account<'info, Counter>,
+}
+
+    // `#[action]` adds the action accounts but does not authenticate the caller on its own.
+    // The `escrow` signer + address check below (per magicblock skill
+    // references/magic-actions.md "Verify the Caller in the Action Handler") is what actually
+    // restricts this instruction to the post-commit action path: only the delegation program
+    // can sign for the derived escrow PDA. `source_program` additionally pins the scheduling
+    // program to this crate.
+    //
+    // Empirically (devnet, 2026-09-19): the live delegation program inserts the destination
+    // program's own id as an extra account between the declared data accounts and the
+    // macro-injected escrow accounts when it dispatches the action CPI. Without a
+    // `source_program` field here to absorb that slot, Anchor deserializes positionally and
+    // shifts every account after `counter` by one — `escrow_auth` receives the program id and
+    // `escrow` receives what should have been `escrow_auth`, so the `escrow` signer/address
+    // check fails with `Unauthorized` even for the genuine post-commit action call (see
+    // RESULT.md check 7 for the raw logs). Declaring `source_program` here fixes the alignment.
+#[action]
+#[derive(Accounts)]
+pub struct UpdateLeaderboard<'info> {
+    #[account(mut, seeds = [LEADERBOARD_SEED], bump)]
+    pub leaderboard: Account<'info, Leaderboard>,
+    /// CHECK: Owner depends on delegation state; the PDA constraint binds this
+    /// handler to the canonical counter account in either state.
+    #[account(seeds = [COUNTER_SEED], bump)]
+    pub counter: UncheckedAccount<'info>,
+    /// CHECK: program that scheduled the action; also absorbs the account slot the
+    /// delegation program inserts for the destination program during CPI dispatch.
+    #[account(address = crate::ID @ ErrorCode::Unauthorized)]
+    pub source_program: UncheckedAccount<'info>,
+    /// CHECK: User-selected escrow authority. Leaderboard updates are
+    /// permissionless; the derived escrow signer below authenticates the
+    /// Magic Action call path.
+    pub escrow_auth: UncheckedAccount<'info>,
+    /// CHECK: Magic escrow PDA. Only the delegation program can sign for it,
+    /// which restricts this instruction to the post-commit action path.
+    #[account(
+        signer @ ErrorCode::Unauthorized,
+        address = ephemeral_rollups_sdk::pda::ephemeral_balance_pda_from_payer(
+            &escrow_auth.key(),
+            ACTION_ESCROW_INDEX,
+        ) @ ErrorCode::Unauthorized,
+    )]
+    pub escrow: UncheckedAccount<'info>,
+}
+
+#[delegate]
+#[derive(Accounts)]
+pub struct DelegateCounter<'info> {
+    pub payer: Signer<'info>,
+    #[account(mut, del)]
+    /// CHECK: the correct pda
+    pub pda: UncheckedAccount<'info>,
+}
+
+#[commit]
+#[derive(Accounts)]
+pub struct UndelegateCounter<'info> {
+    #[account(mut)]
+    pub payer: Signer<'info>,
+    #[account(mut, seeds = [COUNTER_SEED], bump)]
+    pub counter: Account<'info, Counter>,
+}
+
+#[commit]
+#[derive(Accounts)]
+pub struct CommitAndUpdateLeaderboard<'info> {
+    #[account(mut)]
+    pub payer: Signer<'info>,
+
+    #[account(mut, seeds = [COUNTER_SEED], bump)]
+    pub counter: Account<'info, Counter>,
+
+    /// CHECK: Leaderboard PDA - not mut here, writable set in handler
+    #[account(seeds = [LEADERBOARD_SEED], bump)]
+    pub leaderboard: UncheckedAccount<'info>,
+
+    /// CHECK: Destination program for the scheduled action.
+    #[account(address = crate::ID)]
+    pub program_id: UncheckedAccount<'info>,
+}
+
+#[account]
+pub struct Counter {
+    pub count: u64,
+}
+
+#[account]
+pub struct Leaderboard {
+    pub high_score: u64,
+}
