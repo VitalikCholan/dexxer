@@ -51,11 +51,8 @@ pub fn upnl(side: Side, size: u64, entry: u64, mark: u64) -> Result<i64, MathErr
     let raw = (size as i128)
         .checked_mul(diff)
         .ok_or(MathError::Overflow)?;
-    // округлення до нуля для прибутку, від нуля для збитку → на користь пулу
-    let q = raw / SIZE_SCALE as i128;
-    let r = raw % SIZE_SCALE as i128;
-    let adj = if r < 0 { q - 1 } else { q };
-    to_i64(adj)
+    // Pure formula: truncate toward zero so long/short stay antisymmetric; pool-favouring rounding is at settlement (fee subtracts) and position initialization (notional/fee round up).
+    to_i64(raw / SIZE_SCALE as i128)
 }
 
 pub fn fee(notional: u64, bps: u32) -> Result<u64, MathError> {
