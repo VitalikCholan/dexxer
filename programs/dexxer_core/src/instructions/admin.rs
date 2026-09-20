@@ -235,22 +235,23 @@ pub struct DelegatePool<'info> {
     pub pool: UncheckedAccount<'info>,
     #[account(mut, associated_token::mint = dusdc_mint, associated_token::authority = pool)]
     pub pool_ata: Account<'info, TokenAccount>,
-    /// CHECK: eSPL ephemeral ATA record, EphemeralAta::find_pda(pool, mint)
+    /// CHECK: eSPL ephemeral ATA record, verified against espl::find_ephemeral_ata(pool, mint)
     #[account(mut)]
     pub pool_eata: UncheckedAccount<'info>,
-    /// CHECK: eSPL global vault, GlobalVault::find_pda(mint) — must exist (client runs delegateSpl(admin, mint, …, initVaultIfMissing) first)
+    /// CHECK: eSPL global vault, verified against espl::find_global_vault(mint) — must exist
+    /// (client runs delegateSpl(admin, mint, …, initVaultIfMissing) first)
     #[account(mut)]
     pub vault: UncheckedAccount<'info>,
-    /// CHECK: vault token account, find_vault_ata(mint, vault)
+    /// CHECK: vault token account, verified against get_associated_token_address(vault, mint)
     #[account(mut)]
     pub vault_ata: UncheckedAccount<'info>,
-    /// CHECK: delegation PDAs for the eATA
+    /// CHECK: delegation PDAs for the eATA, verified against espl::find_eata_delegation_pdas(eata)
     #[account(mut)]
     pub eata_buffer: UncheckedAccount<'info>,
-    /// CHECK:
+    /// CHECK: verified against espl::find_eata_delegation_pdas(eata)
     #[account(mut)]
     pub eata_record: UncheckedAccount<'info>,
-    /// CHECK:
+    /// CHECK: verified against espl::find_eata_delegation_pdas(eata)
     #[account(mut)]
     pub eata_metadata: UncheckedAccount<'info>,
     /// CHECK: eSPL program
@@ -261,44 +262,80 @@ pub struct DelegatePool<'info> {
 }
 pub fn delegate_pool(ctx: Context<DelegatePool>) -> Result<()> {
     let mint = ctx.accounts.dusdc_mint.key();
+
+    // Every "CHECK" account below is client-supplied and unconstrained by Anchor
+    // seeds (some are PDAs of the eSPL program, not ours), so re-derive and
+    // verify each one here rather than trusting the caller.
     let (expected_eata, _) = espl::find_ephemeral_ata(&ctx.accounts.pool.key(), &mint);
     require_keys_eq!(
         ctx.accounts.pool_eata.key(),
         expected_eata,
         DexxerError::InvalidInput
     );
+    let (expected_vault, _) = espl::find_global_vault(&mint);
+    require_keys_eq!(
+        ctx.accounts.vault.key(),
+        expected_vault,
+        DexxerError::InvalidInput
+    );
+    let expected_vault_ata =
+        anchor_spl::associated_token::get_associated_token_address(&expected_vault, &mint);
+    require_keys_eq!(
+        ctx.accounts.vault_ata.key(),
+        expected_vault_ata,
+        DexxerError::InvalidInput
+    );
+    let eata_delegation = espl::find_eata_delegation_pdas(&expected_eata);
+    require_keys_eq!(
+        ctx.accounts.eata_buffer.key(),
+        eata_delegation.buffer,
+        DexxerError::InvalidInput
+    );
+    require_keys_eq!(
+        ctx.accounts.eata_record.key(),
+        eata_delegation.record,
+        DexxerError::InvalidInput
+    );
+    require_keys_eq!(
+        ctx.accounts.eata_metadata.key(),
+        eata_delegation.metadata,
+        DexxerError::InvalidInput
+    );
+
     let bump = ctx.bumps.pool;
     let seeds: &[&[u8]] = &[POOL_SEED, mint.as_ref(), &[bump]];
     // same order as SDK delegateSpl(): init eATA -> transfer to vault (0) -> delegate eATA
-    espl::initialize_ephemeral_ata(
-        &ctx.accounts.admin.to_account_info(),
-        &ctx.accounts.pool_eata.to_account_info(),
-        &ctx.accounts.pool.to_account_info(),
-        &ctx.accounts.dusdc_mint.to_account_info(),
-        &ctx.accounts.system_program.to_account_info(),
-    )?;
-    espl::deposit_spl_tokens(
-        &ctx.accounts.pool.to_account_info(),
-        &ctx.accounts.pool_eata.to_account_info(),
-        &ctx.accounts.vault.to_account_info(),
-        &ctx.accounts.dusdc_mint.to_account_info(),
-        &ctx.accounts.pool_ata.to_account_info(),
-        &ctx.accounts.vault_ata.to_account_info(),
-        &ctx.accounts.token_program.to_account_info(),
-        0,
-        seeds,
-    )?;
-    espl::delegate_ephemeral_ata(
-        &ctx.accounts.admin.to_account_info(),
-        &ctx.accounts.pool_eata.to_account_info(),
-        &ctx.accounts.espl_program.to_account_info(),
-        &ctx.accounts.eata_buffer.to_account_info(),
-        &ctx.accounts.eata_record.to_account_info(),
-        &ctx.accounts.eata_metadata.to_account_info(),
-        &ctx.accounts.delegation_program.to_account_info(),
-        &ctx.accounts.system_program.to_account_info(),
-        Some(ctx.accounts.config.tee_validator),
-    )?;
+    espl::InitializeEphemeralAta {
+        payer: &ctx.accounts.admin.to_account_info(),
+        eata: &ctx.accounts.pool_eata.to_account_info(),
+        user: &ctx.accounts.pool.to_account_info(),
+        mint: &ctx.accounts.dusdc_mint.to_account_info(),
+        system_program: &ctx.accounts.system_program.to_account_info(),
+    }
+    .invoke()?;
+    espl::DepositSplTokens {
+        authority: &ctx.accounts.pool.to_account_info(),
+        eata: &ctx.accounts.pool_eata.to_account_info(),
+        vault: &ctx.accounts.vault.to_account_info(),
+        mint: &ctx.accounts.dusdc_mint.to_account_info(),
+        user_source_token_acc: &ctx.accounts.pool_ata.to_account_info(),
+        vault_token_acc: &ctx.accounts.vault_ata.to_account_info(),
+        token_program: &ctx.accounts.token_program.to_account_info(),
+        amount: 0,
+    }
+    .invoke_signed(seeds)?;
+    espl::DelegateEphemeralAta {
+        payer: &ctx.accounts.admin.to_account_info(),
+        eata: &ctx.accounts.pool_eata.to_account_info(),
+        espl_token_program: &ctx.accounts.espl_program.to_account_info(),
+        delegation_buffer: &ctx.accounts.eata_buffer.to_account_info(),
+        delegation_record: &ctx.accounts.eata_record.to_account_info(),
+        delegation_metadata: &ctx.accounts.eata_metadata.to_account_info(),
+        delegation_program: &ctx.accounts.delegation_program.to_account_info(),
+        system_program: &ctx.accounts.system_program.to_account_info(),
+        validator: Some(ctx.accounts.config.tee_validator),
+    }
+    .invoke()?;
     ctx.accounts.delegate_pool(
         &ctx.accounts.admin,
         &[POOL_SEED, mint.as_ref()],
@@ -328,6 +365,7 @@ mod espl {
         instruction::{AccountMeta, Instruction},
         program::{invoke, invoke_signed},
     };
+    use ephemeral_rollups_sdk::delegate_args::DelegateAccounts;
 
     // ephemeral_rollups_sdk::spl::EphemeralSplDiscriminator variants used here.
     const INITIALIZE_EPHEMERAL_ATA: u8 = 0;
@@ -343,128 +381,163 @@ mod espl {
         Pubkey::find_program_address(&[user.as_ref(), mint.as_ref()], &espl_program_id())
     }
 
+    /// `ephemeral_rollups_sdk::spl::types::GlobalVault::find_pda`
+    pub fn find_global_vault(mint: &Pubkey) -> (Pubkey, u8) {
+        Pubkey::find_program_address(&[mint.as_ref()], &espl_program_id())
+    }
+
+    /// The eATA's own delegation buffer/record/metadata PDAs — distinct from the
+    /// pool PDA's (those are `#[delegate]`-generated). Computed the same way the
+    /// SDK's `ephemeral_rollups_sdk::delegate_args::DelegateAccounts::new(eata,
+    /// ESPL_TOKEN_PROGRAM_ID)` does: owner_program = the eSPL token program,
+    /// since it (not us) owns the eATA account.
+    pub struct EataDelegationPdas {
+        pub buffer: Pubkey,
+        pub record: Pubkey,
+        pub metadata: Pubkey,
+    }
+
+    pub fn find_eata_delegation_pdas(eata: &Pubkey) -> EataDelegationPdas {
+        let compat_eata = ephemeral_rollups_sdk::compat::Pubkey::new_from_array(eata.to_bytes());
+        let accounts = DelegateAccounts::new(
+            compat_eata,
+            ephemeral_rollups_sdk::consts::ESPL_TOKEN_PROGRAM_ID,
+        );
+        EataDelegationPdas {
+            buffer: Pubkey::new_from_array(accounts.delegate_buffer.to_bytes()),
+            record: Pubkey::new_from_array(accounts.delegation_record.to_bytes()),
+            metadata: Pubkey::new_from_array(accounts.delegation_metadata.to_bytes()),
+        }
+    }
+
     /// `ephemeral_rollups_sdk::spl::cpi::InitializeEphemeralAta`
-    pub fn initialize_ephemeral_ata<'info>(
-        payer: &AccountInfo<'info>,
-        eata: &AccountInfo<'info>,
-        user: &AccountInfo<'info>,
-        mint: &AccountInfo<'info>,
-        system_program: &AccountInfo<'info>,
-    ) -> Result<()> {
-        let ix = Instruction {
-            program_id: espl_program_id(),
-            accounts: vec![
-                AccountMeta::new(*eata.key, false),
-                AccountMeta::new(*payer.key, false),
-                AccountMeta::new_readonly(*user.key, false),
-                AccountMeta::new_readonly(*mint.key, false),
-                AccountMeta::new_readonly(*system_program.key, false),
-            ],
-            data: vec![INITIALIZE_EPHEMERAL_ATA],
-        };
-        invoke(
-            &ix,
-            &[
-                eata.clone(),
-                payer.clone(),
-                user.clone(),
-                mint.clone(),
-                system_program.clone(),
-            ],
-        )?;
-        Ok(())
+    pub struct InitializeEphemeralAta<'a, 'info> {
+        pub payer: &'a AccountInfo<'info>,
+        pub eata: &'a AccountInfo<'info>,
+        pub user: &'a AccountInfo<'info>,
+        pub mint: &'a AccountInfo<'info>,
+        pub system_program: &'a AccountInfo<'info>,
+    }
+    impl<'a, 'info> InitializeEphemeralAta<'a, 'info> {
+        pub fn invoke(self) -> Result<()> {
+            let ix = Instruction {
+                program_id: espl_program_id(),
+                accounts: vec![
+                    AccountMeta::new(*self.eata.key, false),
+                    AccountMeta::new(*self.payer.key, false),
+                    AccountMeta::new_readonly(*self.user.key, false),
+                    AccountMeta::new_readonly(*self.mint.key, false),
+                    AccountMeta::new_readonly(*self.system_program.key, false),
+                ],
+                data: vec![INITIALIZE_EPHEMERAL_ATA],
+            };
+            invoke(
+                &ix,
+                &[
+                    self.eata.clone(),
+                    self.payer.clone(),
+                    self.user.clone(),
+                    self.mint.clone(),
+                    self.system_program.clone(),
+                ],
+            )?;
+            Ok(())
+        }
     }
 
     /// `ephemeral_rollups_sdk::spl::cpi::DepositSplTokens`
-    #[allow(clippy::too_many_arguments)]
-    pub fn deposit_spl_tokens<'info>(
-        authority: &AccountInfo<'info>,
-        eata: &AccountInfo<'info>,
-        vault: &AccountInfo<'info>,
-        mint: &AccountInfo<'info>,
-        user_source_token_acc: &AccountInfo<'info>,
-        vault_token_acc: &AccountInfo<'info>,
-        token_program: &AccountInfo<'info>,
-        amount: u64,
-        signer_seeds: &[&[u8]],
-    ) -> Result<()> {
-        let mut data = Vec::with_capacity(9);
-        data.push(DEPOSIT_SPL_TOKENS);
-        data.extend_from_slice(&amount.to_le_bytes());
-        let ix = Instruction {
-            program_id: espl_program_id(),
-            accounts: vec![
-                AccountMeta::new(*eata.key, false),
-                AccountMeta::new_readonly(*vault.key, false),
-                AccountMeta::new_readonly(*mint.key, false),
-                AccountMeta::new(*user_source_token_acc.key, false),
-                AccountMeta::new(*vault_token_acc.key, false),
-                AccountMeta::new_readonly(*authority.key, true),
-                AccountMeta::new_readonly(*token_program.key, false),
-            ],
-            data,
-        };
-        invoke_signed(
-            &ix,
-            &[
-                eata.clone(),
-                vault.clone(),
-                mint.clone(),
-                user_source_token_acc.clone(),
-                vault_token_acc.clone(),
-                authority.clone(),
-                token_program.clone(),
-            ],
-            &[signer_seeds],
-        )?;
-        Ok(())
+    pub struct DepositSplTokens<'a, 'info> {
+        pub authority: &'a AccountInfo<'info>,
+        pub eata: &'a AccountInfo<'info>,
+        pub vault: &'a AccountInfo<'info>,
+        pub mint: &'a AccountInfo<'info>,
+        pub user_source_token_acc: &'a AccountInfo<'info>,
+        pub vault_token_acc: &'a AccountInfo<'info>,
+        pub token_program: &'a AccountInfo<'info>,
+        pub amount: u64,
+    }
+    impl<'a, 'info> DepositSplTokens<'a, 'info> {
+        pub fn invoke_signed(self, signer_seeds: &[&[u8]]) -> Result<()> {
+            let mut data = Vec::with_capacity(9);
+            data.push(DEPOSIT_SPL_TOKENS);
+            data.extend_from_slice(&self.amount.to_le_bytes());
+            let ix = Instruction {
+                program_id: espl_program_id(),
+                accounts: vec![
+                    AccountMeta::new(*self.eata.key, false),
+                    AccountMeta::new_readonly(*self.vault.key, false),
+                    AccountMeta::new_readonly(*self.mint.key, false),
+                    AccountMeta::new(*self.user_source_token_acc.key, false),
+                    AccountMeta::new(*self.vault_token_acc.key, false),
+                    AccountMeta::new_readonly(*self.authority.key, true),
+                    AccountMeta::new_readonly(*self.token_program.key, false),
+                ],
+                data,
+            };
+            invoke_signed(
+                &ix,
+                &[
+                    self.eata.clone(),
+                    self.vault.clone(),
+                    self.mint.clone(),
+                    self.user_source_token_acc.clone(),
+                    self.vault_token_acc.clone(),
+                    self.authority.clone(),
+                    self.token_program.clone(),
+                ],
+                &[signer_seeds],
+            )?;
+            Ok(())
+        }
     }
 
     /// `ephemeral_rollups_sdk::spl::cpi::DelegateEphemeralAta`
-    #[allow(clippy::too_many_arguments)]
-    pub fn delegate_ephemeral_ata<'info>(
-        payer: &AccountInfo<'info>,
-        eata: &AccountInfo<'info>,
-        espl_token_program: &AccountInfo<'info>,
-        delegation_buffer: &AccountInfo<'info>,
-        delegation_record: &AccountInfo<'info>,
-        delegation_metadata: &AccountInfo<'info>,
-        delegation_program: &AccountInfo<'info>,
-        system_program: &AccountInfo<'info>,
-        validator: Option<Pubkey>,
-    ) -> Result<()> {
-        let mut data = Vec::with_capacity(33);
-        data.push(DELEGATE_EPHEMERAL_ATA);
-        if let Some(validator) = validator {
-            data.extend_from_slice(validator.as_ref());
+    pub struct DelegateEphemeralAta<'a, 'info> {
+        pub payer: &'a AccountInfo<'info>,
+        pub eata: &'a AccountInfo<'info>,
+        pub espl_token_program: &'a AccountInfo<'info>,
+        pub delegation_buffer: &'a AccountInfo<'info>,
+        pub delegation_record: &'a AccountInfo<'info>,
+        pub delegation_metadata: &'a AccountInfo<'info>,
+        pub delegation_program: &'a AccountInfo<'info>,
+        pub system_program: &'a AccountInfo<'info>,
+        pub validator: Option<Pubkey>,
+    }
+    impl<'a, 'info> DelegateEphemeralAta<'a, 'info> {
+        pub fn invoke(self) -> Result<()> {
+            let mut data = Vec::with_capacity(33);
+            data.push(DELEGATE_EPHEMERAL_ATA);
+            if let Some(validator) = self.validator {
+                data.extend_from_slice(validator.as_ref());
+            }
+            let ix = Instruction {
+                program_id: espl_program_id(),
+                accounts: vec![
+                    AccountMeta::new(*self.payer.key, true),
+                    AccountMeta::new(*self.eata.key, false),
+                    AccountMeta::new_readonly(*self.espl_token_program.key, false),
+                    AccountMeta::new(*self.delegation_buffer.key, false),
+                    AccountMeta::new(*self.delegation_record.key, false),
+                    AccountMeta::new(*self.delegation_metadata.key, false),
+                    AccountMeta::new_readonly(*self.delegation_program.key, false),
+                    AccountMeta::new_readonly(*self.system_program.key, false),
+                ],
+                data,
+            };
+            invoke(
+                &ix,
+                &[
+                    self.payer.clone(),
+                    self.eata.clone(),
+                    self.espl_token_program.clone(),
+                    self.delegation_buffer.clone(),
+                    self.delegation_record.clone(),
+                    self.delegation_metadata.clone(),
+                    self.delegation_program.clone(),
+                    self.system_program.clone(),
+                ],
+            )?;
+            Ok(())
         }
-        let ix = Instruction {
-            program_id: espl_program_id(),
-            accounts: vec![
-                AccountMeta::new(*payer.key, true),
-                AccountMeta::new(*eata.key, false),
-                AccountMeta::new_readonly(*espl_token_program.key, false),
-                AccountMeta::new(*delegation_buffer.key, false),
-                AccountMeta::new(*delegation_record.key, false),
-                AccountMeta::new(*delegation_metadata.key, false),
-                AccountMeta::new_readonly(*delegation_program.key, false),
-                AccountMeta::new_readonly(*system_program.key, false),
-            ],
-            data,
-        };
-        invoke(
-            &ix,
-            &[
-                payer.clone(),
-                eata.clone(),
-                espl_token_program.clone(),
-                delegation_buffer.clone(),
-                delegation_record.clone(),
-                delegation_metadata.clone(),
-                delegation_program.clone(),
-                system_program.clone(),
-            ],
-        )?;
-        Ok(())
     }
 }
