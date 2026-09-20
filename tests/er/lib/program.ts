@@ -5,9 +5,10 @@
 // (seeds) exactly, so this file is the single source of truth for account
 // addresses used across `admin.ts`, `q1-deposit.ts`, and `q2-permissions.ts`.
 
-import { AnchorProvider, Program, Wallet } from "@coral-xyz/anchor";
+import { AnchorProvider, BorshAccountsCoder, Program, Wallet } from "@coral-xyz/anchor";
 import { Connection, Keypair, PublicKey } from "@solana/web3.js";
 import { ASSOCIATED_TOKEN_PROGRAM_ID, TOKEN_PROGRAM_ID } from "@solana/spl-token";
+import bs58 from "bs58";
 import { readFileSync } from "fs";
 import { dirname, resolve } from "path";
 import { fileURLToPath } from "url";
@@ -34,6 +35,12 @@ export const DEXXER_CORE_IDL = loadIdl("dexxer_core");
 export const MOCK_ORACLE_IDL = loadIdl("mock_oracle");
 export const DEXXER_CORE_PROGRAM_ID = new PublicKey((DEXXER_CORE_IDL as { address: string }).address);
 export const MOCK_ORACLE_PROGRAM_ID = new PublicKey((MOCK_ORACLE_IDL as { address: string }).address);
+
+// Task 14 (crank-fallback): base58 `getProgramAccounts` memcmp filter value
+// for the 8-byte Anchor discriminator of the `Position` account, computed
+// from the same IDL used to build `dexxerCoreProgram` above (not hardcoded,
+// so it stays correct if the account layout ever changes).
+export const POSITION_DISC = bs58.encode(new BorshAccountsCoder(DEXXER_CORE_IDL).accountDiscriminator("Position"));
 
 export function anchorProvider(conn: Connection, wallet: Keypair): AnchorProvider {
   return new AnchorProvider(conn, new Wallet(wallet), { commitment: "confirmed", skipPreflight: true });

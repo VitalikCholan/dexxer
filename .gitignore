@@ -50,5 +50,6 @@ spikes/06-magic-action/tests/
 tests/er/.keys/
 tests/er/fixtures/*.so
 tests/er/node_modules/
+scripts/node_modules/
 # mb-stack local validator state, contains a keypair
 magicblock-test-storage/

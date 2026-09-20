@@ -8,7 +8,7 @@
 // No `dotenv` package is installed in this package (see package.json), so
 // `.env` is parsed by hand here rather than pulling in a new dependency.
 
-import { Connection, Keypair, LAMPORTS_PER_SOL, PublicKey } from "@solana/web3.js";
+import { Connection, Keypair, LAMPORTS_PER_SOL, PublicKey, Transaction, TransactionInstruction } from "@solana/web3.js";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
 import { dirname, resolve } from "path";
 import { fileURLToPath } from "url";
@@ -103,4 +103,55 @@ export function assert(cond: unknown, msg: string): asserts cond {
     process.exit(1);
   }
   console.log("ok:", msg);
+}
+
+/** Promise-based delay, used by crank-fallback's tick loop (Task 14). */
+export function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * Poll `getSignatureStatuses` instead of `Connection.confirmTransaction`
+ * (Task 14 finding on mb-stack): every shape of `confirmTransaction` — the
+ * deprecated single-signature string form included — races a
+ * `signatureSubscribe` websocket notification against an internal timeout
+ * (30s for `confirmed`). On this local ER validator that notification does
+ * not reliably arrive (its ws port accepts connections fine; it just never
+ * pushes the subscribed event), so `.rpc()` calls against `erConn` can stall
+ * for tens of seconds waiting on it. Plain polling sidesteps the websocket
+ * path entirely and is what this file's own `waitDelegated`/
+ * `waitAccountExists` already do for the same reason.
+ */
+export async function confirmSignature(conn: Connection, sig: string, tries = 100, delayMs = 100): Promise<void> {
+  for (let i = 0; i < tries; i++) {
+    const { value } = await conn.getSignatureStatuses([sig]);
+    const status = value[0];
+    if (status) {
+      if (status.err) throw new Error(`transaction ${sig} failed: ${JSON.stringify(status.err)}`);
+      if (status.confirmationStatus === "confirmed" || status.confirmationStatus === "finalized") return;
+    }
+    await sleep(delayMs);
+  }
+  throw new Error(`confirmSignature timeout waiting for ${sig}`);
+}
+
+/**
+ * Sign, send, and confirm a single instruction without going through
+ * `Connection.confirmTransaction`'s websocket-based strategies — see
+ * `confirmSignature` above. Used for every ER-targeted send in trader.ts
+ * (open/close/setPrice, plus onboarding's two ER calls) instead of Anchor's
+ * `.rpc()`, which hit the same stall.
+ */
+export async function sendAndConfirmIx(
+  conn: Connection,
+  payer: Keypair,
+  ix: TransactionInstruction,
+  extraSigners: Keypair[] = [],
+): Promise<string> {
+  const { blockhash } = await conn.getLatestBlockhash("processed");
+  const tx = new Transaction({ feePayer: payer.publicKey, recentBlockhash: blockhash }).add(ix);
+  tx.sign(payer, ...extraSigners);
+  const sig = await conn.sendRawTransaction(tx.serialize(), { skipPreflight: true });
+  await confirmSignature(conn, sig);
+  return sig;
 }

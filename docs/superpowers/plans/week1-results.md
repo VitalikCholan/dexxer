@@ -317,3 +317,121 @@ vec![] }`). Це менше за попередньо зафіксований �
   `init_permissions` → `perm.owner`).
 - Закриття spec §8 Q1/Q2 — самі відповіді зафіксовано тут; формальне
   закриття питань у spec-документі — Task 15 (за брифом).
+
+## П'ятниця: CLI на mb-stack
+
+Task 14: `deposit → open → crank ліквідує → close` наскрізно на локальному
+mb-stack — два трейдери онбордяться, відкривають позиції, фолбек-crank
+(`scripts/crank-fallback/index.ts`, підпис `Config.crank`) тікає ринок,
+одного ліквідує рух ціни, другий закривається вручну, інваріант пулу
+звірено зі стану ER. Прогін — на чистому леджері (`rm -rf test-ledger
+magicblock-test-storage`, оба програми передеплоєні `anchor deploy
+--provider.cluster http://127.0.0.1:8899`, `tests/er/.keys/` очищено).
+
+### Вибір параметрів ліквідації: варіант (a)
+
+Перед відкриттям позицій викликано `set_params` з `ema_alpha_bps: 10_000,
+max_deviation_bps: 10_000` (жорсткий EMA — mark стає index на кожному
+тіку; guard відхилення розширено так, щоб ніколи не спрацював). Це той
+самий підхід, що й у `tests/litesvm/tests/crank.rs`
+(`liquidation_after_two_ticks_below_mmr`): зі спековими дефолтами
+(`ema_alpha_bps: 3000`) падіння ціни на 6 % (150 → 141) перевищує
+`max_deviation_bps: 200`, зупиняючи відкриття (`paused_open`) і роблячи
+збіжність mark недетермінованою за фіксовану кількість тіків — для CLI-демо
+з жорстким лімітом очікування варіант (a) єдиний, що гарантує рівно 2 тіки
+до ліквідації.
+
+### Прогін (сигнатури, стани, CU)
+
+| Крок | Сигнатура |
+|---|---|
+| `open_position` A (long 10 SOL, margin $150, limit $151) | `4SzqQS84kdNjjPDRVVoD1hxWXsvaziSPnrFyxqkavdrD2K61tyetgJYnFCSUsw6tx3VqHFKZJpXSYX1fF38mXMuY` |
+| `open_position` B (short 5 SOL, margin $100, limit $149) | `ZntDpfxcF9Wfm73QEMJ4vpRmvX4YcUCtV7RFhn5sihqkxYmeu9uQ69PJTjyCiTqL7EB3BtMfwJvBqCa1NwGTrmh` |
+| `set_price(141e8)` | `3c7sDnVuKNdxSgZmPXkSFdukw1hxLCdqeSz9w61Eh7CFvPivZ54STfSi18j8JXy3SsMzE948huwE4Tc4KaKvmuTb` |
+| `close_position` B (User, pnl +$45) | `2Tg75yEweG86D9cYekv7YmTRB2iE3SFaiFWod72WG6AoFi5bMHUBAgmSbGAh5fkWFdAUCfS6MftbXK1fhq6HURZG` |
+
+Тіки крана (`n`, `mark`, `cu`, `tick_ms` — час одного `crank_tick`: сигнал →
+підтвердження):
+
+| n | mark | candidates | cu | tick_ms | liquidated |
+|---|---|---|---|---|---|
+| 1 | 150.00 | 2 | 34 983 | 30 | — |
+| 2 | 150.00 | 2 | 34 983 | 7 | — |
+| 3 | 150.00 | 2 | 16 237 | 7 | — |
+| 4 (перший після `set_price(141)`) | 141.00 | 2 | 34 988 | 7 | — (`liq_ticks` A → 1) |
+| 5 (другий після `set_price(141)`) | 141.00 | 2 | 36 755 | 7 | A закрита (`Liquidated`) |
+
+**Ticks to liquidation = 2** (гістерезис `liq_hysteresis_ticks: 2`, як і
+передбачено spec/LiteSVM-тестами): на 1-му тіку після зміни ціни mark одразу
+дорівнює index (`ema_alpha_bps: 10_000`), позиція A стає ліквідовуваною,
+`liq_ticks` → 1; на 2-му тіку — `liq_ticks` → 2 ≥ hysteresis → `finalize_close`.
+`crank_tick` CU при 2 кандидатах: 34 983–36 755 (без кандидатів — 16 237,
+tick 3 — mark уже збігся, жодної ліквідації не перевіряти не було чого).
+Час одного тіка (сигнал → підтверджено): 7 мс усюди, крім першого (30 мс —
+холодний старт `sendRawTransaction`/поллінг).
+
+Позиція A закрита: `exit=141.00`, `pnl=-$90` (10 SOL × (141−150)),
+`fees=$14.10` (1 % ліквідаційна комісія від нешенела $1410) → на страховий
+фонд (`Pool.insurance`), не в `fees_accrued`. Позиція B закрита вручну:
+`reason=User`, `pnl=+$45` (5 SOL × (150−141), шорт заробляє на падінні).
+
+### Фінальний інваріант (зі стану ER)
+
+```
+protocol_liquidity (10 045 000 000) + fees_accrued (1 773 000)
+  + insurance (14 100 000) + free_A (895 000 000) + free_B (1 044 127 000)
+  = 12 000 000 000
+  = Pool.capital_total = ER-баланс pool eATA
+```
+
+Обидві позиції закриті на момент перевірки, тож доданок `+ position.margin`
+(для відкритих позицій) — нульовий; формула та ж, що в
+`tests/litesvm/src/lib.rs::assert_invariant`. `bad_debt_total = 0` — A
+ліквідовано з додатним equity, банкрутства пулу не було.
+
+### Два реальні баги mb-stack, ніде раніше не відтворювані (LiteSVM не має живого ER/RPC)
+
+1. **Дублікат-транзакція в `crank_tick`.** Інструкція без аргументів: два
+   послідовних тіки з незмінним набором кандидатів (типовий випадок — жоден
+   трейдер нічого не зробив між тіками) дають побайтово однакове
+   повідомлення, якщо `getLatestBlockhash()` двічі поспіль повертає той
+   самий blockhash (відтворено навіть за повний `CRANK_INTERVAL_MS=1000`
+   між тіками) — однакові байти підписуються в однакову сигнатуру, і ER
+   відхиляє повтор як `"This transaction has already been processed"`.
+   Виправлено `freshBlockhash()` у `crank-fallback/index.ts`: перед кожним
+   тіком опитує `getLatestBlockhash("processed")`, доки той не відрізняється
+   від використаного попереднім тіком (слоти ER ~50 мс, тож це щонайбільше
+   1–2 очікування по 200 мс).
+2. **`Connection.confirmTransaction` зависає на цьому валідаторі.** Обидві
+   форми виклику — і сучасна стратегія-об'єкт `{signature, blockhash,
+   lastValidBlockHeight}`, і застаріла форма з одним підписом (саме на неї
+   падає Anchor `.rpc()`, коли `sendAndConfirm`'s `options.blockhash` не
+   заданий) — всередині чекають push-нотифікацію `signatureSubscribe` через
+   RPC-вебсокет із внутрішнім таймаутом (30 с для `confirmed`). Ця
+   нотифікація на локальному ER-валідаторі надійно не приходить (сам
+   вебсокет-порт 7800 приймає з'єднання миттєво — проблема саме в
+   відсутності push, не в порту), тож будь-який `.rpc()`-виклик проти
+   `erConn` міг зависнути на десятки секунд (відтворено на
+   `close_position` — 27 зайвих тіків минуло, поки один такий виклик
+   зрештою повертався). Виправлено `sendAndConfirmIx()` у
+   `tests/er/lib/env.ts`: будує інструкцію (`.instruction()`), підписує,
+   шле `sendRawTransaction`, підтверджує поллінгом `getSignatureStatuses`
+   (`confirmSignature()`, той самий підхід, що й `waitDelegated`/
+   `waitAccountExists`) — жодної залежності від вебсокета. Використовується
+   для всіх ER-надсилань у `trader.ts` (`openPosition`, `closePosition`,
+   `setPrice`, `credit_deposit`/`init_permissions` в `onboardTrader`) і
+   `set_params` у `week1-cli.ts`; L1-надсилання (`baseConn`, справжній
+   `solana-test-validator`) цю проблему не мають і лишились на `.rpc()`.
+
+### Файли
+
+- Нові: `scripts/package.json`, `scripts/tsconfig.json`,
+  `scripts/crank-fallback/index.ts`, `scripts/demo/week1-cli.ts`,
+  `tests/er/lib/trader.ts`.
+- Змінені: `tests/er/lib/env.ts` (`sleep`, `confirmSignature`,
+  `sendAndConfirmIx`), `tests/er/lib/program.ts` (`POSITION_DISC`),
+  `tests/er/package.json` (додано `bs58` як пряму залежність), `.gitignore`
+  (`scripts/node_modules/`).
+
+**WEEK1 CLI PASS.** Повний лог прогону:
+`.superpowers/sdd/2026-09-19-week1-core/week1-cli-run4.log`.
