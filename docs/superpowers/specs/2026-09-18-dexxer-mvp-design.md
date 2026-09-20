@@ -166,7 +166,7 @@ liq_price
 | liquidation fee | 100 bps notional |
 | oi_cap | 30% капіталу пулу на сторону |
 | max_staleness | 2 с — рахувати за ER `Clock` / `publish_time`, **не** за `posted_slot` (check 4, 19.09.2026) |
-| max_conf | 50 bps; `conf == 0` = «не заповнено» → hard reject на відкриття (check 4). **(week 1, 20.09.2026)** `Market.max_conf_bps == 0` вимикає перевірку conf повністю (`oracle::check_open_quality`, guard пропускається до `require!(conf > 0)`) — новий ризик №8 у §7.1: demo-конфіг ставить `max_conf_bps = 0`, бо devnet-фід стабільно повертає `conf == 0` |
+| max_conf | 50 bps; `conf == 0` = «не заповнено» → hard reject на відкриття (check 4). **(week 1, 20.09.2026)** `Market.max_conf_bps == 0` вимикає перевірку conf повністю (`oracle::check_open_quality`, guard пропускається до `require!(conf > 0)`) — новий ризик №11 у §7.1: demo-конфіг ставить `max_conf_bps = 0`, бо devnet-фід стабільно повертає `conf == 0` |
 | ema_alpha | під період 1–2 с; фактичний інтервал кранка плаває, див. §3.5 |
 | гістерезис | 2 **тики** (не секунди — інтервал тіка не фіксований, check 5, 19.09.2026) |
 
@@ -206,7 +206,7 @@ Index — Pyth Lazer через Pricing Oracle. Mark — EMA(index) у `Market.m
 protocol_liquidity + Σ free_margin + Σ position.margin + fees_accrued + insurance == capital_total == баланс pool eATA
 ```
 
-`bad_debt_total` — статистика, окремий лічильник; токени не рухає й у суму інваріанта не входить (перевіряється кожним LiteSVM-тестом через `assert_invariant`/`assert_invariant_ctx`, `tests/litesvm/src/lib.rs`).
+`bad_debt_total` — статистика, окремий лічильник; токени не рухає й у суму інваріанта не входить (перевіряється кожним LiteSVM-тестом трейдингу/кранка (`trade`, `resize`, `crank`, `invariants`) через `assert_invariant`/`assert_invariant_ctx`, `tests/litesvm/src/lib.rs`; `admin`/`smoke`/`user` не викликають цю перевірку — там немає торгових дій, що впливають на інваріант).
 
 - `liq_price(long) < entry < liq_price(short)` при рівному lev.
 - Округлення не зменшує пул.
@@ -345,7 +345,7 @@ pub struct ClosedRecord {
 
 **(week 1, 20.09.2026)** `DuplicateDeposit` прибрано — `credit_deposit` без окремого `deposit`-кроку й без `l1_signature`, ідемпотентність конструктивна (§2.2, §4.2). Додано `PoolInsolvent`, `InvalidCandidate` (crank_tick, §3.5/§4.2), `InvalidOracleAccount`, `AmountZero`, `InvalidParams` (валідація `MarketParams`), `FaucetLimit`. Порядок нижче — код (`programs/dexxer_core/src/errors.rs`); коди `6000..` стабільні для LiteSVM-тестів, нові варіанти лише дописуються в кінець.
 
-`Paused`, `OpenPaused`, `StaleOracle`, `OracleConfidence`, `OracleDeviation`, `WrongFeed`, `InvalidOracleAccount`, `InsufficientMargin`, `LeverageTooHigh`, `PositionTooSmall`, `PositionTooLarge`, `OiCapExceeded`, `SlippageExceeded`, `PositionNotEmpty`, `PositionNotOpen`, `NotLiquidatable`, `Unauthorized`, `SessionExpired`, `NoActionsLeft`, `HasOpenPosition`, `QueueFull`, `MathOverflow`, `InvalidActionSigner`, `PoolInsolvent`, `InvalidCandidate`, `AmountZero`, `InvalidParams`, `FaucetLimit`.
+`MathOverflow`, `DivisionByZero`, `InvalidInput` (три `MathError`-конверсії, оголошені першими — коди 6000–6002 — і не входили до первісного списку §4.3 плану 18.09, хоч існували в коді й тоді), `Paused`, `OpenPaused`, `StaleOracle`, `OracleConfidence`, `OracleDeviation`, `WrongFeed`, `InvalidOracleAccount`, `InsufficientMargin`, `LeverageTooHigh`, `PositionTooSmall`, `PositionTooLarge`, `OiCapExceeded`, `SlippageExceeded`, `PositionNotEmpty`, `PositionNotOpen`, `NotLiquidatable`, `Unauthorized`, `SessionExpired`, `NoActionsLeft`, `HasOpenPosition`, `QueueFull`, `InvalidActionSigner`, `PoolInsolvent`, `InvalidCandidate`, `AmountZero`, `InvalidParams`, `FaucetLimit`.
 
 ### 4.4 Модулі
 
@@ -364,7 +364,7 @@ programs/dexxer_core/src/
 
 **`oracle.rs` — з check 4 (19.09.2026).** Feed перевіряти **деривацією PDA** `["price_feed", "pyth-lazer", <symbol>]` під `Config.oracle_program`, не по `writeAuthority` (він = System Program, порожній). Ціна = `price / 10^exponent`, `exponent` на цьому фіді `+8`. `conf == 0` → відмова на відкриття. Staleness — за ER `Clock`/`publish_time`; `posted_slot` — ER-слот, з L1-слотом не порівнюється. Акаунт 134 байти (133 IDL + 1 хвостовий) — читати за офсетами, не валідувати за довжиною.
 
-**(week 1, 20.09.2026)** `check_open_quality` реалізує вимикач: `market.max_conf_bps == 0` повертає `Ok(())` одразу, без перевірки `conf_bps > 0` і без порівняння з лімітом — це навмисний параметр ринку (`MarketParams`), не баг, потрібний, бо devnet-фід стабільно віддає `conf == 0` (check 4). Ризик №8 §7.1.
+**(week 1, 20.09.2026)** `check_open_quality` реалізує вимикач: `market.max_conf_bps == 0` повертає `Ok(())` одразу, без перевірки `conf_bps > 0` і без порівняння з лімітом — це навмисний параметр ринку (`MarketParams`), не баг, потрібний, бо devnet-фід стабільно віддає `conf == 0` (check 4). Ризик №11 §7.1.
 
 Anchor-правила: `has_one`/`seeds`/`bump`/`constraint` на кожному акаунті; `init_if_needed` не використовувати; `program_id` оракула — з `Config`; `remaining_accounts` валідувати явно; `version: u8` у кожному PDA.
 

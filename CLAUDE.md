@@ -34,7 +34,7 @@
 - Skill `magicblock` — для ER/PER/eSPL/oracle/session keys; `solana-dev` — для Anchor/клієнтів/тестів
 - Мова документів і комітів — українська для docs, англійська для коду й commit messages
 - `crank_tick` приймає `Config.crank` або `CRANK_SIGNER`; кандидати ліквідації — `remaining_accounts` парами `[Position, UserAccount]`, ≤16
-- Пул — контрагент PnL через `Pool.protocol_liquidity`; інваріант тижня 1 (див. spec §3.6) перевіряється кожним LiteSVM-тестом через `assert_invariant`
+- Пул — контрагент PnL через `Pool.protocol_liquidity`; інваріант тижня 1 (див. spec §3.6) перевіряється кожним LiteSVM-тестом трейдингу/кранка (`trade`, `resize`, `crank`, `invariants`) через `assert_invariant`
 - OI-леджер (`MarketRisk.oi_long`/`oi_short`) змінювати лише через `Position.oi_notional`, ніколи перерахунком з VWAP `entry` (`notional(size, entry)`) — подвійне округлення VWAP → notional може underflow'нути `checked_sub`
 - LiteSVM: `tests/litesvm` (`cargo +nightly-2026-09-18 test -p dexxer_litesvm`, потребує nightly через транзитивний `solana-syscalls`; `anchor build` перед першим прогоном)
 - mb-stack: `tests/er` (`npm run q1|q2`, детальніше `tests/er/README.md`); `scripts` — crank fallback і week-1 CLI демо (`npm run crank`, `npm run week1` у `scripts/`)
