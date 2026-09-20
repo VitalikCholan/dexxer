@@ -154,6 +154,27 @@ pub fn check_open_quality(p: &OraclePrice, market: &Market) -> Result<()> {
     Ok(())
 }
 
+/// Reject opening/increasing exposure when the fresh index price has drifted
+/// too far from the market's already-published mark. `mark == 0` means no
+/// mark has been seeded yet (no crank tick has run), so there is nothing to
+/// deviate from and the check is skipped. Closes/decreases never call this —
+/// a trader must always be able to exit (spec §3.4).
+pub fn check_deviation(px: &OraclePrice, market: &Market) -> Result<()> {
+    if market.mark == 0 {
+        return Ok(());
+    }
+    let diff_bps = (px.price.abs_diff(market.mark) as u128)
+        .checked_mul(10_000)
+        .ok_or_else(|| error!(DexxerError::MathOverflow))?
+        .checked_div(market.mark as u128)
+        .ok_or_else(|| error!(DexxerError::MathOverflow))?;
+    require!(
+        diff_bps <= market.max_deviation_bps as u128,
+        DexxerError::OracleDeviation
+    );
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

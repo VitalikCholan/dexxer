@@ -98,7 +98,8 @@ pub fn settle(margin: u64, pnl: i64, fee: u64) -> Result<Settlement> {
 
     // If gross <= 0: user gets nothing, bad_debt = |gross|, fee_taken = 0
     if gross <= 0 {
-        let bad_debt = gross.checked_neg().ok_or(DexxerError::MathOverflow)? as u64;
+        let bad_debt = u64::try_from(gross.checked_neg().ok_or(DexxerError::MathOverflow)?)
+            .map_err(|_| DexxerError::MathOverflow)?;
         return Ok(Settlement {
             to_user: 0,
             fee_taken: 0,
@@ -106,7 +107,7 @@ pub fn settle(margin: u64, pnl: i64, fee: u64) -> Result<Settlement> {
         });
     }
 
-    let gross = gross as u64;
+    let gross = u64::try_from(gross).map_err(|_| DexxerError::MathOverflow)?;
 
     // If fee >= gross: pool takes all, user gets nothing
     if gross <= fee {
@@ -162,11 +163,12 @@ pub fn settle_into_pool(
     if delta_received >= 0 {
         pool.protocol_liquidity = pool
             .protocol_liquidity
-            .checked_add(delta_received as u64)
+            .checked_add(u64::try_from(delta_received).map_err(|_| DexxerError::MathOverflow)?)
             .ok_or(DexxerError::MathOverflow)?;
     } else {
         // Pool loss: reduce protocol_liquidity
-        let loss = delta_received.unsigned_abs() as u64;
+        let loss =
+            u64::try_from(delta_received.unsigned_abs()).map_err(|_| DexxerError::MathOverflow)?;
         pool.protocol_liquidity = pool
             .protocol_liquidity
             .checked_sub(loss)

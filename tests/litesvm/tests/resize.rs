@@ -17,6 +17,17 @@ fn increase_uses_vwap_entry_and_charges_fee_on_delta() {
     let w = World::bootstrap(&mut h);
     h.warp(100, NOW);
     w.set_price(&mut h, P150, 5, NOW, 100);
+    // This test's focus is VWAP-entry/fee math on the price delta, not the
+    // deviation guard (task 12 finding #1) — no crank tick runs between open
+    // and increase here, so raise max_deviation_bps to keep the later 150 ->
+    // 160 jump from tripping OracleDeviation on increase_position.
+    let mut mp = MarketParams::sol_perp_defaults();
+    mp.max_deviation_bps = 10_000;
+    h.send(
+        &[ixs::set_params(&w.admin.pubkey(), &w.config, &w.market, mp)],
+        &[&w.admin],
+    )
+    .unwrap();
     let t = w.new_trader(&mut h, 1_000_000_000);
     h.send(
         &[ixs::open_position(
@@ -187,6 +198,17 @@ fn close_after_increase_keeps_oi_ledger_exact() {
     let w = World::bootstrap(&mut h);
     h.warp(100, NOW);
     w.set_price(&mut h, P150, 5, NOW, 100);
+    // This regression's focus is the OI ledger, not the deviation guard (task
+    // 12 finding #1) — no crank tick runs between open and increase here, so
+    // raise max_deviation_bps to keep the 150 -> 160 jump below from tripping
+    // OracleDeviation on increase_position.
+    let mut mp = MarketParams::sol_perp_defaults();
+    mp.max_deviation_bps = 10_000;
+    h.send(
+        &[ixs::set_params(&w.admin.pubkey(), &w.config, &w.market, mp)],
+        &[&w.admin],
+    )
+    .unwrap();
     let t = w.new_trader(&mut h, 2_000_000_000);
     h.send(
         &[ixs::open_position(
@@ -248,6 +270,17 @@ fn second_increase_after_vwap_rounding_is_accepted() {
     let w = World::bootstrap(&mut h);
     h.warp(100, NOW);
     w.set_price(&mut h, P150, 5, NOW, 100);
+    // Same rationale as close_after_increase_keeps_oi_ledger_exact above:
+    // this test's focus is the OI-cap ledger, not the deviation guard (task
+    // 12 finding #1); raise max_deviation_bps so the 150 -> 160 jump below
+    // doesn't trip OracleDeviation on increase_position.
+    let mut mp = MarketParams::sol_perp_defaults();
+    mp.max_deviation_bps = 10_000;
+    h.send(
+        &[ixs::set_params(&w.admin.pubkey(), &w.config, &w.market, mp)],
+        &[&w.admin],
+    )
+    .unwrap();
     let t = w.new_trader(&mut h, 2_000_000_000);
     h.send(
         &[ixs::open_position(

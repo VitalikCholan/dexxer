@@ -2,7 +2,7 @@ use crate::{
     errors::DexxerError,
     instructions::user::assert_trader,
     math,
-    oracle::{check_open_quality, read_price},
+    oracle::{check_deviation, check_open_quality, read_price},
     risk::{self, Settlement},
     state::*,
 };
@@ -62,6 +62,7 @@ pub fn open_position(
     assert_trader(&a.signer.key(), &mut a.user_account, clock.unix_timestamp)?;
     let px = read_price(&a.feed.to_account_info(), &a.market, &a.config, &clock)?;
     check_open_quality(&px, &a.market)?;
+    check_deviation(&px, &a.market)?;
     match side {
         Side::Long => require!(px.price <= limit_price, DexxerError::SlippageExceeded),
         Side::Short => require!(px.price >= limit_price, DexxerError::SlippageExceeded),
@@ -222,6 +223,7 @@ pub fn increase_position(
     assert_trader(&a.signer.key(), &mut a.user_account, clock.unix_timestamp)?;
     let px = read_price(&a.feed.to_account_info(), &a.market, &a.config, &clock)?;
     check_open_quality(&px, &a.market)?;
+    check_deviation(&px, &a.market)?;
     let side = a.position.side;
     match side {
         Side::Long => require!(px.price <= limit_price, DexxerError::SlippageExceeded),

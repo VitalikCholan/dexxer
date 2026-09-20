@@ -342,3 +342,60 @@ fn close_short_with_loss_keeps_pool_whole() {
     assert_eq!(pool.protocol_liquidity, SEED_AMOUNT + 100_000_000);
     assert_invariant(&h, &w, &[&t]);
 }
+
+#[test]
+fn deviation_guard_blocks_open_not_close() {
+    let mut h = Harness::new();
+    let w = World::bootstrap(&mut h);
+    h.warp(100, NOW);
+    w.set_price(&mut h, P150, 5, NOW, 100);
+    // Seed the mark via one crank tick before anyone has a position.
+    h.send(&[ixs::crank_tick(&w.crank.pubkey(), &w, &[])], &[&w.crank])
+        .unwrap();
+    assert_eq!(h.account::<Market>(&w.market).mark, P150);
+
+    // Open while index == mark: no deviation, succeeds.
+    let t = w.new_trader(&mut h, 1_000_000_000);
+    h.send(
+        &[ixs::open_position(
+            &t.kp.pubkey(),
+            &t,
+            &w,
+            Side::Long,
+            SOL10,
+            M150,
+            P150,
+        )],
+        &[&t.kp],
+    )
+    .unwrap();
+
+    // Index jumps to 160 (+6.67 %, over the 2 % max_deviation_bps default)
+    // with no crank tick in between to move the mark: mark is still 150.
+    w.set_price(&mut h, 160_000_000, 5, NOW, 101);
+    let t2 = w.new_trader(&mut h, 1_000_000_000);
+    let r = h.send(
+        &[ixs::open_position(
+            &t2.kp.pubkey(),
+            &t2,
+            &w,
+            Side::Long,
+            SOL10,
+            M150,
+            u64::MAX,
+        )],
+        &[&t2.kp],
+    );
+    assert_custom_error(&r, 6000 + DexxerError::OracleDeviation as u32);
+
+    // An existing position can still close under the same deviated index —
+    // close_position never calls check_deviation (spec §3.4: exit must
+    // always be available).
+    h.send(&[ixs::close_position(&t.kp.pubkey(), &t, &w, 0)], &[&t.kp])
+        .unwrap();
+    assert_eq!(
+        h.account::<Position>(&t.position).state,
+        PositionState::Closed
+    );
+    assert_invariant(&h, &w, &[&t, &t2]);
+}

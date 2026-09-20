@@ -259,3 +259,19 @@ fn invalid_candidate_pair_rejected() {
     let r = h.send(&[ix], &[&w.crank]);
     assert_custom_error(&r, 6000 + DexxerError::InvalidCandidate as u32);
 }
+
+#[test]
+fn duplicate_candidate_pair_rejected() {
+    let mut h = Harness::new();
+    let w = World::bootstrap(&mut h);
+    h.warp(100, NOW);
+    w.set_price(&mut h, P150, 5, NOW, 100);
+    let t = open_long(&mut h, &w);
+    // Same [Position, UserAccount] pair passed twice in one crank_tick must
+    // not be allowed to drive liq_ticks 0 -> 2 in a single transaction.
+    let r = h.send(
+        &[ixs::crank_tick(&w.crank.pubkey(), &w, &[&t, &t])],
+        &[&w.crank],
+    );
+    assert_custom_error(&r, 6000 + DexxerError::InvalidCandidate as u32);
+}

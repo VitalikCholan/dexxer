@@ -44,23 +44,36 @@ pub fn crank_tick<'info>(mut ctx: Context<'info, CrankTick<'info>>) -> Result<()
             return Ok(()); // stale -> no mark update, no liquidations (spec §3.5)
         }
     };
-    // (2) mark EMA + deviation guard
+    // (2) mark EMA + deviation guard. Snapshot the mark from *before* this
+    // tick's EMA update: measuring deviation against a mark the EMA has
+    // already absorbed this same index sample into would understate drift
+    // (the mark chases the index within the same tick) and could let a
+    // liquidation run on a tick whose index was itself the deviating outlier.
     let m = &mut a.market;
     m.stale_ticks = 0;
-    if m.mark == 0 {
+    let prev_mark = m.mark;
+    // First tick ever (no mark seeded yet): seed mark = index, no deviation
+    // check possible (nothing to compare against) and opens stay unpaused.
+    let tripped = if prev_mark == 0 {
         m.mark = px.price;
+        false
     } else {
-        m.mark = math::ema(m.mark, px.price, m.ema_alpha_bps as u32)?;
-    }
+        m.mark = math::ema(prev_mark, px.price, m.ema_alpha_bps as u32)?;
+        let dev_bps = (px.price.abs_diff(prev_mark) as u128)
+            .checked_mul(10_000)
+            .ok_or(DexxerError::MathOverflow)?
+            .checked_div(prev_mark as u128)
+            .ok_or(DexxerError::MathOverflow)?;
+        dev_bps > m.max_deviation_bps as u128
+    };
     m.mark_slot = clock.slot;
-    let dev_bps = (px
-        .price
-        .abs_diff(m.mark)
-        .checked_mul(10_000)
-        .ok_or(DexxerError::MathOverflow)? as u128)
-        .checked_div(m.mark.max(1) as u128)
-        .ok_or(DexxerError::MathOverflow)? as u64;
-    m.paused_open = dev_bps > m.max_deviation_bps as u64;
+    m.paused_open = tripped;
+    if tripped {
+        // Index deviated from the previous mark: the EMA still absorbed the
+        // sample (so the guard self-clears as the mark converges), but this
+        // tick's index is not trustworthy enough to liquidate anyone on.
+        return Ok(());
+    }
     let mark = m.mark;
     // (3)-(5) candidates: pairs [position, user_account]
     let rem = ctx.remaining_accounts;
@@ -68,6 +81,13 @@ pub fn crank_tick<'info>(mut ctx: Context<'info, CrankTick<'info>>) -> Result<()
         rem.len() % 2 == 0 && rem.len() / 2 <= MAX_CANDIDATES,
         DexxerError::InvalidCandidate
     );
+    // Reject a duplicate [Position, UserAccount] pair inside the same
+    // remaining_accounts list — without this, the same candidate passed
+    // twice would run `liquidatable_now`/hysteresis logic twice in one tx,
+    // double-incrementing `liq_ticks` and being able to trip liquidation a
+    // tick early.
+    let mut seen: [Pubkey; MAX_CANDIDATES] = [Pubkey::default(); MAX_CANDIDATES];
+    let mut seen_len: usize = 0;
     for pair in rem.chunks(2) {
         let (pos_ai, user_ai) = (&pair[0], &pair[1]);
         require!(
@@ -77,6 +97,12 @@ pub fn crank_tick<'info>(mut ctx: Context<'info, CrankTick<'info>>) -> Result<()
                 && user_ai.is_writable,
             DexxerError::InvalidCandidate
         );
+        require!(
+            !seen[..seen_len].contains(&pos_ai.key()),
+            DexxerError::InvalidCandidate
+        );
+        seen[seen_len] = pos_ai.key();
+        seen_len = seen_len.checked_add(1).ok_or(DexxerError::MathOverflow)?;
         let mut pos = Position::try_deserialize(&mut &pos_ai.try_borrow_data()?[..])?;
         let mut user = UserAccount::try_deserialize(&mut &user_ai.try_borrow_data()?[..])?;
         require!(
