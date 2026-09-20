@@ -15,6 +15,13 @@ export default function TabLayout() {
         }}
       />
       <Tabs.Screen
+        name="onboard"
+        options={{
+          title: 'Onboard',
+          tabBarIcon: ({ color }) => <UiIconSymbol size={28} name="lock.shield.fill" color={color} />,
+        }}
+      />
+      <Tabs.Screen
         name="settings"
         options={{
           title: 'Settings',
