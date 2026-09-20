@@ -9,10 +9,11 @@
 //
 // Run (from scripts/, per the brief): `npx tsx demo/week1-cli.ts`.
 
-import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import { spawn, type ChildProcessByStdio } from "node:child_process";
 import { createInterface } from "node:readline";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import type { Readable } from "node:stream";
 import { assert, erConn, sendAndConfirmIx, sleep } from "../../tests/er/lib/env.js";
 import { bootstrap, MARKET_DEFAULTS } from "../../tests/er/lib/admin.js";
 import { accountNs, dexxerCoreProgram, pdas } from "../../tests/er/lib/program.js";
@@ -30,7 +31,7 @@ const CRANK_INTERVAL_MS = 1000;
 // `process.exit()` — so it's the actual guarantee behind "kill the crank
 // child on all paths", not the try/finally below (kept for the graceful
 // wait-for-SIGINT-exit path in the success case).
-let crank: ChildProcessWithoutNullStreams | null = null;
+let crank: ChildProcessByStdio<null, Readable, Readable> | null = null;
 process.on("exit", () => {
   if (crank && crank.exitCode === null && crank.signalCode === null) {
     crank.kill("SIGINT");
@@ -116,13 +117,14 @@ async function main() {
       env: { ...process.env, CRANK_INTERVAL_MS: String(CRANK_INTERVAL_MS) },
       stdio: ["ignore", "pipe", "pipe"],
     });
-    createInterface({ input: crank.stdout }).on("line", (line) => {
+    const child = crank; // local non-null alias: TS can't narrow the module-scoped `crank` across later `await`s
+    createInterface({ input: child.stdout }).on("line", (line: string) => {
       console.log("[crank]", line);
       const rec = parseTickLine(line);
       if (rec) tickLog.push(rec);
     });
-    createInterface({ input: crank.stderr }).on("line", (line) => console.error("[crank:err]", line));
-    crank.on("exit", (code, signal) => console.log(`[crank] exited code=${code} signal=${signal}`));
+    createInterface({ input: child.stderr }).on("line", (line: string) => console.error("[crank:err]", line));
+    child.on("exit", (code: number | null, signal: NodeJS.Signals | null) => console.log(`[crank] exited code=${code} signal=${signal}`));
 
     await waitForTickCount(tickLog, 3, 30_000);
     const marketAfter3 = await accountNs(coreEr).market.fetch(boot.market);
@@ -203,9 +205,12 @@ async function main() {
     });
 
     console.log("=== 7. stop crank ===");
-    crank.kill("SIGINT");
-    await new Promise<void>((r) => crank!.once("exit", () => r()));
-    crank = null;
+    if (crank) {
+      const c = crank;
+      c.kill("SIGINT");
+      await new Promise<void>((r) => c.once("exit", () => r()));
+      crank = null;
+    }
 
     console.log(
       "\nWEEK1 CLI PASS",

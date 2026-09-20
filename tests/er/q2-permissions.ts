@@ -10,9 +10,10 @@
 //
 // Run: `npm run q1 && npm run q2` (from tests/er).
 
-import { EPHEMERAL_VAULT_ID, MAGIC_PROGRAM_ID, PERMISSION_PROGRAM_ID, permissionPdaFromAccount } from "@magicblock-labs/ephemeral-rollups-sdk";
+import { PERMISSION_PROGRAM_ID, permissionPdaFromAccount } from "@magicblock-labs/ephemeral-rollups-sdk";
 import { assert, baseConn, erConn, loadOrCreateKey, waitDelegated } from "./lib/env.js";
-import { dexxerCoreProgram, pdas } from "./lib/program.js";
+import { pdas } from "./lib/program.js";
+import { initPermissions } from "./lib/trader.js";
 
 async function permissionAccountsExist(label: string) {
   const user = loadOrCreateKey("user");
@@ -49,10 +50,6 @@ async function main() {
   await waitDelegated(baseConn, position, "Position", 5, 500);
   await waitDelegated(baseConn, disclosureQueue, "DisclosureQueue", 5, 500);
 
-  const userPermission = permissionPdaFromAccount(userAccount);
-  const positionPermission = permissionPdaFromAccount(position);
-  const dqPermission = permissionPdaFromAccount(disclosureQueue);
-
   const lamportsBefore: Record<string, number> = {};
   for (const [name, pk] of [
     ["userAccount", userAccount],
@@ -65,23 +62,7 @@ async function main() {
   }
 
   console.log("=== init_permissions (ER, first call — creates 3 permissions) ===");
-  const coreEr = dexxerCoreProgram(erConn, user);
-  const sig1 = await coreEr.methods
-    .initPermissions()
-    .accounts({
-      owner: user.publicKey,
-      market,
-      userAccount,
-      position,
-      disclosureQueue,
-      userPermission,
-      positionPermission,
-      dqPermission,
-      permissionProgram: PERMISSION_PROGRAM_ID,
-      ephemeralVault: EPHEMERAL_VAULT_ID,
-      magicProgram: MAGIC_PROGRAM_ID,
-    })
-    .rpc();
+  const sig1 = await initPermissions({ kp: user, userAccount, position, disclosureQueue });
   console.log("init_permissions (1st)", sig1);
 
   const tx1 = await erConn.getTransaction(sig1, { commitment: "confirmed", maxSupportedTransactionVersion: 0 });
@@ -111,22 +92,7 @@ async function main() {
   }
 
   console.log("=== init_permissions (ER, second call — idempotent, no-op) ===");
-  const sig2 = await coreEr.methods
-    .initPermissions()
-    .accounts({
-      owner: user.publicKey,
-      market,
-      userAccount,
-      position,
-      disclosureQueue,
-      userPermission,
-      positionPermission,
-      dqPermission,
-      permissionProgram: PERMISSION_PROGRAM_ID,
-      ephemeralVault: EPHEMERAL_VAULT_ID,
-      magicProgram: MAGIC_PROGRAM_ID,
-    })
-    .rpc();
+  const sig2 = await initPermissions({ kp: user, userAccount, position, disclosureQueue });
   console.log("init_permissions (2nd, idempotent)", sig2);
 
   await permissionAccountsExist("after 2nd call");

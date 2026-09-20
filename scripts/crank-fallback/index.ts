@@ -50,6 +50,11 @@ const INTERVAL = Number(process.env.CRANK_INTERVAL_MS ?? 1000);
 const FEED_ID = process.env.FEED_ID ?? LAZER_FEED_ID;
 const prog = dexxerCoreProgram(erConn, crank);
 
+// Must match `programs/dexxer_core/src/state/mod.rs`'s `MAX_CANDIDATES`
+// (crank_tick's Accounts context requires `remaining_accounts.len() / 2 <=
+// MAX_CANDIDATES`, checked on-chain).
+const MAX_CANDIDATES = 16;
+
 let stop = false;
 process.on("SIGINT", () => {
   stop = true;
@@ -94,9 +99,10 @@ async function tick(ctx: Ctx, n: number): Promise<void> {
   const liquidated: string[] = [];
   // At least one iteration even with zero open positions, so the market's
   // mark/EMA still advances every tick (matches the brief's crank-fallback
-  // pseudocode: `for (let i = 0; i < Math.max(1, open.length); i += 16)`).
-  for (let i = 0; i < Math.max(1, open.length); i += 16) {
-    const chunk = open.slice(i, i + 16);
+  // pseudocode: `for (let i = 0; i < Math.max(1, open.length); i += 16)`,
+  // with the literal `16` replaced by `MAX_CANDIDATES` here).
+  for (let i = 0; i < Math.max(1, open.length); i += MAX_CANDIDATES) {
+    const chunk = open.slice(i, i + MAX_CANDIDATES);
     const remaining = chunk.flatMap((p) => [
       { pubkey: p.key, isWritable: true, isSigner: false },
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
