@@ -186,6 +186,14 @@ pub struct ScheduleCrank<'info> {
     /// crank_tick's own signer-set constraint accepts it at execution time
     #[account(address = config.scheduler_signer @ DexxerError::Unauthorized)]
     pub crank: UncheckedAccount<'info>,
+    // Caller-supplied, same as `CancelCrank`'s: neither `ephemeral-rollups-sdk` 0.16.2
+    // nor `magicblock-magic-program-api` 0.10.1 expose an on-chain PDA derivation for
+    // this account (see task-4 report, "task_context" finding). Named here (rather than
+    // left implicit in `remaining_accounts`) purely for IDL self-documentation and
+    // identity-checking below; admin-gated so a wrong value here only fails the CPI.
+    /// CHECK: Magic Actions task-context account for the newly scheduled `task_id`
+    #[account(mut)]
+    pub task_context: UncheckedAccount<'info>,
     /// CHECK: address-checked
     #[account(address = MAGIC_PROGRAM_ID)]
     pub magic_program: UncheckedAccount<'info>,
@@ -201,9 +209,14 @@ pub struct ScheduleCrank<'info> {
 // `'info` the invariant `compat::AccountInfo<'info>` type demands (verified
 // against the real 0.16.2 API; see task-4 report). `ctx.remaining_accounts`
 // is already `&'info [AccountInfo<'info>]` (Anchor's own guarantee — see the
-// comment on `crank_tick` above), so the client repeats the same six
-// accounts there; check identity against the validated named fields below
-// before trusting them for the CPI.
+// comment on `crank_tick` above), so the client repeats the same seven
+// accounts there (`task_context` first — matching `ScheduleTask`'s own
+// documented account layout in `magicblock-magic-program-api`: 0 = payer,
+// 1 = task context account, 2..n = accounts included in the task; `payer`
+// itself is prepended by `ScheduleCrankCpi::invoke()`, so `remaining_accounts`
+// supplies everything from index 1 onward), then the same six `crank_tick`
+// accounts as before; check identity against the validated named fields
+// below before trusting them for the CPI.
 pub fn schedule_crank<'info>(
     ctx: Context<'info, ScheduleCrank<'info>>,
     task_id: i64,
@@ -211,8 +224,9 @@ pub fn schedule_crank<'info>(
     iterations: i64,
 ) -> Result<()> {
     let rem = ctx.remaining_accounts;
-    require!(rem.len() == 6, DexxerError::InvalidInput);
+    require!(rem.len() == 7, DexxerError::InvalidInput);
     let expected = [
+        ctx.accounts.task_context.key(),
         ctx.accounts.crank.key(),
         ctx.accounts.config.key(),
         ctx.accounts.market.key(),
