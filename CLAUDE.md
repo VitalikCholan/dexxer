@@ -21,6 +21,8 @@
 - docs/dexxer-plan.md — §2–3 застарілі, замінені spec §1 і §7.3
 - docs/dexxer-mobile-stack.md — RN/Expo стек
 - docs/solana-perp-privacy-landscape.md, docs/glossary-perp-privacy.md — ринок і терміни
+- docs/superpowers/plans/2026-09-19-week1-core.md — план тижня 1 (задачі, послідовність)
+- docs/superpowers/plans/week1-results.md — виміряні результати тижня 1 (Q1–Q3, CLI-прогін, CU, знахідки на mb-stack)
 
 ## Правила
 - Anchor 1.0.2, Solana 3.1.9, Rust 1.89, `ephemeral-rollups-sdk` 0.16.2 (`anchor`, `access-control`), TS SDK 0.17, `@solana/web3.js` v1 (не kit)
@@ -31,3 +33,8 @@
 - Solana MCP `program_autofixer` на кожну зміну програми до коміту
 - Skill `magicblock` — для ER/PER/eSPL/oracle/session keys; `solana-dev` — для Anchor/клієнтів/тестів
 - Мова документів і комітів — українська для docs, англійська для коду й commit messages
+- `crank_tick` приймає `Config.crank` або `CRANK_SIGNER`; кандидати ліквідації — `remaining_accounts` парами `[Position, UserAccount]`, ≤16
+- Пул — контрагент PnL через `Pool.protocol_liquidity`; інваріант тижня 1 (див. spec §3.6) перевіряється кожним LiteSVM-тестом трейдингу/кранка (`trade`, `resize`, `crank`, `invariants`) через `assert_invariant`
+- OI-леджер (`MarketRisk.oi_long`/`oi_short`) змінювати лише через `Position.oi_notional`, ніколи перерахунком з VWAP `entry` (`notional(size, entry)`) — подвійне округлення VWAP → notional може underflow'нути `checked_sub`
+- LiteSVM: `tests/litesvm` (`cargo +nightly-2026-09-18 test -p dexxer_litesvm`, потребує nightly через транзитивний `solana-syscalls`; `anchor build` перед першим прогоном)
+- mb-stack: `tests/er` (`npm run q1|q2`, детальніше `tests/er/README.md`); `scripts` — crank fallback і week-1 CLI демо (`npm run crank`, `npm run week1` у `scripts/`)

@@ -1,6 +1,7 @@
 [workspace]
 members = [
-    "programs/*"
+    "programs/*",
+    "tests/litesvm"
 ]
 resolver = "2"
 

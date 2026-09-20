@@ -1,0 +1,16 @@
+{
+  "name": "dexxer-scripts",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "crank": "tsx crank-fallback/index.ts",
+    "week1": "tsx demo/week1-cli.ts"
+  },
+  "dependencies": {
+    "@coral-xyz/anchor": "0.32.1",
+    "@magicblock-labs/ephemeral-rollups-sdk": "0.17.0",
+    "@solana/spl-token": "^0.4.14",
+    "@solana/web3.js": "^1.98.0"
+  },
+  "devDependencies": { "tsx": "^4.19.0", "typescript": "^5.6.0", "@types/node": "^22.10.0" }
+}
