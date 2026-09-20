@@ -19,6 +19,7 @@ pub struct World {
     pub pool: Pubkey,
     pub pool_ata: Pubkey,
     pub feed: Pubkey,
+    pub fee_escrow: Pubkey,
 }
 
 impl World {
@@ -56,6 +57,8 @@ impl World {
         .unwrap();
         h.send(&[ixs::init_pool(&admin.pubkey(), &mint)], &[&admin])
             .unwrap();
+        h.send(&[ixs::init_fee_escrow(&admin.pubkey())], &[&admin])
+            .unwrap();
         let market = pdas::market();
         let pool = pdas::pool(&mint);
         let w = World {
@@ -65,6 +68,7 @@ impl World {
             pool,
             pool_ata: ata(&pool, &mint),
             feed: pdas::feed(&oracle_program),
+            fee_escrow: pdas::fee_escrow(),
             admin,
             crank,
             mint,

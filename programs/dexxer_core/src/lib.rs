@@ -64,6 +64,12 @@ pub mod dexxer_core {
     pub fn seed_pool(ctx: Context<SeedPool>, amount: u64) -> Result<()> {
         admin::seed_pool(ctx, amount)
     }
+    pub fn init_fee_escrow(ctx: Context<InitFeeEscrow>) -> Result<()> {
+        admin::init_fee_escrow(ctx)
+    }
+    pub fn delegate_fee_escrow(ctx: Context<DelegateFeeEscrow>) -> Result<()> {
+        admin::delegate_fee_escrow(ctx)
+    }
     pub fn faucet_init(ctx: Context<FaucetInit>, amount: u64) -> Result<()> {
         user::faucet_init(ctx, amount)
     }

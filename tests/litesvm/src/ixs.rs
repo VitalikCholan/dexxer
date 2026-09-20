@@ -97,6 +97,18 @@ pub fn init_pool(admin: &Pubkey, mint: &Pubkey) -> Instruction {
         data: ix::InitPool {}.data(),
     }
 }
+pub fn init_fee_escrow(admin: &Pubkey) -> Instruction {
+    Instruction {
+        program_id: prog(),
+        accounts: vec![
+            s(admin),
+            r(&pdas::config()),
+            w(&pdas::fee_escrow()),
+            r(&SYSTEM),
+        ],
+        data: ix::InitFeeEscrow {}.data(),
+    }
+}
 pub fn set_params(
     admin: &Pubkey,
     config: &Pubkey,
@@ -338,6 +350,7 @@ pub fn withdraw(signer: &Pubkey, t: &Trader, wd: &World, amount: u64) -> Instruc
             w(&ata(signer, &wd.mint)),
             w(&wd.pool_ata),
             r(&TOKEN),
+            w(&wd.fee_escrow),
             w(&pdas::magic_context()),
             r(&pdas::magic_program()),
         ],

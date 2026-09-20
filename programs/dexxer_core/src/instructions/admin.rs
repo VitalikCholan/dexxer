@@ -129,6 +129,54 @@ pub fn init_pool(ctx: Context<InitPool>) -> Result<()> {
     Ok(())
 }
 
+// Week-2 Task 5 fix round 1 (controller ruling): the dedicated, delegatable
+// fee-escrow PDA that pays `commit_aggregate`'s intent CPI (see
+// state/fee_escrow.rs and instructions/commit.rs). Separate init ix — the
+// smallest coherent surface — rather than folding into `init_config`/
+// `init_pool`, so it stays independently testable and doesn't perturb their
+// existing account lists.
+#[derive(Accounts)]
+pub struct InitFeeEscrow<'info> {
+    #[account(mut)]
+    pub admin: Signer<'info>,
+    #[account(seeds = [CONFIG_SEED], bump = config.bump, has_one = admin @ DexxerError::Unauthorized)]
+    pub config: Account<'info, Config>,
+    #[account(init, payer = admin, space = 8 + FeeEscrow::INIT_SPACE, seeds = [FEE_ESCROW_SEED], bump)]
+    pub fee_escrow: Account<'info, FeeEscrow>,
+    pub system_program: Program<'info, System>,
+}
+pub fn init_fee_escrow(ctx: Context<InitFeeEscrow>) -> Result<()> {
+    let e = &mut ctx.accounts.fee_escrow;
+    e.version = 1;
+    e.bump = ctx.bumps.fee_escrow;
+    Ok(())
+}
+
+// Delegates the fee-escrow PDA to the TEE validator, same pattern as
+// `delegate_market`/`delegate_pool` above.
+#[delegate]
+#[derive(Accounts)]
+pub struct DelegateFeeEscrow<'info> {
+    #[account(mut)]
+    pub admin: Signer<'info>,
+    #[account(seeds = [CONFIG_SEED], bump = config.bump, has_one = admin @ DexxerError::Unauthorized)]
+    pub config: Account<'info, Config>,
+    /// CHECK: delegated PDA
+    #[account(mut, del, seeds = [FEE_ESCROW_SEED], bump)]
+    pub fee_escrow: UncheckedAccount<'info>,
+}
+pub fn delegate_fee_escrow(ctx: Context<DelegateFeeEscrow>) -> Result<()> {
+    ctx.accounts.delegate_fee_escrow(
+        &ctx.accounts.admin,
+        &[FEE_ESCROW_SEED],
+        DelegateConfig {
+            validator: Some(ctx.accounts.config.tee_validator),
+            ..Default::default()
+        },
+    )?;
+    Ok(())
+}
+
 #[derive(Accounts)]
 pub struct AdminMarket<'info> {
     pub admin: Signer<'info>,

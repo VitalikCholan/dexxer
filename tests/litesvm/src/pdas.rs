@@ -32,6 +32,9 @@ pub fn dq(owner: &Pubkey) -> Pubkey {
 pub fn faucet(owner: &Pubkey) -> Pubkey {
     pda(&[FAUCET_SEED, owner.as_ref()])
 }
+pub fn fee_escrow() -> Pubkey {
+    pda(&[FEE_ESCROW_SEED])
+}
 pub fn feed(oracle_program: &Pubkey) -> Pubkey {
     Pubkey::find_program_address(&[b"price_feed", b"pyth-lazer", b"6"], oracle_program).0
 }

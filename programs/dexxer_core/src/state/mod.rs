@@ -1,6 +1,7 @@
 pub mod config;
 pub mod disclosure;
 pub mod faucet;
+pub mod fee_escrow;
 pub mod market;
 pub mod market_risk;
 pub mod permissions;
@@ -10,6 +11,7 @@ pub mod user;
 pub use config::*;
 pub use disclosure::*;
 pub use faucet::*;
+pub use fee_escrow::*;
 pub use market::*;
 pub use market_risk::*;
 pub use permissions::*;
@@ -26,6 +28,7 @@ pub const POSITION_SEED: &[u8] = b"position";
 pub const DQ_SEED: &[u8] = b"dq";
 pub const FAUCET_SEED: &[u8] = b"faucet";
 pub const MINT_AUTH_SEED: &[u8] = b"mint_auth";
+pub const FEE_ESCROW_SEED: &[u8] = b"fee_escrow";
 pub const SOL_SYMBOL: [u8; 8] = *b"SOL\0\0\0\0\0";
 pub const PERMISSION_MEMBERS: usize = 3; // owner, session, crank
 pub const MAX_CANDIDATES: usize = 16;

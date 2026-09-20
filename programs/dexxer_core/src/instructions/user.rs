@@ -387,6 +387,17 @@ pub fn credit_deposit(ctx: Context<CreditDeposit>, amount: u64) -> Result<()> {
 // on LiteSVM no program is deployed at that fixed address, so the account is
 // absent/non-executable and the CPI is skipped; on the ER it is the real
 // Magic program and the CPI runs.
+//
+// Week-2 Task 5 fix round 1 (controller ruling, item 3): `withdraw`'s commit
+// intent originally used `owner` (a plain wallet) as the CPI payer. Verified
+// directly on devnet after the fix round's own program change landed
+// elsewhere: a real `withdraw` call's `UserAccount` commit intent had still
+// not reached base layer after 30+ minutes of polling (see task-5-report.md
+// "fix round 1" — genuinely stuck, not merely slow like `Pool`'s first
+// commit). Routed through the same `fee_escrow` PDA `commit_aggregate` now
+// uses, via `invoke_signed` — no `.magic_fee_vault(...)` here (this path
+// doesn't need the fee-vault's higher commit ceiling, just a payer the
+// commit-scheduling mechanism actually accepts).
 #[derive(Accounts)]
 pub struct Withdraw<'info> {
     pub owner: Signer<'info>,
@@ -399,6 +410,8 @@ pub struct Withdraw<'info> {
     #[account(mut)]
     pub vault_ata: Account<'info, TokenAccount>,
     pub token_program: Program<'info, Token>,
+    #[account(mut, seeds = [FEE_ESCROW_SEED], bump = fee_escrow.bump)]
+    pub fee_escrow: Account<'info, FeeEscrow>,
     /// CHECK: ER `MagicContext` PDA; only written when `magic_program` is executable (real ER)
     #[account(mut, address = MAGIC_CONTEXT_ID)]
     pub magic_context: UncheckedAccount<'info>,
@@ -434,13 +447,15 @@ pub fn withdraw(ctx: Context<Withdraw>, amount: u64) -> Result<()> {
     // on LiteSVM (and any environment without the ER runtime) it is absent,
     // so skip the commit CPI rather than fail the withdrawal.
     if ctx.accounts.magic_program.to_account_info().executable {
+        let bump = ctx.accounts.fee_escrow.bump;
+        let seeds: &[&[u8]] = &[FEE_ESCROW_SEED, &[bump]];
         MagicIntentBundleBuilder::new(
-            ctx.accounts.owner.to_account_info(),
+            ctx.accounts.fee_escrow.to_account_info(),
             ctx.accounts.magic_context.to_account_info(),
             ctx.accounts.magic_program.to_account_info(),
         )
         .commit(&[ctx.accounts.user_account.to_account_info()])
-        .build_and_invoke()?;
+        .build_and_invoke_signed(&[seeds])?;
     }
     Ok(())
 }

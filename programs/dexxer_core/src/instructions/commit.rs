@@ -8,13 +8,25 @@ use ephemeral_rollups_sdk::{
 // spec §8 Q2 / week-2 controller ruling task-4 #5: batch-commit the public
 // aggregate (`Pool`) on a fixed interval, never per-event (CLAUDE.md
 // commit-cadence rule) — driven by `crank_tick`'s scheduled task, not a
-// trading instruction. Signer is `Config.fee_payer`, not `owner`/`admin`, so
-// the scheduler can call this unattended; `Config.fee_payer` is intended to
-// be a delegated ER fee payer so the fee-vault path in
-// fees-and-commit-economics.md applies (see task-4 report). Same
-// executable-gated commit pattern as `withdraw` (instructions/user.rs): on
-// LiteSVM no Magic program is deployed at `MAGIC_PROGRAM_ID`, so the account
-// is absent/non-executable and the CPI is skipped rather than failing.
+// trading instruction. `payer` (`Config.fee_payer`) authorizes/signs the
+// outer transaction so the scheduler can call this unattended — but week-2
+// Task 5 fix round 1 (controller ruling) found that a top-level `Signer`
+// structurally can never satisfy the fee-vault path's "payer must be
+// delegated, signs via seeds" requirement (confirmed on real devnet:
+// `commit_aggregate` hard-failed at commit #11 with `0xA0000000`, the
+// no-vault-path limit, even with `.magic_fee_vault(...)` wired — see
+// week2-results.md §Task 5 "03-commit-cycle"). The CPI's actual intent payer
+// is now `fee_escrow` (state/fee_escrow.rs), a dedicated delegated PDA that
+// signs via `invoke_signed` — mirroring the private-counter spike's M3b fix
+// (`commit_with_vault` switched its CPI payer from a plain wallet to the
+// delegated `counter` PDA for the same reason). `payer`/`fee_escrow` are
+// deliberately independent (per fees-and-commit-economics.md: "the payer...
+// and the committed accounts... are independent") — `payer` still gates who
+// may call this instruction; `fee_escrow` is what the validator actually
+// debits on the fee-vault path. Same executable-gated commit pattern as
+// `withdraw` (instructions/user.rs): on LiteSVM no Magic program is deployed
+// at `MAGIC_PROGRAM_ID`, so the account is absent/non-executable and the CPI
+// is skipped rather than failing.
 #[derive(Accounts)]
 pub struct CommitAggregate<'info> {
     #[account(seeds = [CONFIG_SEED], bump = config.bump)]
@@ -23,6 +35,8 @@ pub struct CommitAggregate<'info> {
     pub payer: Signer<'info>,
     #[account(mut, seeds = [POOL_SEED, pool.mint.as_ref()], bump = pool.bump)]
     pub pool: Account<'info, Pool>,
+    #[account(mut, seeds = [FEE_ESCROW_SEED], bump = fee_escrow.bump)]
+    pub fee_escrow: Account<'info, FeeEscrow>,
     /// CHECK: validator-scoped Magic Program fee vault; constrained to Config.magic_fee_vault
     /// (set by `init_config`/a future `set_fee_vault` admin ix; required on the fee-vault
     /// commit path when the payer is a delegated ER account — see fees-and-commit-economics.md)
@@ -43,14 +57,16 @@ pub fn commit_aggregate(ctx: Context<CommitAggregate>) -> Result<()> {
     // on LiteSVM (and any environment without the ER runtime) it is absent,
     // so skip the commit CPI rather than fail.
     if ctx.accounts.magic_program.to_account_info().executable {
+        let bump = ctx.accounts.fee_escrow.bump;
+        let seeds: &[&[u8]] = &[FEE_ESCROW_SEED, &[bump]];
         MagicIntentBundleBuilder::new(
-            ctx.accounts.payer.to_account_info(),
+            ctx.accounts.fee_escrow.to_account_info(),
             ctx.accounts.magic_context.to_account_info(),
             ctx.accounts.magic_program.to_account_info(),
         )
         .magic_fee_vault(ctx.accounts.magic_fee_vault.to_account_info())
         .commit(&[ctx.accounts.pool.to_account_info()])
-        .build_and_invoke()?;
+        .build_and_invoke_signed(&[seeds])?;
     }
     Ok(())
 }
