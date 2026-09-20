@@ -6,7 +6,7 @@ use ephemeral_rollups_sdk::ephem::MagicIntentBundleBuilder;
 use anchor_lang::solana_program::instruction::{AccountMeta, Instruction};
 use ephemeral_rollups_sdk::crank::{ScheduleCrankCpi, ScheduleTaskArgs};
 
-declare_id!("Ctj6Hz5RG8cPDgmrDPKGjqKVNdHi7x7hmhKshy5wsNyA");
+declare_id!("EEkgWoy8krpaxtP8msJeN4rJux2KX68MCHjasosD8CGE");
 
 pub const COUNTER_SEED: &[u8] = b"counter";
 

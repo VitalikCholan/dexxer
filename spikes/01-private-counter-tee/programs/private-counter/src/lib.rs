@@ -32,6 +32,14 @@ pub mod private_counter {
     /// with it to the ER and become spendable there for explicit deposits (the
     /// tempKeypair's base lamports aren't directly transferable on the ER, but
     /// the counter PDA's are).
+    ///
+    /// Week-2 M2 finding: `size_of(1)` (week 0's owner-only budget, 894_080
+    /// lamports on this deployment) is NOT enough once `set_privacy` grows the
+    /// permission to 2 members (owner + a week-2 `crank` member) — a real
+    /// `setPrivacy(true, crank)` attempt against a `size_of(1)`-funded counter
+    /// failed with `InsufficientFundsForRent` (permission's resize needs the
+    /// full 134-byte rent-exempt minimum, ~1_330_960 lamports on devnet, not
+    /// just the marginal resize delta). Budget for 2 members from the start.
     pub fn initialize(ctx: Context<Initialize>) -> Result<()> {
         transfer(
             CpiContext::new(
@@ -41,7 +49,7 @@ pub mod private_counter {
                     to: ctx.accounts.counter.to_account_info(),
                 },
             ),
-            ephemeral_rollups_sdk::ephemeral_accounts::rent(EphemeralPermission::size_of(1) as u32),
+            ephemeral_rollups_sdk::ephemeral_accounts::rent(EphemeralPermission::size_of(2) as u32),
         )?;
 
         let counter = &mut ctx.accounts.counter;
@@ -119,12 +127,13 @@ pub mod private_counter {
         Ok(())
     }
 
-    /// Toggle the privacy flag of the ephemeral permission. When private, only the
-    /// listed members (just the counter authority) can read ER state via the TEE.
-    /// The authority is the only member; external wallets are rejected when private,
-    /// which is exactly the demo: same TEE endpoint + token, different result based
-    /// on the flag.
-    pub fn set_privacy(ctx: Context<PermissionContext>, is_private: bool) -> Result<()> {
+    /// Toggle the privacy flag of the ephemeral permission. When private, the
+    /// listed members (the counter authority plus a week-2 `crank` member, used
+    /// by task-1's M2 measurement to observe crank-vs-stranger visibility) can
+    /// read ER state via the TEE; external wallets are rejected when private.
+    /// `crank` is week-2's addition to the week-0 spike (single-member vec) —
+    /// pass `Pubkey::default()` to reproduce the original owner-only behavior.
+    pub fn set_privacy(ctx: Context<PermissionContext>, is_private: bool, crank: Pubkey) -> Result<()> {
         msg!("Toggling privacy to {}", is_private);
         let signers = [
             COUNTER_SEED,
@@ -132,10 +141,17 @@ pub mod private_counter {
             &[ctx.bumps.counter],
         ];
         let members = if is_private {
-            vec![Member {
+            let mut m = vec![Member {
                 flags: TX_LOGS_FLAG | TX_MESSAGE_FLAG | TX_BALANCES_FLAG,
                 pubkey: ctx.accounts.counter.authority,
-            }]
+            }];
+            if crank != Pubkey::default() {
+                m.push(Member {
+                    flags: TX_LOGS_FLAG | TX_MESSAGE_FLAG | TX_BALANCES_FLAG,
+                    pubkey: crank,
+                });
+            }
+            m
         } else {
             vec![]
         };
@@ -185,6 +201,35 @@ pub mod private_counter {
         )
         .commit(&[ctx.accounts.counter.to_account_info()])
         .build_and_invoke()?;
+        Ok(())
+    }
+
+    /// Week-2 M3 addition: same as `commit`, but passes the validator-scoped
+    /// `magic_fee_vault` account to the intent builder (`.magic_fee_vault(..)`,
+    /// documented in `ephemeral-rollups-sdk` 0.16.2 as "Required when the payer
+    /// is delegated"). Real finding: a first attempt using `payer` (a plain
+    /// funded wallet, even with a `lamportsDelegatedTransferIx`-created
+    /// *derived* lamports PDA elsewhere) as the CPI payer still failed with
+    /// `0xA0000000` — a plain wallet is never itself "delegated" (only a PDA
+    /// relative to it can be, and a PDA can't be an outer tx signer either).
+    /// `counter` *is* delegated and can PDA-sign a CPI (same pattern as
+    /// `set_privacy`/`close_permission`), so it is the CPI's `payer` here;
+    /// the outer transaction still needs a real wallet (`payer` account) to
+    /// pay the tx fee.
+    pub fn commit_with_vault(ctx: Context<CommitWithVault>) -> Result<()> {
+        let signers = [
+            COUNTER_SEED,
+            ctx.accounts.counter.authority.as_ref(),
+            &[ctx.bumps.counter],
+        ];
+        MagicIntentBundleBuilder::new(
+            ctx.accounts.counter.to_account_info(),
+            ctx.accounts.magic_context.to_account_info(),
+            ctx.accounts.magic_program.to_account_info(),
+        )
+        .magic_fee_vault(ctx.accounts.magic_fee_vault.to_account_info())
+        .commit(&[ctx.accounts.counter.to_account_info()])
+        .build_and_invoke_signed(&[&signers])?;
         Ok(())
     }
 
@@ -276,6 +321,19 @@ pub struct IncrementAndCommit<'info> {
     pub payer: Signer<'info>,
     #[account(mut, seeds = [COUNTER_SEED, counter.authority.as_ref()], bump)]
     pub counter: Account<'info, Counter>,
+}
+
+#[commit]
+#[derive(Accounts)]
+pub struct CommitWithVault<'info> {
+    #[account(mut)]
+    pub payer: Signer<'info>,
+    #[account(mut, seeds = [COUNTER_SEED, counter.authority.as_ref()], bump)]
+    pub counter: Account<'info, Counter>,
+    /// CHECK: validator-scoped magic fee vault (`magicFeeVaultPdaFromValidator`), passed
+    /// through to `MagicIntentBundleBuilder::magic_fee_vault` unchecked by this spike.
+    #[account(mut)]
+    pub magic_fee_vault: UncheckedAccount<'info>,
 }
 
 #[commit]
