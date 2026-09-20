@@ -105,6 +105,8 @@ export const pdas = {
     pda([POSITION_SEED, owner.toBuffer(), market.toBuffer()], DEXXER_CORE_PROGRAM_ID),
   disclosureQueue: (owner: PublicKey) => pda([DQ_SEED, owner.toBuffer()], DEXXER_CORE_PROGRAM_ID),
   feed: (lazerFeedId: string) => pda([FEED_SEED, LAZER_SEED, Buffer.from(lazerFeedId)], MOCK_ORACLE_PROGRAM_ID),
+  /** Same feed PDA derivation as `feed`, but under an arbitrary oracle program (Task 0: the real devnet Pricing Oracle, not `mock_oracle`). */
+  feedUnder: (oracleProgram: PublicKey, lazerFeedId: string) => pda([FEED_SEED, LAZER_SEED, Buffer.from(lazerFeedId)], oracleProgram),
 };
 
 /** `#[delegate]`-generated buffer/record/metadata triple for a PDA owned by `ownerProgramId`. */

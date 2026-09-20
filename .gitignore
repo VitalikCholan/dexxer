@@ -53,3 +53,7 @@ tests/er/node_modules/
 scripts/node_modules/
 # mb-stack local validator state, contains a keypair
 magicblock-test-storage/
+
+# program upgrade-authority keypairs (Task 0, week 2) — backup lives in a
+# password manager, not git; see keys/README.md
+keys/

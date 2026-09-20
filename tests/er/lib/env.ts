@@ -7,12 +7,20 @@
 //
 // No `dotenv` package is installed in this package (see package.json), so
 // `.env` is parsed by hand here rather than pulling in a new dependency.
+//
+// Task 0 (week 2) adds a `DEXXER_NET=local|devnet` profile (default
+// `local`, so every value below is byte-identical to week 1 when the env
+// var is unset) plus `ROUTER`/`routerStatus` and `teeConn` for real devnet +
+// `devnet-tee.magicblock.app`. Addresses for the `devnet` profile are the
+// ones fixed in `docs/superpowers/plans/2026-09-20-week2-privacy-devnet.md`
+// (Global Constraints) and already spiked in `spikes/lib/env.ts` (week 0).
 
 import { Connection, Keypair, LAMPORTS_PER_SOL, PublicKey, Transaction, TransactionInstruction } from "@solana/web3.js";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
 import { dirname, resolve } from "path";
 import { fileURLToPath } from "url";
-import { DELEGATION_PROGRAM_ID } from "@magicblock-labs/ephemeral-rollups-sdk";
+import { DELEGATION_PROGRAM_ID, getAuthToken } from "@magicblock-labs/ephemeral-rollups-sdk";
+import nacl from "tweetnacl";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const KEYS_DIR = resolve(ROOT, ".keys");
@@ -35,13 +43,93 @@ function cfg(key: string, fallback: string): string {
   return process.env[key] ?? dotEnv[key] ?? fallback;
 }
 
-export const BASE = cfg("BASE_RPC", "http://127.0.0.1:8899");
-export const ER = cfg("ER_RPC", "http://127.0.0.1:7799");
-export const PUBLIC = cfg("PUBLIC_RPC", "http://127.0.0.1:6699");
-export const ER_VALIDATOR = new PublicKey(cfg("ER_VALIDATOR", "mAGicPQYBMvcYveUZA5F5UNNwyHvfYh5xkLS2Fr1mev"));
+export type Net = "local" | "devnet";
+export const NET: Net = cfg("DEXXER_NET", "local") === "devnet" ? "devnet" : "local";
+
+interface NetProfile {
+  base: string;
+  er: string;
+  erWs: string;
+  public: string;
+  router: string;
+  validator: string;
+  /** Oracle *program* id passed to `init_config`'s `oracle_program` arg. */
+  oracle: string;
+}
+
+// `local` reproduces week 1's literals exactly (mb-stack defaults); `devnet`
+// is the real cluster + TEE rollup. Any single value can still be
+// overridden via `.env`/process.env regardless of profile (see `cfg` calls
+// below) — this table only supplies the per-profile default.
+const PROFILES: Record<Net, NetProfile> = {
+  local: {
+    base: "http://127.0.0.1:8899",
+    er: "http://127.0.0.1:7799",
+    erWs: "ws://127.0.0.1:7800",
+    public: "http://127.0.0.1:6699",
+    router: "http://127.0.0.1:6699", // mb-stack's query-filtering service also answers getDelegationStatus (see week1-results.md)
+    validator: "mAGicPQYBMvcYveUZA5F5UNNwyHvfYh5xkLS2Fr1mev",
+    oracle: "68xBWNR1uKorC7keLWvsT1pCmKC4RnwvRF4LoV3CCprh", // mock_oracle program id (localnet/LiteSVM only)
+  },
+  devnet: {
+    base: "https://rpc.magicblock.app/devnet",
+    er: "https://devnet-tee.magicblock.app",
+    erWs: "wss://devnet-tee.magicblock.app",
+    public: "https://rpc.magicblock.app/devnet",
+    router: "https://devnet-router.magicblock.app/",
+    validator: "MTEWGuqxUpYZGFJQcp8tLN7x5v9BSeoFHYWQQ3n3xzo",
+    oracle: "PriCems5tHihc6UDXDjzjeawomAwBduWMGAi8ZUjppd", // MagicBlock Pricing Oracle (real Pyth Lazer feed)
+  },
+};
+const profile = PROFILES[NET];
+
+export const BASE = cfg("BASE_RPC", profile.base);
+export const ER = cfg("ER_RPC", profile.er);
+export const ER_WS = cfg("ER_WS", profile.erWs);
+export const PUBLIC = cfg("PUBLIC_RPC", profile.public);
+export const ROUTER = cfg("ROUTER_RPC", profile.router);
+export const ER_VALIDATOR = new PublicKey(cfg("ER_VALIDATOR", profile.validator));
+export const ORACLE = new PublicKey(cfg("ORACLE_PROGRAM", profile.oracle));
 
 export const baseConn = new Connection(BASE, "confirmed");
 export const erConn = new Connection(ER, "confirmed");
+
+/**
+ * A `Connection` authorized to read/write this keypair's permissioned
+ * accounts in the ER. Locally `erConn` is already unauthenticated (mb-stack
+ * has no TEE token check), so this just returns it unchanged. On devnet the
+ * TEE rollup requires a `?token=` from `getAuthToken` (message signed by the
+ * keypair) on both the HTTP and WS endpoints — see
+ * `spikes/07-session-payer/check.ts` for the week-0 spike this mirrors.
+ */
+export async function teeConn(kp: Keypair): Promise<Connection> {
+  if (NET === "local") return erConn;
+  const auth = await getAuthToken(ER, kp.publicKey, async (m) => nacl.sign.detached(m, kp.secretKey));
+  return new Connection(`${ER}?token=${auth.token}`, {
+    wsEndpoint: `${ER_WS}?token=${auth.token}`,
+    commitment: "confirmed",
+  });
+}
+
+/**
+ * Query the MagicBlock router's `getDelegationStatus` for `account` (spec
+ * §5's `router` endpoint). Used to confirm a PDA delegated to `fqdn` ==
+ * the expected TEE endpoint. Same shape as `spikes/lib/env.ts`'s
+ * `routerStatus`, generalized over `ROUTER` for both profiles.
+ */
+export async function routerStatus(
+  account: PublicKey,
+): Promise<{ isDelegated: boolean; fqdn?: string; delegationRecord?: { authority: string; owner: string } }> {
+  const r = await fetch(ROUTER, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "getDelegationStatus", params: [account.toBase58()] }),
+  });
+  if (!r.ok) throw new Error(`getDelegationStatus HTTP ${r.status} from ${ROUTER}`);
+  const body = await r.json();
+  if (body.error) throw new Error(body.error.message);
+  return body.result;
+}
 
 export function loadOrCreateKey(name: string): Keypair {
   if (!existsSync(KEYS_DIR)) mkdirSync(KEYS_DIR, { recursive: true });
