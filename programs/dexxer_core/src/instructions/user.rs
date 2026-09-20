@@ -436,13 +436,20 @@ pub struct Withdraw<'info> {
     pub magic_program: UncheckedAccount<'info>,
 }
 pub fn withdraw(ctx: Context<Withdraw>, amount: u64) -> Result<()> {
-    require!(amount > 0, DexxerError::AmountZero);
+    require!(amount >= MIN_WITHDRAW, DexxerError::InvalidParams);
+    let clock = Clock::get()?;
     let u = &mut ctx.accounts.user_account;
+    let cooldown_ends = u
+        .last_withdraw_slot
+        .checked_add(WITHDRAW_COOLDOWN_SLOTS)
+        .ok_or(DexxerError::MathOverflow)?;
+    require!(clock.slot >= cooldown_ends, DexxerError::WithdrawCooldown);
     require!(u.free_margin >= amount, DexxerError::InsufficientMargin);
     u.free_margin = u
         .free_margin
         .checked_sub(amount)
         .ok_or(DexxerError::MathOverflow)?;
+    u.last_withdraw_slot = clock.slot;
     let p = &mut ctx.accounts.pool;
     p.capital_total = p
         .capital_total

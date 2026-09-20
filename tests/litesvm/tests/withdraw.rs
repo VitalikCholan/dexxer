@@ -93,5 +93,46 @@ fn withdraw_zero_rejected() {
     let w = World::bootstrap(&mut h);
     let t = w.new_trader(&mut h, 1_000_000_000);
     let r = h.send(&[ixs::withdraw(&t.kp.pubkey(), &t, &w, 0)], &[&t.kp]);
-    assert_custom_error(&r, 6000 + DexxerError::AmountZero as u32);
+    // Week-2 Task 5 fix round 2: `amount >= MIN_WITHDRAW` (1 dUSDC) now guards
+    // first, before the old `amount > 0` check — 0 fails as "below minimum",
+    // surfaced as `InvalidParams`, not the retired `AmountZero`.
+    assert_custom_error(&r, 6000 + DexxerError::InvalidParams as u32);
+}
+
+#[test]
+fn withdraw_below_minimum_rejected() {
+    let mut h = Harness::new();
+    let w = World::bootstrap(&mut h);
+    let t = w.new_trader(&mut h, 1_000_000_000);
+    // 500_000 (0.5 dUSDC) is below MIN_WITHDRAW (1_000_000 = 1 dUSDC).
+    let r = h.send(&[ixs::withdraw(&t.kp.pubkey(), &t, &w, 500_000)], &[&t.kp]);
+    assert_custom_error(&r, 6000 + DexxerError::InvalidParams as u32);
+}
+
+#[test]
+fn withdraw_cooldown_enforced() {
+    let mut h = Harness::new();
+    let w = World::bootstrap(&mut h);
+    let t = w.new_trader(&mut h, 1_000_000_000);
+
+    // First withdraw: succeeds, sets `last_withdraw_slot`.
+    h.send(&[ixs::withdraw(&t.kp.pubkey(), &t, &w, 1_000_000)], &[&t.kp])
+        .unwrap();
+
+    // Immediate second withdraw (same slot, well within the 300-slot
+    // cooldown): rejected.
+    let r = h.send(&[ixs::withdraw(&t.kp.pubkey(), &t, &w, 1_000_000)], &[&t.kp]);
+    assert_custom_error(&r, 6000 + DexxerError::WithdrawCooldown as u32);
+
+    // Warp forward past the cooldown (current slot + 301 is comfortably past
+    // last_withdraw_slot + WITHDRAW_COOLDOWN_SLOTS): now succeeds.
+    let now_slot = h.svm.get_sysvar::<solana_clock::Clock>().slot;
+    h.warp(now_slot + 301, 2_000_000);
+    h.send(&[ixs::withdraw(&t.kp.pubkey(), &t, &w, 1_000_000)], &[&t.kp])
+        .unwrap();
+
+    assert_eq!(
+        h.account::<UserAccount>(&t.user).free_margin,
+        1_000_000_000 - 2_000_000
+    );
 }
