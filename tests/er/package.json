@@ -2,7 +2,7 @@
   "name": "dexxer-er-tests",
   "private": true,
   "type": "module",
-  "scripts": { "q1": "tsx q1-deposit.ts", "q2": "tsx q2-permissions.ts", "lifecycle": "tsx lifecycle.ts" },
+  "scripts": { "q1": "tsx q1-deposit.ts", "q2": "tsx q2-permissions.ts" },
   "dependencies": {
     "@coral-xyz/anchor": "0.32.1",
     "@magicblock-labs/ephemeral-rollups-sdk": "0.17.0",

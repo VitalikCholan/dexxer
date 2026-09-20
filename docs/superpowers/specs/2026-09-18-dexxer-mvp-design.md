@@ -183,6 +183,11 @@ liq_price
 
 Index — Pyth Lazer через Pricing Oracle. Mark — EMA(index) у `Market.mark`, `mark_slot`. Ліквідація за mark; вхід/вихід за index у момент tx + slippage. Deviation guard `|index − mark| > X%` → `paused_open`, закриття дозволені. Компроміс: EMA відстає при тренді → ліквідація пізніше, ніж за index.
 
+**Реалізовано (week 1, 20.09.2026).** Два окремі місця, обидва в `u128`/`checked_*`:
+
+- `oracle::check_deviation` — на `open_position`/`increase_position`, одразу після `check_open_quality`: якщо `Market.mark > 0` і `|index − mark| · 10 000 / mark > Market.max_deviation_bps`, → `DexxerError::OracleDeviation`. `close`/`decrease` цю перевірку ніколи не викликають — вихід має лишатись доступним завжди.
+- `crank_tick` — знімок `prev_mark` до EMA-апдейту, `dev_bps` рахується проти `prev_mark` (не проти щойно оновленого mark, інакше EMA цього ж тіку маскує власне відхилення). При спрацюванні: `paused_open = true`, mark усе одно оновлюється EMA (щоб guard сам розходився, коли mark наздоганяє index), але цикл кандидатів на цей тік пропускається (`return Ok(())`) — ліквідацій за тік, чий index відхилився, не буває. Перший тік (`mark == 0`) — сід `mark = index`, перевірки немає.
+
 ### 3.5 Crank
 
 Цикл ~1 с: (1) оракул + валідація; stale → скіп ліквідацій, mark не оновлюється; (2) mark-EMA; (3) кандидати з бакетів `±δ` від mark у `MarketRisk`; (4) `equity < MMR × notional` два тики → `liquidate`: закриття за mark, liq fee у пул, лишок → `free_margin`, `ClosedRecord{Liquidated}`; (5) bad debt → `Pool.insurance`, далі капітал, `bad_debt_total` публічний через коміт; (6) підписант `crank_tick` — `Config.crank` або `CRANK_SIGNER` PDA (`magicblock_magic_program_api::pda`); перевірка виконавця scheduler-а — тиждень 2 на devnet **(week 1, 20.09.2026)**.
@@ -190,6 +195,8 @@ Index — Pyth Lazer через Pricing Oracle. Mark — EMA(index) у `Market.m
 **Кандидати (week 1, 20.09.2026).** `MarketRisk.buckets` не реалізовано (§8 Q4, §2.1) — кандидати на ліквідацію передаються явно в `remaining_accounts` парами `[Position, UserAccount]`, ≤16 пар (`MAX_CANDIDATES`), кожен акаунт перевіряється на власність програми, writable-прапорець і збіг PDA-деривації перед десеріалізацією (`programs/dexxer_core/src/instructions/crank.rs`). Вибір кандидатів для передачі — відповідальність викликача (crank/fallback-скрипт), не бакетів у `MarketRisk`.
 
 Тригер — MagicBlock scheduler; fallback — `scripts/crank-fallback` з ключем `Config.crank`.
+
+**Уточнення liq fee / insurance (week 1, 20.09.2026).** Тригер ліквідації (крок 4) рахує equity з `close_fee_bps` (6 bps) — `risk::liquidatable_now` → `math::equity(margin, upnl, close_fee)`, поріг `eq/notional < mmr_bps`. Але фактичне розрахування (крок 4, `finalize_close`) стягує `liq_fee_bps` (100 bps), а не `close_fee_bps`. На дефолтних параметрах (`mmr_bps=500`, `close_fee_bps=6`, `liq_fee_bps=100`) це дає трейдеру ефективну «подушку» ≈4,06 % notional на межі спрацювання тригера (margin+upnl на межі = (mmr_bps+close_fee_bps)=506 bps notional; після відрахування liq_fee_bps=100 bps лишається `to_user` ≈406 bps = 4,06 % notional) — ліквідація на самій межі MMR не обнуляє маржу трейдера. Крок 5 спрощено на тиждень 1: `insurance` лише накопичує `liq_fee_bps` (`risk::settle_into_pool`, гілка `liquidation`), **не** витрачається на bad debt — рядок спеки нижче «bad debt → `Pool.insurance`, далі капітал» на тиждень 1 відкладено: нестача одразу йде з `protocol_liquidity` (`settle_into_pool`, `checked_sub` без відкату до `insurance`), `bad_debt_total` — лише статистика.
 
 **Виміряне на devnet-tee (check 5, 19.09.2026):** при запиті `execution_interval_millis = 1000` за 20 с відбулося **27 тіків** (~740 мс середнього інтервалу, ≈1.35 тіка/с). Тобто запитаний інтервал — це **підлога, не період**: тіки приходять раніше, ніж замовлено, і рівний крок не гарантований. Наслідки, обов'язкові до виконання:
 
@@ -501,6 +508,7 @@ Solana MCP `program_autofixer` — на кожну зміну програми �
 | 9 | Соло, 4 тижні | усе | порядок жертв | постійно |
 | 10 | Colosseum забороняє код до 28.09 | тиждень 0 | перевірити 19.09; тиждень 0 = spikes | 19.09 |
 | 11 | **(week 1, 20.09.2026)** conf на devnet-фіді порожній (`conf == 0` на кожному читанні, check 4) — демо йде з `Market.max_conf_bps = 0`, що вимикає перевірку confidence повністю (`oracle::check_open_quality`) | відкриття без реального сигналу довіри до ціни | продукт: вимагати `conf > 0` і ненульовий `max_conf_bps`; на MVP-devnet прийнято свідомо, бо фід сам ніколи не заповнює conf | тиждень 2+ |
+| 12 | **(week 1, 20.09.2026)** `scripts/crank-fallback` шукає кандидатів на ліквідацію через `getProgramAccounts` + memcmp по дискримінатору `Position` (`scripts/crank-fallback/index.ts`) — це перестає працювати, щойно акаунти програми в ER стають `EphemeralPermission { is_private: true, ... }` (архітектурне рішення 18.09.2026, `CLAUDE.md`): приватний акаунт не повертається `getProgramAccounts` не-member'у | fallback-crank сліпне на приватних позиціях → немає ліквідацій без scheduler-а | crank повинен бути членом permission (`members`) кожної позиції, або список кандидатів має надходити з іншого джерела (offchain індекс власних записів, підписки трейдерів, тощо) — дизайн тижня 2 | тиждень 2 |
 
 **Порядок жертв:** локальні push → History-екран → `DisclosureQueue`/reveal (лишити commitment) → increase/decrease → **ніколи**: ліквідаційний crank, приватність `Position`, тест на Seeker.
 
