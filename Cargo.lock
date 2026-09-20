@@ -2219,6 +2219,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "mock_oracle"
+version = "0.1.0"
+dependencies = [
+ "anchor-attribute-access-control",
+ "anchor-attribute-account",
+ "anchor-attribute-constant",
+ "anchor-attribute-error",
+ "anchor-attribute-event",
+ "anchor-attribute-program",
+ "anchor-derive-accounts",
+ "anchor-derive-serde",
+ "anchor-derive-space",
+ "anchor-lang",
+ "anchor-syn",
+ "ephemeral-rollups-sdk",
+]
+
+[[package]]
 name = "num"
 version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"

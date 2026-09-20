@@ -1,0 +1,32 @@
+[package]
+name = "mock_oracle"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib", "lib"]
+name = "mock_oracle"
+
+[features]
+default = []
+cpi = ["no-entrypoint"]
+no-entrypoint = []
+idl-build = ["anchor-lang/idl-build"]
+
+[lints.rust]
+unexpected_cfgs = "allow"
+
+[dependencies]
+anchor-lang = "=1.0.2"
+ephemeral-rollups-sdk = { version = "=0.16.2", features = ["anchor"] }
+# pinned: anchor-lang 1.0.2 requires ^1.0.2 and 1.2.0 macros break mint:: codegen
+anchor-syn = "=1.0.2"
+anchor-derive-accounts = "=1.0.2"
+anchor-derive-serde = "=1.0.2"
+anchor-derive-space = "=1.0.2"
+anchor-attribute-access-control = "=1.0.2"
+anchor-attribute-account = "=1.0.2"
+anchor-attribute-constant = "=1.0.2"
+anchor-attribute-error = "=1.0.2"
+anchor-attribute-event = "=1.0.2"
+anchor-attribute-program = "=1.0.2"

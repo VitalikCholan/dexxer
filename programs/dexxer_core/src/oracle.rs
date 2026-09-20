@@ -234,4 +234,44 @@ mod tests {
     fn nonpositive_price_is_error() {
         assert!(parse_price_update(&fixture(0, 0, 8, 0, 1)).is_err());
     }
+
+    // Builds the `mock_oracle` `Feed.body` byte-for-byte the way its
+    // `init_feed`/`set_price` instructions do (same index arithmetic, copied
+    // from `programs/mock_oracle/src/lib.rs`), then prepends the 8-byte Anchor
+    // discriminator this parser ignores. Ties both programs to identical
+    // offsets so a change on either side that breaks the layout fails here.
+    #[test]
+    fn mock_layout_matches_parser() {
+        const BODY: usize = 126;
+        let price_1e8: i64 = 15_000_000_000;
+        let conf: u64 = 5_000_000;
+        let publish_time: i64 = 1_700_000_000;
+        let posted_slot: u64 = 317_000_000;
+        let authority = [7u8; 32];
+
+        // init_feed
+        let mut body = [0u8; BODY];
+        body[0..32].copy_from_slice(&authority);
+        body[32] = 1;
+        body[33..65].copy_from_slice(&[0xc6u8; 32]);
+        body[81..85].copy_from_slice(&8i32.to_le_bytes());
+
+        // set_price
+        body[65..73].copy_from_slice(&price_1e8.to_le_bytes());
+        body[73..81].copy_from_slice(&conf.to_le_bytes());
+        body[85..93].copy_from_slice(&publish_time.to_le_bytes());
+        body[93..101].copy_from_slice(&publish_time.to_le_bytes());
+        body[101..109].copy_from_slice(&price_1e8.to_le_bytes());
+        body[109..117].copy_from_slice(&conf.to_le_bytes());
+        body[117..125].copy_from_slice(&posted_slot.to_le_bytes());
+
+        let mut account = vec![0u8; 8];
+        account.extend_from_slice(&body);
+        assert_eq!(account.len(), 134);
+
+        let p = parse_price_update(&account).unwrap();
+        assert_eq!(p.price, 150_000_000);
+        assert_eq!(p.posted_slot, posted_slot);
+        assert_eq!(p.publish_time, publish_time);
+    }
 }
