@@ -728,3 +728,48 @@ ER для цього акаунта стабільно повертає поро
 
 Повний вивід гаунтлету і всі підписи — у
 `.superpowers/sdd/2026-09-20-week2-privacy-devnet/task-5-report.md` §"Раунд 3".
+
+### Fix round 2 (контролерське рішення: мінімальна сума + per-account cooldown на withdraw)
+
+**Знахідка ревʼю (Important):** спільна `FeeEscrow` тепер фінансує і `commit_aggregate` (admin/fee-payer-гейт),
+і `withdraw` (owner-гейт). Будь-який власник із ненульовим `free_margin` міг викликати `withdraw(1)`
+повторно; коміт кожного виклику списує ту саму ескроу (безкоштовно нижче nonce 25 його акаунта, 100 000
+лампортів понад), тож sybil міг би грифити ескроу й зупинити спек-критичний 5-хвилинний коміт `Pool`.
+Ризик ніде не був задокументований.
+
+**Реалізовано точно за рішенням:**
+1. `require!(amount >= MIN_WITHDRAW)` у `withdraw`, `MIN_WITHDRAW = 1_000_000` (1 dUSDC) — відхилення
+   `InvalidParams`.
+2. Per-account cooldown: нове поле `UserAccount.last_withdraw_slot: u64`; у `withdraw` —
+   `require!(clock.slot >= last_withdraw_slot + WITHDRAW_COOLDOWN_SLOTS)`, `WITHDRAW_COOLDOWN_SLOTS = 300`,
+   потім `last_withdraw_slot = clock.slot`. Новий варіант помилки `WithdrawCooldown` дописано **в кінець**
+   `DexxerError` (порядок попередніх варіантів не змінено — LiteSVM-тести прив'язані до `X as u32 + 6000`).
+
+**Гаунтлет:** `anchor build` чисто, `cargo +nightly-2026-09-18 test -p dexxer_litesvm` — **38/38** (36 →
+38: `withdraw_zero_rejected` оновлено на очікування `InvalidParams` замість знятого `AmountZero`; два нові
+тести — `withdraw_below_minimum_rejected`, `withdraw_cooldown_enforced`, останній через `h.warp(slot+301,
+...)` підтверджує і відхилення в межах вікна, і успіх після нього), `cargo test -p dexxer_core` — **46/46**,
+`program_autofixer` — 0 issues на кожному зміненому файлі (`state/user.rs`, `state/mod.rs`, `errors.rs`,
+`instructions/user.rs`), `tsc --noEmit` чисто в `tests/er` і `scripts` (той самий довиправлений bs58-гап).
+
+**Редеплой:** новий бінарник (945328 байт) уміщувався в наявний слек program-data (946632 байт) — extend не
+знадобився. Успіх з першої спроби: sig
+`5HfWuGRN4Y9UTWXQHm53mrSdfPJTeYuiqHYoPraGw95KASfHgqijdoYwdAFPeJXnxhSwpqyHzi2j9zmX7nmFpG5J`, чиста вартість
+~0.0047 SOL, жодних завислих буферів.
+
+**Smoke-тест (не повний прогін 01–04 — старі `UserAccount`и з попередніх прогонів стали нечитабельними через
+зростання layout, це очікувано й прийнятно, вони одноразові):** свіжа ідентичність через `01-onboard-private`
+(owner `Bzr7RnfYaUNRcRE57egMQA2Vh57cnnupvuWx7vzgGV4u`) — PASS. Один `withdraw(300e6)` (≥1 dUSDC) — ER-нога
+пройшла коректно під новими правилами (`free_margin`: `979933925 → 679933925`, `last_withdraw_slot` на
+акаунті виставлено в реальний слот `320086059`, підтверджено прямим читанням). L1-нога (`withdrawSpl`) впала
+з першої спроби на тій самій `InvalidAccountOwner`-помилці, що й у M4-звіті ("eSPL ephemeral-ATA bookkeeping
+apparently not safely re-cycleable"), але це — **не наслідок цієї зміни** (гейти min/cooldown вже пройшли
+успішно до цього кроку, увесь L1-механізм `withdrawSpl` не чіпався в цьому раунді): повторна спроба (та сама
+транзакція, без жодних змін) пройшла одразу: sig
+`GQaker7zY541BnxTxaJCVD44W52cBCMjgok2jVeGKVjBfwZK2qCZYroXQiJpwRUVUEUi4J4CaN19mNzHz5tTVTz`. Базовий ATA
+підтверджено: `300000000` (рівно withdrawn amount).
+
+**Фінальні баланси:** `payer` 4.522085697 SOL, `devnet-admin` 0.51890156 SOL. Жодних завислих
+buffer-акаунтів.
+
+Повний опис — у `.superpowers/sdd/2026-09-20-week2-privacy-devnet/task-5-report.md` §"Fix round 2".
