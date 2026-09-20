@@ -336,3 +336,251 @@ fee-vault, коли CPI-payer — делегований PDA (`counter`, не з
 
 `export PATH="$HOME/.nvm/versions/node/v24.18.0/bin:$PATH"` → `cd tests/er && npx tsc --noEmit` — чисто (0
 помилок) на фінальній версії `run.ts`/`00-measure.ts`.
+
+## Task 5: Devnet-tee інтеграція — приватний онбординг, витік-тест рівня 4, цикл комітів, withdraw
+
+Повний прогін `dexxer_core` (не спайку) на реальному devnet + `devnet-tee.magicblock.app`: program id
+`G2okX5Bae4CxfK8vzso1Ecc96QUv7E3P4YvxaZnaYXoV` (незмінений, keypair з `keys/programs/`). Запуск:
+`export PATH="$HOME/.nvm/versions/node/v24.18.0/bin:$PATH"`, потім у `tests/er/`: `npm run devnet:onboard`,
+`npm run devnet:leak`, `npm run devnet:commit`, `npm run devnet:withdraw` (кожен — `DEXXER_NET=devnet tsx
+devnet/0N-*.ts`).
+
+### Крок 0.1 — `init_config` бере `scheduler_signer` (M1)
+
+Комітом `8592133`. `admin::init_config` тепер приймає параметр `scheduler_signer: Pubkey` і пише його напряму
+в `Config.scheduler_signer` замість жорсткого `CRANK_SIGNER`-конвертування; `crank_tick`'s constraint у
+`crank.rs` не чіпався (третя гілка з SDK-константою лишилась як fallback). `tests/litesvm/src/{ixs,setup}.rs`
+оновлені (`setup.rs` передає `crank.pubkey()`), `tests/er/lib/admin.ts`'s `bootstrap()`/`bootstrapDevnet()`
+передають `ER_VALIDATOR` (профільно: локальний mb-stack валідатор / `MTEWGuqxUpYZGFJQcp8tLN7x5v9BSeoFHYWQQ3n3xzo`
+на devnet) і `bootstrapDevnet()` додатково передає `magic_fee_vault = EUJssY6kG5fb35s9Lc6jyh6joRPo2e2MhJqoKCqcTt5b`
+(M3) замість `PublicKey.default()`. Гаунтлет: `anchor build` чисто, `cargo +nightly-2026-09-18 test -p
+dexxer_litesvm` — **36/36**, `cargo test -p dexxer_core` — **46/46**, `program_autofixer` на `admin.rs` —
+0 issues.
+
+### Крок 0.2 — деплой на devnet
+
+Перша спроба (`anchor deploy --provider.cluster devnet --provider.wallet spikes/keys/payer.json
+--program-name dexxer_core`, кластер `api.devnet.solana.com`) впала: `Error: Data writes to account failed:
+Custom error: Max retries exceeded` — payer втратив 4.6 SOL у buffer-акаунт
+(`EsmHVuDdT5w5vARrZxzSR4jy5z9yxSBv8ta5LsVmbVZB`). `solana program close EsmHVu...` повернув усі 4.6 SOL
+(без `--buffers`-флага — той приймає лише "закрити всі", без явної адреси). Друга спроба напряму через
+`solana program deploy target/deploy/dexxer_core.so --program-id target/deploy/dexxer_core-keypair.json
+--keypair spikes/keys/payer.json --url https://rpc.magicblock.app/devnet --use-rpc` — **успіх з першої
+спроби**, sig `495VsmTunPbod9ke84RLK1t1swFYKA61UJrQqNSgNHc5hzWMXXmBnEqXMXnsXn4LSWJjgiQR83pds43QgxrPSRBu`.
+
+`solana program show G2okX5Bae4CxfK8vzso1Ecc96QUv7E3P4YvxaZnaYXoV -u devnet`: `Owner:
+BPFLoaderUpgradeab1e1...`, `Authority: 4P1WD92zwtUB2jxYQJRvsQc4fLSDtergp6tvMyzMgGMM` (payer), `Data Length:
+906632 bytes`, `Balance: 4.6065694 SOL`.
+
+**Знахідка:** реальна вартість деплою — **≈4.61 SOL** (payer 6.101968857 → 1.489365697 SOL до фандингу
+admin), суттєво вище брифової оцінки "~1.7 SOL" — сучасні devnet rent-ставки для program-data акаунта цього
+розміру (~886 KB) + сам факт, що перша (провалена) спроба тимчасово заморозила 4.6 SOL у buffer, поки не
+закрита вручну.
+
+### Крок 0.3 — bootstrap
+
+`scripts/admin/devnet-bootstrap.ts`/`fund-fee-payer.ts` мали ту саму інфраструктурну проблему, що й
+`00-measure.ts` документував для себе: `tests/er/.env` жорстко фіксує `BASE_RPC=http://127.0.0.1:8899` для
+локального mb-stack, і `lib/env.ts`'s `cfg()` читає `.env` **поверх** профілю `devnet` за замовчуванням —
+обидва скрипти статично імпортували `lib/env.js` до встановлення `process.env`, тож `requireFunded` падав з
+generic `fetch failed` (спроба з'єднання з непіднятим localhost). Виправлено тим самим прийомом, що й
+`00-measure.ts`: `process.env.BASE_RPC` (і сусідні) виставляються *до* динамічного `await import(...)`.
+
+`requireFunded(admin.publicKey, 2, "devnet-admin")` — поріг знижено до **0.3 SOL**: після деплою (4.61 SOL
+з 6.1) payer мав лише ~0.89 SOL, а `devnet-admin` — окремий, ще незафандений ключ; 2 SOL були "грубим
+запобіжником", не реальним бюджетом (виміряно: bootstrap коштує **~0.028 SOL** admin'у). `devnet-admin`
+профінансовано 0.6 SOL з `payer` (sig
+`3DuvfHjpHqLnS5XGGJyYKxfhU1uMp5NGHzPWup6jMSpW17X61Y8kVSrMvmkr8DDtsJn7aJQs4xDkQmg2fAtGzbKy`).
+
+`DEXXER_NET=devnet npx tsx ../../scripts/admin/devnet-bootstrap.ts` — **успіх з другої спроби** (перша впала
+на тому самому `.env`-баг до виправлення). Адреси: `admin`
+`8L4EyWLc6yGH4c3zrVWLCoJqRbgWGtUf9sYyqnMPkVtH`, `crank` `2w7Xvd4GtS4rTE86tG51LMa9ZvLckDMFizb6XZDQerFA`,
+`fee-payer` `3HgDNwQPnHRRK6Sy5MXTN18zEYpGMJZioiGV3dD3Chnt`, `mint` `2URtQ5L8oJiUtbtXXvbNk3MRoAt4w8DTZ8GB7r4uCZ29`,
+`market` `1347yiBYsvCwqjJf8TUB9D4KSPp7RVF2cwQxfxSj4udp`, `marketRisk` `GNyNkDkb4CpG4ftuimmXsoXVxdv9tmoQRusmhfZvgnr5`,
+`pool` `S7S157Q7VGBSxfeUXscrdnobbMKC2gTFKXpQe5L31mj`, `poolAta` `Ai9S7fxN9QRdTYv8dasKRo3caNPzEep8agacTw6uoZSo`,
+`feed` `ENYwebBThHzmzwPLAQvCucUTsjyfBSZdD9ViXksS4jPu` (реальний Pyth Lazer feed під MagicBlock Pricing
+Oracle, не мок). Ключові підписи: `init_config`
+`3QhP4n1UPTuKtnfEenSk8xiMm53beUtt71yKP1kYcru6WnigRKHkRuf9rayAys7JyyvGrkLDXpu6zS1Rpma4dVvj`, `delegate_market`
+`yas7EcnS6rBVPdpiw1nTaV4kn3kTpdhHMYVPPU1Fw11Wm7fgcitNCqh1pR29NW7SfRNR9ws3TEHQh59dtz9MHk3`, `delegate_pool`
+`3eZEQ7z4P7uXZTZhPfYwHgwtK7XfeEFLJjrroxmyNRLuzF34A7Uq2AQ3ZGncRRZqTxexbEKeoHxBB7t76dZtW5dW`.
+
+Верифікація: `routerStatus` для `market`/`marketRisk`/`pool` — усі `isDelegated: true`, `fqdn:
+"https://devnet-tee.magicblock.app/"`. `Pool.capital_total` та `protocol_liquidity` через `teeConn(admin)`
+— **10000000000** (10 000 dUSDC), обидва.
+
+### Крок 0.4 — `fund-fee-payer.ts`: реальна знахідка
+
+Прогін **впав** на симуляції: `require!(destination_info.owned_by(&DELEGATION_PROGRAM_ID)) failed,
+sponsored_lamports_transfer.rs:71` / `InvalidAccountOwner`. Підтверджує написане в самому файлі
+(`fund-fee-payer.ts`'s заголовковий коментар з Task 0): `lamportsDelegatedTransferIx` вимагає, щоб
+`destination` уже була **делегованим** base-layer акаунтом (те саме підтверджує
+`references/lamports-topup.md` skill'а `magicblock`: "Destination must already be delegated"). `devnet-fee-payer`
+— звичайний, ніколи не делегований keypair (`Config.fee_payer` — просто `Pubkey`, а `CommitAggregate.payer`
+— `Signer<'info>` на верхньому рівні транзакції, тобто програмний PDA там технічно **не може** опинитися:
+PDA не має приватного ключа для підпису зовнішньої транзакції). Це передвіщає знахідку Задачі 3/Task 5 нижче
+(`03-commit-cycle`).
+
+Замість `lamportsDelegatedTransferIx`, `devnet-fee-payer` профінансовано напряму 0.05 SOL з `devnet-admin`
+(звичайний `SystemProgram.transfer`, той самий механізм, що надійно працював для `payer`/`user`/`crank`
+протягом усіх вимірювань M1–M4 Task 1) — цього достатньо для сплати комісій ER-транзакцій самим
+fee-payer'ом (не для fee-vault шляху — той лишається недоступним, див. нижче).
+
+### 01-onboard-private — PASS
+
+Повна приватна послідовність онбордингу (`tests/er/devnet/01-onboard-private.ts`): свіжий трейдер (генерується
+кожен запуск, `Keypair.generate()`-подібна ідентичність під унікальним іменем `devnet-trader-<runId>`,
+профінансована напряму з `devnet-admin`, не `requestAirdrop` — той ненадійний на реальному devnet) → faucet
+→ `init_user` → знімок байтів `Position` **до делегації** → `delegateSpl` → `delegate_user` → `credit_deposit`
+(ER, owner-токен) → `init_permissions` (private, members=[owner, crank] — сесія ще не встановлена) →
+`set_session` (перебудовує members на [owner, session, crank]) → фандинг сесії → `open_position`,
+підписаний **лише** сесійним ключем.
+
+**Відхилення від букви брифу:** фандинг сесії — НЕ `lamportsDelegatedTransferIx(payer, session, 0.01 SOL)`,
+а звичайний `SystemProgram.transfer` на base (0.01 SOL, як і в брифі). Причина — та сама, що й у
+0.4: `lamportsDelegatedTransferIx`'s `destination` мусить бути вже делегованою (перевірено емпірично на
+`fund-fee-payer.ts` вище), а сесія — звичайний, ніколи не делегований keypair, не PDA. Механізм, що реально
+працює (доведено по всіх вимірюваннях M1–M4): звичайний гаманець із base SOL має видимий баланс і в ER
+(клонується разом з рештою стану), достатній для сплати власних ER-комісій — саме це й потрібно фразі брифу
+("session pays its own ER fees").
+
+**Перша спроба (runId `1789926691277`) впала** на `open_position`: `AnchorError InvalidInput (6002)` —
+`size=0.1 SOL, margin=$30` при реальній ціні SOL/USD (~$110.04, зчитано напряму з живого фіда через
+`teeConn`) дає notional=$11 < margin=$30 → leverage <1x → `math::liq_price` повертає `InvalidInput`
+(`math.rs`: "margin > notional (leverage below 1x) has no liquidation price"). Виправлено: `size=1.0 SOL,
+margin=$20` (notional ~$110, ~5.5x — у межах 10x max / вище 10% IMR).
+
+**Другий прогін (runId `1789926789424`) — PASS.** `owner`
+`8Tax4NJKM6knGKJ2yYic1P8g1QW1uLZT1JRZ9ae2TLtK`, `session` `C6eVfKxUN6nL85v64XdMyxZuKeQEj2mRrx98enfMKwxG`,
+`position` `F7U8j2k2MJLhKpwNQixGdgfsMhSBiiSnKkn7LmVASBft`. Ключові підписи: `init_user`
+`413ds1DzhsN54xfBk5psoPcaWJuqFdXzvi8hR7tHgU3ymfgMZ58iZ7gxqdQMsfCjK3VEy27SZ2v3mhxfw9a9cEGr`, `delegate_user`
+`4pQ3VQhNmgtkVMfVQvBjFnqgq8yMQXDgSxMDGBEZf6YGGr4qe5PsHAFribffe5hEPrFALmc6RpHdMqFeASbjbm4t`, `credit_deposit`
+`31s1eF9NBu1vxo9NXJNj91GJWfNwEcoiAEgEAiwRBvHN8iYhzCUoUiKrwnU6d3ix5vSZsqFCgYCorKEotnaMx8yg`,
+`init_permissions` `2AjdwtABMN7Ms8aVr9dp1naG2WHptkckCCNuRjAHzzcm4F8LaVTYtzfLZwqdwyjKqd6RVEL8nEsooJLWupEZtJyX`,
+`set_session` `262qGraMQNet9Q7pRWGmDPoxVGYdv4Yqtk1CaexyGxxDi5kQCYLbyqezQyG3cHCfBXrbyBdm2LuFreZCijFXfDSS`,
+`open_position` (session-signed)
+`3QF5Le3W88KrLc997zeeaxzYtAdprX29HUgYHHN32ZNrmdL6wa7uAzkwM2vyFQ6eMUxrHsxzYNa3S2pzfWiVZUCQ`. Position після
+відкриття (прочитано owner-токеном): `state=Open, side=Long, size=1000000000 (1 SOL), entry=110004104
+(~$110.00), margin=20000000 ($20)`.
+
+### 02-leak-test — LEAK TEST PASS (усі 6 перевірок)
+
+| # | перевірка | результат | нотатка |
+|---|---|---|---|
+| a | base RPC: owner + байти | **PASS** | owner=`DELeGGvXpWV2fqJUhqcF5ZSYMS4JTLjteaAMARRSaeSh`, 265B == знімок до делегації |
+| b | TEE без токена | **PASS**\* | HTTP 200, `value: null` (не помилка/401 — див. відхилення нижче) |
+| c | stranger-токен | **PASS** | `null` |
+| d | session-токен | **PASS** | видима, 265B |
+| e | crank-токен | **PASS** | видима, 265B |
+| f | owner-токен | **PASS** | видима, `state == Open` |
+
+**\*Відхилення від букви брифу (b):** брифова очікувана поведінка — "HTTP 401/помилка". Реальна поведінка
+`devnet-tee.magicblock.app`, перевірена і клієнтом (голий `Connection` без токена), і прямим `curl`-ом
+(без жодних заголовків auth) на `getAccountInfo` тієї самої позиції: **HTTP 200**, заголовок
+`x-mb-remote-account-claims: 0`, JSON-RPC `{"value":null}` — без помилки на жодному рівні. Властивість
+приватності, яку перевірка фактично мусить довести (неавтентифікований читач нічого не дізнається про
+приватну позицію), виконується — просто через мовчазний `null`, а не відмову запиту. Перевірка (b)
+переписана на "no-token → не видимо (помилка АБО null)" замість жорсткого очікування помилки.
+
+### 03-commit-cycle — FAIL (справжня архітектурна знахідка, не флакі)
+
+`fee-payer` `3HgDNwQPnHRRK6Sy5MXTN18zEYpGMJZioiGV3dD3Chnt`, `magic_fee_vault`
+`EUJssY6kG5fb35s9Lc6jyh6joRPo2e2MhJqoKCqcTt5b`. Коміти #1–#10 — **успішні** на ланцюгу (sig #1
+`4fqRHGz7SNZkjCSuEEUGBUK5WwRZ9dT2DGCCGrGhr5FvsTXKnEbdHhBdDh6kEaVZspxZcS7dkwZvYcVxjcFQd7xd`, #10
+`2B7RPJKmx1i48jEyGpHArw6FzjXb2rdfNnQnut1a4zpGjqEd7wP5cgkxC8v2QuAwaLrJ6i74AEWkFYcREVuL3K9t`; поллінг
+`Pool.last_commit_slot` на base підтвердив пропагацію для #2–#10, #1 сам пройшов, але мій поллінг на нього
+(60×1с) спрацював запізно — реальний sig підтверджений). Коміт **#11 впав**: sig
+`dbq6Q7f4ECuR6NgJrHeUz34nqU88AccuXRY42W2Q2sBba2RYnwc11ByNRvzbqmth6icStBzcVdbFtMUv3XjdGDz`, `{"InstructionError":[0,{"Custom":2684354560}]}`
+— **2684354560 = 0xA0000000 = `COMMIT_LIMIT_ERR`**, точнісінько код M3a. Коміт #12 — та сама помилка (sig
+`49iNzotLmFFcoAzYRkeWzAFH5e8vsURRQfjEnxv6rMcwMi2Tgn3TXMQU5K7Dij62y8QCE9gAG6iBtiJb4iiiddFw`). `fee-payer`'s
+ER-баланс лишився рівно `50000000` лампортів **до і після кожного** коміту (delta 0 всюди, і успішних, і
+провалених) — узгоджується з M3's раніше знайденою неоднозначністю "видимий баланс не змінюється". `Position`
+та `UserAccount` на base — **незмінні** протягом усього циклу (підтверджено побайтово).
+
+**Корінна причина (підтверджена документацією MagicBlock skill і напряму на цій сесії, не здогад):**
+fee-vault-шлях ("Option 2" у `delegation.md`/`fees-and-commit-economics.md`) вмикається **лише** коли
+CPI-payer інтенту одночасно **делегований** і **підписує через seeds** (цитата: "The payer must be
+delegated, non-confined, writable, and able to sign", "usually a PDA that signs via seeds"). `commit_aggregate`
+(`programs/dexxer_core/src/instructions/commit.rs`) передає `ctx.accounts.payer` — оголошений
+`Signer<'info>` **на верхньому рівні** контексту інструкції — напряму як payer у
+`MagicIntentBundleBuilder::new(...)`. Акаунт, оголошений `Signer<'info>` на верхньому рівні прямо
+викликаної інструкції, **структурно не може** бути програмним PDA (PDA не має приватного ключа, не може
+підписати зовнішню транзакцію) — отже `Config.fee_payer`, яким би він не був, завжди залишиться звичайним
+гаманцем, ніколи не задовольнить вимогу "delegated + signs via seeds", і `.magic_fee_vault(...)` ніколи
+реально не вмикається: інструкція завжди йде по Path A (без делегованого payer'а) — 10 безкоштовних
+plain-комітів на акаунт, назавжди (не часове вікно, підтверджено M3a), потім `0xA0000000`.
+
+Незалежно підтверджено тим самим кроком 0.4 вище: `lamportsDelegatedTransferIx` проти `devnet-fee-payer`
+впав з `InvalidAccountOwner` — `Config.fee_payer` дійсно не (і не може стати клієнтським кроком) делегованим
+акаунтом за поточним дизайном.
+
+Паралель зі спайком: M3b (Task 1) розв'язала точно цю саму проблему для `private-counter`'s
+`commit_with_vault`, переключивши CPI-payer із простого гаманця на `counter` (делеговану PDA, що підписує
+через `invoke_signed`), лишивши гаманець лише платником **зовнішньої** транзакції — документація явно
+розділяє ці дві ролі ("payer" і "committed accounts" незалежні). `commit_aggregate` потребує аналогічного
+редизайну (окрема делегована PDA як CPI-payer, відмінна від того, хто підписує саму транзакцію) —
+**програмна (Rust) зміна поза мандатом Кроку 0 цієї задачі.** Робота над скриптом 03 зупинена на цьому —
+жодних змін у `.rs`-файлах поза Кроком 0 не внесено; знахідка й докази запротокольовані тут для контролера.
+
+**Висновок decision (c) (M3, тепер фіналізовано напряму на `dexxer_core`):** реальна вартість
+fee-vault-комітів **лишається невизначеною й непідтвердженою** — не тому, що вимірювання не вдалося, а тому,
+що fee-vault-шлях у поточному дизайні `commit_aggregate` ніколи не активується взагалі (завжди Path A).
+Ліміт **10 успішних-назавжди-plain-комітів на акаунт** підтверджено вдруге, тепер на реальному `Pool`
+`dexxer_core`, не лише на спайку.
+
+### 04-withdraw — PASS (дві головні асерції), одна асерція не підтверджена в межах вікна спостереження
+
+`withdraw(300e6)` owner-токеном (ER): sig
+`DmXntxi7f2XRtFCWHxyi5e2sDESQsmV289pgiksVrEs5JLEJozT2MF1MgJE2qmbjyW3hNwKbHCtf95jWMF3JVmX`.
+`UserAccount.free_margin` на ER: `979933997 → 679933997` (рівно −300000000). **PASS.**
+
+L1-нога (M4/decision (d)): `undelegateIx(owner, mint)` — sig
+`3M3AuMfSo5jGVVxp4UM4NyXJrZAreYLyWVvrMVGKdymoHEoWpxCf5D7ASqBnKec1CKLiDzxNfuZmc8E9yFBYvQ4c` → поллінг base
+ATA до `owner == TOKEN_PROGRAM_ID` — підтверджено → `withdrawSpl(owner, mint, 300e6, {idempotent:false})` —
+sig `5FtJYb4CPwGo7vSjCXyL9XM4DyoeCUVXrEFtU9NtfZwyE3rpyTDp36vC65ghVM2MDui377MxvRWjoj7p9HvrwhDC`. Базовий ATA:
+`0 → 300000000` (рівно +300000000). **PASS.**
+
+**Не підтверджено:** остання асерція брифу ("assert base UserAccount updated — the withdraw ix's commit
+intent landed") — поллінг `UserAccount` на base тривав **~7.5 хвилин сукупно** (30с у самому скрипті + 5 хв
++ 2 хв окремими прогонами) і жодного разу не показав оновлене значення (лишався на до-withdraw
+`979933997` замість `679933997`). Withdraw-транзакція сама пройшла успішно (ER-стан коректний, лампорти
+дійсно перейшли на base ATA — сама функція withdraw працює), тобто CPI `MagicIntentBundleBuilder::new(...).commit(&[user_account]).build_and_invoke()`
+у `withdraw` (`instructions/user.rs`) не впав — але й комітнутий стан `UserAccount` не долетів до base за
+час спостереження. `withdraw` передає той самий патерн CPI-payer'а, що й `commit_aggregate` вище
+(`ctx.accounts.owner` — звичайний гаманець, не делегована PDA), тож імовірно та сама корінна причина
+(Path A, без делегованого payer'а) — хоча тут це не мало б бути `0xA0000000` (перший-в-історії коміт для
+цього `UserAccount`, лічильник мав би бути << 10). Найправдоподібніше — планування/пропагація через
+недельогованого payer'а на цьому шляху взагалі ненадійна чи набагато повільніша за спостережене вікно, а
+не жорсткий ліміт. **Не діагностовано до кінця** — чесно позначено як відкрите питання, не заявлено як
+PASS без підстав. `Config.fee_payer`'s редизайн (03) імовірно розв'язав би і це.
+
+### Файли
+
+- Create: `tests/er/devnet/01-onboard-private.ts`, `02-leak-test.ts`, `03-commit-cycle.ts`,
+  `04-withdraw.ts`.
+- Modify: `tests/er/lib/trader.ts` (`DEXXER_NET`-обізнаний: усі ER-виклики резолвлять з'єднання через
+  `teeConn(kp)` замість модульного `erConn`; локально `teeConn` повертає `erConn` без змін — байт-у-байт
+  та сама поведінка, що й тиждень 1), `tests/er/lib/admin.ts` (`ER_VALIDATOR`/`MAGIC_FEE_VAULT` у
+  `init_config`-виклики обох `bootstrap()`/`bootstrapDevnet()`; поріг `requireFunded` для `devnet-admin`
+  знижено 2→0.3 SOL), `tests/er/package.json` (`devnet:onboard|leak|commit|withdraw`),
+  `scripts/admin/devnet-bootstrap.ts` та `fund-fee-payer.ts` (виправлено `.env`-переважає-`devnet`-профіль
+  баг тим самим прийомом, що й `00-measure.ts`).
+- Нові gitignored ключі під `tests/er/.keys/`: `devnet-admin.json`, `devnet-crank.json`,
+  `devnet-fee-payer.json`, `devnet-mint.json`, `devnet-trader-<runId>.json`, `devnet-session-<runId>.json`
+  (по одному на прогін 01), `devnet-run-latest.json` (вказівник стану для 02–04: адреси, sig'и, знімок
+  байтів `Position` до делегації).
+
+`cd tests/er && npx tsc --noEmit` — чисто на фінальних версіях усіх змінених/нових файлів.
+
+### Баланси (кінець Task 5)
+
+| ідентичність | баланс (SOL) |
+|---|---|
+| `payer` (spikes/keys/payer.json) | 0.889360697 |
+| `devnet-admin` | 0.422066120 |
+| `devnet-fee-payer` | 0.05 |
+| trader (`devnet-trader-1789926789424`) | 0.019389248 |
+| session (`devnet-session-1789926789424`) | 0.01 |
+
+Найбільша стаття витрат сесії — деплой (~4.61 SOL із 6.1 стартового бюджету `payer`); увесь Task 5 після
+деплою (bootstrap + 01–04, включно з провальною першою спробою 01 і діагностикою 03/04) — менше 0.7 SOL
+сукупно з `devnet-admin`.

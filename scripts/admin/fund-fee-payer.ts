@@ -23,7 +23,19 @@
 import { randomBytes } from "node:crypto";
 import { LAMPORTS_PER_SOL, Transaction, sendAndConfirmTransaction } from "@solana/web3.js";
 import { lamportsDelegatedTransferIx } from "@magicblock-labs/ephemeral-rollups-sdk";
-import { NET, baseConn, loadOrCreateKey, teeConn } from "../../tests/er/lib/env.js";
+
+// Task 5 fix: same `.env`-shadows-`devnet`-profile issue as
+// devnet-bootstrap.ts (see its header comment) — force the devnet
+// endpoints into `process.env` before the dynamic import below.
+if ((process.env.DEXXER_NET ?? "local") === "devnet") {
+  process.env.BASE_RPC ??= "https://rpc.magicblock.app/devnet";
+  process.env.ER_RPC ??= "https://devnet-tee.magicblock.app";
+  process.env.ER_WS ??= "wss://devnet-tee.magicblock.app";
+  process.env.PUBLIC_RPC ??= "https://rpc.magicblock.app/devnet";
+  process.env.ROUTER_RPC ??= "https://devnet-router.magicblock.app/";
+  process.env.ER_VALIDATOR ??= "MTEWGuqxUpYZGFJQcp8tLN7x5v9BSeoFHYWQQ3n3xzo";
+}
+const { NET, baseConn, loadOrCreateKey, teeConn } = await import("../../tests/er/lib/env.js");
 
 if (NET !== "devnet") {
   console.error(

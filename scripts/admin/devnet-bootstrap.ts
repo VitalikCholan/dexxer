@@ -17,9 +17,34 @@
 // instruction) would be unusable. Running this for real is Task 5's job —
 // see `.superpowers/sdd/2026-09-20-week2-privacy-devnet/task-0-brief.md`.
 // This file is a code deliverable, checked with `tsc --noEmit` only.
+//
+// Task 5 fix: `tests/er/.env` hardcodes local mb-stack endpoints
+// (BASE_RPC=http://127.0.0.1:8899 etc — a week-1 convenience file for
+// `q1`/`q2`) and `lib/env.ts`'s `cfg()` reads `process.env[key] ??
+// dotEnv[key] ?? profileDefault`, i.e. that `.env` wins over the `devnet`
+// profile's own defaults unless the same env vars are already set in
+// `process.env` first. This script originally only asserted `NET ===
+// "devnet"` and let `bootstrapDevnet()`'s static imports resolve `baseConn`
+// against `.env`'s local address — `requireFunded` then failed with a
+// generic `fetch failed` (connection refused against a mb-stack that wasn't
+// running). Fixed the same way `tests/er/devnet/00-measure.ts` does: force
+// the devnet profile's endpoints into `process.env` *before* the dynamic
+// `import("../../tests/er/lib/admin.js")` below (static imports are hoisted
+// above top-level code, so setting `process.env` before a static import
+// would run too late).
+export {}; // module marker: top-level await below requires this file to be a module
 
-import { NET } from "../../tests/er/lib/env.js";
-import { bootstrapDevnet } from "../../tests/er/lib/admin.js";
+if ((process.env.DEXXER_NET ?? "local") === "devnet") {
+  process.env.BASE_RPC ??= "https://rpc.magicblock.app/devnet";
+  process.env.ER_RPC ??= "https://devnet-tee.magicblock.app";
+  process.env.ER_WS ??= "wss://devnet-tee.magicblock.app";
+  process.env.PUBLIC_RPC ??= "https://rpc.magicblock.app/devnet";
+  process.env.ROUTER_RPC ??= "https://devnet-router.magicblock.app/";
+  process.env.ER_VALIDATOR ??= "MTEWGuqxUpYZGFJQcp8tLN7x5v9BSeoFHYWQQ3n3xzo";
+}
+
+const { NET } = await import("../../tests/er/lib/env.js");
+const { bootstrapDevnet } = await import("../../tests/er/lib/admin.js");
 
 if (NET !== "devnet") {
   console.error(

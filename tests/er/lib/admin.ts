@@ -436,8 +436,13 @@ export async function bootstrapDevnet(): Promise<BootstrappedDevnet> {
   const crank = loadOrCreateKey("devnet-crank");
   const feePayer = loadOrCreateKey("devnet-fee-payer");
   // Rough sanity floor, not an exact budget: rent for Config/Market/MarketRisk/Pool/mint/ATAs
-  // + tx fees. Real funding (~6 SOL total incl. deploy) is a human step (brief Step 2/3).
-  await requireFunded(admin.publicKey, 2, "devnet-admin");
+  // + tx fees. Task 5 (real run): the program deploy alone cost ~4.61 SOL of the payer's 6.1 SOL
+  // budget (program-data rent at current devnet rates, well above the brief's ~1.7 SOL estimate),
+  // and `devnet-admin` is funded separately from the deploy payer — lowered from the original "2
+  // SOL, ~6 total incl. deploy" placeholder (which assumed one shared budget) to a floor that still
+  // comfortably covers this function's actual on-chain cost (small account rents + tx fees, well
+  // under 0.3 SOL in practice) without requiring more of the payer's remaining balance than needed.
+  await requireFunded(admin.publicKey, 0.3, "devnet-admin");
   console.log("admin", admin.publicKey.toBase58());
   console.log("crank", crank.publicKey.toBase58());
   console.log("fee-payer", feePayer.publicKey.toBase58());
