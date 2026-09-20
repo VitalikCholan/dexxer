@@ -46,11 +46,14 @@ mod size_tests {
         let u = 8 + UserAccount::INIT_SPACE;
         let p = 8 + Position::INIT_SPACE;
         let d = 8 + DisclosureQueue::INIT_SPACE;
+        let m = 8 + Market::INIT_SPACE;
         let perm = rent(EphemeralPermission::size_of(PERMISSION_MEMBERS) as u32);
         println!("UserAccount {u} B, Position {p} B, DisclosureQueue {d} B; L1 rent total {} lamports; ER permission prefund {perm} lamports x3",
             l1_rent(u) + l1_rent(p) + l1_rent(d));
         assert!(p < 400, "Position must stay under 400 B (spec §8 Q3)");
         assert!(d < 1300, "DisclosureQueue must stay under 1300 B");
-        assert!(8 + Market::INIT_SPACE < 300);
+        // Bound through a `let` (not the bare const expression) so clippy's
+        // `assertions_on_constants` lint doesn't fire on a compile-time-true assert.
+        assert!(m < 300, "Market must stay under 300 B");
     }
 }
