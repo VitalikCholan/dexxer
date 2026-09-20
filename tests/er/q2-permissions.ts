@@ -98,7 +98,15 @@ async function main() {
     const info = await erConn.getAccountInfo(pk, "confirmed");
     lamportsAfter1[name] = info!.lamports;
     const delta = lamportsBefore[name] - lamportsAfter1[name];
-    assert(delta > 0, `${name} lamports decreased after init_permissions (before ${lamportsBefore[name]}, after ${lamportsAfter1[name]}, delta ${delta})`);
+    // 4096 = measured rent for a public/0-member EphemeralPermission (this
+    // week's `EphemeralMembersArgs { is_private: false, members: vec![] }`).
+    // Task 2's Q3 estimate (7264 lamports, `size_of(3)`) assumed the future
+    // 3-member private version — Task 15 should update that estimate.
+    const EXPECTED_PERMISSION_RENT = 4096;
+    assert(
+      delta === EXPECTED_PERMISSION_RENT,
+      `${name} lamports decreased by exactly ${EXPECTED_PERMISSION_RENT} after init_permissions (before ${lamportsBefore[name]}, after ${lamportsAfter1[name]}, delta ${delta})`,
+    );
     console.log(`  ${name} lamports: ${lamportsBefore[name]} -> ${lamportsAfter1[name]} (paid ${delta} for its own EphemeralPermission)`);
   }
 

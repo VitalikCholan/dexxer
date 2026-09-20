@@ -136,11 +136,10 @@ ER-акаунти в PER оплачуються за іншою формулою
 для тижня 1; жодного даунгрейду/апгрейду версії не знадобилось — фолбек на
 `0.14.10` не використовувався). Обидві програми задеплоєні на локальний L1
 (`http://127.0.0.1:8899`) командою `anchor deploy --provider.cluster
-http://127.0.0.1:8899` після явного `--ignore-keys` для білду (`target/deploy/dexxer_core-keypair.json`
-на цій машині розсинхронізувався з `declare_id!` вдруге після Task 0's
-`anchor keys sync` — ключ програми не змінювався, оскільки апгрейд
-використовує upgrade-authority id.json, а не keypair-файл програми;
-деплой — апгрейд наявної адреси `G2okX5Bae4CxfK8vzso1Ecc96QUv7E3P4YvxaZnaYXoV`).
+http://127.0.0.1:8899` (деплой — апгрейд наявної адреси
+`G2okX5Bae4CxfK8vzso1Ecc96QUv7E3P4YvxaZnaYXoV`). Звичайний `anchor build`
+працює без прапорців; `anchor keys list` збігається з `declare_id!` для
+обох програм.
 
 Program ids: `dexxer_core = G2okX5Bae4CxfK8vzso1Ecc96QUv7E3P4YvxaZnaYXoV`,
 `mock_oracle = 68xBWNR1uKorC7keLWvsT1pCmKC4RnwvRF4LoV3CCprh`. ER validator
