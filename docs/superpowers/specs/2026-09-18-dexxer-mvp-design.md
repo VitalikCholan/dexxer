@@ -78,8 +78,8 @@ Hedge mode / кілька позицій на ринок · limit/TP/SL · fundi
 | `Faucet` | `[b"faucet", owner]`, dexxer_core | L1 | — | публічний | rate-limit N dUSDC/добу |
 | `dUSDC` mint | mint authority = PDA dexxer_core | L1 | — | публічний | 6 decimals |
 | `Market` | `[b"market", b"SOL"]` | делегований у TEE | при зміні параметрів | permissioned `[crank, admin]` | параметри, mark-EMA, paused_open |
-| `MarketRisk` | `[b"risk", market]` | делегований | **ніколи** | permissioned | OI long/short, бакети ліквідації |
-| `Pool` | `[b"pool", dUSDC]` | делегований | **фіксовано 5 хв** | permissioned | capital_total, locked_total, fees, insurance, bad_debt_total |
+| `MarketRisk` | `[b"risk", market]` | делегований | **ніколи** | permissioned | OI long/short, open_positions; **без бакетів на MVP (week 1, 20.09.2026, §8 Q4)** — `buckets: [LiqBucket; 64]` не реалізовано, кандидати на ліквідацію йдуть парами `[Position, UserAccount]` у `remaining_accounts`, не через вибірку `MarketRisk` |
+| `Pool` | `[b"pool", dUSDC]` | делегований | **фіксовано 5 хв** | permissioned | capital_total, `protocol_liquidity` **(week 1, 20.09.2026)** — власний капітал пулу, контрагент PnL, сідується `seed_pool`; locked_total, fees, insurance, bad_debt_total |
 | `UserAccount` | `[b"user", owner]` | делегований | фіксовано 5 хв, усі разом | `[owner, session, crank]` | free_margin, locked_margin, session_key, expiry, actions_left, nonce. **Витік:** `locked_margin` з гранулярністю 5 хв = верхня межа позиції. Прийнято для MVP |
 | `Position` | `[b"position", owner, market]` | делегований | **нуль до закриття** | `is_private`, `[owner, session, crank]` | створюється раз при онбордингу; при закритті обнуляється; undelegate лише при виході після скрабу |
 | `DisclosureQueue` | `[b"dq", owner]` | делегований | **ніколи** | `[owner, crank]` | кільце N `ClosedRecord` до reveal |
@@ -103,7 +103,7 @@ Hedge mode / кілька позицій на ринок · limit/TP/SL · fundi
 | Флоу | Підписант | Куди | Що | Відмова |
 |---|---|---|---|---|
 | Онбординг | owner (MWA, 1 підпис, fallback 2) | L1 | faucet → `init_user` (UserAccount + Position + DisclosureQueue, рента під permission) → `deposit` (eSPL у pool eATA) → `delegate_user` у `tee_validator` з Delegation Actions `create_permission` → session | розбити на 2 tx |
-| `credit_deposit` | crank / callback | ER | `free_margin += amount` після підтвердження депозиту на L1 | ризик №1, план Б §7 |
+| `credit_deposit` **(week 1, 20.09.2026 — закриває ризик №1, §8 Q1)** | owner | ER | CPI SPL-transfer user eATA → pool eATA + `free_margin += amount`; ідемпотентність конструктивна — той самий переказ вдруге не пройде, бо кошти вже витрачені першим (`tests/er/q1-deposit.ts`, `week1-results.md` Task 13 Q1: CU 18 090, немає крана, немає `l1_signature`, `DuplicateDeposit` прибрано) | insufficient funds (SPL) при повторі |
 | open / increase / decrease / close / add_margin | session key | TEE ER, token-gated | оракул → маржинальна перевірка → `Position`, `UserAccount`, `MarketRisk`, `Pool` | помилка програми; slippage; paused |
 | `crank_tick` | ER scheduler (fallback: наш скрипт) | TEE ER | ~1 с: оракул, mark-EMA, ≤16 кандидатів у `remaining_accounts`, ліквідація | stale → скіп ліквідацій, `stale_ticks++`, після N `paused_open` |
 | `commit_aggregate` | crank | ER → L1 | 5 хв: `Pool`, `UserAccount[]`, `Market` при зміні; Magic Actions `write_commitment` для закритих | ретрай; квота через fee vault |
@@ -166,7 +166,7 @@ liq_price
 | liquidation fee | 100 bps notional |
 | oi_cap | 30% капіталу пулу на сторону |
 | max_staleness | 2 с — рахувати за ER `Clock` / `publish_time`, **не** за `posted_slot` (check 4, 19.09.2026) |
-| max_conf | 50 bps; `conf == 0` = «не заповнено» → hard reject на відкриття (check 4) |
+| max_conf | 50 bps; `conf == 0` = «не заповнено» → hard reject на відкриття (check 4). **(week 1, 20.09.2026)** `Market.max_conf_bps == 0` вимикає перевірку conf повністю (`oracle::check_open_quality`, guard пропускається до `require!(conf > 0)`) — новий ризик №8 у §7.1: demo-конфіг ставить `max_conf_bps = 0`, бо devnet-фід стабільно повертає `conf == 0` |
 | ema_alpha | під період 1–2 с; фактичний інтервал кранка плаває, див. §3.5 |
 | гістерезис | 2 **тики** (не секунди — інтервал тіка не фіксований, check 5, 19.09.2026) |
 
@@ -185,7 +185,9 @@ Index — Pyth Lazer через Pricing Oracle. Mark — EMA(index) у `Market.m
 
 ### 3.5 Crank
 
-Цикл ~1 с: (1) оракул + валідація; stale → скіп ліквідацій, mark не оновлюється; (2) mark-EMA; (3) кандидати з бакетів `±δ` від mark у `MarketRisk`; (4) `equity < MMR × notional` два тики → `liquidate`: закриття за mark, liq fee у пул, лишок → `free_margin`, `ClosedRecord{Liquidated}`; (5) bad debt → `Pool.insurance`, далі капітал, `bad_debt_total` публічний через коміт; (6) одна форма tx з плановими діями.
+Цикл ~1 с: (1) оракул + валідація; stale → скіп ліквідацій, mark не оновлюється; (2) mark-EMA; (3) кандидати з бакетів `±δ` від mark у `MarketRisk`; (4) `equity < MMR × notional` два тики → `liquidate`: закриття за mark, liq fee у пул, лишок → `free_margin`, `ClosedRecord{Liquidated}`; (5) bad debt → `Pool.insurance`, далі капітал, `bad_debt_total` публічний через коміт; (6) підписант `crank_tick` — `Config.crank` або `CRANK_SIGNER` PDA (`magicblock_magic_program_api::pda`); перевірка виконавця scheduler-а — тиждень 2 на devnet **(week 1, 20.09.2026)**.
+
+**Кандидати (week 1, 20.09.2026).** `MarketRisk.buckets` не реалізовано (§8 Q4, §2.1) — кандидати на ліквідацію передаються явно в `remaining_accounts` парами `[Position, UserAccount]`, ≤16 пар (`MAX_CANDIDATES`), кожен акаунт перевіряється на власність програми, writable-прапорець і збіг PDA-деривації перед десеріалізацією (`programs/dexxer_core/src/instructions/crank.rs`). Вибір кандидатів для передачі — відповідальність викликача (crank/fallback-скрипт), не бакетів у `MarketRisk`.
 
 Тригер — MagicBlock scheduler; fallback — `scripts/crank-fallback` з ключем `Config.crank`.
 
@@ -198,7 +200,14 @@ Index — Pyth Lazer через Pricing Oracle. Mark — EMA(index) у `Market.m
 
 ### 3.6 Інваріанти (proptest + LiteSVM)
 
-- `Σ free_margin + Σ position.margin + pool.fees + pool.insurance == pool.capital_total` після кожної інструкції.
+**(week 1, 20.09.2026)** Інваріант переписано під `Pool.protocol_liquidity` (§2.1, §4.1):
+
+```
+protocol_liquidity + Σ free_margin + Σ position.margin + fees_accrued + insurance == capital_total == баланс pool eATA
+```
+
+`bad_debt_total` — статистика, окремий лічильник; токени не рухає й у суму інваріанта не входить (перевіряється кожним LiteSVM-тестом через `assert_invariant`/`assert_invariant_ctx`, `tests/litesvm/src/lib.rs`).
+
 - `liq_price(long) < entry < liq_price(short)` при рівному lev.
 - Округлення не зменшує пул.
 - Ліквідація не дає юзеру більше `margin + upnl`.
@@ -214,10 +223,21 @@ MMR 5% при 10x — рух 5% за 1–4 с = bad debt на пул (тесто
 
 ### 4.1 Структури
 
+**(week 1, 20.09.2026)** Структури нижче — фактичний код тижня 1 (`programs/dexxer_core/src/state/*.rs`), не план 18.09. Розходження з початковою версією й чому:
+
+- `Config` отримав `dusdc_mint: Pubkey` (пряме посилання на мінт, замінює похідний доступ) і `disclosure_delay_slots: u64` (параметр затримки розкриття з §1.1/§2.2, раніше не був полем).
+- `Market.max_staleness_slots` перейменовано на `max_staleness_secs: u64` — staleness рахується за секундами ER `Clock`, не за слотами (check 4, 19.09.2026, §3.3). Додано `liq_hysteresis_ticks: u8` і `max_stale_ticks: u16` як поля `Market` (гістерезис і поріг паузи — параметри ринку, не константи; check 5, 19.09.2026, §3.5).
+- `MarketRisk.buckets: [LiqBucket; 64]` не реалізовано (§8 Q4): кандидати на ліквідацію передаються явно в `remaining_accounts` (§3.5, §4.2), а не вибираються з бакетів у акаунті.
+- `Pool.vault_eata` перейменовано на `vault_ata: Pubkey` (це L1 ATA пулу, делегується під eATA — `delegate_pool`, §4.2); додано `protocol_liquidity: u64` (§2.1) — сідується `seed_pool`, є частиною інваріанта §3.6.
+- `UserAccount` без змін структурно.
+- `Position.liq_ticks: u8` — лічильник гістерезису ліквідації (§3.5), веде crank; `closed: Option<ClosedRecord>` лишився. Додано `oi_notional: u64` — точний внесок позиції в `MarketRisk.oi_long`/`oi_short`, підтримується синхронно на open/increase/decrease. Причина: `entry` — VWAP, що округлюється вгору на кожному `increase_position`, тож перерахунок `notional(size, entry)` при закритті/ліквідації міг перевищити реальний залишок OI (подвійне округлення: VWAP вгору, потім `notional` знов вгору) і underflow'нути `checked_sub` у бухгалтерії OI. Зменшення OI-леджера завжди йде через `Position.oi_notional`, ніколи через перерахунок з VWAP entry.
+- Додано `Faucet { version: u8, owner: Pubkey, day_start: i64, minted_today: u64, bump: u8 }` (`[b"faucet", owner]`, §2.1) з `FAUCET_DAILY_LIMIT` — не було в §4.1 плану 18.09, інструкції `faucet_init`/`faucet_mint` §4.2 без `init_if_needed`.
+
 ```rust
 #[account] pub struct Config {
     version: u8, admin: Pubkey, crank: Pubkey, paused: bool,
-    oracle_program: Pubkey, tee_validator: Pubkey, bump: u8,
+    oracle_program: Pubkey, tee_validator: Pubkey, dusdc_mint: Pubkey,
+    disclosure_delay_slots: u64, bump: u8,
 }
 
 #[account] pub struct Market {
@@ -225,22 +245,22 @@ MMR 5% при 10x — рух 5% за 1–4 с = bad debt на пул (тесто
     max_lev_bps: u32, imr_bps: u32, mmr_bps: u32,
     open_fee_bps: u16, close_fee_bps: u16, liq_fee_bps: u16,
     oi_cap: u64, max_position: u64, min_size: u64,
-    max_staleness_slots: u64, max_conf_bps: u16, max_deviation_bps: u16,
+    max_staleness_secs: u64, max_conf_bps: u16, max_deviation_bps: u16,
     mark: u64, mark_slot: u64, ema_alpha_bps: u16,
+    liq_hysteresis_ticks: u8, max_stale_ticks: u16,
     paused_open: bool, stale_ticks: u16, bump: u8,
-}
+}                                               // 128 B (з дискримінатором)
 
 #[account] pub struct MarketRisk {
     version: u8, market: Pubkey,
     oi_long: u64, oi_short: u64, open_positions: u32,
-    buckets: [LiqBucket; 64],
     bump: u8,
-}
+}                                               // без buckets (§8 Q4)
 
 #[account] pub struct Pool {
-    version: u8, mint: Pubkey, vault_eata: Pubkey,
-    capital_total: u64, locked_total: u64, fees_accrued: u64,
-    insurance: u64, bad_debt_total: u64,
+    version: u8, mint: Pubkey, vault_ata: Pubkey,
+    capital_total: u64, protocol_liquidity: u64, locked_total: u64,
+    fees_accrued: u64, insurance: u64, bad_debt_total: u64,
     last_commit_slot: u64, bump: u8,
 }
 
@@ -249,16 +269,21 @@ MMR 5% при 10x — рух 5% за 1–4 с = bad debt на пул (тесто
     session_key: Pubkey, session_expiry: i64, actions_left: u32,
     free_margin: u64, locked_margin: u64,
     nonce: u64, bump: u8,
-}
+}                                               // 110 B (з дискримінатором)
 
 #[account] pub struct Position {
     version: u8, owner: Pubkey, market: Pubkey,
     state: PositionState,          // Empty | Open | Closed
     side: Side, size: u64, entry: u64, margin: u64,
-    liq_price: u64, opened_slot: u64,
+    liq_price: u64, opened_slot: u64, liq_ticks: u8,
+    oi_notional: u64,              // точний внесок в MarketRisk.oi_long/oi_short
     closed: Option<ClosedRecord>,  // до mark_committed
     bump: u8,
-}
+}                                               // 265 B (з дискримінатором)
+
+#[account] pub struct Faucet {
+    version: u8, owner: Pubkey, day_start: i64, minted_today: u64, bump: u8,
+}                                               // FAUCET_DAILY_LIMIT / добу
 
 pub struct ClosedRecord {
     market: Pubkey, side: Side, size: u64, entry: u64,
@@ -286,21 +311,29 @@ pub struct ClosedRecord {
 
 **Колонка «Підписант» — обов'язкова явна перевірка в коді, не опис.** `EphemeralPermission` гейтить **лише читання** акаунтів; сабміт і виконання транзакції не гейтяться зовсім, а `getAuthToken` видається будь-якому ключу з валідним підписом і членства не перевіряє (check 9, 19.09.2026). Тобто не-member спокійно надсилає tx у ER і мутує permissioned-акаунт, якщо сама інструкція його не зупинила. Кожна ER-інструкція сама доводить право підписанта: `has_one`/`constraint` проти `Config.crank`, `Position.owner`, `UserAccount.session_key`, плюс `session_expiry` і `actions_left`.
 
+**(week 1, 20.09.2026)** Таблиця нижче — фактичні інструкції тижня 1. Окремої `deposit`-інструкції на L1 нема: `credit_deposit` сам виконує SPL-transfer і нарахування в одній ER-tx (закриває §8 Q1, детально — §2.2). `init_market`/`init_pool`/`set_params`/`pause`/`unpause` розбито по рядках і доповнено новими адмінськими інструкціями (`seed_pool`, `delegate_market`, `delegate_pool`, `faucet_init`), яких не було в плані 18.09.
+
 | Інструкція | Шар | Підписант | Guards |
 |---|---|---|---|
-| `init_config`, `init_market`, `init_pool`, `set_params`, `pause`, `unpause` | L1 | admin | — |
-| `faucet_mint` | L1 | user | rate-limit |
-| `init_user` | L1 | owner | UserAccount + Position(Empty) + DisclosureQueue, рента під `EphemeralPermission::size_of(3)` |
-| `delegate_user` | L1 | owner | делегує три PDA у `tee_validator`; Delegation Actions `create_permission(private, [owner, session, crank])` |
-| `deposit` | L1 | owner | eSPL delegateSpl → pool eATA; подія для `credit_deposit` |
-| `credit_deposit` | ER | crank | ідемпотентно за `(owner, l1_signature)`; `free_margin += amount` |
+| `init_config`, `set_params`, `pause`, `unpause` | L1 | admin | — |
+| `init_market` | L1 | admin | `MarketParams::validate()`; ініціалізує `Market` + `MarketRisk` |
+| `delegate_market` | L1 | admin | делегує `Market` + `MarketRisk` у `tee_validator` (без `EphemeralPermission` — жодних per-user полів) |
+| `init_pool` | L1 | admin | ініціалізує `Pool` + pool ATA (`associated_token`) |
+| `seed_pool` | L1 | admin | admin ATA → pool ATA, звичайний SPL-transfer, **до** делегування; `capital_total` і `protocol_liquidity += amount` |
+| `delegate_pool` | L1 | admin | eATA init → депонує **весь поточний баланс** pool ATA (не 0 — task-13 знахідка) → делегує eATA → делегує `Pool`; усі п'ять eSPL/делегаційних PDA (`pool_eata`, `vault`, `vault_ata`, `eata_buffer/record/metadata`) звіряються on-chain деривацією, не довіряються клієнту |
+| `faucet_init` | L1 | owner | створює `Faucet` (без `init_if_needed`) + перший мінт під rate-limit |
+| `faucet_mint` | L1 | owner | `FAUCET_DAILY_LIMIT`/добу, вікно 86 400 с котиться |
+| `init_user` | L1 | owner | UserAccount + Position(Empty) + DisclosureQueue, рента під `EphemeralPermission::size_of(3)` на кожен із трьох PDA (`market` тут — address-only перевірка через seeds, не `Account<Market>`: після `delegate_market` акаунт належить Delegation Program на L1) |
+| `delegate_user` | L1 | owner | делегує три PDA у `tee_validator` |
+| `init_permissions` | ER | owner | три `CreateEphemeralPermissionCpi` в одній tx — `UserAccount`, `Position`, `DisclosureQueue`, кожен PDA сам платить (закриває §8 Q2); тиждень 1: `EphemeralMembersArgs { is_private: false, members: vec![] }` (публічний, 0 членів — приватна 3-членна версія `[owner, session, crank]` — тиждень 2); ідемпотентність — `perm.owner == PERMISSION_PROGRAM_ID`, не `perm.lamports() > 0` (свіжий permission-акаунт має 0 лампортів, рента йде у спільний `ephemeral_vault`) |
+| `credit_deposit` | ER | owner | CPI SPL-transfer user eATA → pool eATA + `free_margin += amount`; ідемпотентність конструктивна (кошти вже витрачені першим переказом), не за `(owner, l1_signature)`; `DuplicateDeposit` прибрано (закриває §8 Q1, ризик №1) |
 | `set_session` | ER | owner | оновлює `session_key`, `session_expiry`, `actions_left`, members |
 | `open_position` | ER | session / owner | `!paused`, `!paused_open`, `Empty`, оракул, IMR, lev, OI cap, max_position, min_size, slippage, `actions_left > 0` |
 | `increase_position` | ER | session | те саме, `Open`, VWAP entry |
 | `decrease_position` | ER | session | `Open`, залишок ≥ IMR або повне закриття |
 | `add_margin` | ER | session | `free_margin ≥ amount` |
 | `close_position` | ER | session | `Open`, оракул, slippage → `ClosedRecord`, `Closed` |
-| `crank_tick` | ER | crank | оракул, EMA, ≤16 remaining_accounts, MMR + гістерезис |
+| `crank_tick` | ER | `Config.crank` **або** `CRANK_SIGNER` PDA (`magicblock_magic_program_api::pda`) | оракул, EMA; кандидати — явні пари `[Position, UserAccount]` у `remaining_accounts`, ≤16 пар (`MAX_CANDIDATES`), кожна пара звіряється на власність програми, writable-прапорець і PDA-деривацію перед десеріалізацією; MMR + гістерезис через `Position.liq_ticks` |
 | `commit_aggregate` | ER | crank | `MagicIntentBundleBuilder`: `Pool`, `UserAccount[]`, `Market` при зміні; `add_post_commit_actions(write_commitment)` для `Closed && !commitment_written` |
 | `write_commitment` | L1 (Magic Action) | injected escrow signer — **обов'язкова перевірка** | seeds `[b"commit", nonce]`; контекст `#[action]` **мусить** оголосити `source_program` (`address = crate::ID`) перед `escrow_auth`/`escrow` (check 7, 19.09.2026) |
 | `mark_committed` | ER | crank | `ClosedRecord` → `DisclosureQueue`, `Position → Empty` |
@@ -310,7 +343,9 @@ pub struct ClosedRecord {
 
 ### 4.3 Помилки
 
-`Paused`, `OpenPaused`, `StaleOracle`, `OracleConfidence`, `OracleDeviation`, `WrongFeed`, `InsufficientMargin`, `LeverageTooHigh`, `PositionTooSmall`, `PositionTooLarge`, `OiCapExceeded`, `SlippageExceeded`, `PositionNotEmpty`, `PositionNotOpen`, `NotLiquidatable`, `Unauthorized`, `SessionExpired`, `NoActionsLeft`, `HasOpenPosition`, `QueueFull`, `MathOverflow`, `InvalidActionSigner`, `DuplicateDeposit`.
+**(week 1, 20.09.2026)** `DuplicateDeposit` прибрано — `credit_deposit` без окремого `deposit`-кроку й без `l1_signature`, ідемпотентність конструктивна (§2.2, §4.2). Додано `PoolInsolvent`, `InvalidCandidate` (crank_tick, §3.5/§4.2), `InvalidOracleAccount`, `AmountZero`, `InvalidParams` (валідація `MarketParams`), `FaucetLimit`. Порядок нижче — код (`programs/dexxer_core/src/errors.rs`); коди `6000..` стабільні для LiteSVM-тестів, нові варіанти лише дописуються в кінець.
+
+`Paused`, `OpenPaused`, `StaleOracle`, `OracleConfidence`, `OracleDeviation`, `WrongFeed`, `InvalidOracleAccount`, `InsufficientMargin`, `LeverageTooHigh`, `PositionTooSmall`, `PositionTooLarge`, `OiCapExceeded`, `SlippageExceeded`, `PositionNotEmpty`, `PositionNotOpen`, `NotLiquidatable`, `Unauthorized`, `SessionExpired`, `NoActionsLeft`, `HasOpenPosition`, `QueueFull`, `MathOverflow`, `InvalidActionSigner`, `PoolInsolvent`, `InvalidCandidate`, `AmountZero`, `InvalidParams`, `FaucetLimit`.
 
 ### 4.4 Модулі
 
@@ -328,6 +363,8 @@ programs/dexxer_core/src/
 **Межа `math.rs` / `risk.rs`.** `math.rs` — чисті формули без Anchor-типів і без політики: `notional`, `upnl`, `fee`, `required_margin`, `equity`, `vwap_entry`, `decrease_pnl`, **`liq_price`**, **`ema`** (mark-EMA §3.4). Усі ставки — `u32` bps, проміжні `u128`, кожен крок `checked_*`, округлення на користь пулу. `risk.rs` — політика поверх них: перевірки IMR/MMR, `is_liquidatable` у контексті ринку, бакети `MarketRisk`, вибір ≤16 кандидатів на тік. `math.rs` повертає `MathError`; конвертація в `anchor_lang::error::Error` — через `From<MathError>` → `DexxerError` в `errors.rs`, щоб формули не знали про Anchor.
 
 **`oracle.rs` — з check 4 (19.09.2026).** Feed перевіряти **деривацією PDA** `["price_feed", "pyth-lazer", <symbol>]` під `Config.oracle_program`, не по `writeAuthority` (він = System Program, порожній). Ціна = `price / 10^exponent`, `exponent` на цьому фіді `+8`. `conf == 0` → відмова на відкриття. Staleness — за ER `Clock`/`publish_time`; `posted_slot` — ER-слот, з L1-слотом не порівнюється. Акаунт 134 байти (133 IDL + 1 хвостовий) — читати за офсетами, не валідувати за довжиною.
+
+**(week 1, 20.09.2026)** `check_open_quality` реалізує вимикач: `market.max_conf_bps == 0` повертає `Ok(())` одразу, без перевірки `conf_bps > 0` і без порівняння з лімітом — це навмисний параметр ринку (`MarketParams`), не баг, потрібний, бо devnet-фід стабільно віддає `conf == 0` (check 4). Ризик №8 §7.1.
 
 Anchor-правила: `has_one`/`seeds`/`bump`/`constraint` на кожному акаунті; `init_if_needed` не використовувати; `program_id` оракула — з `Config`; `remaining_accounts` валідувати явно; `version: u8` у кожному PDA.
 
@@ -453,7 +490,7 @@ Solana MCP `program_autofixer` — на кожну зміну програми �
 
 | # | Ризик | Удар | Мітигація | Коли |
 |---|---|---|---|---|
-| 1 | eSPL у TEE не працює або депозит L1 → `credit_deposit` не зв'язується | блокер кастоді | План Б: власний escrow-vault на L1; `deposit` пише `free_margin` до делегації; поповнення = undelegate → deposit → redelegate | тиждень 0 |
+| 1 | ~~eSPL у TEE не працює або депозит L1 → `credit_deposit` не зв'язується~~ **ЗАКРИТО (week 1, 20.09.2026, §8 Q1):** `credit_deposit` сам виконує CPI SPL-transfer user eATA → pool eATA в тій самій ER-tx, що й `free_margin += amount` — окремого «зв'язку» L1↔ER не потрібно, план Б (escrow-vault) не знадобився | блокер кастоді (знято) | `tests/er/q1-deposit.ts`, CU 18 090, `week1-results.md` Task 13 Q1 | — |
 | 2 | ER не читає неделеговані L1-акаунти | архітектурний | усе, що читає ER-інструкція, — делеговане | тиждень 0 |
 | 3 | Scheduler у TEE нестабільний | ліквідації | `crank-fallback` на Railway | тиждень 2 |
 | 4 | Tx з приватними акаунтами видно не-member'ам | ламає демо | **АКТИВОВАНО (check 6, 19.09.2026).** Метадані (факт, слот, час, успіх, fee, CU) не гейтяться; список підписів по program id відкритий усім. Мітигація: (а) однакова форма tx для всіх дій — ззовні `open`, `close`, `add_margin` нерозрізнювані; (б) cover traffic — `crank_tick` кожну ~1 с є природним chaff'ом, і торгова tx за самими метаданими нерозрізнювана від тіку кранка; (в) чесно описати канал у README і в §2.3. **Спільний sponsor-payer сам по собі не допомагає** — витік іде від списку підписів program id, а не від payer'а | тиждень 0 → постійно |
@@ -463,6 +500,7 @@ Solana MCP `program_autofixer` — на кожну зміну програми �
 | 8 | Смерть devnet-tee під час демо | демо | записане відео + `mb-stack` резерв | тиждень 4 |
 | 9 | Соло, 4 тижні | усе | порядок жертв | постійно |
 | 10 | Colosseum забороняє код до 28.09 | тиждень 0 | перевірити 19.09; тиждень 0 = spikes | 19.09 |
+| 11 | **(week 1, 20.09.2026)** conf на devnet-фіді порожній (`conf == 0` на кожному читанні, check 4) — демо йде з `Market.max_conf_bps = 0`, що вимикає перевірку confidence повністю (`oracle::check_open_quality`) | відкриття без реального сигналу довіри до ціни | продукт: вимагати `conf > 0` і ненульовий `max_conf_bps`; на MVP-devnet прийнято свідомо, бо фід сам ніколи не заповнює conf | тиждень 2+ |
 
 **Порядок жертв:** локальні push → History-екран → `DisclosureQueue`/reveal (лишити commitment) → increase/decrease → **ніколи**: ліквідаційний crank, приватність `Position`, тест на Seeker.
 
@@ -513,10 +551,10 @@ Solana MCP `program_autofixer` — на кожну зміну програми �
 
 ## 8. Відкриті питання (закриваються тижнем 0, не документом)
 
-1. Механізм зв'язку депозиту на L1 з `credit_deposit` в ER (eSPL callback? наш crank читає L1 події?) — **НЕ закрито тижнем 0.** Check 2 довів лише механіку eSPL (`delegateSpl` + `transferSpl` у TEE, баланси сходяться), але самого зв'язку «депозит на L1 → нарахування в ER» не перевіряв. → тиждень 1, дні 1–2.
-2. Чи можна створити `EphemeralPermission` на трьох PDA в одній Delegation Actions-транзакції — **НЕ закрито тижнем 0.** Check 1 створив permission на **одному** PDA; три в одній tx не пробували. → тиждень 1, дні 1–2.
-3. Розмір `Position` + `DisclosureQueue` та рента при онбордингу — **НЕ закрито тижнем 0**, бо структури ще не зафіксовані в коді. Порахувати після §4.1 → тиждень 1, дні 1–2.
-4. Чи потрібен `MarketRisk.buckets` на MVP-обсязі — лишити структуру, заповнювати лінійно.
+1. ~~Механізм зв'язку депозиту на L1 з `credit_deposit` в ER~~ **ЗАКРИТО тижнем 1 (20.09.2026), деталі — `docs/superpowers/plans/week1-results.md` Task 13 Q1.** Відповідь: жодного окремого «зв'язку» немає. `credit_deposit` — owner-signed ER-інструкція, що сама робить CPI SPL-transfer user eATA → pool eATA і в тій самій транзакції `free_margin += amount`; ніякого крана, callback'а чи `l1_signature` не потрібно. CU 18 090 на mb-stack (`tests/er/q1-deposit.ts`). Ідемпотентність — конструктивна: подвійний `credit_deposit` тим самим переказом фізично неможливий, бо джерельні кошти вже витрачені першим переказом (SPL `insufficient funds` на другій спробі); `DuplicateDeposit` як окрема помилка прибрано з §4.3.
+2. ~~Чи можна створити `EphemeralPermission` на трьох PDA в одній Delegation Actions-транзакції~~ **ЗАКРИТО тижнем 1 (20.09.2026), деталі — `week1-results.md` Task 13 Q2.** Відповідь: так. `init_permissions` (ER, owner) — одна tx, три `CreateEphemeralPermissionCpi` (`UserAccount`, `Position`, `DisclosureQueue`), кожен PDA сам платить за свій permission-акаунт. CU 57 615. Тиждень 1: публічний permission (`is_private: false, members: []`) — приватна 3-членна версія `[owner, session, crank]` лишається тижню 2. Ідемпотентність другого виклику — за `perm.owner == PERMISSION_PROGRAM_ID`, не за лампортами: свіжий `EphemeralPermission` на цій версії mb-stack має **0 лампортів** (рента йде у спільний `ephemeral_vault`, не на сам акаунт) — `perm.lamports() > 0` як ознака «вже створено» не працює.
+3. ~~Розмір `Position` + `DisclosureQueue` та рента при онбордингу~~ **ЗАКРИТО тижнем 1 (20.09.2026), деталі — `week1-results.md` Task 2 (з правкою від 20.09) і §4.1 вище.** Виміряні розміри (з 8-байтним дискримінатором Anchor): `UserAccount` 110 B, `Position` **265 B** (257 B у першому вимірі Task 2 + 8 B за нове поле `Position.oi_notional`, додане пізніше в тижні 1 — див. правку в `week1-results.md`), `DisclosureQueue` 1156 B, `Market` 128 B. L1-рента (`Rent::default()`, формула `(space + 128) × 6960`) за три user-PDA (`UserAccount` + `Position` + `DisclosureQueue`) разом — **13 328 400 лампортів (≈0.0133 SOL)** (було 13 272 720 до додавання `oi_notional`). Префандинг трьох ER-permission-акаунтів на онбординг (`EphemeralPermission::size_of(3)` через `ephemeral_accounts::rent`) — 7264 лампорта кожен, 3 × 7264 = 21 792 лампорта сумарно; це прогноз під **майбутню приватну 3-членну** версію (тиждень 2) — фактична вартість поточної, публічної, 0-членної версії тижня 1 виявилась меншою, **4096 лампортів** на permission (виміряно на mb-stack, Task 13 Q2), тож префанд із запасом покриває week-1-версію і свідомо лишається розрахованим під week-2-версію, а не зменшується.
+4. Чи потрібен `MarketRisk.buckets` на MVP-обсязі — лишити структуру, заповнювати лінійно. **Примітка (week 1, 20.09.2026):** код пішов іншим шляхом — `buckets` не реалізовано взагалі; кандидати на ліквідацію передаються явно парами `[Position, UserAccount]` у `remaining_accounts` `crank_tick` (§2.1, §3.5, §4.1, §4.2). Питання №4 лишається відкритим у первісному сенсі (чи знадобляться бакети для масштабу за межами MVP), але поточна відповідь тижня 1 — ні, явних кандидатів достатньо.
 5. Formatting `Disclosure` для explorer — чи достатньо `getProgramAccounts` по discriminator без індексера при десятках записів.
 
 ---
