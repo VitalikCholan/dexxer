@@ -1,19 +1,28 @@
 // tests/er/devnet/03-commit-cycle.ts
 //
-// Task 5, script 3 of 4: `commit_aggregate` x12, >=5s apart, signed by
-// `Config.fee_payer` via a TEE-authenticated connection — proving the
-// fee-vault-scoped commit path crosses M3's plain-commit limit of 10
+// Task 5, script 3 of 4: `commit_aggregate` x12, >=5s apart, transaction
+// signed by `Config.fee_payer` via a TEE-authenticated connection — proving
+// the fee-vault-scoped commit path crosses M3's plain-commit limit of 10
 // (week2-results.md §Task 1). After each commit, polls base-layer `Pool`
-// until `last_commit_slot` propagates; records the fee payer's ER lamport
-// balance before/after every commit (the real per-commit cost measurement
-// M3 could not pin — see the header comment on the result for how this
-// settles decision (c)). Asserts `Position`/`UserAccount` on base layer are
-// unchanged throughout (only `Pool` is ever committed by this instruction).
+// until `last_commit_slot` propagates; records the `FeeEscrow` PDA's ER
+// lamport balance before/after every commit — the real per-commit cost
+// measurement M3 could not pin, and the first attempt at this script
+// couldn't either (the fee-vault path never activated — see task-5-report.md
+// "fix round 1"). This settles decision (c). Asserts `Position`/`UserAccount`
+// on base layer are unchanged throughout (only `Pool` is ever committed by
+// this instruction).
+//
+// Task 5 fix round 1 (controller ruling): `commit_aggregate`'s CPI intent
+// payer is now the dedicated, delegated `FeeEscrow` PDA (not `Config.fee_payer`
+// — a plain wallet can never satisfy the fee-vault path's "delegated, signs
+// via seeds" requirement; see programs/dexxer_core/src/instructions/commit.rs).
+// `payer` (`Config.fee_payer`, still `devnet-fee-payer`) remains the outer
+// transaction's signer/authorizer only.
 //
 // Run: `npm run devnet:commit` (from tests/er). Requires 01 to have run at
 // least once (uses its persisted owner/position/userAccount for the
-// unchanged-on-base assertion) and `fund-fee-payer`-equivalent SOL on
-// `devnet-fee-payer` (see below — NOT `fund-fee-payer.ts`, see finding).
+// unchanged-on-base assertion), `devnet-bootstrap.ts` to have created +
+// delegated `FeeEscrow`, and `fund-fee-payer.ts` to have topped it up.
 
 import { readFileSync } from "fs";
 import { dirname, resolve } from "path";
@@ -69,7 +78,8 @@ async function main() {
   console.log("=== bootstrapDevnet (idempotent) ===");
   const boot = await bootstrapDevnet();
   const feePayer = loadOrCreateKey("devnet-fee-payer");
-  console.log("fee-payer (Config.fee_payer):", feePayer.publicKey.toBase58());
+  console.log("fee-payer (Config.fee_payer, tx signer only):", feePayer.publicKey.toBase58());
+  console.log("fee-escrow (CPI intent payer):", boot.feeEscrow.toBase58());
   console.log("magic_fee_vault (Config.magic_fee_vault):", MAGIC_FEE_VAULT.toBase58());
 
   const feePayerBaseBal = await baseConn.getBalance(feePayer.publicKey, "confirmed");
@@ -78,6 +88,13 @@ async function main() {
   const feePayerConn = await teeConn(feePayer);
   const core = dexxerCoreProgram(feePayerConn, feePayer);
   const config = pdas.config();
+
+  const escrowInfo = await baseConn.getAccountInfo(boot.feeEscrow, "confirmed");
+  const { DELEGATION_PROGRAM_ID } = await import("@magicblock-labs/ephemeral-rollups-sdk");
+  if (!escrowInfo || !escrowInfo.owner.equals(DELEGATION_PROGRAM_ID)) {
+    console.error(`FAIL: fee-escrow is not delegated (owner=${escrowInfo?.owner.toBase58() ?? "null"}). Re-run devnet-bootstrap.ts.`);
+    process.exit(1);
+  }
 
   const position = new PublicKey(run.position);
   const userAccount = new PublicKey(run.userAccount);
@@ -88,10 +105,10 @@ async function main() {
   let lastSlot = BigInt(poolBefore.lastCommitSlot.toString());
   console.log("Pool.last_commit_slot before cycle:", lastSlot.toString());
 
-  const results: { i: number; ok: boolean; sig?: string; err?: string; balBefore: number; balAfter: number; baseSlot?: string }[] = [];
+  const results: { i: number; ok: boolean; sig?: string; err?: string; escrowBefore: number; escrowAfter: number; baseSlot?: string }[] = [];
 
   for (let i = 1; i <= NUM_COMMITS; i++) {
-    const balBefore = await feePayerConn.getBalance(feePayer.publicKey, "confirmed").catch(() => -1);
+    const escrowBefore = await feePayerConn.getBalance(boot.feeEscrow, "confirmed").catch(() => -1);
     try {
       const ix = await core.methods
         .commitAggregate()
@@ -99,24 +116,27 @@ async function main() {
           config,
           payer: feePayer.publicKey,
           pool: boot.pool,
+          feeEscrow: boot.feeEscrow,
           magicFeeVault: MAGIC_FEE_VAULT,
           magicContext: MAGIC_CONTEXT_ID,
           magicProgram: MAGIC_PROGRAM_ID,
         })
         .instruction();
       const sig = await sendAndConfirmIx(feePayerConn, feePayer, ix);
-      const balAfter = await feePayerConn.getBalance(feePayer.publicKey, "confirmed").catch(() => -1);
-      console.log(`commit #${i}: OK sig=${sig} balance ${balBefore} -> ${balAfter} (delta ${balBefore >= 0 && balAfter >= 0 ? balAfter - balBefore : "n/a"})`);
+      const escrowAfter = await feePayerConn.getBalance(boot.feeEscrow, "confirmed").catch(() => -1);
+      console.log(
+        `commit #${i}: OK sig=${sig} escrow balance ${escrowBefore} -> ${escrowAfter} (delta ${escrowBefore >= 0 && escrowAfter >= 0 ? escrowAfter - escrowBefore : "n/a"})`,
+      );
       const newSlot = await pollBaseCommitSlot(boot.pool, lastSlot);
       console.log(`  base Pool.last_commit_slot propagated: ${lastSlot} -> ${newSlot}`);
       lastSlot = newSlot;
-      results.push({ i, ok: true, sig, balBefore, balAfter, baseSlot: newSlot.toString() });
+      results.push({ i, ok: true, sig, escrowBefore, escrowAfter, baseSlot: newSlot.toString() });
     } catch (e: any) {
-      const balAfter = await feePayerConn.getBalance(feePayer.publicKey, "confirmed").catch(() => -1);
+      const escrowAfter = await feePayerConn.getBalance(boot.feeEscrow, "confirmed").catch(() => -1);
       const msg = e?.message ?? String(e);
       console.log(`commit #${i}: FAILED — ${msg}`);
       if (e?.logs) console.log("  logs:", e.logs);
-      results.push({ i, ok: false, err: msg, balBefore, balAfter });
+      results.push({ i, ok: false, err: msg, escrowBefore, escrowAfter });
       if (i === NUM_COMMITS) break; // still record the last attempt's evidence, then stop
       // Keep going is pointless once the mechanism has failed once — but per
       // the task's "timebox" rule, try up to a couple more before giving up
@@ -138,7 +158,7 @@ async function main() {
   console.log("\n=== SUMMARY ===");
   for (const r of results) {
     console.log(
-      `#${r.i}: ${r.ok ? "OK" : "FAIL"} balance ${r.balBefore}->${r.balAfter} (delta ${r.balBefore >= 0 && r.balAfter >= 0 ? r.balAfter - r.balBefore : "n/a"})${r.sig ? ` sig=${r.sig}` : ""}${r.err ? ` err=${r.err.slice(0, 150)}` : ""}`,
+      `#${r.i}: ${r.ok ? "OK" : "FAIL"} escrow ${r.escrowBefore}->${r.escrowAfter} (delta ${r.escrowBefore >= 0 && r.escrowAfter >= 0 ? r.escrowAfter - r.escrowBefore : "n/a"})${r.sig ? ` sig=${r.sig}` : ""}${r.err ? ` err=${r.err.slice(0, 150)}` : ""}`,
     );
   }
   console.log("Position unchanged on base:", positionUnchanged);

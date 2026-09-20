@@ -76,6 +76,7 @@ const POSITION_SEED = Buffer.from("position");
 const DQ_SEED = Buffer.from("dq");
 const FAUCET_SEED = Buffer.from("faucet");
 const MINT_AUTH_SEED = Buffer.from("mint_auth");
+const FEE_ESCROW_SEED = Buffer.from("fee_escrow");
 export const SOL_SYMBOL = Buffer.from([83, 79, 76, 0, 0, 0, 0, 0]); // b"SOL\0\0\0\0\0"
 
 // mock_oracle seeds, matching programs/mock_oracle/src/lib.rs
@@ -89,6 +90,7 @@ function pda(seeds: (Buffer | Uint8Array)[], programId: PublicKey): PublicKey {
 export const pdas = {
   config: () => pda([CONFIG_SEED], DEXXER_CORE_PROGRAM_ID),
   mintAuth: () => pda([MINT_AUTH_SEED], DEXXER_CORE_PROGRAM_ID),
+  feeEscrow: () => pda([FEE_ESCROW_SEED], DEXXER_CORE_PROGRAM_ID),
   market: () => pda([MARKET_SEED, SOL_SYMBOL], DEXXER_CORE_PROGRAM_ID),
   marketRisk: (market: PublicKey) => pda([RISK_SEED, market.toBuffer()], DEXXER_CORE_PROGRAM_ID),
   pool: (mint: PublicKey) => pda([POOL_SEED, mint.toBuffer()], DEXXER_CORE_PROGRAM_ID),

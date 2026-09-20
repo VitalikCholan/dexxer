@@ -89,6 +89,8 @@ export interface Bootstrapped {
   pool: PublicKey;
   poolAta: PublicKey;
   feed: PublicKey;
+  /** `commit_aggregate`'s delegated CPI-payer PDA (Task 5 fix round 1 — see admin.rs `FeeEscrow`). */
+  feeEscrow: PublicKey;
   sigs: Record<string, string>;
 }
 
@@ -248,6 +250,53 @@ async function seedAndDelegatePool(
   sigs.delegatePool = sig;
   console.log("delegate_pool", sig);
   await waitDelegated(baseConn, pool, "pool");
+}
+
+/**
+ * Task 5 fix round 1 (controller ruling): create + delegate the dedicated
+ * `FeeEscrow` PDA that `commit_aggregate` now uses as its intent CPI payer
+ * (see `programs/dexxer_core/src/instructions/{admin,commit}.rs`) —
+ * identical between `bootstrap()`/`bootstrapDevnet()`, so factored out the
+ * same way `seedAndDelegatePool` is. Idempotent: skips `init_fee_escrow` if
+ * the PDA already exists, skips `delegate_fee_escrow` if already delegated.
+ */
+async function initAndDelegateFeeEscrow(core: Program, admin: Keypair, config: PublicKey, sigs: Record<string, string>): Promise<PublicKey> {
+  const feeEscrow = pdas.feeEscrow();
+  const info = await baseConn.getAccountInfo(feeEscrow, "confirmed");
+  if (!info) {
+    const sig = await core.methods
+      .initFeeEscrow()
+      .accounts({ admin: admin.publicKey, config, feeEscrow, systemProgram: SystemProgram.programId })
+      .rpc();
+    sigs.initFeeEscrow = sig;
+    console.log("init_fee_escrow", sig);
+  } else {
+    console.log("init_fee_escrow: exists, skipped");
+  }
+  const infoNow = info ?? (await baseConn.getAccountInfo(feeEscrow, "confirmed"));
+  if (!infoNow || !infoNow.owner.equals(DELEGATION_PROGRAM_ID)) {
+    const t = delegationTriple(feeEscrow, DEXXER_CORE_PROGRAM_ID);
+    const sig = await core.methods
+      .delegateFeeEscrow()
+      .accounts({
+        admin: admin.publicKey,
+        config,
+        bufferFeeEscrow: t.buffer,
+        delegationRecordFeeEscrow: t.record,
+        delegationMetadataFeeEscrow: t.metadata,
+        feeEscrow,
+        ownerProgram: DEXXER_CORE_PROGRAM_ID,
+        delegationProgram: DELEGATION_PROGRAM_ID,
+        systemProgram: SystemProgram.programId,
+      })
+      .rpc();
+    sigs.delegateFeeEscrow = sig;
+    console.log("delegate_fee_escrow", sig);
+    await waitDelegated(baseConn, feeEscrow, "fee_escrow");
+  } else {
+    console.log("delegate_fee_escrow: already delegated, skipped");
+  }
+  return feeEscrow;
 }
 
 export async function bootstrap(): Promise<Bootstrapped> {
@@ -424,7 +473,10 @@ export async function bootstrap(): Promise<Bootstrapped> {
   // --- admin dUSDC ATA + faucet + seed_pool + delegate_pool (L1, before delegating the pool) ---
   await seedAndDelegatePool(core, admin, config, mintAuth, mint, pool, poolAta, sigs);
 
-  return { admin, mint, market, marketRisk, pool, poolAta, feed, sigs };
+  // --- init + delegate the fee-escrow PDA (Task 5 fix round 1) ---
+  const feeEscrow = await initAndDelegateFeeEscrow(core, admin, config, sigs);
+
+  return { admin, mint, market, marketRisk, pool, poolAta, feed, feeEscrow, sigs };
 }
 
 export async function bootstrapDevnet(): Promise<BootstrappedDevnet> {
@@ -572,5 +624,8 @@ export async function bootstrapDevnet(): Promise<BootstrappedDevnet> {
   // --- admin dUSDC ATA + faucet + seed_pool + delegate_pool (shared with `bootstrap()`) ---
   await seedAndDelegatePool(core, admin, config, mintAuth, mint, pool, poolAta, sigs);
 
-  return { admin, mint, market, marketRisk, pool, poolAta, feed, sigs, feePayer };
+  // --- init + delegate the fee-escrow PDA (Task 5 fix round 1) ---
+  const feeEscrow = await initAndDelegateFeeEscrow(core, admin, config, sigs);
+
+  return { admin, mint, market, marketRisk, pool, poolAta, feed, feeEscrow, sigs, feePayer };
 }

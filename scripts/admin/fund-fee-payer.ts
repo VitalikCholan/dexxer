@@ -1,32 +1,38 @@
 // scripts/admin/fund-fee-payer.ts
 //
-// Task 0 (week 2): top up the devnet fee-payer's lamport balance inside the
-// TEE rollup, via the Ephemeral SPL Token program's sponsored "delegated
-// transfer" (`lamportsDelegatedTransferIx` — see the `magicblock` skill's
-// `references/lamports-topup.md`, and week-2 plan decision #4: a dedicated
-// `fee-payer` keypair, not `crank`, pays for `commit_aggregate`'s
-// fee-vault-scoped commits after the free 25).
+// Task 5 fix round 1 (controller ruling): top up the `FeeEscrow` PDA's
+// lamport balance inside the TEE rollup, via the Ephemeral SPL Token
+// program's sponsored "delegated transfer" (`lamportsDelegatedTransferIx` —
+// see the `magicblock` skill's `references/lamports-topup.md`).
 //
-// Run (see devnet-bootstrap.ts for the same DEXXER_NET requirement):
+// Renamed in intent (kept the filename for npm-script/doc continuity):
+// originally this topped up `devnet-fee-payer` (the plain wallet that signs
+// `commit_aggregate`'s outer transaction) directly — but `lamportsDelegatedTransferIx`
+// requires its `destination` to already be a *delegated* base-layer account
+// ("Destination must already be delegated" in lamports-topup.md), and a
+// plain wallet can never satisfy that (confirmed on-chain: Task 5's first
+// attempt failed with `InvalidAccountOwner`, see task-5-report.md). The fix
+// round gave `commit_aggregate` a dedicated delegated PDA — `FeeEscrow`
+// (programs/dexxer_core/src/instructions/admin.rs's `init_fee_escrow`/
+// `delegate_fee_escrow`) — as its actual CPI intent payer; `devnet-fee-payer`
+// remains only the transaction's signer/authorizer (`Config.fee_payer`,
+// checked by `CommitAggregate.payer`'s constraint) and needs no ER-vault
+// balance of its own (only ordinary base SOL for its own tx fees, already
+// funded in Task 5's bootstrap). This script now tops up `FeeEscrow`
+// instead, which — once `bootstrapDevnet()`'s `initAndDelegateFeeEscrow` has
+// run — is a genuinely delegated account and satisfies the precondition.
+//
+// Run (see devnet-bootstrap.ts for the same DEXXER_NET requirement, and run
+// devnet-bootstrap.ts first so `FeeEscrow` exists and is delegated):
 //   cd tests/er && DEXXER_NET=devnet npx tsx ../../scripts/admin/fund-fee-payer.ts
-//
-// NOT run by Task 0 itself — same reasons as devnet-bootstrap.ts (unfunded
-// payer, no deploy yet), PLUS a precondition this script cannot satisfy on
-// its own: `lamportsDelegatedTransferIx` requires `destination` (the fee
-// payer) to already be a *delegated* base-layer account — "Destination must
-// already be delegated" in lamports-topup.md. Nothing in Task 0 delegates
-// the fee-payer's own system account (that wiring — likely alongside
-// `Config.fee_payer` — is a later task's job); running this before that
-// exists will fail on-chain with a clear error. This file is a code
-// deliverable, checked with `tsc --noEmit` only.
 
 import { randomBytes } from "node:crypto";
 import { LAMPORTS_PER_SOL, Transaction, sendAndConfirmTransaction } from "@solana/web3.js";
 import { lamportsDelegatedTransferIx } from "@magicblock-labs/ephemeral-rollups-sdk";
 
-// Task 5 fix: same `.env`-shadows-`devnet`-profile issue as
-// devnet-bootstrap.ts (see its header comment) — force the devnet
-// endpoints into `process.env` before the dynamic import below.
+// Same `.env`-shadows-`devnet`-profile issue as devnet-bootstrap.ts (see its
+// header comment) — force the devnet endpoints into `process.env` before the
+// dynamic import below.
 if ((process.env.DEXXER_NET ?? "local") === "devnet") {
   process.env.BASE_RPC ??= "https://rpc.magicblock.app/devnet";
   process.env.ER_RPC ??= "https://devnet-tee.magicblock.app";
@@ -36,6 +42,8 @@ if ((process.env.DEXXER_NET ?? "local") === "devnet") {
   process.env.ER_VALIDATOR ??= "MTEWGuqxUpYZGFJQcp8tLN7x5v9BSeoFHYWQQ3n3xzo";
 }
 const { NET, baseConn, loadOrCreateKey, teeConn } = await import("../../tests/er/lib/env.js");
+const { pdas } = await import("../../tests/er/lib/program.js");
+const { DELEGATION_PROGRAM_ID } = await import("@magicblock-labs/ephemeral-rollups-sdk");
 
 if (NET !== "devnet") {
   console.error(
@@ -49,9 +57,18 @@ const TOPUP_SOL = 0.2;
 
 async function main(): Promise<void> {
   const admin = loadOrCreateKey("devnet-admin");
-  const feePayer = loadOrCreateKey("devnet-fee-payer");
+  const feeEscrow = pdas.feeEscrow();
   console.log("admin (payer)", admin.publicKey.toBase58());
-  console.log("fee-payer (destination)", feePayer.publicKey.toBase58());
+  console.log("fee-escrow (destination)", feeEscrow.toBase58());
+
+  const escrowInfo = await baseConn.getAccountInfo(feeEscrow, "confirmed");
+  if (!escrowInfo || !escrowInfo.owner.equals(DELEGATION_PROGRAM_ID)) {
+    console.error(
+      `FAIL: fee-escrow (${feeEscrow.toBase58()}) is not delegated (owner=${escrowInfo?.owner.toBase58() ?? "null"}). ` +
+        "Run devnet-bootstrap.ts first (it creates + delegates FeeEscrow via initAndDelegateFeeEscrow).",
+    );
+    process.exit(1);
+  }
 
   const amount = BigInt(Math.round(TOPUP_SOL * LAMPORTS_PER_SOL));
   // Fresh salt per logical top-up request (lamports-topup.md): reusing a
@@ -59,19 +76,19 @@ async function main(): Promise<void> {
   // fails if it's still live from a prior attempt.
   const salt = randomBytes(32);
 
-  const ix = lamportsDelegatedTransferIx(admin.publicKey, feePayer.publicKey, amount, salt);
+  const ix = lamportsDelegatedTransferIx(admin.publicKey, feeEscrow, amount, salt);
   const tx = new Transaction().add(ix);
   const sig = await sendAndConfirmTransaction(baseConn, tx, [admin], { commitment: "confirmed" });
   console.log("lamportsDelegatedTransferIx", sig, "amount", amount.toString(), "lamports, salt", Buffer.from(salt).toString("hex"));
 
-  const rollup = await teeConn(feePayer);
-  const bal = await rollup.getBalance(feePayer.publicKey, "confirmed");
-  console.log("fee-payer balance in rollup", bal, "lamports");
+  const rollup = await teeConn(admin);
+  const bal = await rollup.getBalance(feeEscrow, "confirmed");
+  console.log("fee-escrow balance in rollup", bal, "lamports");
   if (bal < Number(amount)) {
-    console.error(`FAIL: expected fee-payer rollup balance >= ${amount} lamports, got ${bal}`);
+    console.error(`FAIL: expected fee-escrow rollup balance >= ${amount} lamports, got ${bal}`);
     process.exit(1);
   }
-  console.log("ok: fee-payer funded in rollup");
+  console.log("ok: fee-escrow funded in rollup");
 }
 
 main().catch((e) => {

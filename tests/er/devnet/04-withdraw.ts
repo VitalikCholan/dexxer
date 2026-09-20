@@ -7,8 +7,17 @@
 // {idempotent:false})` on base -> assert base ATA balance +300e6 and that
 // base `UserAccount` reflects the withdraw's commit intent.
 //
+// Task 5 fix round 1 (controller ruling, item 3): the first run of this
+// script left `UserAccount`'s commit intent unconfirmed after ~7.5 minutes
+// of polling. Re-checked after the fix round's other changes landed: still
+// unconfirmed after 30+ minutes — genuinely stuck, not just slow. Per the
+// ruling, `withdraw`'s commit intent is now routed through the same
+// `fee_escrow` delegated PDA `commit_aggregate` uses (see
+// instructions/user.rs), instead of the plain `owner` wallet.
+//
 // Run: `npm run devnet:withdraw` (from tests/er). Requires 01 to have run
-// (uses its persisted owner/userAccount/userAta/mint).
+// (uses its persisted owner/userAccount/userAta/mint) and `fee_escrow` to
+// already be delegated (devnet-bootstrap.ts).
 
 import { readFileSync } from "fs";
 import { dirname, resolve } from "path";
@@ -80,6 +89,7 @@ async function main() {
   assert(freeMarginBefore >= WITHDRAW_AMOUNT, `free_margin (${freeMarginBefore}) >= withdraw amount (${WITHDRAW_AMOUNT})`);
 
   console.log("=== withdraw (ER, owner token) ===");
+  const feeEscrow = pdas.feeEscrow();
   const withdrawIx = await core.methods
     .withdraw(new BN(WITHDRAW_AMOUNT.toString()))
     .accounts({
@@ -89,6 +99,7 @@ async function main() {
       ownerAta: userAta,
       vaultAta: poolAta,
       tokenProgram: TOKEN_PROGRAM_ID,
+      feeEscrow,
       magicContext: MAGIC_CONTEXT_ID,
       magicProgram: MAGIC_PROGRAM_ID,
     })
