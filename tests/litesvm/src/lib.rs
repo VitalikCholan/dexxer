@@ -86,6 +86,33 @@ pub fn assert_custom_error(r: &Result<TransactionMetadata, FailedTransactionMeta
     );
 }
 
+/// Extract the custom program error code (e.g. `6006`) from a failed tx's
+/// error `Display`, or `None` if it failed some other way (or didn't fail).
+/// Mirrors `assert_custom_error`'s two observed formats instead of matching
+/// on `TransactionError`/`InstructionError` directly, since those solana-*
+/// crates are only transitive dependencies here (pulled in via `litesvm`),
+/// not declared ones.
+pub fn custom_error_code(
+    r: &Result<TransactionMetadata, FailedTransactionMetadata>,
+) -> Option<u32> {
+    let e = r.as_ref().err()?.err.to_string();
+    if let Some(start) = e.find("Custom(") {
+        let rest = &e[start + "Custom(".len()..];
+        let end = rest.find(')')?;
+        if let Ok(code) = rest[..end].parse::<u32>() {
+            return Some(code);
+        }
+    }
+    if let Some(pos) = e.find("custom program error: ") {
+        let hex = e[pos + "custom program error: ".len()..].trim_start_matches("0x");
+        let hex: String = hex.chars().take_while(|c| c.is_ascii_hexdigit()).collect();
+        if let Ok(code) = u32::from_str_radix(&hex, 16) {
+            return Some(code);
+        }
+    }
+    None
+}
+
 /// protocol_liquidity + Σ free + Σ pos.margin + fees + insurance == capital_total == vault balance.
 /// Shared across Task 7 (trade), 8 (liquidation) and 9/10 (decrease/crank) tests.
 pub fn assert_invariant(h: &Harness, w: &setup::World, traders: &[&setup::Trader]) {
@@ -97,20 +124,31 @@ pub fn assert_invariant(h: &Harness, w: &setup::World, traders: &[&setup::Trader
 pub fn assert_invariant_ctx(h: &Harness, w: &setup::World, traders: &[&setup::Trader], ctx: &str) {
     let pool: dexxer_core::state::Pool = h.account(&w.pool);
     let mut sum = pool.protocol_liquidity + pool.fees_accrued + pool.insurance;
+    let mut locked_sum: u64 = 0;
     for t in traders {
         let u: dexxer_core::state::UserAccount = h.account(&t.user);
         let p: dexxer_core::state::Position = h.account(&t.position);
-        sum += u.free_margin
-            + if p.state == dexxer_core::state::PositionState::Open {
-                p.margin
-            } else {
-                0
-            };
+        let open_margin = if p.state == dexxer_core::state::PositionState::Open {
+            p.margin
+        } else {
+            0
+        };
+        sum += u.free_margin + open_margin;
+        locked_sum += open_margin;
+        assert_eq!(
+            u.locked_margin, open_margin,
+            "{ctx}user.locked_margin != position.margin for {}",
+            t.user
+        );
     }
     assert_eq!(sum, pool.capital_total, "{ctx}sum != capital_total");
     assert_eq!(
         pool.capital_total,
         token_ix::token_balance(&h.svm, &w.pool_ata),
         "{ctx}capital_total != vault balance"
+    );
+    assert_eq!(
+        pool.locked_total, locked_sum,
+        "{ctx}pool.locked_total != Σ position.margin over Open positions"
     );
 }

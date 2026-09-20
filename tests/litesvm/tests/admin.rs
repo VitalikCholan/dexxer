@@ -72,4 +72,26 @@ fn seed_pool_requires_admin_and_nonzero() {
     .unwrap();
     let r = h.send(&[ixs::seed_pool(&w.admin.pubkey(), &w, 0)], &[&w.admin]);
     assert_custom_error(&r, 6000 + DexxerError::AmountZero as u32);
+
+    // Non-admin case: a stranger with their own funded-ATA setup cannot seed
+    // the pool. `SeedPool`'s `config` account carries
+    // `has_one = admin @ DexxerError::Unauthorized`, and Anchor validates
+    // accounts in struct-field order (admin signer, then config), so this
+    // fails that has_one check before the amount or any token balance is
+    // even considered. The `@` override means the on-chain error is our own
+    // `Unauthorized` (6019), not Anchor's generic ConstraintHasOne (2001) —
+    // named here since that's what the review ruling anchored on.
+    let stranger = Keypair::new();
+    h.fund(&stranger.pubkey(), 1_000_000_000);
+    h.send(
+        &[dexxer_litesvm::token_ix::create_ata(
+            &stranger.pubkey(),
+            &stranger.pubkey(),
+            &w.mint,
+        )],
+        &[&stranger],
+    )
+    .unwrap();
+    let r = h.send(&[ixs::seed_pool(&stranger.pubkey(), &w, 1)], &[&stranger]);
+    assert_custom_error(&r, 6000 + DexxerError::Unauthorized as u32);
 }

@@ -3,11 +3,12 @@
 // Deterministic PRNG (seed 0xDEADBEEF) so a failure reproduces exactly.
 use dexxer_core::{math, state::*};
 use dexxer_litesvm::{
-    assert_invariant_ctx, ixs,
+    assert_invariant_ctx, custom_error_code, ixs,
     setup::{Trader, World},
     Harness,
 };
 use solana_signer::Signer;
+use std::collections::HashMap;
 
 struct Lcg(u64);
 impl Lcg {
@@ -67,12 +68,53 @@ fn random_sequences_keep_pool_invariants() {
     let mut close_attempt = 0u32;
     let mut crank_ok = 0u32;
     let mut liquidated = 0u32;
+    // Custom error code -> occurrence count, over every failed trade-op
+    // attempt below (crank itself must never fail — see the `unwrap_or_else`
+    // in its arm — so it never contributes here).
+    let mut err_hist: HashMap<u32, u32> = HashMap::new();
+
+    // The op valid for the trader's current state: Empty can only be opened
+    // (or left for a crank tick), Open can be add_margin/increase/decrease/
+    // closed (or left for a crank tick). Drawing from this set — instead of
+    // drawing one of 7 fixed slots and falling through to a crank whenever
+    // the draw doesn't fit the state — means every non-crank draw below is a
+    // genuine attempt against dexxer_core, not a silent no-op.
+    enum Op {
+        Open,
+        AddMargin,
+        Increase,
+        Decrease,
+        Close,
+        Crank,
+    }
 
     for step in 0..300u32 {
         slot += 1;
         ts += 1;
         h.warp(slot, ts);
-        let i = rng.below(traders.len() as u64) as usize;
+        // Re-post the feed every step (same price unless this step is a
+        // crank, which posts its own moved price below) so a trade-op
+        // attempt never sees a stale oracle just because the crank ratio
+        // dropped once every draw became a genuine attempt (task 12 finding
+        // #6) — staleness is `max_staleness_secs` (2s) old, independent of
+        // whether a crank_tick happened to run this step.
+        w.set_price(&mut h, price, 5, ts, slot);
+        // Draw uniformly among traders that aren't Closed (week 1: a Closed
+        // position never returns to Empty, so a Closed trader has no valid
+        // trade op at all — including it in the draw would just waste steps
+        // on forced cranks, the same fallthrough-to-crank problem this
+        // rewrite is fixing). Falls back to the full roster on the
+        // essentially-unreachable case every tracked trader is Closed at once.
+        let alive: Vec<usize> = (0..traders.len())
+            .filter(|&idx| {
+                h.account::<Position>(&traders[idx].position).state != PositionState::Closed
+            })
+            .collect();
+        let i = if alive.is_empty() {
+            rng.below(traders.len() as u64) as usize
+        } else {
+            alive[rng.below(alive.len() as u64) as usize]
+        };
         let side = if rng.below(2) == 0 {
             Side::Long
         } else {
@@ -80,8 +122,27 @@ fn random_sequences_keep_pool_invariants() {
         };
         let size = 100_000_000 + rng.below(20_000_000_000); // 0.1 .. 20.1 SOL
         let st = h.account::<Position>(&traders[i].position).state;
-        match rng.below(7) {
-            0 | 1 if st == PositionState::Empty => {
+        // ~50% trade attempts / ~50% cranks: comfortably clears the "≥120 of
+        // 300 steps are trade attempts" bar while still giving positions
+        // enough crank ticks against a moving price to actually land a
+        // liquidation (a higher trade bias closes positions out from under
+        // themselves before an adverse crank ever gets a chance at them).
+        // A Closed position (week 1: never returns to Empty, see
+        // Position::state) has no valid trade op at all, so it always
+        // falls to a crank regardless of `do_trade`.
+        let do_trade = rng.below(2) == 0;
+        let op = match st {
+            PositionState::Empty if do_trade => Op::Open,
+            PositionState::Open if do_trade => match rng.below(4) {
+                0 => Op::AddMargin,
+                1 => Op::Increase,
+                2 => Op::Decrease,
+                _ => Op::Close,
+            },
+            _ => Op::Crank,
+        };
+        match op {
+            Op::Open => {
                 opened_attempt += 1;
                 let notional = math::notional(size, price).unwrap();
                 // Half the time bias the margin near the 10 % IMR floor (10-15 %
@@ -107,9 +168,11 @@ fn random_sequences_keep_pool_invariants() {
                 );
                 if r.is_ok() {
                     opened_ok += 1;
+                } else if let Some(code) = custom_error_code(&r) {
+                    *err_hist.entry(code).or_insert(0) += 1;
                 }
             }
-            2 if st == PositionState::Open => {
+            Op::AddMargin => {
                 add_margin_attempt += 1;
                 let r = h.send(
                     &[ixs::add_margin(
@@ -122,9 +185,11 @@ fn random_sequences_keep_pool_invariants() {
                 );
                 if r.is_ok() {
                     add_margin_ok += 1;
+                } else if let Some(code) = custom_error_code(&r) {
+                    *err_hist.entry(code).or_insert(0) += 1;
                 }
             }
-            3 if st == PositionState::Open => {
+            Op::Increase => {
                 increase_attempt += 1;
                 let r = h.send(
                     &[ixs::increase_position(
@@ -139,9 +204,11 @@ fn random_sequences_keep_pool_invariants() {
                 );
                 if r.is_ok() {
                     increase_ok += 1;
+                } else if let Some(code) = custom_error_code(&r) {
+                    *err_hist.entry(code).or_insert(0) += 1;
                 }
             }
-            4 if st == PositionState::Open => {
+            Op::Decrease => {
                 decrease_attempt += 1;
                 let sz = h.account::<Position>(&traders[i].position).size;
                 let r = h.send(
@@ -156,9 +223,11 @@ fn random_sequences_keep_pool_invariants() {
                 );
                 if r.is_ok() {
                     decrease_ok += 1;
+                } else if let Some(code) = custom_error_code(&r) {
+                    *err_hist.entry(code).or_insert(0) += 1;
                 }
             }
-            5 if st == PositionState::Open => {
+            Op::Close => {
                 close_attempt += 1;
                 let pos = h.account::<Position>(&traders[i].position);
                 let r = h.send(
@@ -172,9 +241,11 @@ fn random_sequences_keep_pool_invariants() {
                 );
                 if r.is_ok() {
                     close_ok += 1;
+                } else if let Some(code) = custom_error_code(&r) {
+                    *err_hist.entry(code).or_insert(0) += 1;
                 }
             }
-            _ => {
+            Op::Crank => {
                 // ±3 % move, then a crank over everyone
                 let delta = price / 100 * (1 + rng.below(3));
                 price = if rng.below(2) == 0 {
@@ -187,7 +258,17 @@ fn random_sequences_keep_pool_invariants() {
                     .iter()
                     .map(|t| h.account::<Position>(&t.position).state == PositionState::Open)
                     .collect();
-                let all: Vec<&Trader> = traders.iter().collect();
+                // Cranking every tracked trader (not just the currently Open
+                // ones) worked when the roster stayed <= MAX_CANDIDATES, but
+                // the state-aware draw above now closes positions fast enough
+                // that the roster (replaced 1:1, see below) can grow past
+                // that — so cap the candidate list to the Open positions,
+                // bounded to what one crank_tick accepts.
+                let all: Vec<&Trader> = traders
+                    .iter()
+                    .filter(|t| h.account::<Position>(&t.position).state == PositionState::Open)
+                    .take(MAX_CANDIDATES)
+                    .collect();
                 h.send(&[ixs::crank_tick(&w.crank.pubkey(), &w, &all)], &[&w.crank])
                     .unwrap_or_else(|e| panic!("step {step}: crank must not fail: {e:?}"));
                 for (idx, t) in traders.iter().enumerate() {
@@ -250,15 +331,30 @@ fn random_sequences_keep_pool_invariants() {
                 && h.account::<Position>(&traders[idx].position).state == PositionState::Closed
             {
                 replaced[idx] = true;
-                if traders.len() < 12 {
+                // Raised from the original 12: the state-aware draw closes
+                // positions fast enough that a low cap exhausted the whole
+                // roster (every trader Closed, no valid trade op left) well
+                // before 300 steps. The crank candidate list above is
+                // decoupled from this count (filtered to Open + bounded to
+                // MAX_CANDIDATES), so growing the roster further is safe.
+                if traders.len() < 64 {
                     traders.push(w.new_trader(&mut h, 2_000_000_000));
                     replaced.push(false);
                 }
             }
         }
     }
+    let trade_attempts =
+        opened_attempt + add_margin_attempt + increase_attempt + decrease_attempt + close_attempt;
+    let mut hist: Vec<(u32, u32)> = err_hist.into_iter().collect();
+    hist.sort_by_key(|(code, _)| *code);
+    let hist_str = hist
+        .iter()
+        .map(|(code, count)| format!("{code}:{count}"))
+        .collect::<Vec<_>>()
+        .join(", ");
     println!(
-        "ops: open {}/{} add_margin {}/{} increase {}/{} decrease {}/{} close {}/{} crank {} liquidated {}",
+        "ops: open {}/{} add_margin {}/{} increase {}/{} decrease {}/{} close {}/{} crank {} liquidated {} errors: {{{hist_str}}}",
         opened_ok,
         opened_attempt,
         add_margin_ok,
@@ -271,6 +367,10 @@ fn random_sequences_keep_pool_invariants() {
         close_attempt,
         crank_ok,
         liquidated
+    );
+    assert!(
+        trade_attempts >= 120,
+        "only {trade_attempts} trade attempts in 300 steps"
     );
     assert!(liquidated > 0, "no liquidation occurred in 300 steps");
     let pool: Pool = h.account(&w.pool);
