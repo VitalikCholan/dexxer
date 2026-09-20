@@ -55,5 +55,8 @@ scripts/node_modules/
 magicblock-test-storage/
 
 # program upgrade-authority keypairs (Task 0, week 2) — backup lives in a
-# password manager, not git; see keys/README.md
-keys/
+# password manager, not git; see keys/README.md. `keys/*` (not `keys/`) so
+# the negation below can still re-include the README — once a directory
+# itself is excluded, git won't look inside it for `!`-negated files.
+keys/*
+!keys/README.md
