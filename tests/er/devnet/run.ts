@@ -509,9 +509,16 @@ async function m3_commitLimitsAndFeeVault() {
     const payerErProvider = new anchor.AnchorProvider(payerTee, new anchor.Wallet(payer), { commitment: "confirmed" });
     const payerErProgram = new Program(idl, payerErProvider);
 
+    // Fix round 1: `counter` is privacy-gated (set_privacy(true) since week 0,
+    // members=[user] only) — reading its balance through `payerTee` (payer is
+    // NOT a member) silently returns 0, the same null-vs-hidden ambiguity M2
+    // already documented for getAccountInfo, not a real balance. Use
+    // `userTee` (a real member) for `counter`; `payer` and `feeVault` aren't
+    // privacy-gated, any connection reads them correctly.
     const payerBefore = await payerTee.getBalance(payer.publicKey).catch(() => -1);
-    const counterBefore = await payerTee.getBalance(counterPDA).catch(() => -1);
-    console.log("payer ER balance before fee-vault commits:", payerBefore, "counter ER balance before:", counterBefore);
+    const counterBefore = await userTee.getBalance(counterPDA).catch(() => -1);
+    const vaultBefore = await payerTee.getBalance(feeVault).catch(() => -1);
+    console.log("payer ER balance before:", payerBefore, "counter ER balance before (via member token):", counterBefore, "feeVault balance before:", vaultBefore);
 
     const vaultCommitSigs: string[] = [];
     let vaultFailed = "";
@@ -530,20 +537,57 @@ async function m3_commitLimitsAndFeeVault() {
       }
     }
     const payerAfter = await payerTee.getBalance(payer.publicKey).catch(() => -1);
-    const counterAfter = await payerTee.getBalance(counterPDA).catch(() => -1);
+    const counterAfter = await userTee.getBalance(counterPDA).catch(() => -1);
+    const vaultAfter = await payerTee.getBalance(feeVault).catch(() => -1);
     console.log(
       "payer ER balance after:",
       payerAfter,
       "(delta:",
       payerBefore >= 0 && payerAfter >= 0 ? payerAfter - payerBefore : "n/a",
-      ") counter ER balance after:",
+      ") counter ER balance after (via member token):",
       counterAfter,
       "(delta:",
       counterBefore >= 0 && counterAfter >= 0 ? counterAfter - counterBefore : "n/a",
+      ") feeVault balance after:",
+      vaultAfter,
+      "(delta:",
+      vaultBefore >= 0 && vaultAfter >= 0 ? vaultAfter - vaultBefore : "n/a",
       ")",
     );
+
+    // Re-derive which account actually failed on the *last* attempt (rather
+    // than trust the IDL's declared account order, which legacy
+    // `Transaction.compileMessage()` does NOT preserve — it sorts same-tier
+    // (writable, non-signer) accounts alphabetically by base58 pubkey). Only
+    // meaningful if the loop actually stopped early.
+    let failedAccountIndex: number | undefined;
+    let failedAccountPubkey = "";
+    if (vaultCommitSigs.length < 30) {
+      try {
+        const ix = await payerErProgram.methods
+          .commitWithVault()
+          .accountsPartial({ payer: payer.publicKey, counter: counterPDA, magicFeeVault: feeVault })
+          .instruction();
+        const tx = new Transaction().add(ix);
+        tx.feePayer = payer.publicKey;
+        tx.recentBlockhash = (await payerTee.getLatestBlockhash()).blockhash;
+        tx.sign(payer);
+        const compiled = tx.compileMessage().accountKeys.map((k) => k.toBase58());
+        const sim = await payerTee.simulateTransaction(tx);
+        console.log("re-simulated the failing call: compiled accountKeys:", compiled, "sim.value.err:", JSON.stringify(sim.value.err));
+        const errObj = sim.value.err as any;
+        if (errObj && typeof errObj === "object" && "InsufficientFundsForRent" in errObj) {
+          failedAccountIndex = errObj.InsufficientFundsForRent.account_index;
+          failedAccountPubkey = failedAccountIndex !== undefined ? compiled[failedAccountIndex] : "";
+          console.log(`failing account: index ${failedAccountIndex} = ${failedAccountPubkey}`);
+        }
+      } catch (e: any) {
+        console.log("re-simulation of the failing call threw:", e?.message ?? String(e));
+      }
+    }
+
     m3bPass = vaultCommitSigs.length > 0;
-    m3bNote = `vaultCommits=${vaultCommitSigs.length}/30, counterErBalanceBefore=${counterBefore}, after=${counterAfter}, payerErBalanceBefore=${payerBefore}, after=${payerAfter}${vaultFailed ? `, firstFailure="${vaultFailed.slice(0, 200)}"` : ""}`;
+    m3bNote = `vaultCommits=${vaultCommitSigs.length}/30, counterErBalanceBefore=${counterBefore}, after=${counterAfter}, payerErBalanceBefore=${payerBefore}, after=${payerAfter}, feeVaultBalanceBefore=${vaultBefore}, after=${vaultAfter}, failedAccountIndex=${failedAccountIndex}, failedAccountPubkey=${failedAccountPubkey}${vaultFailed ? `, firstFailure="${vaultFailed.slice(0, 200)}"` : ""}`;
   } catch (e: any) {
     m3bNote = `fee-vault path failed: ${(e?.message ?? String(e)).slice(0, 300)}`;
     console.log("M3b fee-vault path exception:", e);
@@ -559,11 +603,29 @@ async function m4_undelegateWithdraw() {
   console.log("\n=== M4: undelegateIx + withdrawSpl for eSPL ===");
   const mint = new PublicKey("44FTm7zsYePyuBzLmQDjxk53eioxqzkdEW28FEPnSNBk");
   const payer = loadSpikeKey("payer"); // mint authority, fee payer
-  const owner = loadSpikeKey("session"); // fresh identity for this mint's eSPL flow (week 0 didn't use it)
+  // Fix round 1: re-running this measurement against `session` a second time
+  // (it already completed one full deposit->undelegate->withdraw cycle) hit
+  // `withdrawSpl FAILED: ... require!(ephemeral_ata_info.owned_by(&crate::ID))
+  // failed, token_vault.rs:102` — the eSPL ephemeral-ATA bookkeeping for a
+  // given (owner, mint) pair is apparently not safely re-cycleable from this
+  // client without re-creating it, so a fresh, never-cycled identity is used
+  // instead each time this measurement runs (persistent, gitignored, like
+  // `m2owner`).
+  const owner = loadOrCreateSpikeKey("m4owner");
   const depositAmount = 10n;
 
   const ownerAta = getAssociatedTokenAddressSync(mint, owner.publicKey);
   console.log("mint:", mint.toBase58(), "owner:", owner.publicKey.toBase58(), "ownerAta:", ownerAta.toBase58());
+
+  const ownerBaseBal = await baseConn.getBalance(owner.publicKey);
+  if (ownerBaseBal < 0.01 * LAMPORTS_PER_SOL) {
+    const { blockhash } = await baseConn.getLatestBlockhash("confirmed");
+    const tx = new Transaction({ feePayer: payer.publicKey, recentBlockhash: blockhash }).add(
+      SystemProgram.transfer({ fromPubkey: payer.publicKey, toPubkey: owner.publicKey, lamports: 0.01 * LAMPORTS_PER_SOL }),
+    );
+    const sig = await withRetry(() => web3.sendAndConfirmTransaction(baseConn, tx, [payer], { commitment: "confirmed" }), "fund m4owner");
+    console.log("funded m4owner sig:", sig, "(0.01 SOL)");
+  }
 
   // 1. ensure owner's base ATA exists and holds >= depositAmount
   const { createAssociatedTokenAccountIdempotent } = await import("@solana/spl-token");
@@ -605,7 +667,13 @@ async function m4_undelegateWithdraw() {
   }
   console.log("owner ER balance after delegate:", erBalance.toString(), "(expected", depositAmount.toString(), ")");
 
-  // 3. undelegateIx on the ER
+  // 3. undelegateIx on the ER — timed segment 1: send -> confirmed.
+  // (Fix round 1: the previous version started its single timer *after* this
+  // step and the poll below, so the previously-reported "546 ms" only ever
+  // covered the withdrawSpl leg, not the undelegate->poll->withdraw sequence
+  // the report claimed. Now instrumented as three real segments + a true
+  // end-to-end total, timestamped from the undelegate send.)
+  const tUndelegateStart = Date.now();
   const undelIx = undelegateIx(owner.publicKey, mint);
   const undelTx = new Transaction().add(undelIx);
   undelTx.feePayer = owner.publicKey;
@@ -613,9 +681,11 @@ async function m4_undelegateWithdraw() {
   undelTx.sign(owner);
   const undelSig = await withRetry(() => ownerTee.sendRawTransaction(undelTx.serialize(), { skipPreflight: true }), "undelegateIx send");
   await ownerTee.confirmTransaction(undelSig, "confirmed").catch(() => {});
-  console.log("undelegateIx sig:", undelSig);
+  const tUndelegateConfirmed = Date.now();
+  console.log("undelegateIx sig:", undelSig, "(", tUndelegateConfirmed - tUndelegateStart, "ms send->confirmed)");
 
-  // 4. poll base ATA until it's owned by the token program again (undelegated / base-committed)
+  // 4. poll base ATA until it's owned by the token program again (undelegated / base-committed) — segment 2.
+  const tPollStart = tUndelegateConfirmed;
   let baseCommitted = false;
   let baseOwnerSeen = "";
   for (let i = 0; i < 60; i++) {
@@ -627,12 +697,13 @@ async function m4_undelegateWithdraw() {
     }
     await sleep(1000);
   }
-  console.log("base ATA owner after undelegate poll:", baseOwnerSeen, "baseCommitted:", baseCommitted);
+  const tPollEnd = Date.now();
+  console.log("base ATA owner after undelegate poll:", baseOwnerSeen, "baseCommitted:", baseCommitted, "(", tPollEnd - tPollStart, "ms poll)");
 
-  // 5. withdrawSpl(owner, mint, 10n, { idempotent: false }) on base layer
+  // 5. withdrawSpl(owner, mint, 10n, { idempotent: false }) on base layer — segment 3.
+  const tWithdrawStart = tPollEnd;
   let withdrawSig = "";
   let withdrawOk = false;
-  const t0 = Date.now();
   try {
     const withdrawIxs = await withdrawSpl(owner.publicKey, mint, depositAmount, { idempotent: false });
     const wtx = new Transaction().add(...withdrawIxs);
@@ -645,14 +716,35 @@ async function m4_undelegateWithdraw() {
   } catch (e: any) {
     console.log("withdrawSpl FAILED:", e?.message ?? String(e), e?.logs);
   }
-  const elapsedMs = Date.now() - t0;
+  const tWithdrawEnd = Date.now();
+  const undelegateMs = tUndelegateConfirmed - tUndelegateStart;
+  const pollMs = tPollEnd - tPollStart;
+  const withdrawMs = tWithdrawEnd - tWithdrawStart;
+  const totalMs = tWithdrawEnd - tUndelegateStart;
+  console.log(`M4 timing: undelegate=${undelegateMs}ms poll=${pollMs}ms withdraw=${withdrawMs}ms total(undelegate->withdraw)=${totalMs}ms`);
 
   const finalAta = await getAccount(baseConn, ownerAta).catch(() => null);
   console.log("owner base ATA final balance:", finalAta?.amount.toString() ?? "n/a");
 
   const pass = withdrawOk && baseCommitted;
-  record("M4", pass ? "PASS" : "FAIL", `baseCommitted=${baseCommitted}, withdrawOk=${withdrawOk}, withdrawSig=${withdrawSig}, elapsedMs=${elapsedMs}`);
-  return { mint: mint.toBase58(), owner: owner.publicKey.toBase58(), delegateSig, undelSig, baseCommitted, withdrawSig, withdrawOk, elapsedMs };
+  record(
+    "M4",
+    pass ? "PASS" : "FAIL",
+    `baseCommitted=${baseCommitted}, withdrawOk=${withdrawOk}, withdrawSig=${withdrawSig}, undelegateMs=${undelegateMs}, pollMs=${pollMs}, withdrawMs=${withdrawMs}, totalMs=${totalMs}`,
+  );
+  return {
+    mint: mint.toBase58(),
+    owner: owner.publicKey.toBase58(),
+    delegateSig,
+    undelSig,
+    baseCommitted,
+    withdrawSig,
+    withdrawOk,
+    undelegateMs,
+    pollMs,
+    withdrawMs,
+    totalMs,
+  };
 }
 
 // ============================================================== runner ====

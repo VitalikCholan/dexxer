@@ -166,7 +166,7 @@ transaction verification error: Error processing Instruction 0: custom program e
 **M3b — fee-vault.** `magic_fee_vault` (validator-scoped, `magicFeeVaultPdaFromValidator(ER_VALIDATOR)`, TS
 SDK 0.17.0 хелпер, seeds `["magic-fee-vault", validator]` під `DELEGATION_PROGRAM_ID`) =
 **`EUJssY6kG5fb35s9Lc6jyh6joRPo2e2MhJqoKCqcTt5b`** (базовий шар: власник `DELeGGvXpWV2fqJUhqcF5ZSYMS4JTLjteaAMARRSaeSh`,
-баланс 0.00094656 SOL, 8 байт даних).
+баланс 8 393 814 560 lamports (**8.39 SOL**), 8 байт даних).
 
 Перша спроба провалилась (0xa0000000, як і plain-коміт): `payer` (реальний гаманець) як CPI-`payer`, навіть
 після `lamportsDelegatedTransferIx(payer, payer, …)` — та інструкція делегує похідний **"lamports PDA"**
@@ -180,48 +180,95 @@ SDK 0.17.0 хелпер, seeds `["magic-fee-vault", validator]` під `DELEGATI
 Зовнішній гаманець (`payer`) лишається підписантом *транзакції* (платить звичайну комісію — це дозволено, бо
 не є "модифікацією поза комісією"). Перший виклик після цієї зміни — **успіх з першої спроби**.
 
-30 запланованих комітів через `commit_with_vault`: **14/30 успішних**, далі —
-`Transaction results in an account (2) with insufficient funds for rent` (акаунт index 2 = `counter`; сам
-`counter` вичерпав власний баланс — тижня-0 фандинг на `size_of(1)`, ~894 080 лампортів, — і кожен fee-vault-
-коміт списує реальні лампорти з нього). Підписи: #1
+Перший прогін 30 запланованих комітів через `commit_with_vault`: **14/30 успішних**, далі —
+`Transaction results in an account (2) with insufficient funds for rent`. Підписи: #1
 `2bgcGLU2QiU1xqfx7Dh3gxqhxgDyhWLWbiGiz3iEvXp4z9vWdaziKB9Yafz9T5cPSQTrrWjMtusa92jKMD4a6dri`, #2
 `5V6XWEiy5bbjY5wF2ucx35wuYQZUZonJHCuUaDdXrFXS1ZbBJKL3Zv89YqW4Ye5WsyxxZs6i1nZF2Wc91Vh1am47`, #3
 `3dxR2i7NwXV5k853zErx5bEXKVSckF1WtyBaTGZG6ds551t5yiRdbU69NqkKAJpEV99AKgNy5jea8cG7hKjQEfVZ`, #10
 `3AcBefiVkenkoyWw1qZaK1fXJWq8KqxwEjfNH9QF5ADRPzmGYzrfmXe2rKjhBRtU7im8heNHYVfPv1DF9Y2yCip1`, #15 — перша
-невдала. `payer`'s власний ER-баланс лишився незмінним протягом усіх 30 спроб (4520510057 → 4520510057) —
-кошти списувались виключно з `counter`, підтверджуючи, що саме **CPI-payer** (не транзакційний feePayer) є
-економічним актором fee-vault-шляху.
+невдала.
 
-**Не підтверджено емпірично:** припущення плану (§ Global Constraints) "з делегованим payer + magic_fee_vault
-кожен коміт після 25-го коштує `100_000` lamports за акаунт" — у цьому прогоні `counter` вичерпався на 15-му
-виклику (`~894 080 / 14 ≈ 63 863` лампортів/коміт у середньому, грубо), не на 26-му, і жодного явного
-"100_000 lamports" списання в даних не видно. Ця розбіжність, найімовірніше, пояснюється різницею контексту:
-план описував `Pool`-акаунт у `dexxer_core` з іншим (можливо, попередньо профінансованим під конкретний
-бюджет) CPI-payer, а тут CPI-payer — спайковий `counter` зі своїм тижня-0 бюджетом. **Точна економічна модель
-(скільки коштує коміт після N-го) лишається відкритим питанням для Task 2**, яке варто перевимірювати вже на
-`dexxer_core`'s `Pool`/`Config.fee_payer` безпосередньо.
+**Виправлення round 1 (контроль): атрибуція "account 2" та реальні баланси.** Перший прогін читав баланс
+`counter` через **токен `payer`-а** — а `payer` НЕ є членом приватного `user`-лічильника (той самий
+privacy-режим, що й M2), тож `getBalance(counter)` через недозволений токен мовчки повертає `0`, а не реальне
+число (та сама null-vs-hidden двозначність, що й `getAccountInfo` у M2). Записані тоді "counter ER balance
+before/after: 0" — **артефакт читання чужим токеном, не реальний баланс**; попередня оцінка "~63 863
+лампортів/коміт" з них — **відкликається**.
+
+Виправлено (`tests/er/devnet/run.ts`): баланс `counter` тепер читається через **токен `user`-а** (реального
+члена), а після зупинки циклу скрипт **пересимульовує** останню (невдалу) спробу `commit_with_vault` і виводить
+`sim.value.err` разом зі скомпільованим `accountKeys`, щоб напряму зчитати, який індекс і яка адреса
+провалились — а не покладатися на порядок акаунтів у IDL (legacy `Transaction.compileMessage()` **не зберігає**
+порядок оголошення; для акаунтів однакового тиру (writable, не-signer) він сортує їх **алфавітно за base58**,
+тому порядок у транзакції — не порядок у `#[derive(Accounts)]`).
+
+Повторний (контрольний) прогін лише fee-vault-частини M3 (лічильник `user` уже вичерпаний з першого прогону,
+тож усі 30 спроб зазнають невдачі одразу — це саме дало чисте `before`/`after` без жодного успішного коміту
+між ними):
+
+```
+payer ER balance before: 6116666457   after: 6116666457   (delta: 0)
+counter ER balance before (via member token): 894080   after: 894080   (delta: 0)
+feeVault balance before: 8393814560   after: 8393814560   (delta: 0)
+failing account: index 2 = GUrqtjuVRoRYxfeDWpwTNn5xb9vSSBWTZ7KpMfMUdzuJ  (= counterPDA)
+```
+
+**Підтверджено напряму: акаунт, що провалюється — `counter` (index 2 у реально скомпільованій, а не
+IDL-задекларованій транзакції), не `magic_fee_vault`.** `magic_fee_vault` сам лишається незмінним і далеким
+від вичерпання (8.39 SOL) в обох прогонах. `counter`'s баланс — рівно `894 080` лампортів **до і після**
+контрольного прогону, що дорівнює точно rent-exempt мінімуму для його власного 48-байтного розміру
+(`solana rent 48` → `0.00089408 SOL` = `894 080` лампортів, звірено) — тобто `counter` сидить точно на межі
+власної rent-exemption, без жодного запасу.
+
+**Що НЕ підтверджено (чесно позначено як невідоме):** `counter`'s баланс не змінився між "14 успішних" першого
+прогону і "0 успішних" контрольного — тобто гіпотеза "fee-vault-коміт буквально списує лампорти з `counter`
+за раз" **не узгоджується** з даними (якби списував, перший прогін мав би скінчити нижче `894 080`, а не
+рівно на ньому). Найправдоподібніше пояснення — окрема, дискретна квота на fee-vault-коміти (аналогічна
+10-коміт ліміту M3a), а не пряме вичерпання лампортів `counter`; повідомлення `InsufficientFundsForRent`,
+імовірно, — побічний ефект внутрішнього realloc/scratch-простору, зав'язаного на `counter`, а не пряме
+списання видимого балансу. Попередня оцінка "~63 863 лампортів/коміт" та її екстраполяція на "$/добу"
+**відкликаються повністю** — недостатньо даних, щоб порахувати реальну вартість коміту. Точна економічна
+модель (скільки коштує коміт після N-го, чи це взагалі лампорт-based механізм) лишається **повністю відкритим
+питанням для Task 2**, яке варто перевимірювати безпосередньо на `dexxer_core`'s `Pool`/`Config.fee_payer`
+(з чистого, щойно профінансованого акаунта, щоб відрізнити "квота за кількістю" від "вичерпання балансу").
 
 ### M4 — `undelegateIx` + `withdrawSpl` для eSPL
 
-**Статус: PASS.**
+**Статус: PASS** (сегментований час — виправлення round 1, деталі нижче).
 
-Mint спайку 02: `44FTm7zsYePyuBzLmQDjxk53eioxqzkdEW28FEPnSNBk` (6 decimals, mint authority = `payer`). Власник
-для цього вимірювання — `spikes/keys/session.json` (свіжа для цього mint-у роль, щоб не змішувати стан з
-week-0's `user`/`pool` делегаціями цього ж mint-у).
+Mint спайку 02: `44FTm7zsYePyuBzLmQDjxk53eioxqzkdEW28FEPnSNBk` (6 decimals, mint authority = `payer`).
 
-1. `createAssociatedTokenAccountIdempotent` + `mintTo` 1000 базових одиниць на базовий ATA `session`.
-2. `delegateSpl(session, mint, 10n, { validator: ER_VALIDATOR, payer, initVaultIfMissing: false, idempotent:
-   false })` — sig `3TwAUXFgxjMdz5wJd3g1YUtRFywYrVhe8ReQ8DqXQtGg8r3vEq6xsGMjBM3tafFQzq1bnL8dKJEnjCsknPsnraMg`.
+**Виправлення round 1 — таймер і повторний цикл.** Перший прогін мав дві проблеми: (1) таймер `t0` стартував
+**після** підтвердження `undelegateIx` і всього поллінгу базового ATA, тож заявлені "546 мс" насправді міряли
+лише останній крок (`withdrawSpl`), не заявлену послідовність undelegate→poll→withdraw; (2) власник
+`spikes/keys/session.json` уже пройшов один повний цикл depositundelegatewithdraw раніше в цій сесії —
+повторний цикл на тому ж (owner, mint) впав на `withdrawSpl`:
+`require!(ephemeral_ata_info.owned_by(&crate::ID)) failed, token_vault.rs:102` (`InvalidAccountOwner`) —
+ефемерна-ATA бухгалтерія eSPL, схоже, небезпечно перециклювати без повторного створення для того самого
+власника. Виправлено: (a) таймер тепер розбитий на три сегменти (`undelegate`, `poll`, `withdraw`) з міткою
+від старту `undelegateIx`-надсилання; (b) вимірювання відтепер завжди використовує **свіжу** persistent-
+ідентичність (`spikes/keys/m4owner.json`, gitignored, профінансована 0.01 SOL з `payer`), яка ще не проходила
+цикл для цього mint-у.
+
+Чистий повторний прогін (`m4owner`, mint той самий):
+
+1. `createAssociatedTokenAccountIdempotent` + `mintTo` 1000 базових одиниць на базовий ATA `m4owner`.
+2. `delegateSpl(m4owner, mint, 10n, { validator: ER_VALIDATOR, payer, initVaultIfMissing: false, idempotent:
+   false })` — sig `2oiwBytK2BLZxXJTj1zPzvXXp3bVUnDJR7rR5eMiZejn4XnBKpR9WoHm5dfwkUisEH9fTqgQuQ9CLJRZ957t6gbd`.
    Поллінг ER-балансу підтвердив `10n`.
-3. `undelegateIx(session, mint)` на ER — sig
-   `5kh1CyycBUajQTTDT26H5F9zyHZeaTfYz2F7W2m471qVHRP1JCDoCQWiiMJ1Aa8cxNTLCaiUuLXwXjhqUazwh9XV`.
-4. Поллінг базового ATA до `owner == TOKEN_PROGRAM_ID` (тобто розделеговано/закомічено на базовий шар):
-   підтверджено (`TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA`).
-5. `withdrawSpl(session, mint, 10n, { idempotent: false })` на базовому шарі — sig
-   `5hxJ5n9uc4shojL4PXpGSWN97Acs54xU9aqHq11w7Ehan1FjFnRFz8b6LVpZSV8XMd8U7udMnHTokN5GTDZWkroo`. Фінальний
-   базовий баланс: `1000` базових одиниць (весь депозит повернувся через commit-then-withdraw цикл).
+3. `undelegateIx(m4owner, mint)` на ER — sig
+   `5c82sv3sbd2GqhQMDAQpc5Kdx2svLDr59rUGLeKAqXaaVDpYoMYTbtS5RqnKMKNL7Hzs3M93P9UWXEk2vwLYd6uQ` — **надіслано →
+   підтверджено: 2062 мс**.
+4. Поллінг базового ATA до `owner == TOKEN_PROGRAM_ID` — підтверджено (`TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA`)
+   — **176 мс**.
+5. `withdrawSpl(m4owner, mint, 10n, { idempotent: false })` на базовому шарі — sig
+   `2xhZQYEP8xZccUU8oPg5iFJinFU8Q6bmfEkdnAUdr6B53nas4EKtjCgDbZXUNRBd2REdXmYkj9XqHYrfUMJDL25X` — **559 мс**.
+   Фінальний базовий баланс: `1000` базових одиниць (весь депозит повернувся через commit-then-withdraw
+   цикл).
 
-**Час undelegate → withdraw (крок 3 до кроку 5, включно з поллінгом кроку 4): 546 мс.**
+**Реальний сегментований час (undelegate-надсилання → withdraw-підтвердження): undelegate=2062 мс,
+poll=176 мс, withdraw=559 мс, total=2797 мс.** Раніше заявлені "546 мс" були лише третім сегментом
+(`withdrawSpl`), не всією послідовністю — виправлено в усіх місцях, де це число фігурувало.
 
 ### Рішення після M1–M4
 
@@ -232,19 +279,24 @@ week-0's `user`/`pool` делегаціями цього ж mint-у).
 memcmp-фільтром за дискримінатором акаунта повертає приватні акаунти, членом яких є crank. Реєстр
 `MarketRisk.traders: [Pubkey; 32]` (план §147) **не додавати**.
 
-**(c) `magic_fee_vault` (devnet-tee) = `EUJssY6kG5fb35s9Lc6jyh6joRPo2e2MhJqoKCqcTt5b`.** Вартість 5-хвилинних
-комітів `Pool` на добу — **не визначена з достатньою точністю в цій сесії**: підтверджено лише, що (1) без
-fee-vault ліміт — 10 plain-комітів на акаунт (постійний, не відновлюється); (2) з fee-vault, коли CPI-payer —
-делегований PDA (не звичайний гаманець), коміти продовжуються за реальний кошт лампортів із балансу цього
-PDA (14 успішних на бюджеті ~894 080 лампортів, ~63 863 лампорти/коміт у середньому — грубий орієнтир, не
-підтверджена формула). За 288 комітів/добу (24 год × 60/5 хв) це дало б орієнтовний порядок **~0.018 SOL/добу**
-за грубою екстраполяцією 63 863 лампортів/коміт — **вимагає повторного вимірювання безпосередньо на
-`Config.fee_payer`/`Pool` у Task 2**, оскільки план очікував іншу точку зламу (100 000 lamports після 25-го
-коміту), не підтверджену тут.
+**(c) `magic_fee_vault` (devnet-tee) = `EUJssY6kG5fb35s9Lc6jyh6joRPo2e2MhJqoKCqcTt5b`.** Адреса й доступність
+підтверджені (8.39 SOL, стабільно). Вартість 5-хвилинних комітів `Pool` на добу — **не визначена в цій сесії,
+свідомо не оцінюється числом**. Підтверджено напряму (виправлення round 1, контрольний прогін з реальними
+балансами через токен члена): (1) без fee-vault — 10 plain-комітів на акаунт, постійний ліміт; (2) з
+fee-vault, коли CPI-payer — делегований PDA (`counter`, не звичайний гаманець), перший прогін дав 14/30
+успішних, а контрольний повторний прогін (той самий вичерпаний `counter`) — 0/30, при цьому `counter`'s
+власний баланс лишився рівно `894 080` лампортів (= його власний rent-exempt мінімум для 48 байт) **однаково
+до і після обох прогонів** — тобто гіпотеза "коміт списує лампорти з `counter`" не узгоджується з
+вимірюваннями; `magic_fee_vault` теж лишився незмінним в обох прогонах. Попередня оцінка "~63 863
+лампорти/коміт" і похідна "~0.018 SOL/добу" **відкликані** — недостатньо даних для формули. Ймовірніше
+пояснення — дискретна квота на fee-vault-коміти, а не лампорт-based вичерпання; **повністю відкрите питання
+для Task 2**, перевимірювати на `Config.fee_payer`/`Pool` з чистого акаунта.
 
 **(d) Послідовність withdraw для клієнта:** `undelegateIx(owner, mint)` на ER → поллінг базового ATA до
 `owner == TOKEN_PROGRAM_ID` → `withdrawSpl(owner, mint, amount, { idempotent: false })` на базовому шарі.
-Виміряний час (крок 1 до завершення кроку 3): **546 мс**.
+**Реальний сегментований час** (виправлення round 1 — попередній прогін мав таймер, що стартував запізно і
+міряв лише останній крок): `undelegateIx` надіслано→підтверджено **2062 мс**, поллінг базового ATA **176 мс**,
+`withdrawSpl` **559 мс**, **сумарно (undelegate-надсилання → withdraw-підтвердження): 2797 мс**.
 
 ### Task-context (підсумок для Task 5/6)
 
@@ -256,7 +308,7 @@ PDA (14 успішних на бюджеті ~894 080 лампортів, ~63 86
 чи `crank`) має шанс просто працювати для `ScheduleTask`, але **`CancelCrankCpi`'s окремий `task_context`-
 параметр не тестувався** в цій сесії (жодного `cancel_crank`-виклику) — залишається відкритим для Task 6.
 
-### Баланс `payer` (весь Task 1)
+### Баланс `payer` (весь Task 1, включно з виправленнями round 1)
 
 | момент | баланс (SOL) |
 |---|---|
@@ -264,10 +316,11 @@ PDA (14 успішних на бюджеті ~894 080 лампортів, ~63 86
 | після деплою спайку 05 | 4.585399337 |
 | … (проміжні M2/M3-виправлення, апгрейди спайку 01 — дешеві, без суттєвих змін) | ~4.52–4.58 |
 | після `solana program close` спайку 05 (+1.5961614 SOL) | 6.116666457 |
-| **підсумкова дельта за весь Task 1** | **−0.067302 SOL** |
+| після виправлень round 1 (M3 контрольний прогін, M4 фандинг `m4owner` + 2 перезапуски) | 6.101378217 |
+| **підсумкова дельта за весь Task 1 разом із round 1** | **−0.082591 SOL** |
 
 Інші ідентичності (кінцеві баланси devnet): `user` 0.776232216 SOL, `stranger` 0.099985 SOL, `session`
-0.004985 SOL, `m2owner` (нова, для M2) 0.006793552 SOL.
+0.004975 SOL, `m2owner` (для M2) 0.006793552 SOL, `m4owner` (для M4, round-1 виправлення) 0.009985 SOL.
 
 ### Файли
 
@@ -277,7 +330,9 @@ PDA (14 успішних на бюджеті ~894 080 лампортів, ~63 86
   `programs/crank-counter/src/lib.rs` (`anchor keys sync` → новий id, програма закрита в кінці),
   `spikes/01-private-counter-tee/programs/private-counter/src/lib.rs` (`set_privacy` приймає `crank: Pubkey`,
   `initialize` фінансує `size_of(2)`, нова `commit_with_vault`/`CommitWithVault`).
-- Нові gitignored ключі: `spikes/keys/m2owner.json` (свіжа ідентичність для M2, профінансована з `payer`).
+- Нові gitignored ключі: `spikes/keys/m2owner.json` (свіжа ідентичність для M2), `spikes/keys/m4owner.json`
+  (свіжа ідентичність для M4, round-1 виправлення — уникає повторного циклу на `session`), обидві профінансовані
+  з `payer`.
 
 `export PATH="$HOME/.nvm/versions/node/v24.18.0/bin:$PATH"` → `cd tests/er && npx tsc --noEmit` — чисто (0
 помилок) на фінальній версії `run.ts`/`00-measure.ts`.
