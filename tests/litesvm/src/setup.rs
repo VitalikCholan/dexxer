@@ -38,6 +38,8 @@ impl World {
                 &oracle_program,
                 &Pubkey::new_unique(),
                 100,
+                &admin.pubkey(), // fee_payer: reuse admin locally, no real scheduler on LiteSVM
+                &Pubkey::default(), // magic_fee_vault: no fee-vault requirement locally
             )],
             &[&admin, &mint_kp],
         )

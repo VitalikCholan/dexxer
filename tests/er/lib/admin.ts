@@ -260,13 +260,24 @@ export async function bootstrap(): Promise<Bootstrapped> {
   const marketRisk = pdas.marketRisk(market);
   const feed = pdas.feed(LAZER_FEED_ID);
 
-  // --- init_config (creates the dUSDC mint) ---
+  // --- init_config (creates the dUSDC mint). task-2: `init_config` gained
+  // `fee_payer`/`magic_fee_vault` args (`Config` layout froze there). Locally
+  // there's no real scheduler/fee-vault requirement, so reuse `admin` as the
+  // fee payer (an admin-side keypair this function already manages) and
+  // `PublicKey.default()` for the vault. ---
   let mint: PublicKey;
   const configInfo = await baseConn.getAccountInfo(config, "confirmed");
   if (!configInfo) {
     const mintKp = loadOrCreateKey("mint");
     const sig = await core.methods
-      .initConfig(admin.publicKey, MOCK_ORACLE_PROGRAM_ID, ER_VALIDATOR, new BN(DISCLOSURE_DELAY_SLOTS))
+      .initConfig(
+        admin.publicKey,
+        MOCK_ORACLE_PROGRAM_ID,
+        ER_VALIDATOR,
+        new BN(DISCLOSURE_DELAY_SLOTS),
+        admin.publicKey,
+        PublicKey.default,
+      )
       .accounts({
         admin: admin.publicKey,
         config,
@@ -438,16 +449,23 @@ export async function bootstrapDevnet(): Promise<BootstrappedDevnet> {
 
   // --- init_config (creates the dUSDC mint). `crank` is a dedicated devnet
   // keypair here (week 1 reused `admin` for this role — see spec §7.3 week 2
-  // decision #1, permission members). No `fee_payer` arg yet: `init_config`'s
-  // signature doesn't have one until a later task adds `Config.fee_payer`
-  // (see task-0-brief.md ruling 2); `feePayer` is only generated+persisted
-  // here for that task to wire in. ---
+  // decision #1, permission members). task-2: `init_config` gained
+  // `fee_payer`/`magic_fee_vault` args; pass the persisted devnet fee-payer
+  // pubkey and `PublicKey.default()` for the vault for now — a later task
+  // fills the real fee-vault address. ---
   let mint: PublicKey;
   const configInfo = await baseConn.getAccountInfo(config, "confirmed");
   if (!configInfo) {
     const mintKp = loadOrCreateKey("devnet-mint");
     const sig = await core.methods
-      .initConfig(crank.publicKey, ORACLE, ER_VALIDATOR, new BN(DISCLOSURE_DELAY_SLOTS))
+      .initConfig(
+        crank.publicKey,
+        ORACLE,
+        ER_VALIDATOR,
+        new BN(DISCLOSURE_DELAY_SLOTS),
+        feePayer.publicKey,
+        PublicKey.default,
+      )
       .accounts({
         admin: admin.publicKey,
         config,

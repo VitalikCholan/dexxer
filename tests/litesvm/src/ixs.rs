@@ -27,6 +27,7 @@ fn rs(p: &Pubkey) -> AccountMeta {
     AccountMeta::new_readonly(*p, true)
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn init_config(
     admin: &Pubkey,
     mint: &Pubkey,
@@ -34,6 +35,8 @@ pub fn init_config(
     oracle_program: &Pubkey,
     tee_validator: &Pubkey,
     delay: u64,
+    fee_payer: &Pubkey,
+    magic_fee_vault: &Pubkey,
 ) -> Instruction {
     Instruction {
         program_id: prog(),
@@ -51,6 +54,8 @@ pub fn init_config(
             oracle_program: apk(*oracle_program),
             tee_validator: apk(*tee_validator),
             disclosure_delay_slots: delay,
+            fee_payer: apk(*fee_payer),
+            magic_fee_vault: apk(*magic_fee_vault),
         }
         .data(),
     }
@@ -183,9 +188,27 @@ pub fn set_session(
     expiry: i64,
     actions: u32,
 ) -> Instruction {
+    // `SetSession` gains the same permission/vault/magic/permission_program
+    // accounts `InitPermissions` has (task-2). On LiteSVM these are empty
+    // (system-owned, 0-lamport) PDAs — that's the point: the permission
+    // program doesn't exist here, so `perm.owner != PERMISSION_PROGRAM_ID`
+    // and the program skips the update CPI.
     Instruction {
         program_id: prog(),
-        accounts: vec![rs(signer), w(&t.user)],
+        accounts: vec![
+            rs(signer),
+            r(&pdas::config()),
+            r(&pdas::market()),
+            w(&t.user),
+            w(&t.position),
+            w(&t.dq),
+            w(&pdas::permission(&t.user)),
+            w(&pdas::permission(&t.position)),
+            w(&pdas::permission(&t.dq)),
+            r(&pdas::permission_program()),
+            w(&pdas::ephemeral_vault()),
+            r(&pdas::magic_program()),
+        ],
         data: ix::SetSession {
             session_key: apk(*session),
             expiry,

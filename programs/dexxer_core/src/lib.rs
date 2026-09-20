@@ -27,6 +27,8 @@ pub mod dexxer_core {
         oracle_program: Pubkey,
         tee_validator: Pubkey,
         disclosure_delay_slots: u64,
+        fee_payer: Pubkey,
+        magic_fee_vault: Pubkey,
     ) -> Result<()> {
         admin::init_config(
             ctx,
@@ -34,6 +36,8 @@ pub mod dexxer_core {
             oracle_program,
             tee_validator,
             disclosure_delay_slots,
+            fee_payer,
+            magic_fee_vault,
         )
     }
     pub fn init_market(

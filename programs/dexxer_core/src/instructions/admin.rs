@@ -5,6 +5,7 @@ use anchor_spl::{
     token::{Mint, Token, TokenAccount},
 };
 use ephemeral_rollups_sdk::{anchor::delegate, cpi::DelegateConfig};
+use magicblock_magic_program_api::pda::CRANK_SIGNER;
 
 #[derive(Accounts)]
 pub struct InitConfig<'info> {
@@ -27,6 +28,8 @@ pub fn init_config(
     oracle_program: Pubkey,
     tee_validator: Pubkey,
     disclosure_delay_slots: u64,
+    fee_payer: Pubkey,
+    magic_fee_vault: Pubkey,
 ) -> Result<()> {
     let c = &mut ctx.accounts.config;
     c.version = 1;
@@ -37,6 +40,12 @@ pub fn init_config(
     c.tee_validator = tee_validator;
     c.dusdc_mint = ctx.accounts.dusdc_mint.key();
     c.disclosure_delay_slots = disclosure_delay_slots;
+    // Byte conversion, same pattern as `espl::espl_program_id` below: the SDK
+    // constant is a `compat::Pubkey`, not `anchor_lang::prelude::Pubkey`.
+    c.scheduler_signer = Pubkey::new_from_array(CRANK_SIGNER.to_bytes());
+    c.fee_payer = fee_payer;
+    c.magic_fee_vault = magic_fee_vault;
+    c.crank_task_id = 0;
     c.bump = ctx.bumps.config;
     Ok(())
 }
