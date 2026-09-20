@@ -114,6 +114,23 @@ pub mod dexxer_core {
     pub fn crank_tick<'info>(ctx: Context<'info, CrankTick<'info>>) -> Result<()> {
         crank::crank_tick(ctx)
     }
+    pub fn schedule_crank<'info>(
+        ctx: Context<'info, ScheduleCrank<'info>>,
+        task_id: i64,
+        interval_ms: i64,
+        iterations: i64,
+    ) -> Result<()> {
+        crank::schedule_crank(ctx, task_id, interval_ms, iterations)
+    }
+    pub fn cancel_crank<'info>(ctx: Context<'info, CancelCrank<'info>>) -> Result<()> {
+        crank::cancel_crank(ctx)
+    }
+    pub fn commit_aggregate(ctx: Context<CommitAggregate>) -> Result<()> {
+        commit::commit_aggregate(ctx)
+    }
+    pub fn commit_market(ctx: Context<CommitMarket>) -> Result<()> {
+        commit::commit_market(ctx)
+    }
     pub fn delegate_market(ctx: Context<DelegateMarket>) -> Result<()> {
         admin::delegate_market(ctx)
     }
