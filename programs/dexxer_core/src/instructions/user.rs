@@ -160,8 +160,19 @@ pub struct InitUser<'info> {
     pub owner: Signer<'info>,
     #[account(seeds = [CONFIG_SEED], bump = config.bump)]
     pub config: Account<'info, Config>,
-    #[account(seeds = [MARKET_SEED, &market.symbol], bump = market.bump)]
-    pub market: Account<'info, Market>,
+    // `UncheckedAccount`, not `Account<'info, Market>` (task-13 finding on
+    // mb-stack): once `delegate_market` has run, `market` is owned by the
+    // Delegation Program on L1, so any `Account<'info, Market>` deserialize
+    // of it here fails with `AccountOwnedByWrongProgram` — but users must
+    // still be able to `init_user` after the market has been delegated
+    // (delegation happens once at admin bootstrap; onboarding happens
+    // continuously afterward). Only `.key()` is used below, so the seeds
+    // constraint uses the fixed `SOL_SYMBOL` (matching `DelegateUser`'s
+    // already-correct `market` field) instead of reading `.symbol`/`.bump`
+    // off the account.
+    /// CHECK: address-derived via seeds; only `.key()` is read
+    #[account(seeds = [MARKET_SEED, &SOL_SYMBOL], bump)]
+    pub market: UncheckedAccount<'info>,
     #[account(
         init,
         payer = owner,
@@ -397,8 +408,19 @@ pub fn init_permissions(ctx: Context<InitPermissions>) -> Result<()> {
         ),
     ];
     for (acc, perm, seeds) in triples.iter() {
-        if perm.lamports() > 0 {
-            continue; // idempotent: already created
+        // Idempotent: already created. Task-13 finding on mb-stack: a freshly
+        // created `EphemeralPermission` account has 0 lamports (its rent is
+        // funded into the shared `ephemeral_vault`, not the account itself —
+        // confirmed by reading a real permission account back after
+        // creation), so `perm.lamports() > 0` never detects "already
+        // exists" and a second call re-invokes the CPI, which the Magic
+        // program then rejects on the already-initialized account
+        // (`invalid account data for instruction`). Ownership is the
+        // correct signal: an undelegated/uninitialized PDA here is owned by
+        // the System Program (or has no account at all), never by the
+        // Permission Program.
+        if perm.owner == &PERMISSION_PROGRAM_ID {
+            continue;
         }
         CreateEphemeralPermissionCpi {
             payer: acc.clone(),

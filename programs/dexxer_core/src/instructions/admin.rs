@@ -313,6 +313,14 @@ pub fn delegate_pool(ctx: Context<DelegatePool>) -> Result<()> {
         system_program: &ctx.accounts.system_program.to_account_info(),
     }
     .invoke()?;
+    // Deposit the pool's *entire current* base-layer balance into the vault as
+    // part of delegation, not a hardcoded 0 (task-13 finding: mb-stack accepts
+    // `amount: 0` without error, but then the ER-visible ephemeral balance for
+    // `pool_ata` is 0 too — pool funds seeded on L1 via `seed_pool` before
+    // this call would be stranded, invisible from the ER). Reading the amount
+    // straight off the already-deserialized `pool_ata` account keeps this
+    // correct regardless of when `seed_pool` runs relative to delegation.
+    let deposit_amount = ctx.accounts.pool_ata.amount;
     espl::DepositSplTokens {
         authority: &ctx.accounts.pool.to_account_info(),
         eata: &ctx.accounts.pool_eata.to_account_info(),
@@ -321,7 +329,7 @@ pub fn delegate_pool(ctx: Context<DelegatePool>) -> Result<()> {
         user_source_token_acc: &ctx.accounts.pool_ata.to_account_info(),
         vault_token_acc: &ctx.accounts.vault_ata.to_account_info(),
         token_program: &ctx.accounts.token_program.to_account_info(),
-        amount: 0,
+        amount: deposit_amount,
     }
     .invoke_signed(seeds)?;
     espl::DelegateEphemeralAta {
@@ -424,7 +432,14 @@ mod espl {
                 program_id: espl_program_id(),
                 accounts: vec![
                     AccountMeta::new(*self.eata.key, false),
-                    AccountMeta::new(*self.payer.key, false),
+                    // Must be `is_signer: true`: the eSPL program CPIs into the
+                    // System Program to create+fund the eATA, which requires the
+                    // payer's actual signature. Matches the TS SDK's
+                    // `initEphemeralAtaIx` (payer: isSigner true) — verified
+                    // against a real eSPL program on mb-stack (task-13): with
+                    // `false` here the eSPL program's own System Program CPI
+                    // fails with `PrivilegeEscalation`.
+                    AccountMeta::new(*self.payer.key, true),
                     AccountMeta::new_readonly(*self.user.key, false),
                     AccountMeta::new_readonly(*self.mint.key, false),
                     AccountMeta::new_readonly(*self.system_program.key, false),

@@ -128,3 +128,193 @@ ER-акаунти в PER оплачуються за іншою формулою
 Окремо — префандинг permission-акаунта Access Control Program (`EphemeralPermission::size_of(3)` для трьох членів `[owner, session, crank]`, через `ephemeral_accounts::rent`): **7264 lamports** (0.000007264 SOL) за один permission-акаунт. У брифі позначено «x3», бо кожен делегований PDA позиції потребує власного permission-акаунта — на депозит під делегацію потрібно тримати попереднє фінансування трьох таких акаунтів: 3 × 7264 = **21 792 lamports** (0.000021792 SOL) сумарно (інтерпретація: по одному permission на кожен із трьох делегованих PDA — підтвердити в Task 11/13).
 
 **Висновок для Q3**: L1-рента за весь ланцюжок акаунтів користувача (`UserAccount` + `Position` + `DisclosureQueue`) — ≈0.0133 SOL, і ще ≈0.0000218 SOL на префандинг трьох ER permission-акаунтів під делегацію. Разом онбординг одного користувача (акаунти під Delegation Program на L1, без токенних eATA) коштує ≈0.0133 SOL рента + мізерний ER-префандинг — на порядки менше за очікування з відкритого питання спеки.
+
+## Task 13: mb-stack Q1 (депозит → облік) і Q2 (три permission в одній tx)
+
+Перший наскрізний прогін реальної програми на локальному mb-stack:
+`@magicblock-labs/ephemeral-validator@0.13.7` (той самий стек, що піднятий
+для тижня 1; жодного даунгрейду/апгрейду версії не знадобилось — фолбек на
+`0.14.10` не використовувався). Обидві програми задеплоєні на локальний L1
+(`http://127.0.0.1:8899`) командою `anchor deploy --provider.cluster
+http://127.0.0.1:8899` після явного `--ignore-keys` для білду (`target/deploy/dexxer_core-keypair.json`
+на цій машині розсинхронізувався з `declare_id!` вдруге після Task 0's
+`anchor keys sync` — ключ програми не змінювався, оскільки апгрейд
+використовує upgrade-authority id.json, а не keypair-файл програми;
+деплой — апгрейд наявної адреси `G2okX5Bae4CxfK8vzso1Ecc96QUv7E3P4YvxaZnaYXoV`).
+
+Program ids: `dexxer_core = G2okX5Bae4CxfK8vzso1Ecc96QUv7E3P4YvxaZnaYXoV`,
+`mock_oracle = 68xBWNR1uKorC7keLWvsT1pCmKC4RnwvRF4LoV3CCprh`. ER validator
+identity (звірено через `getIdentity` на `http://127.0.0.1:7799`):
+`mAGicPQYBMvcYveUZA5F5UNNwyHvfYh5xkLS2Fr1mev`.
+
+### Три реальні баги, знайдені лише на живому eSPL/Permission (LiteSVM їх не мав чим ловити)
+
+1. **`delegate_pool` → `InitializeEphemeralAta`**: ручна CPI-обгортка
+   позначала `payer` як `is_signer: false` замість `true` — eSPL-програма
+   падала на власному CPI в System Program з `PrivilegeEscalation`
+   (`"…'s signer privilege escalated"`, `Cross-program invocation with
+   unauthorized signer or writable account`). Виправлено на `true` (звірено
+   з TS SDK `initEphemeralAtaIx`, де `payer: isSigner true`).
+2. **`delegate_pool` → `DepositSplTokens`**: жорстко закодований
+   `amount: 0`. mb-stack приймає таку транзакцію без помилки, але тоді
+   ER-видимий ephemeral-баланс `pool_ata` дорівнює 0 незалежно від того,
+   скільки токенів було посіяно на L1 раніше (`seed_pool` перед делегуванням
+   не «переноситься» в ER автоматично — видимий в ER баланс визначається
+   сумою, задепонованою саме в момент делегування). Виправлено: депонується
+   актуальний баланс `pool_ata.amount` на момент делегування.
+3. **`InitUser` → поле `market`**: було `Account<'info, Market>` (з
+   owner-перевіркою). Після того як `delegate_market` вже відбувся
+   (`market` тепер належить Delegation Program на L1), будь-яка спроба
+   десеріалізувати його як `Account<Market>` валиться з
+   `AccountOwnedByWrongProgram`, а користувачі мусять мати змогу
+   онбордитись і ПІСЛЯ делегування маркету (делегування — одноразова
+   адмінська дія; онбординг — постійний процес). Виправлено на
+   `UncheckedAccount` із seeds на константу `SOL_SYMBOL` (як уже було
+   зроблено в `DelegateUser`) — у тілі інструкції з маркету читається лише
+   `.key()`.
+4. **`init_permissions`, idempotency-перевірка**: `perm.lamports() > 0` ніколи
+   не спрацьовує як «вже створено» — на цій версії mb-stack
+   `EphemeralPermission`-акаунт створюється з **0 лампортів** (рента йде в
+   спільний `ephemeral_vault`, не на сам акаунт; перевірено прямим
+   `getAccountInfo` вже створеного permission-акаунта: `lamports: 0`,
+   `owner: ACLseoPoyC3cBqoUtkbjZ4aDrkurZW86v19pXz2XQnp1`, `space: 68`).
+   Другий виклик тому завжди намагався заново створити CPI і падав з
+   `invalid account data for instruction` від Magic-програми. Виправлено на
+   `perm.owner == PERMISSION_PROGRAM_ID`.
+
+Усі чотири виправлення пройшли `program_autofixer` (Solana MCP) чисто
+(`issues: [], require_another_tool_call_after_fixing: false`) і
+`cargo +nightly-2026-09-18 test -p dexxer_litesvm` без регресій (30/30
+проходять) — LiteSVM не мав жодного з цих акаунтів під реальний eSPL/Access
+Control Program, тому жоден з чотирьох багів там не міг спливти раніше.
+
+Окрема знахідка на рівні клієнта (не програми): `@coral-xyz/anchor@0.32.1`'s
+`AnchorProvider.sendAndConfirm` конструює `web3.SendTransactionError` за
+старою (до 1.98) позиційною сигнатурою `(message, logs)`, а встановлений
+`@solana/web3.js@^1.98` перевизначив цей конструктор на один об'єкт
+`{action, signature, transactionMessage, logs}` — тому будь-яка транзакція,
+що потрапила в блок, але впала з помилкою виконання, губить реальне
+повідомлення/логи, і замість них видно лише `SendTransactionError: Unknown
+action 'undefined'`. Робочий обхід: діставати справжню помилку через
+`connection.getSignaturesForAddress(signer)` + `getTransaction(sig).meta.logMessages`
+на потрібному підписанті замість довіри об'єкту помилки з `.rpc()`. Записано
+в `tests/er/README.md`, щоб не витрачати час на це again.
+
+### Q1: депозит → облік (`tests/er/q1-deposit.ts`)
+
+Сценарій (чистий прогін на щойно піднятому mb-stack, `npm run q1`):
+`bootstrap()` → `init_config`/`init_market`/`init_pool` → mock-оракул
+(`init_feed`, `set_price(150.00, conf 5e6)`, `delegate_feed`) →
+`delegate_market` → адмінський `faucet_init(10 000 dUSDC)` → `seed_pool(10 000
+dUSDC)` **на L1, до делегування пулу** (адмінський ATA → `pool_ata`, звичайний
+SPL-transfer; тому не треба адмінської eATA в ER) → `delegateSpl(admin, mint,
+0, {validator, initVaultIfMissing: true})` (створює спільний global vault) →
+`delegate_pool` (ініціалізує + депонує повний баланс `pool_ata` в eATA пулу +
+делегує) → юзер: airdrop, `faucet_init(1 000 dUSDC)`, `init_user`,
+`delegateSpl(user, mint, 1 000 dUSDC)`, `delegate_user` → **ER**:
+`credit_deposit(1 000 dUSDC)`, підписано юзером, ER-blockhash з
+`http://127.0.0.1:7799`.
+
+Підписи (`npm run q1`, фінальний чистий прогін):
+
+| Крок | Підпис |
+|---|---|
+| `init_config` | `2LBkj6WBNqM8Tq2vfNnu8PTD8yfQMos1SMkN8LcoDrHdaKZ6sZYGXF2vmJKrJiU4tQYSi9VCZYMvFi28FLRrXHa` |
+| `init_market` | `2A86FKo73gx7God8AXA3pRnvdVwm2cjs1M76D8inXtGLKjarS7ygqfDJ5kXSpGydJ3LHmfmDdirZnNN3QqKPz4aQ` |
+| `init_pool` | `3gaH62huCB7QT6WJ6Zazq3tdmMpmVunwWiUaytXaCpb7VTAFmq2Ee4Ajc4mN45cQZy5fv1XrJaoV1uUfVErcudWu` |
+| `init_feed` | `vndRLrQh3roY2XstEEyLXPo5qHtiqZNB8yGj5qY4kbmhcz6uPi5R368wmXL42R2XCjGooyjHtwUVHzqyEf3E8ki` |
+| `set_price` | `2r8uCAwZf9a13EAeTg6kaPnx3XcKDGPS9eiMaGYtp7kt8ykLCsLwX2J3bduDJPU2BhULHs1ymqvtUhwYq6LPtUST` |
+| `delegate_feed` | `5hRQySFwR2NTHvncuHKMitbHhQ7KLVFXqF4CPEzuVoVJhEYw5JpFDKJRixgYBn6rKW6JjH6DSrtqvDxJzUD8RCGZ` |
+| `delegate_market` | `4P8Y1wYCYQBz9uGimwVoQJzVm11MVW63HZZcPAwUeocsjN1ybWGTHQLzEDnBvMDvkRvAryn1Xgq3pPpBhCn26ZbX` |
+| `faucet_init` (admin) | `3iCixPVviRsUfJMzH3XbkKwsCg1QuWAR9z6mmmC6TJkmw2pTom8dzhimq5xRP2C1RiCWZ1Cx4LsFomfguVVraXvF` |
+| `seed_pool` (L1) | `u2k8dDHmk68SvXYLbtb4FHwbnsKUf5mQ5vCsbEw8Y6J89GnEPdMm1KTXnH3UG18ckEYyMCqirakbciBg9yk7Vku` |
+| `delegateSpl(admin, 0)` (creates vault) | `2UVQdtQEP14HkfDYogJpxrNSC7SHAPNapRJY4YRAKAUPs6GUEyVgT5ptAF3HwVcaHoy1uF99X1fNetJgurCNz9ev` |
+| `delegate_pool` | `3rMmrb21fspMjuLaFsVTKNQ3xTZTX6DbgthGwbxcKwb71r9ARS63R7UoEGDqkvrjmzW2aiNJXPLgqKH6jErUKUJ3` |
+| `faucet_init` (user) | `4AAkGFetvhMegEKxvZWYKk8yaFMCpcJxZME96Lqk1gfZYWsYW5GtGdFSQQ1M4SYptDzsLswHKMiCDaF4vaKz9fkV` |
+| `init_user` | `65Pp7uqPBpGmePpioiFXQ1jC7PkhKXH68DM5edrZoVFrUdjy1Yut9JKChtbh5Hna5hd3H2jKPsEzKCcvTqpRvc9h` |
+| `delegateSpl(user, 1000e6)` | `4Fud5ptsthfCvzJsXfr7MCTLbGJr9B8Jr9moqgUgVi6yXu4vD4ADB8hr45X17ePPNT1Ms2Ujqyprvv7tAToG8F2A` |
+| `delegate_user` | `2xnLv3BEP9KpiMkgcRnjQRGgRzheExAhfQKq458d4AJL7FLXQj8zCX3AYjg8vXnckQfzoihzk21DVxQmwGpat56u` |
+| **`credit_deposit`** (ER, підписано юзером) | **`2jYKVvZSnoqv36TEMrYaTCFqaApHY2eUdQvxaigwGdF69kdTmjhFJzb4ycmqWaJYy9AMDwMQm8ssDjmSngKqUA17`** |
+
+Баланси/стани (усі читання — через ER-конекшн, `getTokenAccountBalance`/
+`program.account.*.fetch` на `http://127.0.0.1:7799`):
+
+| Що | До депозиту | Після `credit_deposit(1000e6)` |
+|---|---|---|
+| `poolAta` (ER) | 10 000 000 000 (10 000 dUSDC) | 11 000 000 000 (11 000 dUSDC) |
+| `Pool.capital_total` / `protocol_liquidity` | 10 000 000 000 / 10 000 000 000 | 11 000 000 000 / — |
+| `UserAccount.free_margin` | 0 | 1 000 000 000 (1 000 dUSDC) |
+| `userAta` (ER, ephemeral-баланс юзера) | 1 000 000 000 | 0 |
+
+`credit_deposit` CU: **18 090** (`getTransaction(sig).meta.computeUnitsConsumed`
+на ER).
+
+Негативний тест: другий `credit_deposit(1)` тим самим юзером — відхилено
+(ephemeral-ATA юзера вже порожня, стандартна помилка SPL Token
+`insufficient funds`; сира помилка на клієнті замаскована відомим багом
+Anchor/web3.js — див. вище). Це підтверджує «ідемпотентність за
+конструкцією»: подвійний депозит того самого переказу неможливий, бо кошти,
+які мали б бути задепоновані вдруге, вже витрачені першим переказом —
+інструкція сама по собі без нонсу, але подвійна витрата унеможливлена рухом
+реальних токенів.
+
+**Q1 PASS.**
+
+### Q2: три permission в одній ER-транзакції (`tests/er/q2-permissions.ts`)
+
+Той самий юзер (після Q1): одна ER-транзакція з однією інструкцією
+`init_permissions`, що трьома CPI в Permission Program (через Magic Program)
+створює `EphemeralPermission` для `UserAccount`, `Position` і
+`DisclosureQueue`.
+
+| Виклик | Підпис | CU |
+|---|---|---|
+| 1-й (створює 3 permission) | `5yBwMWMbyvgV89uPKVqTSSYjq48fwKEyHy44qHs1YC8977FvDEGYT97pcbJo55DEVBffrXoPCR9xtBvrr1yYq7nL` | 57 615 |
+| 2-й (idempotent, без CPI) | `zUYTjb6Qycurx1rdosHxtvA1QR4GvEVHy654LPXt9sSiniGXewLV8Zk7mxaoVv8GPH1rBxUkinw8VrYAd2MkYGq` | — |
+
+Перевірено на ER: усі три permission-акаунти існують і належать
+`PERMISSION_PROGRAM_ID` (`ACLseoPoyC3cBqoUtkbjZ4aDrkurZW86v19pXz2XQnp1`).
+Лампорти PDA-власників зменшились рівно один раз (перший виклик), другий
+виклик лампортів не чіпає:
+
+| PDA | До | Після 1-го виклику | Після 2-го виклику |
+|---|---|---|---|
+| `UserAccount` | 1 663 744 | 1 659 648 (−4096) | 1 659 648 (без змін) |
+| `Position` | 2 742 544 | 2 738 448 (−4096) | 2 738 448 (без змін) |
+| `DisclosureQueue` | 8 943 904 | 8 939 808 (−4096) | 8 939 808 (без змін) |
+
+Кожен PDA сплатив рівно **4096 лампортів** за власний `EphemeralPermission`
+(публічний, 0 членів — `EphemeralMembersArgs { is_private: false, members:
+vec![] }`). Це менше за попередньо зафіксований у Task 2 прогноз (7264
+лампортів, `EphemeralPermission::size_of(3)` — прогноз під майбутню
+приватну версію з трьома членами `[owner, session, crank]`; 4096 —
+фактична вартість поточної, публічної, порожньочленної версії тижня 1).
+Префандинг на L1 (7264 × 3 = 21 792 лампортів на юзера, з Task 2) із запасом
+покриває фактичні 4096 × 3 = 12 288 — головне питання Task 2 Q3 щодо
+префандингу підтверджено коректним і навіть надлишковим.
+
+**Q2 PASS**, включно з ідемпотентністю другого виклику.
+
+### Стек і файли
+
+- mb-stack: `@magicblock-labs/ephemeral-validator@0.13.7` (без фолбеку на
+  `0.14.10` і без переходу на devnet-tee — усе відпрацювало на локальному
+  стеку в межах ліміту 2 год).
+- Через два з чотирьох знайдених багів (privilege escalation в
+  `delegate_pool`, ідемпотентність `init_permissions`) стан локального
+  валідатора доводилось скидати начисто (`test-ledger`/
+  `magicblock-test-storage` персистентні між рестартами процесу — рестарт
+  процесу САМ ПО СОБІ не дає чистого стану; потрібне саме видалення цих
+  директорій) — `config`/`market`/`pool` є синглтонами на рівні програми
+  (`seeds` без прив'язки до admin-ключа), тож без чистого рестарту неможливо
+  було перевірити виправлення на новому пулі.
+- Нові файли: `tests/er/lib/env.ts`, `tests/er/lib/program.ts`,
+  `tests/er/lib/admin.ts`, `tests/er/q1-deposit.ts`,
+  `tests/er/q2-permissions.ts`, `tests/er/README.md`, `tests/er/.env`.
+- Змінені файли програми: `programs/dexxer_core/src/instructions/admin.rs`
+  (`InitializeEphemeralAta` signer-фікс, динамічний deposit amount у
+  `delegate_pool`), `programs/dexxer_core/src/instructions/user.rs`
+  (`InitUser.market` → `UncheckedAccount`, idempotency-перевірка
+  `init_permissions` → `perm.owner`).
+- Закриття spec §8 Q1/Q2 — самі відповіді зафіксовано тут; формальне
+  закриття питань у spec-документі — Task 15 (за брифом).
