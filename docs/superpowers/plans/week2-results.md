@@ -587,7 +587,9 @@ PASS без підстав. `Config.fee_payer`'s редизайн (03) імов�
 
 ### Fix round 1 (контролерське рішення: `commit_aggregate` платить через делеговану `FeeEscrow`)
 
-**Статус: BLOCKED на редеплой — недостатньо SOL у `payer`.**
+**Статус: завершено — редеплой успішний, 03 PASS (12/12), 04 частково PASS (переміщення коштів; коміт
+`UserAccount` на base лишається невирішеним, окреме питання, не пов'язане з payer-механізмом — див. "Раунд
+3" нижче).**
 
 Дизайн реалізовано повністю: нова `FeeEscrow` PDA (`programs/dexxer_core/src/state/fee_escrow.rs`, seeds
 `["fee_escrow"]`), `init_fee_escrow`/`delegate_fee_escrow` (admin-gated, той самий патерн, що й
@@ -605,14 +607,26 @@ PASS без підстав. `Config.fee_payer`'s редизайн (03) імов�
 кожному зміненому файлі, `tsc --noEmit` чисто в `tests/er` і в `scripts` (той самий доперевіряний bs58-гап,
 що й раніше, не новий).
 
-**Редеплой не вдався:** `solana program deploy ... --use-rpc` (той самий робочий шлях, що й у Кроці 0.2)
-повернув `Account 4P1WD92zwtUB2jxYQJRvsQc4fLSDtergp6tvMyzMgGMM has insufficient funds for spend
-(4.7929038 SOL) + fee (0.00468 SOL)`. Баланс `payer` на момент спроби: **0.889360697 SOL**. Потрібно: **~4.80
-SOL**. Дефіцит: **~3.91 SOL**. Спроба нічого не витратила (preflight-перевірка відхилила до будь-якої
-ончейн-транзакції — баланс `payer` і реєстр підтверджують: жодних лампортів не рухалось, буферний акаунт на
-ланцюгу не існує). Апгрейд коштує майже стільки ж, скільки первинний деплой, бо новий бінарник (943312 байт,
-+36680 до задеплоєних 906632) не влазить у наявний слек program-data акаунта — CLI фандить повнорозмірний
-буфер заново.
+**Редеплой, спроба 1** (payer 0.889360697 SOL, до фандингу від користувача): `solana program deploy
+... --use-rpc` повернув `Account ... has insufficient funds for spend (4.7929038 SOL) + fee (0.00468 SOL)`.
+Дефіцит: ~3.91 SOL. Нічого не витрачено.
+
+**Після фандингу користувачем** (sig `2MgBeWXzQEN2YFUwp3k57b585gQqLtD7NoZr19G7f7qMBLcEYFbXKe2dsN2sSxQbpQySr66bxeUpEztWqui8vorc`,
+payer 4.889360697 SOL) — той самий деплой впав ще двічі з іншою помилкою (`Account allocation failed:
+account does not have enough SOL to perform the operation`, без деталей суми). Причина: задеплоєний
+program-data акаунт (906632 байт) не має слеку під новий бінарник (943312 байт) — внутрішній auto-extend
+крок `solana program deploy` і тимчасовий write-буфер (4.7929038 SOL) потребують коштів **одночасно**, а
+попередня оцінка "~4.80 SOL" рахувала лише буфер.
+
+**Знижено ризик окремим extend:** `solana program extend G2okX5Bae4CxfK8vzso1Ecc96QUv7E3P4YvxaZnaYXoV 40000
+--keypair spikes/keys/payer.json --url https://rpc.magicblock.app/devnet` — успіх, program-data тепер 946632
+байт (достатньо для 943312-байтного бінарника). Коштувало **0.203205 SOL** (4.889360697 → 4.686155697,
+назавжди — це рента нового, більшого акаунта, не втрата). Жодного "завислого" buffer-акаунта немає
+(`--buffers` порожній до і після).
+
+Повторна спроба деплою — та сама, точна помилка: `insufficient funds for spend (4.7929038 SOL) + fee
+(0.00468 SOL)`. Оскільки extend уже зроблено, це вже **лише** вимога тимчасового write-буфера. **Точний
+залишковий дефіцит: 4.7975838 − 4.686155697 = 0.111428103 SOL.**
 
 **03-commit-cycle і 04-withdraw НЕ перезапускались** проти виправленої програми (стара версія й досі
 задеплоєна на ланцюгу) — перезапуск проти старої програми нічого б не довів про фікс і витратив би ще
@@ -620,9 +634,10 @@ SOL**. Дефіцит: **~3.91 SOL**. Спроба нічого не витра�
 FAIL на коміті #11, `0xA0000000`; 04 — PASS на переміщенні коштів, база `UserAccount` не підтверджена) до
 моменту, коли редеплой стане можливим.
 
-**Що розблокує:** фандинг `payer` (`4P1WD92zwtUB2jxYQJRvsQc4fLSDtergp6tvMyzMgGMM`) щонайменше на ~4.8 SOL,
-далі — `solana program deploy` (той самий `--use-rpc`-шлях) → `devnet-bootstrap.ts` (ідемпотентно створить +
-делегує `FeeEscrow`) → `fund-fee-payer.ts` (тепер фандить ESCROW, не гаманець) → `npm run devnet:commit`
+**Що розблокує (оновлено, раунд 2):** extend уже зроблено — далі потрібен лише невеликий фандинг `payer`
+(`4P1WD92zwtUB2jxYQJRvsQc4fLSDtergp6tvMyzMgGMM`), ~0.15–0.2 SOL (точний дефіцит 0.111428103 SOL, +запас на
+комісію), потім — `solana program deploy` (той самий `--use-rpc`-шлях) → `devnet-bootstrap.ts` (ідемпотентно
+створить + делегує `FeeEscrow`) → `fund-fee-payer.ts` (тепер фандить ESCROW, не гаманець) → `npm run devnet:commit`
 (очікується 12/12, delta балансу escrow ймовірно 0 — цей `Pool` уже має 10 довічних комітів з першого
 прогону, тож цикл піде по nonce 11–22, усе ще нижче порогу 25 для live-fee) → `npm run devnet:withdraw`
 свіжим трейдером (правило "одна позиція на трейдера") → фінальне оновлення цього розділу з реальними
@@ -630,3 +645,86 @@ FAIL на коміті #11, `0xA0000000`; 04 — PASS на переміщенн�
 
 Повний дизайн, evidence і гаунтлет-вивід — у
 `.superpowers/sdd/2026-09-20-week2-privacy-devnet/task-5-report.md` §"Fix round 1".
+
+### Раунд 3: редеплой і повна переперевірка
+
+Після фандингу `payer` до 4.986155697 SOL — деплой пройшов з першої спроби: sig
+`4HRDWT8voKZ2WQZ4zKGGuHQuqESGjrnWAuEs5WpyhGSwjQSPGDGgMkiejah85jQNqzNrkkJDgTa3kq2smUqQEBBh`, program-data
+946632 байт, `payer` після — 4.981475697 SOL (чиста вартість деплою ~0.0047 SOL — буферна рента повернулась,
+жодних "завислих" buffer-акаунтів).
+
+**Bootstrap ескроу:** `init_fee_escrow`
+(`3zuxzL52UAkzJw6b1JbFStd53rCpMbi1onrjMyPkjv4LYVAHHWbDZJ339kfBgU8GEornGtGMGdYzUXyzqC22hdrn`),
+`delegate_fee_escrow`
+(`4EbPcqPgPhQ92ijdkUiFK54bD715hMgEFUtpTbDgmMfNkHoz7E9KdL1LRXV1YMuKj9u9YYy1ptZb5F8jRzqMtN3a`) — `FeeEscrow`
+PDA `85ncXT9nYSAjjne8zA2e32Ew77EPygfJnPF15aqsLhJH`, підтверджено делеговано. `fund-fee-payer.ts` — **успіх**
+(sig `3A8Pii2N7gcT8hqV6wrWaZ91NcUGrvQBxHFYTvd35wVXy6Epjicxw7RS88GHyAhWVUMSto56WHsRpffL5S81ow89`, 0.2 SOL);
+ER-баланс ескроу: **200701040 лампортів**. Це перший успішний прогін цього скрипту взагалі — доказ, що
+ескроу дійсно задовольняє вимогу `lamportsDelegatedTransferIx` ("destination must be delegated"), де
+звичайний гаманець `devnet-fee-payer` не міг ніколи.
+
+**03-commit-cycle — PASS.** Усі 12 комітів пройшли на ланцюгу (#1 сам пройшов, лише поллінг пропагації
+запізнився — той самий артефакт, що й у першому прогоні; #2–#12 підтвердили пропагацію). **Коміт #11 — саме
+той виклик, що раніше падав з `0xA0000000` — тепер успішний**: sig
+`V4t26xjcJBD9VkvBxS3qJj1f2RMmhW7iaHV4MENVVG2YDKVp15JtwgPYBTUjR27ojKHEs42dspKLfWALajbVayx`. Коміт #12: sig
+`63QHQWKyXxVHHcQpMocDkV8cww4CCnxA4aM9atbXfCMVKMA7eE6BAnt1UXQrUAkTSMywjmW8Si8m4gkbaPnSEQma`.
+
+**Баланс ескроу — рівно `200701040 → 200701040`, delta 0, усі 12 разів без винятку.** `Position`/`UserAccount`
+на base — побайтово незмінні протягом усього циклу.
+
+**Рішення (c), фіналізовано:** ці коміти — nonce 11–22 цього `Pool` (продовження 10 з першого прогону), усі
+нижче порогу 25, де за `fees-and-commit-economics.md` починаються live-списання (100 000 лампортів/акаунт
+при nonce ≥ 25). Нульове списання — саме те, що передбачає це правило. **Fee-vault шлях підтверджено живим і
+функціональним** (перетинає 10-коміт хард-кап no-vault шляху), але його реальна вартість за коміт нижче
+nonce 25 лишається невиміряною — чесна прогалина, не суперечність: у цьому діапазоні nonce нічого й не мало
+списатись, і не списалось.
+
+**04-withdraw — друга реальна знахідка, виправлена; коміт `UserAccount` на base лишається відкритим
+питанням.** Перший повторний прогін (свіжий трейдер, runId `1789936060209`) упав одразу на `withdraw`:
+`InstructionError::MissingAccount` — базова помилка Solana-рантайму, не Anchor. Причина: перша версія фіксу
+для `withdraw` не додала `.magic_fee_vault(...)` (вважалось непотрібним для цього шляху). Реальний devnet
+показав інше — валідатор вимагає акаунт vault у списку акаунтів CPI щоразу, коли payer делегований,
+незалежно від кількості комітів. Виправлено: додано `magic_fee_vault` до `Withdraw` (той самий констрейнт,
+що й у `CommitAggregate`) і `.magic_fee_vault(...)` у builder — точно як `commit_aggregate`. Це також
+зажадало `Box`-нути `config` у `Withdraw` (стек SBF-фрейму переповнився — `Access violation in stack frame
+5` — зловлено LiteSVM, не devnet).
+
+Повний локальний гаунтлет після цього другого патчу: `anchor build` чисто, LiteSVM **36/36** (знадобився й
+LiteSVM-фікс: `Pubkey::default()` — локальний плейсхолдер "без fee-vault вимоги" для `Config.magic_fee_vault`
+— **це** адреса самого System Program, яку SBF-рантайм відмовляється позначати `mut`; новий `mut`-акаунт
+`magic_fee_vault` у `Withdraw` впав на `ConstraintMut` проти нього. Виправлено: `World.magic_fee_vault` —
+свіжий, неисполняемый dummy-pubkey, не `Pubkey::default()`), `cargo test -p dexxer_core` **46/46**,
+`program_autofixer` чисто, `tsc --noEmit` чисто. Редеплой (946632 байт — extend не знадобився, влізло в
+наявний слек; довелось повернути 0.35 SOL з `devnet-admin` назад у `payer`, бо точна вимога буфера
+4.80619308 SOL перевищувала баланс `payer` після раунду 2 приблизно на 0.33 SOL): sig
+`97rZ9vQepbqjsHSe6st7qQunM3fCWejqQyUHqZVaDyhka1mdMKETGs7vbtYTnsCYEY4fgdLpy5W3FpjXg9YTD3i`, чиста вартість
+~0.0047 SOL, жодних завислих буферів.
+
+Онбординг свіжого трейдера (runId `1789936529816`) і повторний withdraw:
+
+- `withdraw(300e6)` — **тепер успішно**, sig
+  `2XNrswEYHMhCiHC4oc8LZMrcNjb2J9zEGHVXnjNk9f7cejHXFn4fP38wfJEH36PEdfefwo6uk5vjtJxDE7C42kWw`. ER
+  `free_margin`: `979933838 → 679933838` (рівно −300000000). **PASS.**
+- `undelegateIx` → поллінг → `withdrawSpl` — базовий ATA `0 → 300000000` (рівно +300000000). **PASS.**
+- Базовий `UserAccount.free_margin`: поллінг **ще ~3.5 хвилини** цього прогону (30с усередині скрипту + ще
+  90×2с=180с окремо) — **і досі** показує до-withdraw значення, не `679933838`. Акаунт на base — і досі
+  власності Delegation Program (очікувано для звичайного, не-undelegating коміту), байти незмінні.
+
+**Це вже третє незалежне підтвердження, на трьох різних ідентичностях трейдера й двох різних конфігураціях
+CPI-payer'а (звичайний `owner`, потім `fee_escrow`+vault), що коміт `UserAccount` ніколи не долітає до
+base.** У поєднанні з результатом 03 (`Pool`, не приватний, комітиться миттєво й надійно тим самим
+механізмом escrow+vault) — сам механізм тепер доведено робочим. Найімовірніше пояснення (не підтверджене):
+`UserAccount` приватний (має активний `EphemeralPermission` від `init_permissions`/`set_session`), тоді як
+`Pool` — ніколи. Звичайний `.commit(&[user_account])` комітить **увесь** сирий байтовий стан акаунта;
+власне правило CLAUDE.md ("`UserAccount` — лише `free_margin`/`locked_margin`" може комітитись) натякає, що
+задуманий дизайн — це field-scoped або інакше приватність-свідомий шлях коміту, не сирий повноакаунтний
+коміт, який валідатор, що дотримується цієї межі, цілком міг би мовчки придушувати для акаунта під активним
+дозволом — як свідомий захист приватності, а не баг. **Не підтверджено** (жодних логів в обидва боки — `getTransaction`
+ER для цього акаунта стабільно повертає порожньо, повторювана прогалина ще з Task 1). Рекомендую це як
+окреме, спеціальне дослідження тижня 3, а не подальші здогадки в межах цього fix-раунду.
+
+**Фінальні баланси:** `payer` 4.826780697 SOL, `devnet-admin` 0.26890656 SOL, `devnet-fee-payer` 0.05 SOL,
+ескроу (base) 0.00070104 SOL / (ER) 200701040 лампортів. Жодних завислих buffer-акаунтів.
+
+Повний вивід гаунтлету і всі підписи — у
+`.superpowers/sdd/2026-09-20-week2-privacy-devnet/task-5-report.md` §"Раунд 3".

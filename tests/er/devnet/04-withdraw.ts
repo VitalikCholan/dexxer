@@ -40,6 +40,7 @@ const envMod = await import("../lib/env.js");
 const { NET, baseConn, loadOrCreateKey, sendAndConfirmIx, teeConn, sleep } = envMod;
 const assert: (cond: unknown, msg: string) => asserts cond = envMod.assert;
 const { accountNs, dexxerCoreProgram, pdas } = await import("../lib/program.js");
+const { MAGIC_FEE_VAULT } = await import("../lib/admin.js");
 
 if (NET !== "devnet") {
   console.error(`FAIL: DEXXER_NET must be "devnet" (got "${NET}"). Run: DEXXER_NET=devnet npm run devnet:withdraw`);
@@ -89,6 +90,7 @@ async function main() {
   assert(freeMarginBefore >= WITHDRAW_AMOUNT, `free_margin (${freeMarginBefore}) >= withdraw amount (${WITHDRAW_AMOUNT})`);
 
   console.log("=== withdraw (ER, owner token) ===");
+  const config = pdas.config();
   const feeEscrow = pdas.feeEscrow();
   const withdrawIx = await core.methods
     .withdraw(new BN(WITHDRAW_AMOUNT.toString()))
@@ -99,7 +101,9 @@ async function main() {
       ownerAta: userAta,
       vaultAta: poolAta,
       tokenProgram: TOKEN_PROGRAM_ID,
+      config,
       feeEscrow,
+      magicFeeVault: MAGIC_FEE_VAULT,
       magicContext: MAGIC_CONTEXT_ID,
       magicProgram: MAGIC_PROGRAM_ID,
     })
