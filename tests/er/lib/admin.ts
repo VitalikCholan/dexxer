@@ -52,6 +52,11 @@ import {
 
 export const LAZER_FEED_ID = "6";
 export const DISCLOSURE_DELAY_SLOTS = 100;
+// devnet-tee's validator-scoped magic fee vault (M3, week2-results.md §Task 1):
+// `magicFeeVaultPdaFromValidator(ER_VALIDATOR)` = this address, measured with
+// 8.39 SOL funded. Local mb-stack keeps `PublicKey.default()` (no fee-vault
+// requirement there).
+export const MAGIC_FEE_VAULT = new PublicKey("EUJssY6kG5fb35s9Lc6jyh6joRPo2e2MhJqoKCqcTt5b");
 export const POOL_SEED_AMOUNT = 10_000_000_000n; // 10,000 dUSDC (6 decimals)
 export const MOCK_PRICE_1E8 = 15_000_000_000n; // $150.00
 export const MOCK_CONF = 5_000_000n;
@@ -275,6 +280,7 @@ export async function bootstrap(): Promise<Bootstrapped> {
         MOCK_ORACLE_PROGRAM_ID,
         ER_VALIDATOR,
         new BN(DISCLOSURE_DELAY_SLOTS),
+        ER_VALIDATOR, // scheduler_signer (Task 5 M1: local mb-stack validator identity)
         admin.publicKey,
         PublicKey.default,
       )
@@ -463,8 +469,9 @@ export async function bootstrapDevnet(): Promise<BootstrappedDevnet> {
         ORACLE,
         ER_VALIDATOR,
         new BN(DISCLOSURE_DELAY_SLOTS),
+        ER_VALIDATOR, // scheduler_signer — Task 1 M1: devnet-tee ticks are signed by the TEE validator identity, not CRANK_SIGNER
         feePayer.publicKey,
-        PublicKey.default,
+        MAGIC_FEE_VAULT,
       )
       .accounts({
         admin: admin.publicKey,

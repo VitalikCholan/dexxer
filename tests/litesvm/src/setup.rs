@@ -38,6 +38,7 @@ impl World {
                 &oracle_program,
                 &Pubkey::new_unique(),
                 100,
+                &crank.pubkey(), // scheduler_signer: fixed test crank, no real scheduler on LiteSVM
                 &admin.pubkey(), // fee_payer: reuse admin locally, no real scheduler on LiteSVM
                 &Pubkey::default(), // magic_fee_vault: no fee-vault requirement locally
             )],

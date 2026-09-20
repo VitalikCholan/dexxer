@@ -5,7 +5,6 @@ use anchor_spl::{
     token::{Mint, Token, TokenAccount},
 };
 use ephemeral_rollups_sdk::{anchor::delegate, cpi::DelegateConfig};
-use magicblock_magic_program_api::pda::CRANK_SIGNER;
 
 #[derive(Accounts)]
 pub struct InitConfig<'info> {
@@ -28,6 +27,7 @@ pub fn init_config(
     oracle_program: Pubkey,
     tee_validator: Pubkey,
     disclosure_delay_slots: u64,
+    scheduler_signer: Pubkey,
     fee_payer: Pubkey,
     magic_fee_vault: Pubkey,
 ) -> Result<()> {
@@ -40,9 +40,12 @@ pub fn init_config(
     c.tee_validator = tee_validator;
     c.dusdc_mint = ctx.accounts.dusdc_mint.key();
     c.disclosure_delay_slots = disclosure_delay_slots;
-    // Byte conversion, same pattern as `espl::espl_program_id` below: the SDK
-    // constant is a `compat::Pubkey`, not `anchor_lang::prelude::Pubkey`.
-    c.scheduler_signer = Pubkey::new_from_array(CRANK_SIGNER.to_bytes());
+    // Week-2 Task 1 M1: scheduled ticks on devnet-tee are signed by the TEE
+    // validator identity, not the `magicblock_magic_program_api::pda::CRANK_SIGNER`
+    // PDA — caller now supplies the real signer (devnet: `ER_VALIDATOR`; local
+    // mb-stack: its own validator identity). `crank_tick`'s constraint still
+    // accepts the `CRANK_SIGNER` PDA as a third branch (crank.rs untouched).
+    c.scheduler_signer = scheduler_signer;
     c.fee_payer = fee_payer;
     c.magic_fee_vault = magic_fee_vault;
     c.crank_task_id = 0;

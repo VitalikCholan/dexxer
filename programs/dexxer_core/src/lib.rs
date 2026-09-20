@@ -27,6 +27,7 @@ pub mod dexxer_core {
         oracle_program: Pubkey,
         tee_validator: Pubkey,
         disclosure_delay_slots: u64,
+        scheduler_signer: Pubkey,
         fee_payer: Pubkey,
         magic_fee_vault: Pubkey,
     ) -> Result<()> {
@@ -36,6 +37,7 @@ pub mod dexxer_core {
             oracle_program,
             tee_validator,
             disclosure_delay_slots,
+            scheduler_signer,
             fee_payer,
             magic_fee_vault,
         )

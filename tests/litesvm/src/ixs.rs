@@ -35,6 +35,7 @@ pub fn init_config(
     oracle_program: &Pubkey,
     tee_validator: &Pubkey,
     delay: u64,
+    scheduler_signer: &Pubkey,
     fee_payer: &Pubkey,
     magic_fee_vault: &Pubkey,
 ) -> Instruction {
@@ -54,6 +55,7 @@ pub fn init_config(
             oracle_program: apk(*oracle_program),
             tee_validator: apk(*tee_validator),
             disclosure_delay_slots: delay,
+            scheduler_signer: apk(*scheduler_signer),
             fee_payer: apk(*fee_payer),
             magic_fee_vault: apk(*magic_fee_vault),
         }
