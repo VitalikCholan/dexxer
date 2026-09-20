@@ -9,12 +9,17 @@ use ephemeral_rollups_sdk::{
         structs::{EphemeralMembersArgs, EphemeralPermission, PERMISSION_SEED},
     },
     anchor::delegate,
-    consts::{EPHEMERAL_VAULT_ID, MAGIC_PROGRAM_ID, PERMISSION_PROGRAM_ID},
+    consts::{EPHEMERAL_VAULT_ID, MAGIC_CONTEXT_ID, MAGIC_PROGRAM_ID, PERMISSION_PROGRAM_ID},
     cpi::DelegateConfig,
+    ephem::{FoldableIntentBuilder, MagicIntentBundleBuilder},
     ephemeral_accounts::rent,
 };
 
-use crate::{errors::DexxerError, state::*, token::transfer_signed_by_owner};
+use crate::{
+    errors::DexxerError,
+    state::*,
+    token::{transfer_signed_by_owner, transfer_signed_by_pool},
+};
 
 /// Authorize an instruction as coming from either the account owner or a
 /// live, non-expired session key with remaining actions. Consumes one action
@@ -370,6 +375,73 @@ pub fn credit_deposit(ctx: Context<CreditDeposit>, amount: u64) -> Result<()> {
         .capital_total
         .checked_add(amount)
         .ok_or(DexxerError::MathOverflow)?;
+    Ok(())
+}
+
+// Mirror image of `CreditDeposit`: owner-only (money leaves the system, so
+// the session-key path in `assert_trader` does not apply here), debits
+// `free_margin`/`pool.capital_total`, and transfers `vault_ata -> owner_ata`
+// signed by the pool PDA. `magic_context`/`magic_program` are plain
+// `UncheckedAccount`s (not the `#[commit]` macro's `Program<MagicProgram>`)
+// so the commit CPI can be gated on `magic_program.executable` in the body:
+// on LiteSVM no program is deployed at that fixed address, so the account is
+// absent/non-executable and the CPI is skipped; on the ER it is the real
+// Magic program and the CPI runs.
+#[derive(Accounts)]
+pub struct Withdraw<'info> {
+    pub owner: Signer<'info>,
+    #[account(mut, seeds = [USER_SEED, owner.key().as_ref()], bump = user_account.bump, has_one = owner @ DexxerError::Unauthorized)]
+    pub user_account: Account<'info, UserAccount>,
+    #[account(mut, seeds = [POOL_SEED, pool.mint.as_ref()], bump = pool.bump, has_one = vault_ata)]
+    pub pool: Account<'info, Pool>,
+    #[account(mut, token::mint = pool.mint, token::authority = owner)]
+    pub owner_ata: Account<'info, TokenAccount>,
+    #[account(mut)]
+    pub vault_ata: Account<'info, TokenAccount>,
+    pub token_program: Program<'info, Token>,
+    /// CHECK: ER `MagicContext` PDA; only written when `magic_program` is executable (real ER)
+    #[account(mut, address = MAGIC_CONTEXT_ID)]
+    pub magic_context: UncheckedAccount<'info>,
+    /// CHECK: address-checked; gates the commit CPI via `.executable` in `withdraw`
+    #[account(address = MAGIC_PROGRAM_ID)]
+    pub magic_program: UncheckedAccount<'info>,
+}
+pub fn withdraw(ctx: Context<Withdraw>, amount: u64) -> Result<()> {
+    require!(amount > 0, DexxerError::AmountZero);
+    let u = &mut ctx.accounts.user_account;
+    require!(u.free_margin >= amount, DexxerError::InsufficientMargin);
+    u.free_margin = u
+        .free_margin
+        .checked_sub(amount)
+        .ok_or(DexxerError::MathOverflow)?;
+    let p = &mut ctx.accounts.pool;
+    p.capital_total = p
+        .capital_total
+        .checked_sub(amount)
+        .ok_or(DexxerError::MathOverflow)?;
+    let mint = p.mint;
+    let pool_bump = p.bump;
+    transfer_signed_by_pool(
+        &ctx.accounts.token_program,
+        &ctx.accounts.vault_ata,
+        &ctx.accounts.owner_ata,
+        &ctx.accounts.pool.to_account_info(),
+        &mint,
+        pool_bump,
+        amount,
+    )?;
+    // Only in a real ER does a Magic program actually live at this address;
+    // on LiteSVM (and any environment without the ER runtime) it is absent,
+    // so skip the commit CPI rather than fail the withdrawal.
+    if ctx.accounts.magic_program.to_account_info().executable {
+        MagicIntentBundleBuilder::new(
+            ctx.accounts.owner.to_account_info(),
+            ctx.accounts.magic_context.to_account_info(),
+            ctx.accounts.magic_program.to_account_info(),
+        )
+        .commit(&[ctx.accounts.user_account.to_account_info()])
+        .build_and_invoke()?;
+    }
     Ok(())
 }
 

@@ -323,3 +323,22 @@ pub fn credit_deposit(signer: &Pubkey, t: &Trader, wd: &World, amount: u64) -> I
         data: ix::CreditDeposit { amount }.data(),
     }
 }
+pub fn withdraw(signer: &Pubkey, t: &Trader, wd: &World, amount: u64) -> Instruction {
+    // `owner_ata` is derived from `signer` (not necessarily the trader's real
+    // owner) so the session-key-rejection test can pass a mismatched signer
+    // and exercise the program's owner check.
+    Instruction {
+        program_id: prog(),
+        accounts: vec![
+            rs(signer),
+            w(&t.user),
+            w(&wd.pool),
+            w(&ata(signer, &wd.mint)),
+            w(&wd.pool_ata),
+            r(&TOKEN),
+            w(&pdas::magic_context()),
+            r(&pdas::magic_program()),
+        ],
+        data: ix::Withdraw { amount }.data(),
+    }
+}

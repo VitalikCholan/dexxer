@@ -50,6 +50,9 @@ pub fn ephemeral_vault() -> Pubkey {
 pub fn magic_program() -> Pubkey {
     compat_pk(ephemeral_rollups_sdk::consts::MAGIC_PROGRAM_ID)
 }
+pub fn magic_context() -> Pubkey {
+    compat_pk(ephemeral_rollups_sdk::consts::MAGIC_CONTEXT_ID)
+}
 /// The ER `EphemeralPermission` PDA for `account`, under the permission program.
 pub fn permission(account: &Pubkey) -> Pubkey {
     let compat_account = ephemeral_rollups_sdk::compat::Pubkey::new_from_array(account.to_bytes());

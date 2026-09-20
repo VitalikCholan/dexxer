@@ -82,6 +82,9 @@ pub mod dexxer_core {
     pub fn credit_deposit(ctx: Context<CreditDeposit>, amount: u64) -> Result<()> {
         user::credit_deposit(ctx, amount)
     }
+    pub fn withdraw(ctx: Context<Withdraw>, amount: u64) -> Result<()> {
+        user::withdraw(ctx, amount)
+    }
     pub fn open_position(
         ctx: Context<Trade>,
         side: Side,
