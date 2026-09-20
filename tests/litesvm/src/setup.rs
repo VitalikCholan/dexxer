@@ -20,6 +20,7 @@ pub struct World {
     pub pool_ata: Pubkey,
     pub feed: Pubkey,
     pub fee_escrow: Pubkey,
+    pub magic_fee_vault: Pubkey,
 }
 
 impl World {
@@ -31,6 +32,12 @@ impl World {
         h.fund(&admin.pubkey(), 50_000_000_000);
         h.fund(&crank.pubkey(), 5_000_000_000);
         let mint = mint_kp.pubkey();
+        // A fresh, non-existent-on-ledger pubkey, not `Pubkey::default()` (== the
+        // System Program's own address — LiteSVM/the SBF runtime rejects marking
+        // an executable program account `mut`, which `Withdraw`/`CommitAggregate`
+        // both do for `magic_fee_vault`; discovered when `Withdraw` started
+        // requiring it — see instructions/user.rs's fix-round-1 comment).
+        let magic_fee_vault = Pubkey::new_unique();
         h.send(
             &[ixs::init_config(
                 &admin.pubkey(),
@@ -41,7 +48,7 @@ impl World {
                 100,
                 &crank.pubkey(), // scheduler_signer: fixed test crank, no real scheduler on LiteSVM
                 &admin.pubkey(), // fee_payer: reuse admin locally, no real scheduler on LiteSVM
-                &Pubkey::default(), // magic_fee_vault: no fee-vault requirement locally
+                &magic_fee_vault,
             )],
             &[&admin, &mint_kp],
         )
@@ -69,6 +76,7 @@ impl World {
             pool_ata: ata(&pool, &mint),
             feed: pdas::feed(&oracle_program),
             fee_escrow: pdas::fee_escrow(),
+            magic_fee_vault,
             admin,
             crank,
             mint,

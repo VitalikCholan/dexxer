@@ -395,9 +395,20 @@ pub fn credit_deposit(ctx: Context<CreditDeposit>, amount: u64) -> Result<()> {
 // not reached base layer after 30+ minutes of polling (see task-5-report.md
 // "fix round 1" — genuinely stuck, not merely slow like `Pool`'s first
 // commit). Routed through the same `fee_escrow` PDA `commit_aggregate` now
-// uses, via `invoke_signed` — no `.magic_fee_vault(...)` here (this path
-// doesn't need the fee-vault's higher commit ceiling, just a payer the
-// commit-scheduling mechanism actually accepts).
+// uses, via `invoke_signed`.
+//
+// Fix round 1, round-trip 2: the first version of this fix omitted
+// `.magic_fee_vault(...)` (reasoned it wasn't needed — this path doesn't
+// need the fee-vault's higher commit ceiling). Real devnet run disagreed:
+// failed with `InstructionError::MissingAccount` ("An account required by
+// the instruction is missing"), a base Solana runtime error, not an Anchor
+// one — the validator expects the vault account in the CPI's account list
+// whenever the payer is delegated, independent of commit volume. Added here
+// to match `commit_aggregate` exactly. `config` is `Box`ed (same reason as
+// `InitPermissions`/`SetSession` elsewhere in this file): with `magic_fee_vault`
+// added alongside the existing `owner_ata`/`vault_ata`/`pool`/`user_account`,
+// this context blew the SBF stack frame (`Access violation in stack frame 5`)
+// without it.
 #[derive(Accounts)]
 pub struct Withdraw<'info> {
     pub owner: Signer<'info>,
@@ -410,8 +421,13 @@ pub struct Withdraw<'info> {
     #[account(mut)]
     pub vault_ata: Account<'info, TokenAccount>,
     pub token_program: Program<'info, Token>,
+    #[account(seeds = [CONFIG_SEED], bump = config.bump)]
+    pub config: Box<Account<'info, Config>>,
     #[account(mut, seeds = [FEE_ESCROW_SEED], bump = fee_escrow.bump)]
     pub fee_escrow: Account<'info, FeeEscrow>,
+    /// CHECK: validator-scoped Magic Program fee vault; constrained to Config.magic_fee_vault
+    #[account(mut, constraint = magic_fee_vault.key() == config.magic_fee_vault @ DexxerError::Unauthorized)]
+    pub magic_fee_vault: UncheckedAccount<'info>,
     /// CHECK: ER `MagicContext` PDA; only written when `magic_program` is executable (real ER)
     #[account(mut, address = MAGIC_CONTEXT_ID)]
     pub magic_context: UncheckedAccount<'info>,
@@ -454,6 +470,7 @@ pub fn withdraw(ctx: Context<Withdraw>, amount: u64) -> Result<()> {
             ctx.accounts.magic_context.to_account_info(),
             ctx.accounts.magic_program.to_account_info(),
         )
+        .magic_fee_vault(ctx.accounts.magic_fee_vault.to_account_info())
         .commit(&[ctx.accounts.user_account.to_account_info()])
         .build_and_invoke_signed(&[seeds])?;
     }
