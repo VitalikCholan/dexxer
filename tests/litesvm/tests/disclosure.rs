@@ -1,13 +1,62 @@
-use anchor_lang::AccountSerialize;
-use dexxer_core::state::*;
-use dexxer_litesvm::{apk, ixs, pk, setup::World, Harness};
+use anchor_lang::{AccountSerialize, InstructionData, Space};
+use dexxer_core::{errors::DexxerError, instruction as ix, state::*};
+use dexxer_litesvm::{
+    apk, assert_custom_error, ixs, pdas, pk, setup::World, token_ix::SYSTEM, Harness,
+};
 use solana_account::Account;
+use solana_instruction::{AccountMeta, Instruction};
 use solana_keypair::Keypair;
 use solana_pubkey::Pubkey;
 use solana_signer::Signer;
 
 fn prog() -> Pubkey {
     pk(dexxer_core::ID)
+}
+
+/// Builds `write_commitment` the way `ixs::write_commitment_direct` does, except
+/// `escrow_auth` is set to the *real* `Config.fee_payer` (public knowledge — no
+/// signature required by the program's own constraint, which only checks the
+/// pubkey value) instead of an unrelated stranger. This isolates the one
+/// remaining gate a plain wallet cannot pass: `escrow` itself, which must be a
+/// signer at `ephemeral_balance_pda_from_payer(escrow_auth, ACTION_ESCROW_INDEX)`
+/// — a PDA no wallet holds a private key for. Kept local to this test file per
+/// the Task 3 file-ownership split (`ixs.rs` is owned by the parallel agent).
+fn write_commitment_isolated_escrow(w: &World, nonce: u64, hash: [u8; 32]) -> Instruction {
+    let fee_payer = w.admin.pubkey(); // World::bootstrap's init_config sets fee_payer = admin.pubkey()
+    Instruction {
+        program_id: prog(),
+        accounts: vec![
+            AccountMeta::new(pdas::commitment(nonce), false),
+            AccountMeta::new_readonly(w.config, false),
+            AccountMeta::new_readonly(SYSTEM, false),
+            AccountMeta::new_readonly(prog(), false),
+            AccountMeta::new_readonly(fee_payer, false),
+            AccountMeta::new(pdas::action_escrow(&fee_payer), false),
+        ],
+        data: ix::WriteCommitment { nonce, hash }.data(),
+    }
+}
+
+/// Same as `write_commitment_isolated_escrow`, for `write_disclosure`.
+fn write_disclosure_isolated_escrow(
+    w: &World,
+    args: DisclosureArgs,
+    salt: [u8; 32],
+) -> Instruction {
+    let fee_payer = w.admin.pubkey();
+    Instruction {
+        program_id: prog(),
+        accounts: vec![
+            AccountMeta::new(pdas::disclosure(args.nonce), false),
+            AccountMeta::new_readonly(pdas::commitment(args.nonce), false),
+            AccountMeta::new_readonly(w.config, false),
+            AccountMeta::new_readonly(SYSTEM, false),
+            AccountMeta::new_readonly(prog(), false),
+            AccountMeta::new_readonly(fee_payer, false),
+            AccountMeta::new(pdas::action_escrow(&fee_payer), false),
+        ],
+        data: ix::WriteDisclosure { args, salt }.data(),
+    }
 }
 
 /// Writes a real, correctly-discriminated `Commitment` account directly into the
@@ -114,4 +163,72 @@ fn write_disclosure_direct_call_rejected() {
         e.contains("PrivilegeEscalation"),
         "expected the escrow-payer CPI to fail on privilege escalation, got: {e}"
     );
+}
+
+// Fix round 1: the two tests above prove a plain wallet is rejected, but only via
+// the `init` CPI's own lamport-transfer signer requirement — an incidental
+// side effect of the target account being unfunded, not the program's own
+// `signer @ InvalidActionSigner` constraint on `escrow`. Anchor's `init`
+// degrades to `allocate`+`assign` (signed by the target PDA's own seeds, never
+// touching `escrow`) once the target already holds rent-exempt lamports —
+// anyone can produce that by airdropping to a public PDA address. These two
+// tests pre-fund the target and additionally use the *real* `Config.fee_payer`
+// as `escrow_auth` (public, no signature needed), so every other constraint
+// passes and only `escrow`'s own signer/address check remains — proving that
+// check itself, not the CPI side effect, is what blocks a plain wallet.
+#[test]
+fn write_commitment_prefunded_target_still_blocked_by_escrow_signer() {
+    let mut h = Harness::new();
+    let w = World::bootstrap(&mut h);
+    let nonce = 2u64;
+    let target = pdas::commitment(nonce);
+    let rent = h
+        .svm
+        .minimum_balance_for_rent_exemption(8 + Commitment::INIT_SPACE);
+    h.svm.airdrop(&target, rent).unwrap();
+    let r = h.send(
+        &[write_commitment_isolated_escrow(&w, nonce, [9u8; 32])],
+        &[],
+    );
+    assert!(
+        r.is_err(),
+        "prefunded direct write_commitment must still fail (escrow signer/address check)"
+    );
+    assert_custom_error(&r, 6000 + DexxerError::InvalidActionSigner as u32);
+}
+
+#[test]
+fn write_disclosure_prefunded_target_still_blocked_by_escrow_signer() {
+    let mut h = Harness::new();
+    let w = World::bootstrap(&mut h);
+    let nonce = 2u64;
+    let args = DisclosureArgs {
+        market: apk(w.market),
+        side: Side::Long,
+        size: 1,
+        entry: 1,
+        exit: 1,
+        pnl: 0,
+        fees: 0,
+        reason: CloseReason::User,
+        opened_slot: 1,
+        closed_slot: 2,
+        nonce,
+        reveal_after_slot: 3,
+    };
+    seed_commitment(&mut h, nonce, [7u8; 32]);
+    let target = pdas::disclosure(nonce);
+    let rent = h
+        .svm
+        .minimum_balance_for_rent_exemption(8 + Disclosure::INIT_SPACE);
+    h.svm.airdrop(&target, rent).unwrap();
+    let r = h.send(
+        &[write_disclosure_isolated_escrow(&w, args, [1u8; 32])],
+        &[],
+    );
+    assert!(
+        r.is_err(),
+        "prefunded direct write_disclosure must still fail (escrow signer/address check)"
+    );
+    assert_custom_error(&r, 6000 + DexxerError::InvalidActionSigner as u32);
 }
