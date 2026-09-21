@@ -124,4 +124,39 @@ mod tests {
         );
         assert_ne!(h1, commitment_hash(&a, &[4u8; 32]), "salt must affect hash");
     }
+
+    /// Golden vector (Task 7, week 3): fixed inputs / fixed expected hex, so the
+    /// TS client's `commitmentHash` (tests/er/lib/program.ts) can assert
+    /// byte-for-byte agreement with this Rust implementation without spinning up
+    /// a validator. Expected hex computed by running this test once and pasting
+    /// its output — see `tests/er/lib/hashes.selftest.ts`.
+    #[test]
+    fn commitment_hash_golden_vector() {
+        let args = DisclosureArgs {
+            market: Pubkey::new_from_array([1u8; 32]),
+            side: Side::Long,
+            size: 1_000_000,
+            entry: 150_000_000,
+            exit: 151_000_000,
+            pnl: -5,
+            fees: 7,
+            reason: CloseReason::User,
+            opened_slot: 10,
+            closed_slot: 20,
+            nonce: 3,
+            reveal_after_slot: 25,
+        };
+        let salt = [2u8; 32];
+        let hash = commitment_hash(&args, &salt);
+        let hex = hash
+            .iter()
+            .map(|b| format!("{:02x}", b))
+            .collect::<String>();
+        println!("commitment_hash_golden_vector hex: {hex}");
+        assert_eq!(
+            hex,
+            "26e982cc691717451020afc4cb1146e7489b0953c9b26b3ad589f19741c4103f",
+            "keccak256 golden vector regressed — mirror any intentional change in tests/er/lib/hashes.selftest.ts"
+        );
+    }
 }

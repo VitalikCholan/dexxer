@@ -87,4 +87,38 @@ mod tests {
         assert_ne!(pad(&a, 0), pad(&a, 1));
         assert_ne!(pad(&a, 0), pad(&[2u8; 32], 0));
     }
+
+    /// Golden vectors (Task 7, week 3): fixed inputs / fixed expected hex, so the
+    /// TS client's `leaf`/`pad` (tests/er/lib/program.ts) can assert byte-for-byte
+    /// agreement with this Rust implementation without spinning up a validator.
+    /// Expected hex computed by running this test once and pasting its output —
+    /// see `tests/er/lib/hashes.selftest.ts`.
+    #[test]
+    fn leaf_and_pad_golden_vectors() {
+        let owner = Pubkey::new_from_array([3u8; 32]);
+        let exit_salt = [4u8; 32];
+        let leaf_hash = leaf(&owner, 42, &exit_salt, 99);
+        let leaf_hex = leaf_hash
+            .iter()
+            .map(|b| format!("{:02x}", b))
+            .collect::<String>();
+        println!("leaf_golden_vector hex: {leaf_hex}");
+
+        let pad_hash = pad(&[5u8; 32], 7);
+        let pad_hex = pad_hash
+            .iter()
+            .map(|b| format!("{:02x}", b))
+            .collect::<String>();
+        println!("pad_golden_vector hex: {pad_hex}");
+        assert_eq!(
+            leaf_hex,
+            "79107674f9ef863f98a85fdbc056ddf1121f71870dffb8628f206b6c82f31572",
+            "keccak256 golden vector regressed — mirror any intentional change in tests/er/lib/hashes.selftest.ts"
+        );
+        assert_eq!(
+            pad_hex,
+            "ee5497d0b6b70660e0c594f242962c673db850a86ce614f3706820cf5b19dfb3",
+            "keccak256 golden vector regressed — mirror any intentional change in tests/er/lib/hashes.selftest.ts"
+        );
+    }
 }

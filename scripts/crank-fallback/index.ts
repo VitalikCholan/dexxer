@@ -66,6 +66,15 @@
 //    rather than letting the whole process crash on a transient TEE auth
 //    hiccup. Locally (`DEXXER_NET` unset) `teeConn` returns the plain
 //    unauthenticated `erConn` unchanged, so this codepath is a no-op there.
+//
+// Week 3 (Task 7): every `DISCLOSURE_EVERY_TICKS` ticks (~5 min at the
+// default 1s cadence — the same cadence as the `Pool` commit itself, since
+// `commit_aggregate` below IS that commit), `runRootCycle` then
+// `runDisclosureCycle` (scripts/crank-fallback/disclosure.ts) run root BEFORE
+// disclosure, so a `commit_aggregate` call always carries a freshly computed
+// `BalancesRoot`. Both are wrapped in their own try/catch here so a failure
+// in either never kills the 1s tick loop — see disclosure.ts's own per-call
+// try/catch for the finer-grained (per-action) version of the same rule.
 
 export {}; // module marker: top-level await below requires this file to be a module (also keeps `let stop` below out of the global/DOM scope)
 
@@ -79,12 +88,22 @@ if ((process.env.DEXXER_NET ?? "local") === "devnet") {
 }
 
 const { PublicKey, Transaction } = await import("@solana/web3.js");
-const { NET, confirmSignature, loadOrCreateKey, sleep, teeConn } = await import("../../tests/er/lib/env.js");
+const { NET, baseConn, confirmSignature, loadOrCreateKey, sleep, teeConn } = await import("../../tests/er/lib/env.js");
 const { POSITION_DISC, accountNs, dexxerCoreProgram, pdas } = await import("../../tests/er/lib/program.js");
+const { runDisclosureCycle, runRootCycle } = await import("./disclosure.js");
 type PublicKeyT = InstanceType<typeof PublicKey>;
 
 const crank = loadOrCreateKey(NET === "devnet" ? "devnet-crank" : "admin");
+// Week 3 (Task 7): `commit_aggregate`'s `payer` must equal `Config.fee_payer`
+// exactly (task-7 brief) — locally that's `admin` (see `bootstrap()`'s
+// `init_config` call in tests/er/lib/admin.ts), on devnet the dedicated
+// `devnet-fee-payer` identity (see `bootstrapDevnet()`).
+const feePayer = loadOrCreateKey(NET === "devnet" ? "devnet-fee-payer" : "admin");
 const INTERVAL = Number(process.env.CRANK_INTERVAL_MS ?? 1000);
+// Week 3 (Task 7): cadence for `runRootCycle`/`runDisclosureCycle` — the same
+// 300-tick (~5 min at the default 1s INTERVAL) interval as the `Pool` commit
+// itself.
+const DISCLOSURE_EVERY_TICKS = 300;
 
 // Must match `programs/dexxer_core/src/state/mod.rs`'s `MAX_CANDIDATES`
 // (crank_tick's Accounts context requires `remaining_accounts.len() / 2 <=
@@ -102,6 +121,11 @@ process.on("SIGINT", () => {
 // `crank`/`INTERVAL`/etc above).
 let conn = await teeConn(crank);
 let prog = dexxerCoreProgram(conn, crank);
+// Week 3 (Task 7): separate connection/program pair, authenticated as
+// `feePayer` — `commit_aggregate`'s only accepted `payer` signer, distinct
+// from `crank`'s identity (see disclosure.ts's `DisclosureCtx`).
+let feePayerConn = await teeConn(feePayer);
+let feePayerProg = dexxerCoreProgram(feePayerConn, feePayer);
 let lastBlockhash: string | null = null;
 
 function looksLikeAuthOrTimeout(e: unknown): boolean {
@@ -112,6 +136,8 @@ function looksLikeAuthOrTimeout(e: unknown): boolean {
 async function reconnect(): Promise<void> {
   conn = await teeConn(crank);
   prog = dexxerCoreProgram(conn, crank);
+  feePayerConn = await teeConn(feePayer);
+  feePayerProg = dexxerCoreProgram(feePayerConn, feePayer);
   lastBlockhash = null; // the old value belongs to the just-replaced connection
   console.log("crank-fallback: reconnected (fresh TEE auth token)");
 }
@@ -132,6 +158,9 @@ interface Ctx {
   market: PublicKeyT;
   marketRisk: PublicKeyT;
   pool: PublicKeyT;
+  /** Week 3 (Task 7): `runRootCycle`/`runDisclosureCycle` — see disclosure.ts. */
+  balancesRoot: PublicKeyT;
+  feeEscrow: PublicKeyT;
 }
 
 async function tick(ctx: Ctx, n: number): Promise<void> {
@@ -231,12 +260,17 @@ async function main(): Promise<void> {
   const market = pdas.market();
   const marketRisk = pdas.marketRisk(market);
   const pool = pdas.pool(config.dusdcMint as PublicKeyT);
+  const balancesRoot = pdas.balancesRoot();
+  const feeEscrow = pdas.feeEscrow();
   console.log("crank-fallback starting", {
     net: NET,
     crank: crank.publicKey.toBase58(),
+    feePayer: feePayer.publicKey.toBase58(),
     market: market.toBase58(),
     pool: pool.toBase58(),
+    balancesRoot: balancesRoot.toBase58(),
     intervalMs: INTERVAL,
+    disclosureEveryTicks: DISCLOSURE_EVERY_TICKS,
   });
 
   let n = 0;
@@ -244,7 +278,7 @@ async function main(): Promise<void> {
     const t0 = Date.now();
     n += 1;
     try {
-      await tick({ market, marketRisk, pool }, n);
+      await tick({ market, marketRisk, pool, balancesRoot, feeEscrow }, n);
     } catch (e) {
       console.error("tick failed", String(e));
       if (looksLikeAuthOrTimeout(e)) {
@@ -255,6 +289,25 @@ async function main(): Promise<void> {
         }
       }
     }
+
+    // Week 3 (Task 7): root BEFORE disclosure, so `commit_aggregate` always
+    // carries a freshly computed `BalancesRoot`. Each cycle is its own
+    // try/catch — see file header point (Task 7) and disclosure.ts's own
+    // per-action try/catch — so neither ever kills this 1s tick loop.
+    if (n % DISCLOSURE_EVERY_TICKS === 0) {
+      const cycleCtx = { baseConn, conn, prog, crank, feePayerConn, feePayerProg, feePayer, pool, balancesRoot, feeEscrow };
+      try {
+        await runRootCycle(cycleCtx);
+      } catch (e) {
+        console.error("runRootCycle failed", String(e));
+      }
+      try {
+        await runDisclosureCycle(cycleCtx);
+      } catch (e) {
+        console.error("runDisclosureCycle failed", String(e));
+      }
+    }
+
     await sleep(Math.max(0, INTERVAL - (Date.now() - t0)));
   }
   console.log("crank-fallback stopped (SIGINT)");

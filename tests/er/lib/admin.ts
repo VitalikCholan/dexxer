@@ -35,10 +35,11 @@ import {
   sendAndConfirmTransaction,
 } from "@solana/web3.js";
 import { getOrCreateAssociatedTokenAccount, TOKEN_PROGRAM_ID, ASSOCIATED_TOKEN_PROGRAM_ID } from "@solana/spl-token";
-import { delegateSpl } from "@magicblock-labs/ephemeral-rollups-sdk";
+import { createTopUpEscrowInstruction, delegateSpl, escrowPdaFromEscrowAuthority } from "@magicblock-labs/ephemeral-rollups-sdk";
 import { NET, ORACLE, airdrop, baseConn, ER_VALIDATOR, loadOrCreateKey, waitDelegated } from "./env.js";
 import { crankSignerPda } from "./crank-signer.js";
 import {
+  ACTION_ESCROW_INDEX,
   DELEGATION_PROGRAM_ID,
   DEXXER_CORE_PROGRAM_ID,
   EPHEMERAL_SPL_TOKEN_PROGRAM_ID,
@@ -95,9 +96,13 @@ export interface Bootstrapped {
   sigs: Record<string, string>;
 }
 
-/** `bootstrapDevnet()`'s return value: same fields as `bootstrap()`, plus the devnet fee payer. */
+/** `bootstrapDevnet()`'s return value: same fields as `bootstrap()`, plus the devnet fee payer and week-3's `BalancesRoot`/action-escrow. */
 export interface BootstrappedDevnet extends Bootstrapped {
   feePayer: Keypair;
+  /** `[b"balances_root"]`, week 3 Task 5/7 — see `initAndDelegateBalancesRoot`. */
+  balancesRoot: PublicKey;
+  /** Action-escrow balance PDA topped up for `write_commitment`/`write_disclosure` — see `topUpActionEscrow`. */
+  actionEscrow: PublicKey;
 }
 
 async function ensureFunded(pubkey: PublicKey, minSol: number, label: string) {
@@ -298,6 +303,91 @@ async function initAndDelegateFeeEscrow(core: Program, admin: Keypair, config: P
     console.log("delegate_fee_escrow: already delegated, skipped");
   }
   return feeEscrow;
+}
+
+/**
+ * Week 3 (Task 5/7): create + delegate the `[b"balances_root"]` PDA that
+ * `set_balances_root`/`commit_aggregate` write to — same idempotent
+ * init-then-delegate shape as `initAndDelegateFeeEscrow` above (mirrors
+ * `delegate_fee_escrow`'s account list, per task-7 brief).
+ */
+async function initAndDelegateBalancesRoot(core: Program, admin: Keypair, config: PublicKey, sigs: Record<string, string>): Promise<PublicKey> {
+  const balancesRoot = pdas.balancesRoot();
+  const info = await baseConn.getAccountInfo(balancesRoot, "confirmed");
+  if (!info) {
+    const sig = await core.methods
+      .initBalancesRoot()
+      .accounts({ admin: admin.publicKey, config, balancesRoot, systemProgram: SystemProgram.programId })
+      .rpc();
+    sigs.initBalancesRoot = sig;
+    console.log("init_balances_root", sig);
+  } else {
+    console.log("init_balances_root: exists, skipped");
+  }
+  const infoNow = info ?? (await baseConn.getAccountInfo(balancesRoot, "confirmed"));
+  if (!infoNow || !infoNow.owner.equals(DELEGATION_PROGRAM_ID)) {
+    const t = delegationTriple(balancesRoot, DEXXER_CORE_PROGRAM_ID);
+    const sig = await core.methods
+      .delegateBalancesRoot()
+      .accounts({
+        admin: admin.publicKey,
+        config,
+        bufferBalancesRoot: t.buffer,
+        delegationRecordBalancesRoot: t.record,
+        delegationMetadataBalancesRoot: t.metadata,
+        balancesRoot,
+        ownerProgram: DEXXER_CORE_PROGRAM_ID,
+        delegationProgram: DELEGATION_PROGRAM_ID,
+        systemProgram: SystemProgram.programId,
+      })
+      .rpc();
+    sigs.delegateBalancesRoot = sig;
+    console.log("delegate_balances_root", sig);
+    await waitDelegated(baseConn, balancesRoot, "balances_root");
+  } else {
+    console.log("delegate_balances_root: already delegated, skipped");
+  }
+  return balancesRoot;
+}
+
+const ACTION_ESCROW_TOP_UP_LAMPORTS = 0.05 * LAMPORTS_PER_SOL;
+const ACTION_ESCROW_MIN_LAMPORTS = 0.02 * LAMPORTS_PER_SOL;
+
+/**
+ * Week 3 (Task 7): base-layer top-up of the action-escrow balance PDA that
+ * `write_commitment`/`write_disclosure`'s `escrow`/`escrow_auth` accounts
+ * check (`ephemeral_balance_pda_from_payer(escrow_auth, ACTION_ESCROW_INDEX)`
+ * on the Rust side, `escrowPdaFromEscrowAuthority(feePayer, ACTION_ESCROW_INDEX)`
+ * here — same derivation, see `spikes/06-magic-action/tests/magic-actions.ts`
+ * for the reference call). `escrowAuthority` is `feePayer` (the identity
+ * `write_commitment`/`write_disclosure` require as `Config.fee_payer`); the
+ * lamports themselves come from `admin` (already funded by `requireFunded`
+ * above), which is the only account that needs to sign this top-up —
+ * `createTopUpEscrowInstruction`'s `payer` argument, not `escrowAuthority`,
+ * is the signer (see its account list: `payer` is-signer, `escrowAuthority`
+ * is not). Idempotent: skips if the escrow already holds >= 0.02 SOL.
+ *
+ * Note (brief discrepancy, IDL/SDK wins — see task-7-report.md): the task-7
+ * brief's pseudocode calls `createTopUpEscrowInstruction` with 3 args
+ * (escrow, payer, amount); the installed SDK (0.17.0, `tests/er/node_modules`)
+ * exports a 4-arg signature `(escrow, escrowAuthority, payer, amount, index?)`
+ * — `escrowAuthority` and `payer` are distinct accounts, and both
+ * `escrowPdaFromEscrowAuthority`/`createTopUpEscrowInstruction` already
+ * default their `index` param to 255 (== `ACTION_ESCROW_INDEX`), passed
+ * explicitly here for clarity.
+ */
+async function topUpActionEscrow(admin: Keypair, feePayer: Keypair, sigs: Record<string, string>): Promise<PublicKey> {
+  const escrow = escrowPdaFromEscrowAuthority(feePayer.publicKey, ACTION_ESCROW_INDEX);
+  const bal = await baseConn.getBalance(escrow, "confirmed").catch(() => 0);
+  if (bal >= ACTION_ESCROW_MIN_LAMPORTS) {
+    console.log(`action escrow: funded (${(bal / LAMPORTS_PER_SOL).toFixed(4)} SOL), skipped`);
+    return escrow;
+  }
+  const ix = createTopUpEscrowInstruction(escrow, feePayer.publicKey, admin.publicKey, ACTION_ESCROW_TOP_UP_LAMPORTS, ACTION_ESCROW_INDEX);
+  const sig = await sendAndConfirmTransaction(baseConn, new Transaction().add(ix), [admin], { commitment: "confirmed" });
+  sigs.topUpActionEscrow = sig;
+  console.log("action escrow top-up", sig, "escrow", escrow.toBase58());
+  return escrow;
 }
 
 export async function bootstrap(): Promise<Bootstrapped> {
@@ -636,5 +726,9 @@ export async function bootstrapDevnet(): Promise<BootstrappedDevnet> {
   // --- init + delegate the fee-escrow PDA (Task 5 fix round 1) ---
   const feeEscrow = await initAndDelegateFeeEscrow(core, admin, config, sigs);
 
-  return { admin, mint, market, marketRisk, pool, poolAta, feed, feeEscrow, sigs, feePayer };
+  // --- init + delegate BalancesRoot, then top up the action escrow (week 3, Task 7) ---
+  const balancesRoot = await initAndDelegateBalancesRoot(core, admin, config, sigs);
+  const actionEscrow = await topUpActionEscrow(admin, feePayer, sigs);
+
+  return { admin, mint, market, marketRisk, pool, poolAta, feed, feeEscrow, sigs, feePayer, balancesRoot, actionEscrow };
 }
