@@ -1233,6 +1233,7 @@ dependencies = [
  "anchor-lang",
  "anchor-spl",
  "anchor-syn",
+ "bytemuck",
  "ephemeral-rollups-sdk",
  "magicblock-magic-program-api",
  "proptest",

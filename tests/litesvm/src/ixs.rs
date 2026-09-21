@@ -109,6 +109,18 @@ pub fn init_fee_escrow(admin: &Pubkey) -> Instruction {
         data: ix::InitFeeEscrow {}.data(),
     }
 }
+pub fn init_balances_root(admin: &Pubkey) -> Instruction {
+    Instruction {
+        program_id: prog(),
+        accounts: vec![
+            s(admin),
+            r(&pdas::config()),
+            w(&pdas::balances_root()),
+            r(&SYSTEM),
+        ],
+        data: ix::InitBalancesRoot {}.data(),
+    }
+}
 pub fn set_params(
     admin: &Pubkey,
     config: &Pubkey,
@@ -382,6 +394,7 @@ pub fn commit_aggregate(payer: &Pubkey, wd: &World, extra: &[AccountMeta]) -> In
         r(&wd.config),
         rs(payer),
         w(&wd.pool),
+        w(&wd.balances_root),
         w(&wd.fee_escrow),
         w(&wd.magic_fee_vault),
         w(&pdas::magic_context()),
@@ -491,6 +504,29 @@ pub fn write_disclosure_direct_with_escrow_auth(
         program_id: prog(),
         accounts: write_disclosure_direct_accounts(r(escrow_auth), escrow_auth, wd, &args),
         data: ix::WriteDisclosure { args, salt }.data(),
+    }
+}
+/// `set_balances_root` (ER, crank): `extra` is the batch of `UserAccount`
+/// pubkeys (readonly, `remaining_accounts`) whose leaves this call computes.
+pub fn set_balances_root(
+    crank: &Pubkey,
+    wd: &World,
+    begin: bool,
+    finalize: bool,
+    padding_seed: [u8; 32],
+    extra: &[AccountMeta],
+) -> Instruction {
+    let mut accounts = vec![rs(crank), r(&wd.config), w(&wd.balances_root)];
+    accounts.extend_from_slice(extra);
+    Instruction {
+        program_id: prog(),
+        accounts,
+        data: ix::SetBalancesRoot {
+            begin,
+            finalize,
+            padding_seed,
+        }
+        .data(),
     }
 }
 /// `mark_committed` (ER, crank): retires a `Closed && commitment_written` position's

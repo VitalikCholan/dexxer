@@ -5,16 +5,39 @@ use super::ROOT_LEAVES;
 
 /// Public, delegated, committed with `Pool` every 5 min (spec §2.4.2).
 /// Carries only keccak leaves — never a balance or owner in the clear.
-#[account]
-#[derive(InitSpace)]
+///
+/// `zero_copy` (controller ruling 5, week 3 task 5): a by-value Borsh
+/// `Account<BalancesRoot>` — 2 KiB dominated by `leaves: [[u8; 32]; 64]` —
+/// blew the SBF 4096-byte stack frame in both `InitBalancesRoot::try_accounts`
+/// (912 B over) and the `init_balances_root` global dispatch handler (672 B
+/// over), confirmed by a LiteSVM probe (`tests/litesvm/tests/root.rs`) that
+/// faulted with "Access violation in stack frame 3" before this conversion —
+/// `Box` at the call site cannot fix a by-value deserialize, only the
+/// zero-copy accessor (`AccountLoader::load*`, no stack copy) does. Field
+/// order below is `repr(C)`-significant and chosen so `bytemuck::Pod` needs no
+/// padding holes: `root_slot` (8-byte aligned) first, then the leaf array
+/// (1-byte aligned, any size), then the three `u8` scalars, then an explicit
+/// 5-byte pad to round the struct to a multiple of 8. No consumer of the old
+/// Borsh layout exists yet (Task 7 TS only hashes leaves; Task 9 decoders are
+/// unwritten) — Task 9's brief must be updated to this `repr(C)` layout.
+#[account(zero_copy)]
+#[repr(C)]
 pub struct BalancesRoot {
-    pub version: u8,
     /// Slot the current leaf set was computed for; every leaf is bound to it.
     pub root_slot: u64,
+    pub leaves: [[u8; 32]; ROOT_LEAVES],
+    pub version: u8,
     /// Real (non-padding) leaves written so far in the current cycle.
     pub filled: u8,
-    pub leaves: [[u8; 32]; ROOT_LEAVES],
     pub bump: u8,
+    _pad: [u8; 5],
+}
+
+impl BalancesRoot {
+    /// `8` (Anchor discriminator) + `size_of::<Self>()` — `zero_copy` has no
+    /// `InitSpace` derive (Borsh-only), so this is the `space` value every
+    /// `init` context below passes directly.
+    pub const SIZE: usize = 8 + std::mem::size_of::<BalancesRoot>();
 }
 
 /// `keccak(owner ‖ free_margin ‖ exit_salt ‖ root_slot)` — spec §2.4.2 / Global Constraints.

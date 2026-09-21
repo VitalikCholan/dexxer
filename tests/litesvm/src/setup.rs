@@ -20,6 +20,7 @@ pub struct World {
     pub pool_ata: Pubkey,
     pub feed: Pubkey,
     pub fee_escrow: Pubkey,
+    pub balances_root: Pubkey,
     pub magic_fee_vault: Pubkey,
     /// Signs `commit_aggregate`'s `payer: Signer` (must equal `Config.fee_payer`).
     /// Same key as `admin` (bootstrap's `init_config` sets `fee_payer = admin.pubkey()`,
@@ -72,6 +73,8 @@ impl World {
             .unwrap();
         h.send(&[ixs::init_fee_escrow(&admin.pubkey())], &[&admin])
             .unwrap();
+        h.send(&[ixs::init_balances_root(&admin.pubkey())], &[&admin])
+            .unwrap();
         let market = pdas::market();
         let pool = pdas::pool(&mint);
         let w = World {
@@ -82,6 +85,7 @@ impl World {
             pool_ata: ata(&pool, &mint),
             feed: pdas::feed(&oracle_program),
             fee_escrow: pdas::fee_escrow(),
+            balances_root: pdas::balances_root(),
             magic_fee_vault,
             fee_payer: admin.insecure_clone(),
             admin,

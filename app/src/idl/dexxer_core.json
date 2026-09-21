@@ -416,6 +416,32 @@
           }
         },
         {
+          "name": "balances_root",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  98,
+                  97,
+                  108,
+                  97,
+                  110,
+                  99,
+                  101,
+                  115,
+                  95,
+                  114,
+                  111,
+                  111,
+                  116
+                ]
+              }
+            ]
+          }
+        },
+        {
           "name": "fee_escrow",
           "writable": true,
           "pda": {
@@ -841,6 +867,217 @@
           "type": "u64"
         }
       ]
+    },
+    {
+      "name": "delegate_balances_root",
+      "discriminator": [
+        25,
+        190,
+        92,
+        225,
+        247,
+        184,
+        139,
+        38
+      ],
+      "accounts": [
+        {
+          "name": "admin",
+          "writable": true,
+          "signer": true,
+          "relations": [
+            "config"
+          ]
+        },
+        {
+          "name": "config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "buffer_balances_root",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  98,
+                  117,
+                  102,
+                  102,
+                  101,
+                  114
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "balances_root"
+              }
+            ],
+            "program": {
+              "kind": "const",
+              "value": [
+                223,
+                85,
+                190,
+                214,
+                89,
+                228,
+                134,
+                229,
+                234,
+                112,
+                104,
+                71,
+                32,
+                40,
+                234,
+                129,
+                244,
+                98,
+                123,
+                132,
+                56,
+                50,
+                114,
+                160,
+                100,
+                93,
+                67,
+                94,
+                154,
+                81,
+                107,
+                72
+              ]
+            }
+          }
+        },
+        {
+          "name": "delegation_record_balances_root",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  100,
+                  101,
+                  108,
+                  101,
+                  103,
+                  97,
+                  116,
+                  105,
+                  111,
+                  110
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "balances_root"
+              }
+            ],
+            "program": {
+              "kind": "account",
+              "path": "delegation_program"
+            }
+          }
+        },
+        {
+          "name": "delegation_metadata_balances_root",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  100,
+                  101,
+                  108,
+                  101,
+                  103,
+                  97,
+                  116,
+                  105,
+                  111,
+                  110,
+                  45,
+                  109,
+                  101,
+                  116,
+                  97,
+                  100,
+                  97,
+                  116,
+                  97
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "balances_root"
+              }
+            ],
+            "program": {
+              "kind": "account",
+              "path": "delegation_program"
+            }
+          }
+        },
+        {
+          "name": "balances_root",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  98,
+                  97,
+                  108,
+                  97,
+                  110,
+                  99,
+                  101,
+                  115,
+                  95,
+                  114,
+                  111,
+                  111,
+                  116
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "owner_program",
+          "address": "G2okX5Bae4CxfK8vzso1Ecc96QUv7E3P4YvxaZnaYXoV"
+        },
+        {
+          "name": "delegation_program",
+          "address": "DELeGGvXpWV2fqJUhqcF5ZSYMS4JTLjteaAMARRSaeSh"
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": []
     },
     {
       "name": "delegate_fee_escrow",
@@ -2670,6 +2907,78 @@
       ]
     },
     {
+      "name": "init_balances_root",
+      "discriminator": [
+        77,
+        5,
+        130,
+        183,
+        77,
+        66,
+        127,
+        10
+      ],
+      "accounts": [
+        {
+          "name": "admin",
+          "writable": true,
+          "signer": true,
+          "relations": [
+            "config"
+          ]
+        },
+        {
+          "name": "config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "balances_root",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  98,
+                  97,
+                  108,
+                  97,
+                  110,
+                  99,
+                  101,
+                  115,
+                  95,
+                  114,
+                  111,
+                  111,
+                  116
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": []
+    },
+    {
       "name": "init_config",
       "discriminator": [
         23,
@@ -4215,6 +4524,88 @@
       ]
     },
     {
+      "name": "set_balances_root",
+      "discriminator": [
+        254,
+        85,
+        220,
+        199,
+        147,
+        10,
+        177,
+        81
+      ],
+      "accounts": [
+        {
+          "name": "crank",
+          "signer": true
+        },
+        {
+          "name": "config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "balances_root",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  98,
+                  97,
+                  108,
+                  97,
+                  110,
+                  99,
+                  101,
+                  115,
+                  95,
+                  114,
+                  111,
+                  111,
+                  116
+                ]
+              }
+            ]
+          }
+        }
+      ],
+      "args": [
+        {
+          "name": "begin",
+          "type": "bool"
+        },
+        {
+          "name": "finalize",
+          "type": "bool"
+        },
+        {
+          "name": "padding_seed",
+          "type": {
+            "array": [
+              "u8",
+              32
+            ]
+          }
+        }
+      ]
+    },
+    {
       "name": "set_params",
       "discriminator": [
         27,
@@ -5043,6 +5434,19 @@
   ],
   "accounts": [
     {
+      "name": "BalancesRoot",
+      "discriminator": [
+        166,
+        110,
+        154,
+        136,
+        248,
+        196,
+        81,
+        170
+      ]
+    },
+    {
       "name": "Commitment",
       "discriminator": [
         61,
@@ -5389,6 +5793,82 @@
     }
   ],
   "types": [
+    {
+      "name": "BalancesRoot",
+      "docs": [
+        "Public, delegated, committed with `Pool` every 5 min (spec §2.4.2).",
+        "Carries only keccak leaves — never a balance or owner in the clear.",
+        "",
+        "`zero_copy` (controller ruling 5, week 3 task 5): a by-value Borsh",
+        "`Account<BalancesRoot>` — 2 KiB dominated by `leaves: [[u8; 32]; 64]` —",
+        "blew the SBF 4096-byte stack frame in both `InitBalancesRoot::try_accounts`",
+        "(912 B over) and the `init_balances_root` global dispatch handler (672 B",
+        "over), confirmed by a LiteSVM probe (`tests/litesvm/tests/root.rs`) that",
+        "faulted with \"Access violation in stack frame 3\" before this conversion —",
+        "`Box` at the call site cannot fix a by-value deserialize, only the",
+        "zero-copy accessor (`AccountLoader::load*`, no stack copy) does. Field",
+        "order below is `repr(C)`-significant and chosen so `bytemuck::Pod` needs no",
+        "padding holes: `root_slot` (8-byte aligned) first, then the leaf array",
+        "(1-byte aligned, any size), then the three `u8` scalars, then an explicit",
+        "5-byte pad to round the struct to a multiple of 8. No consumer of the old",
+        "Borsh layout exists yet (Task 7 TS only hashes leaves; Task 9 decoders are",
+        "unwritten) — Task 9's brief must be updated to this `repr(C)` layout."
+      ],
+      "serialization": "bytemuck",
+      "repr": {
+        "kind": "c"
+      },
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "root_slot",
+            "docs": [
+              "Slot the current leaf set was computed for; every leaf is bound to it."
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "leaves",
+            "type": {
+              "array": [
+                {
+                  "array": [
+                    "u8",
+                    32
+                  ]
+                },
+                64
+              ]
+            }
+          },
+          {
+            "name": "version",
+            "type": "u8"
+          },
+          {
+            "name": "filled",
+            "docs": [
+              "Real (non-padding) leaves written so far in the current cycle."
+            ],
+            "type": "u8"
+          },
+          {
+            "name": "bump",
+            "type": "u8"
+          },
+          {
+            "name": "_pad",
+            "type": {
+              "array": [
+                "u8",
+                5
+              ]
+            }
+          }
+        ]
+      }
+    },
     {
       "name": "CloseReason",
       "type": {

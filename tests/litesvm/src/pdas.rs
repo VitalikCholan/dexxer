@@ -35,6 +35,9 @@ pub fn faucet(owner: &Pubkey) -> Pubkey {
 pub fn fee_escrow() -> Pubkey {
     pda(&[FEE_ESCROW_SEED])
 }
+pub fn balances_root() -> Pubkey {
+    pda(&[BALANCES_ROOT_SEED])
+}
 pub fn commitment(nonce: u64) -> Pubkey {
     pda(&[COMMIT_SEED, &nonce.to_le_bytes()])
 }

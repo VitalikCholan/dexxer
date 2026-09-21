@@ -47,6 +47,9 @@ pub struct CommitAggregate<'info> {
     pub payer: Signer<'info>,
     #[account(mut, seeds = [POOL_SEED, pool.mint.as_ref()], bump = pool.bump)]
     pub pool: Box<Account<'info, Pool>>,
+    // `zero_copy` (controller ruling 5) — AccountLoader, not Account/Box.
+    #[account(mut, seeds = [BALANCES_ROOT_SEED], bump = balances_root.load()?.bump)]
+    pub balances_root: AccountLoader<'info, BalancesRoot>,
     #[account(mut, seeds = [FEE_ESCROW_SEED], bump = fee_escrow.bump)]
     pub fee_escrow: Account<'info, FeeEscrow>,
     /// CHECK: validator-scoped Magic Program fee vault; constrained to Config.magic_fee_vault
@@ -226,7 +229,10 @@ pub fn commit_aggregate<'info>(ctx: Context<'info, CommitAggregate<'info>>) -> R
             ctx.accounts.magic_program.to_account_info(),
         )
         .magic_fee_vault(ctx.accounts.magic_fee_vault.to_account_info())
-        .commit(&[ctx.accounts.pool.to_account_info()]);
+        .commit(&[
+            ctx.accounts.pool.to_account_info(),
+            ctx.accounts.balances_root.to_account_info(),
+        ]);
         let builder = if actions.is_empty() {
             builder
         } else {

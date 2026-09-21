@@ -178,4 +178,18 @@ pub mod dexxer_core {
     pub fn mark_committed(ctx: Context<MarkCommitted>) -> Result<()> {
         disclosure::mark_committed(ctx)
     }
+    pub fn init_balances_root(ctx: Context<InitBalancesRoot>) -> Result<()> {
+        root::init_balances_root(ctx)
+    }
+    pub fn delegate_balances_root(ctx: Context<DelegateBalancesRoot>) -> Result<()> {
+        root::delegate_balances_root(ctx)
+    }
+    pub fn set_balances_root<'info>(
+        ctx: Context<'info, SetBalancesRoot<'info>>,
+        begin: bool,
+        finalize: bool,
+        padding_seed: [u8; 32],
+    ) -> Result<()> {
+        root::set_balances_root(ctx, begin, finalize, padding_seed)
+    }
 }
