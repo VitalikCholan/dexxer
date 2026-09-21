@@ -740,7 +740,11 @@ fn close_permission_if_present<'info>(
 /// private field first (nothing private may survive into a public commit),
 /// then close the three `EphemeralPermission`s (safe now — the underlying
 /// accounts are already zeroed), then commit-and-undelegate so the three PDAs
-/// return to this program on L1. Task 1 M-A measured on devnet-tee that this
+/// return to this program on L1. The permission close must precede the
+/// commit, not merely follow the scrub: a still-permissioned (private)
+/// account is refused by the TEE's own commit filter (spec risk #13), so
+/// skipping this step fails the whole `undelegate_user` call outright rather
+/// than ever risking a leak. Task 1 M-A measured on devnet-tee that this
 /// exact order (close-permission-then-commit-and-undelegate in the same ER
 /// tx) lands on L1 on the first try.
 ///
@@ -769,12 +773,18 @@ pub fn undelegate_user(ctx: Context<UndelegateUser>) -> Result<()> {
     let db = [a.dq.bump];
 
     // Scrub — nothing private may survive into the public commit below.
-    // `owner`/`bump`/PDA seeds stay: they are structural, not private data.
+    // Every `UserAccount` field is accounted for here: `version`/`owner`/
+    // `bump` are kept (structural, not private data — `owner` is the PDA
+    // seed); `free_margin`/`locked_margin` are provably zero already (the
+    // `BalanceNotZero` guard above); everything else is zeroed below,
+    // including `last_withdraw_slot` (a withdraw-cooldown timestamp — leaks
+    // recent activity if left on the committed account).
     let u = &mut a.user_account;
     u.session_key = Pubkey::default();
     u.session_expiry = 0;
     u.actions_left = 0;
     u.nonce = 0;
+    u.last_withdraw_slot = 0;
     u.exit_salt = [0; 32];
     a.dq.head = 0;
     a.dq.len = 0;
