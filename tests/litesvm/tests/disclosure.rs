@@ -1,65 +1,18 @@
-use anchor_lang::{AccountSerialize, InstructionData, Space};
-use dexxer_core::{errors::DexxerError, instruction as ix, state::*};
+use anchor_lang::{AccountSerialize, Space};
+use dexxer_core::{errors::DexxerError, state::*};
 use dexxer_litesvm::{
     apk, assert_custom_error, assert_invariant, ixs, pdas, pk,
     setup::{Trader, World},
-    token_ix::SYSTEM,
     Harness,
 };
 use solana_account::Account;
-use solana_instruction::{AccountMeta, Instruction};
+use solana_instruction::AccountMeta;
 use solana_keypair::Keypair;
 use solana_pubkey::Pubkey;
 use solana_signer::Signer;
 
 fn prog() -> Pubkey {
     pk(dexxer_core::ID)
-}
-
-/// Builds `write_commitment` the way `ixs::write_commitment_direct` does, except
-/// `escrow_auth` is set to the *real* `Config.fee_payer` (public knowledge — no
-/// signature required by the program's own constraint, which only checks the
-/// pubkey value) instead of an unrelated stranger. This isolates the one
-/// remaining gate a plain wallet cannot pass: `escrow` itself, which must be a
-/// signer at `ephemeral_balance_pda_from_payer(escrow_auth, ACTION_ESCROW_INDEX)`
-/// — a PDA no wallet holds a private key for. Kept local to this test file per
-/// the Task 3 file-ownership split (`ixs.rs` is owned by the parallel agent).
-fn write_commitment_isolated_escrow(w: &World, nonce: u64, hash: [u8; 32]) -> Instruction {
-    let fee_payer = w.admin.pubkey(); // World::bootstrap's init_config sets fee_payer = admin.pubkey()
-    Instruction {
-        program_id: prog(),
-        accounts: vec![
-            AccountMeta::new(pdas::commitment(nonce), false),
-            AccountMeta::new_readonly(w.config, false),
-            AccountMeta::new_readonly(SYSTEM, false),
-            AccountMeta::new_readonly(prog(), false),
-            AccountMeta::new_readonly(fee_payer, false),
-            AccountMeta::new(pdas::action_escrow(&fee_payer), false),
-        ],
-        data: ix::WriteCommitment { nonce, hash }.data(),
-    }
-}
-
-/// Same as `write_commitment_isolated_escrow`, for `write_disclosure`.
-fn write_disclosure_isolated_escrow(
-    w: &World,
-    args: DisclosureArgs,
-    salt: [u8; 32],
-) -> Instruction {
-    let fee_payer = w.admin.pubkey();
-    Instruction {
-        program_id: prog(),
-        accounts: vec![
-            AccountMeta::new(pdas::disclosure(args.nonce), false),
-            AccountMeta::new_readonly(pdas::commitment(args.nonce), false),
-            AccountMeta::new_readonly(w.config, false),
-            AccountMeta::new_readonly(SYSTEM, false),
-            AccountMeta::new_readonly(prog(), false),
-            AccountMeta::new_readonly(fee_payer, false),
-            AccountMeta::new(pdas::action_escrow(&fee_payer), false),
-        ],
-        data: ix::WriteDisclosure { args, salt }.data(),
-    }
 }
 
 /// Writes a real, correctly-discriminated `Commitment` account directly into the
@@ -189,8 +142,12 @@ fn write_commitment_prefunded_target_still_blocked_by_escrow_signer() {
         .svm
         .minimum_balance_for_rent_exemption(8 + Commitment::INIT_SPACE);
     h.svm.airdrop(&target, rent).unwrap();
+    // World::bootstrap's init_config sets fee_payer = admin.pubkey().
+    let fee_payer = w.admin.pubkey();
     let r = h.send(
-        &[write_commitment_isolated_escrow(&w, nonce, [9u8; 32])],
+        &[ixs::write_commitment_direct_with_escrow_auth(
+            &fee_payer, &w, nonce, [9u8; 32],
+        )],
         &[],
     );
     assert!(
@@ -225,8 +182,11 @@ fn write_disclosure_prefunded_target_still_blocked_by_escrow_signer() {
         .svm
         .minimum_balance_for_rent_exemption(8 + Disclosure::INIT_SPACE);
     h.svm.airdrop(&target, rent).unwrap();
+    let fee_payer = w.admin.pubkey();
     let r = h.send(
-        &[write_disclosure_isolated_escrow(&w, args, [1u8; 32])],
+        &[ixs::write_disclosure_direct_with_escrow_auth(
+            &fee_payer, &w, args, [1u8; 32],
+        )],
         &[],
     );
     assert!(
