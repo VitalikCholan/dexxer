@@ -25,6 +25,7 @@
 - docs/superpowers/plans/week1-results.md — виміряні результати тижня 1 (Q1–Q3, CLI-прогін, CU, знахідки на mb-stack)
 - docs/superpowers/plans/2026-09-20-week2-privacy-devnet.md — план тижня 2 (приватність, devnet-tee, мобільний скелет)
 - docs/superpowers/plans/week2-results.md — виміряні результати тижня 2 (M1–M4, devnet-деплой, crank fix-раунди, мобільний скелет)
+- docs/superpowers/plans/2026-09-22-week3-disclosure-root-exit.md — план тижня 3 (13F на коміті `Pool`, `BalancesRoot`, `undelegate_user`, History/Receipt, CI; дизайн — spec §2.4)
 
 ## Правила
 - Anchor 1.0.2, Solana 3.1.9, Rust 1.89, `ephemeral-rollups-sdk` 0.16.2 (`anchor`, `access-control`), TS SDK 0.17, `@solana/web3.js` v1 (не kit)
