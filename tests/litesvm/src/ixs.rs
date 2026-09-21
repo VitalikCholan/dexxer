@@ -374,6 +374,26 @@ pub fn withdraw(signer: &Pubkey, t: &Trader, wd: &World, amount: u64) -> Instruc
         data: ix::Withdraw { amount }.data(),
     }
 }
+/// `payer` must equal `Config.fee_payer` (`w.fee_payer` in tests). `extra` is any
+/// mix of `Position`/`DisclosureQueue` accounts appended after the fixed accounts —
+/// `commit_aggregate` reads them from `remaining_accounts`.
+pub fn commit_aggregate(payer: &Pubkey, wd: &World, extra: &[AccountMeta]) -> Instruction {
+    let mut accounts = vec![
+        r(&wd.config),
+        rs(payer),
+        w(&wd.pool),
+        w(&wd.fee_escrow),
+        w(&wd.magic_fee_vault),
+        w(&pdas::magic_context()),
+        r(&pdas::magic_program()),
+    ];
+    accounts.extend_from_slice(extra);
+    Instruction {
+        program_id: prog(),
+        accounts,
+        data: ix::CommitAggregate {}.data(),
+    }
+}
 /// Direct call to `write_commitment` by a plain wallet impersonating the action path:
 /// `caller` signs as `escrow_auth` (a wallet can legitimately sign for itself), and
 /// `escrow` is its derived action-escrow PDA — but **not** as a signer, since no wallet

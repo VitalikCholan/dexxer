@@ -21,6 +21,12 @@ pub struct World {
     pub feed: Pubkey,
     pub fee_escrow: Pubkey,
     pub magic_fee_vault: Pubkey,
+    /// Signs `commit_aggregate`'s `payer: Signer` (must equal `Config.fee_payer`).
+    /// Same key as `admin` (bootstrap's `init_config` sets `fee_payer = admin.pubkey()`,
+    /// no real scheduler on LiteSVM) — kept as its own field/keypair so callers don't
+    /// need to know that reuse detail (`Keypair::insecure_clone`, not a move: `admin`
+    /// is still a separate field below).
+    pub fee_payer: Keypair,
 }
 
 impl World {
@@ -77,6 +83,7 @@ impl World {
             feed: pdas::feed(&oracle_program),
             fee_escrow: pdas::fee_escrow(),
             magic_fee_vault,
+            fee_payer: admin.insecure_clone(),
             admin,
             crank,
             mint,

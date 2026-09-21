@@ -143,7 +143,7 @@ pub mod dexxer_core {
     ) -> Result<()> {
         crank::cancel_crank(ctx, task_id)
     }
-    pub fn commit_aggregate(ctx: Context<CommitAggregate>) -> Result<()> {
+    pub fn commit_aggregate<'info>(ctx: Context<'info, CommitAggregate<'info>>) -> Result<()> {
         commit::commit_aggregate(ctx)
     }
     pub fn commit_market(ctx: Context<CommitMarket>) -> Result<()> {

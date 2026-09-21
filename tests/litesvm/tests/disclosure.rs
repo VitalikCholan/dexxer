@@ -1,7 +1,10 @@
 use anchor_lang::{AccountSerialize, InstructionData, Space};
 use dexxer_core::{errors::DexxerError, instruction as ix, state::*};
 use dexxer_litesvm::{
-    apk, assert_custom_error, ixs, pdas, pk, setup::World, token_ix::SYSTEM, Harness,
+    apk, assert_custom_error, assert_invariant, ixs, pdas, pk,
+    setup::{Trader, World},
+    token_ix::SYSTEM,
+    Harness,
 };
 use solana_account::Account;
 use solana_instruction::{AccountMeta, Instruction};
@@ -231,4 +234,117 @@ fn write_disclosure_prefunded_target_still_blocked_by_escrow_signer() {
         "prefunded direct write_disclosure must still fail (escrow signer/address check)"
     );
     assert_custom_error(&r, 6000 + DexxerError::InvalidActionSigner as u32);
+}
+
+// Task 3: `commit_aggregate` reads `remaining_accounts` for post-commit actions.
+// LiteSVM has no delegation program, so the Magic CPI itself is skipped (same
+// executable-gated pattern as `commit_aggregate`'s own doc comment) — these
+// tests assert the ER-side effects the loop performs unconditionally, before
+// that CPI: `commitment_written` flips, the loop ignores non-`Closed`
+// positions, and it rejects a program-owned account that is neither a
+// `Position` nor a `DisclosureQueue`.
+const P100: u64 = 100_000_000;
+const SOL1: u64 = 1_000_000_000;
+const M20: u64 = 20_000_000;
+const NOW: i64 = 2_000_000;
+
+fn world_with_price(h: &mut Harness) -> World {
+    let w = World::bootstrap(h);
+    h.warp(9_101, NOW);
+    w.set_price(h, P100, 5, NOW, 100);
+    w
+}
+
+fn open_then_close(h: &mut Harness, w: &World) -> Trader {
+    let t = w.new_trader(h, 1_000_000_000);
+    h.send(
+        &[ixs::open_position(
+            &t.kp.pubkey(),
+            &t,
+            w,
+            Side::Long,
+            SOL1,
+            M20,
+            P100,
+        )],
+        &[&t.kp],
+    )
+    .unwrap();
+    h.send(&[ixs::close_position(&t.kp.pubkey(), &t, w, 0)], &[&t.kp])
+        .unwrap();
+    t
+}
+
+#[test]
+fn commit_aggregate_marks_closed_position_commitment_written() {
+    let mut h = Harness::new();
+    let w = world_with_price(&mut h);
+    let t = open_then_close(&mut h, &w);
+    assert!(
+        !h.account::<Position>(&t.position)
+            .closed
+            .unwrap()
+            .commitment_written
+    );
+    let extra = vec![AccountMeta::new(t.position, false)];
+    h.send(
+        &[ixs::commit_aggregate(&w.fee_payer.pubkey(), &w, &extra)],
+        &[&w.fee_payer],
+    )
+    .unwrap();
+    let p = h.account::<Position>(&t.position);
+    assert_eq!(
+        p.state,
+        PositionState::Closed,
+        "state unchanged until mark_committed"
+    );
+    assert!(
+        p.closed.unwrap().commitment_written,
+        "flag flips even though Magic CPI is skipped on LiteSVM"
+    );
+    assert_invariant(&h, &w, &[&t]);
+}
+
+#[test]
+fn commit_aggregate_ignores_open_position() {
+    let mut h = Harness::new();
+    let w = world_with_price(&mut h);
+    let t = w.new_trader(&mut h, 1_000_000_000);
+    h.send(
+        &[ixs::open_position(
+            &t.kp.pubkey(),
+            &t,
+            &w,
+            Side::Long,
+            SOL1,
+            M20,
+            P100,
+        )],
+        &[&t.kp],
+    )
+    .unwrap();
+    let extra = vec![AccountMeta::new(t.position, false)];
+    h.send(
+        &[ixs::commit_aggregate(&w.fee_payer.pubkey(), &w, &extra)],
+        &[&w.fee_payer],
+    )
+    .unwrap();
+    assert_eq!(
+        h.account::<Position>(&t.position).state,
+        PositionState::Open
+    );
+    assert!(h.account::<Position>(&t.position).closed.is_none());
+}
+
+#[test]
+fn commit_aggregate_rejects_foreign_remaining_account() {
+    let mut h = Harness::new();
+    let w = World::bootstrap(&mut h);
+    // Program-owned but neither `Position` nor `DisclosureQueue`.
+    let extra = vec![AccountMeta::new(w.market, false)];
+    let r = h.send(
+        &[ixs::commit_aggregate(&w.fee_payer.pubkey(), &w, &extra)],
+        &[&w.fee_payer],
+    );
+    assert_custom_error(&r, 6000 + DexxerError::InvalidCandidate as u32);
 }

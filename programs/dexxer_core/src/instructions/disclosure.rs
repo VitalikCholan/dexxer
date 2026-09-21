@@ -93,3 +93,47 @@ pub fn write_disclosure(
     d.bump = ctx.bumps.disclosure;
     Ok(())
 }
+
+/// A closed position whose commitment has not been emitted yet -> (nonce, hash).
+/// Used by `commit_aggregate` to decide whether a `Position` in `remaining_accounts`
+/// needs a `write_commitment` post-commit action this bundle.
+pub fn pending_commitment(pos: &Position) -> Option<(u64, [u8; 32])> {
+    if pos.state != PositionState::Open && pos.state != PositionState::Empty {
+        if let Some(rec) = pos.closed.as_ref() {
+            if !rec.commitment_written {
+                let args = DisclosureArgs::from(rec);
+                return Some((rec.nonce, commitment_hash(&args, &rec.salt)));
+            }
+        }
+    }
+    None
+}
+
+/// Pops up to `max` records whose reveal slot has passed (`reveal_after_slot <= slot`).
+/// Ring order is preserved for the remaining records (compaction is O(len), len <= 8).
+/// Records are popped only when they are actually emitted here — never peeked and left —
+/// so a `write_disclosure` action for a given nonce is scheduled at most once.
+pub fn due_reveals(
+    dq: &mut DisclosureQueue,
+    slot: u64,
+    max: usize,
+) -> Result<Vec<(DisclosureArgs, [u8; 32])>> {
+    let mut out = Vec::new();
+    let mut kept: Vec<ClosedRecord> = Vec::new();
+    for i in 0..dq.len as usize {
+        let idx = (dq.head as usize + i) % DQ_CAPACITY;
+        let rec = dq.records[idx];
+        if rec.reveal_after_slot <= slot && out.len() < max {
+            out.push((DisclosureArgs::from(&rec), rec.salt));
+        } else {
+            kept.push(rec);
+        }
+    }
+    dq.records = [ClosedRecord::default(); DQ_CAPACITY];
+    for (i, r) in kept.iter().enumerate() {
+        dq.records[i] = *r;
+    }
+    dq.head = 0;
+    dq.len = u8::try_from(kept.len()).map_err(|_| DexxerError::MathOverflow)?;
+    Ok(out)
+}
