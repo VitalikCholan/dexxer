@@ -177,7 +177,6 @@
         },
         {
           "name": "config",
-          "writable": true,
           "pda": {
             "seeds": [
               {
@@ -203,7 +202,12 @@
           "address": "Magic11111111111111111111111111111111111111"
         }
       ],
-      "args": []
+      "args": [
+        {
+          "name": "task_id",
+          "type": "i64"
+        }
+      ]
     },
     {
       "name": "close_position",
@@ -3926,7 +3930,6 @@
         },
         {
           "name": "config",
-          "writable": true,
           "pda": {
             "seeds": [
               {
@@ -3999,7 +4002,10 @@
         {
           "name": "crank",
           "docs": [
-            "crank_tick's own signer-set constraint accepts it at execution time"
+            "below against `config.scheduler_signer` (task-6 fix round 3 — the",
+            "client must have already called `set_scheduler_signer` on base with",
+            "`crank_signer_pda(admin)` before this; see that ix's doc comment in",
+            "`admin.rs` and the function body below for the full story)."
           ]
         },
         {
@@ -4160,6 +4166,53 @@
               "name": "MarketParams"
             }
           }
+        }
+      ]
+    },
+    {
+      "name": "set_scheduler_signer",
+      "discriminator": [
+        167,
+        173,
+        245,
+        91,
+        139,
+        253,
+        70,
+        203
+      ],
+      "accounts": [
+        {
+          "name": "admin",
+          "signer": true,
+          "relations": [
+            "config"
+          ]
+        },
+        {
+          "name": "config",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        }
+      ],
+      "args": [
+        {
+          "name": "new_scheduler_signer",
+          "type": "pubkey"
         }
       ]
     },
@@ -4620,6 +4673,24 @@
           "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
         },
         {
+          "name": "config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
           "name": "fee_escrow",
           "writable": true,
           "pda": {
@@ -4641,6 +4712,10 @@
               }
             ]
           }
+        },
+        {
+          "name": "magic_fee_vault",
+          "writable": true
         },
         {
           "name": "magic_context",
@@ -4929,6 +5004,11 @@
       "code": 6029,
       "name": "FaucetLimit",
       "msg": "faucet daily limit exceeded"
+    },
+    {
+      "code": 6030,
+      "name": "WithdrawCooldown",
+      "msg": "withdraw is on cooldown for this account"
     }
   ],
   "types": [
@@ -5063,11 +5143,22 @@
           {
             "name": "scheduler_signer",
             "docs": [
-              "Signer of scheduled Magic Actions crank ticks, initialized once at",
-              "`init_config` time. Week-2 Task 1 M1: on devnet-tee this is the TEE",
-              "validator identity (`ER_VALIDATOR`), not the SDK's",
-              "`magicblock_magic_program_api::pda::CRANK_SIGNER` PDA — `crank_tick`'s",
-              "signer constraint also accepts that PDA as a fallback branch."
+              "Signer of scheduled Magic Actions crank ticks — read directly by",
+              "`crank_tick`'s own signer constraint (its `config.scheduler_signer`",
+              "branch) and by `schedule_crank` (which embeds it, read-only, as the",
+              "scheduled instruction's signer meta). Must equal",
+              "`crank_signer_pda(Config.admin)` — the Magic Program's per-authority",
+              "crank-executor PDA (see `tests/er/lib/crank-signer.ts` for the",
+              "derivation and its pinned validator source) — for scheduled ticks to",
+              "actually execute; `init_config` seeds it with that value directly for",
+              "a fresh bootstrap, and `set_scheduler_signer` (task-6 fix round 3,",
+              "`instructions/admin.rs`) updates it later for an existing `Config`.",
+              "`set_scheduler_signer` is a plain base-layer admin write — unlike",
+              "`schedule_crank`, which can never write any `Config` field itself",
+              "(see `instructions/crank.rs`'s `ScheduleCrank.config` doc comment for",
+              "why: a writable, non-delegated account is unconditionally rejected in",
+              "`ScheduleCrankCpi`'s `instruction_accounts`, and `config` must be in",
+              "that list)."
             ],
             "type": "pubkey"
           },
@@ -5088,7 +5179,17 @@
           {
             "name": "crank_task_id",
             "docs": [
-              "Magic Actions scheduled-task id for the crank, set once registered."
+              "Magic Actions scheduled-task id for the crank. Always `0` on-chain as",
+              "of task-6 fix round 3: `Config` is never delegated to the ER, and",
+              "`schedule_crank`/`cancel_crank` must keep `config` strictly read-only",
+              "in their Magic Program CPI (a writable, non-delegated account there",
+              "is rejected — `TransactionError::InvalidWritableAccount`, see",
+              "`instructions/crank.rs`'s `ScheduleCrank.config` doc comment), so",
+              "neither instruction can write this field. Left in place (not",
+              "removed, to avoid an account-layout migration) as a documented",
+              "vestigial field; the real task_id lives only in `schedule_crank`'s",
+              "logs and its caller's own records, and `cancel_crank` now takes",
+              "`task_id` as an explicit argument instead of reading this field."
             ],
             "type": "i64"
           },
@@ -5588,6 +5689,10 @@
           },
           {
             "name": "nonce",
+            "type": "u64"
+          },
+          {
+            "name": "last_withdraw_slot",
             "type": "u64"
           },
           {
