@@ -5,7 +5,9 @@ use anchor_lang::{
 use anchor_spl::token::{self, Mint, MintTo, Token, TokenAccount};
 use ephemeral_rollups_sdk::{
     access_control::{
-        instructions::{CreateEphemeralPermissionCpi, UpdateEphemeralPermissionCpi},
+        instructions::{
+            CloseEphemeralPermissionCpi, CreateEphemeralPermissionCpi, UpdateEphemeralPermissionCpi,
+        },
         structs::{EphemeralMembersArgs, EphemeralPermission, PERMISSION_SEED},
     },
     anchor::delegate,
@@ -650,6 +652,177 @@ pub fn init_permissions(ctx: Context<InitPermissions>) -> Result<()> {
             }
             .invoke_signed(&[seeds.as_slice()])?;
         }
+    }
+    Ok(())
+}
+
+// Week-3 Task 6 (spec §2.4.3): full exit. Same permission-account shape as
+// `SetSession`/`InitPermissions` (the three per-user PDAs + shared vault +
+// permission program) plus `Withdraw`'s magic-fee-vault accounts, since this
+// is the only instruction that both closes ER permissions *and* pays a
+// fee-vault commit CPI in the same call. Boxed for the same reason as every
+// other multi-account context in this file: this many accounts together blow
+// the SBF stack frame in `try_accounts`.
+#[derive(Accounts)]
+pub struct UndelegateUser<'info> {
+    #[account(mut)]
+    pub owner: Signer<'info>,
+    #[account(seeds = [CONFIG_SEED], bump = config.bump)]
+    pub config: Box<Account<'info, Config>>,
+    #[account(mut, seeds = [USER_SEED, owner.key().as_ref()], bump = user_account.bump, has_one = owner @ DexxerError::Unauthorized)]
+    pub user_account: Box<Account<'info, UserAccount>>,
+    #[account(mut, seeds = [POSITION_SEED, owner.key().as_ref(), position.market.as_ref()], bump = position.bump, has_one = owner @ DexxerError::Unauthorized)]
+    pub position: Box<Account<'info, Position>>,
+    #[account(mut, seeds = [DQ_SEED, owner.key().as_ref()], bump = dq.bump, has_one = owner @ DexxerError::Unauthorized)]
+    pub dq: Box<Account<'info, DisclosureQueue>>,
+    /// CHECK: permission PDA of `user_account`, under the permission program
+    #[account(mut, seeds = [PERMISSION_SEED, user_account.key().as_ref()], bump, seeds::program = PERMISSION_PROGRAM_ID)]
+    pub user_permission: UncheckedAccount<'info>,
+    /// CHECK: permission PDA of `position`
+    #[account(mut, seeds = [PERMISSION_SEED, position.key().as_ref()], bump, seeds::program = PERMISSION_PROGRAM_ID)]
+    pub position_permission: UncheckedAccount<'info>,
+    /// CHECK: permission PDA of `dq`
+    #[account(mut, seeds = [PERMISSION_SEED, dq.key().as_ref()], bump, seeds::program = PERMISSION_PROGRAM_ID)]
+    pub dq_permission: UncheckedAccount<'info>,
+    /// CHECK: shared ER vault (rent for permission accounts lives here, as in SetSession)
+    #[account(mut, address = EPHEMERAL_VAULT_ID)]
+    pub ephemeral_vault: UncheckedAccount<'info>,
+    /// CHECK: permission program
+    #[account(address = PERMISSION_PROGRAM_ID)]
+    pub permission_program: UncheckedAccount<'info>,
+    #[account(mut, seeds = [FEE_ESCROW_SEED], bump = fee_escrow.bump)]
+    pub fee_escrow: Account<'info, FeeEscrow>,
+    /// CHECK: validator-scoped Magic Program fee vault; constrained to Config.magic_fee_vault (as in Withdraw)
+    #[account(mut, constraint = magic_fee_vault.key() == config.magic_fee_vault @ DexxerError::Unauthorized)]
+    pub magic_fee_vault: UncheckedAccount<'info>,
+    /// CHECK: ER `MagicContext` PDA; only written when `magic_program` is executable (real ER)
+    #[account(mut, address = MAGIC_CONTEXT_ID)]
+    pub magic_context: UncheckedAccount<'info>,
+    /// CHECK: address-checked; gates the close-permission/commit-and-undelegate CPIs via `.executable`
+    #[account(address = MAGIC_PROGRAM_ID)]
+    pub magic_program: UncheckedAccount<'info>,
+}
+
+/// Close one ER `EphemeralPermission`, mirroring `set_session`'s
+/// `UpdateEphemeralPermissionCpi` loop exactly: the permissioned account signs
+/// for itself via its own PDA seeds (`authority_is_signer: false`), and the
+/// call is skipped when `perm` isn't owned by the permission program — LiteSVM
+/// has no permission program deployed at all, and on the L1/pre-onboarding
+/// path the permission may simply not exist yet (same guard `set_session`
+/// uses for the identical reason).
+#[inline(never)]
+fn close_permission_if_present<'info>(
+    acc: &AccountInfo<'info>,
+    perm: &AccountInfo<'info>,
+    vault: &AccountInfo<'info>,
+    magic_program: &AccountInfo<'info>,
+    permission_program: &AccountInfo<'info>,
+    seeds: &[&[u8]],
+) -> Result<()> {
+    if perm.owner != &PERMISSION_PROGRAM_ID {
+        return Ok(());
+    }
+    CloseEphemeralPermissionCpi {
+        payer: acc.clone(),
+        authority: acc.clone(),
+        permissioned_account: acc.clone(),
+        permission: perm.clone(),
+        vault: vault.clone(),
+        magic_program: magic_program.clone(),
+        permission_program: permission_program.clone(),
+        authority_is_signer: false,
+    }
+    .invoke_signed(&[seeds])
+    .map_err(Into::into)
+}
+
+/// Full exit with a live TEE (spec §2.4.3). Order matters: scrub every
+/// private field first (nothing private may survive into a public commit),
+/// then close the three `EphemeralPermission`s (safe now — the underlying
+/// accounts are already zeroed), then commit-and-undelegate so the three PDAs
+/// return to this program on L1. Task 1 M-A measured on devnet-tee that this
+/// exact order (close-permission-then-commit-and-undelegate in the same ER
+/// tx) lands on L1 on the first try.
+///
+/// This is the ONLY instruction in the program that commits a raw
+/// `UserAccount`/`Position`/`DisclosureQueue` to L1 (CLAUDE.md privacy rule:
+/// a raw private account is never committed as-is) — and it is safe here
+/// specifically because both the scrub and the permission close above have
+/// already run by the time `commit_and_undelegate` is reached, so nothing
+/// sensitive is left in the bytes that land publicly on L1.
+pub fn undelegate_user(ctx: Context<UndelegateUser>) -> Result<()> {
+    let a = ctx.accounts;
+    require!(
+        a.position.state == PositionState::Empty,
+        DexxerError::HasOpenPosition
+    );
+    require!(a.dq.len == 0, DexxerError::QueueNotEmpty);
+    require!(
+        a.user_account.free_margin == 0 && a.user_account.locked_margin == 0,
+        DexxerError::BalanceNotZero
+    );
+
+    let o = a.owner.key();
+    let m = a.position.market;
+    let ub = [a.user_account.bump];
+    let pb = [a.position.bump];
+    let db = [a.dq.bump];
+
+    // Scrub — nothing private may survive into the public commit below.
+    // `owner`/`bump`/PDA seeds stay: they are structural, not private data.
+    let u = &mut a.user_account;
+    u.session_key = Pubkey::default();
+    u.session_expiry = 0;
+    u.actions_left = 0;
+    u.nonce = 0;
+    u.exit_salt = [0; 32];
+    a.dq.head = 0;
+    a.dq.len = 0;
+    a.dq.records = [ClosedRecord::default(); DQ_CAPACITY];
+
+    close_permission_if_present(
+        &a.user_account.to_account_info(),
+        &a.user_permission.to_account_info(),
+        &a.ephemeral_vault.to_account_info(),
+        &a.magic_program.to_account_info(),
+        &a.permission_program.to_account_info(),
+        &[USER_SEED, o.as_ref(), &ub],
+    )?;
+    close_permission_if_present(
+        &a.position.to_account_info(),
+        &a.position_permission.to_account_info(),
+        &a.ephemeral_vault.to_account_info(),
+        &a.magic_program.to_account_info(),
+        &a.permission_program.to_account_info(),
+        &[POSITION_SEED, o.as_ref(), m.as_ref(), &pb],
+    )?;
+    close_permission_if_present(
+        &a.dq.to_account_info(),
+        &a.dq_permission.to_account_info(),
+        &a.ephemeral_vault.to_account_info(),
+        &a.magic_program.to_account_info(),
+        &a.permission_program.to_account_info(),
+        &[DQ_SEED, o.as_ref(), &db],
+    )?;
+
+    // Only in a real ER does a Magic program actually live at this address;
+    // on LiteSVM it is absent, so skip the commit-and-undelegate CPI rather
+    // than fail the exit (same executable-gated pattern as `withdraw`).
+    if a.magic_program.to_account_info().executable {
+        let bump = a.fee_escrow.bump;
+        let seeds: &[&[u8]] = &[FEE_ESCROW_SEED, &[bump]];
+        MagicIntentBundleBuilder::new(
+            a.fee_escrow.to_account_info(),
+            a.magic_context.to_account_info(),
+            a.magic_program.to_account_info(),
+        )
+        .magic_fee_vault(a.magic_fee_vault.to_account_info())
+        .commit_and_undelegate(&[
+            a.user_account.to_account_info(),
+            a.position.to_account_info(),
+            a.dq.to_account_info(),
+        ])
+        .build_and_invoke_signed(&[seeds])?;
     }
     Ok(())
 }

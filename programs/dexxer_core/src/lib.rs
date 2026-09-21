@@ -161,6 +161,9 @@ pub mod dexxer_core {
     pub fn init_permissions(ctx: Context<InitPermissions>) -> Result<()> {
         user::init_permissions(ctx)
     }
+    pub fn undelegate_user(ctx: Context<UndelegateUser>) -> Result<()> {
+        user::undelegate_user(ctx)
+    }
     pub fn write_commitment(
         ctx: Context<WriteCommitment>,
         nonce: u64,

@@ -529,6 +529,31 @@ pub fn set_balances_root(
         .data(),
     }
 }
+/// `undelegate_user` (owner, ER): scrub -> close permission x3 -> commit_and_undelegate.
+/// Same permission/vault/magic accounts as `set_session`, plus `fee_escrow`/
+/// `magic_fee_vault`/`magic_context`/`magic_program` (as in `withdraw`).
+pub fn undelegate_user(signer: &Pubkey, t: &Trader, wd: &World) -> Instruction {
+    Instruction {
+        program_id: prog(),
+        accounts: vec![
+            s(signer),
+            r(&wd.config),
+            w(&t.user),
+            w(&t.position),
+            w(&t.dq),
+            w(&pdas::permission(&t.user)),
+            w(&pdas::permission(&t.position)),
+            w(&pdas::permission(&t.dq)),
+            w(&pdas::ephemeral_vault()),
+            r(&pdas::permission_program()),
+            w(&wd.fee_escrow),
+            w(&wd.magic_fee_vault),
+            w(&pdas::magic_context()),
+            r(&pdas::magic_program()),
+        ],
+        data: ix::UndelegateUser {}.data(),
+    }
+}
 /// `mark_committed` (ER, crank): retires a `Closed && commitment_written` position's
 /// `ClosedRecord` into the owner's `DisclosureQueue` and frees the `Position` back
 /// to `Empty`. `MarkCommitted { crank, config, position, dq }` — no instruction args.

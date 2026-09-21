@@ -5043,6 +5043,360 @@
       ]
     },
     {
+      "name": "undelegate_user",
+      "discriminator": [
+        116,
+        139,
+        246,
+        224,
+        235,
+        172,
+        97,
+        25
+      ],
+      "accounts": [
+        {
+          "name": "owner",
+          "writable": true,
+          "signer": true,
+          "relations": [
+            "user_account",
+            "position",
+            "dq"
+          ]
+        },
+        {
+          "name": "config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "user_account",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  117,
+                  115,
+                  101,
+                  114
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "owner"
+              }
+            ]
+          }
+        },
+        {
+          "name": "position",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  111,
+                  115,
+                  105,
+                  116,
+                  105,
+                  111,
+                  110
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "owner"
+              },
+              {
+                "kind": "account",
+                "path": "position.market",
+                "account": "Position"
+              }
+            ]
+          }
+        },
+        {
+          "name": "dq",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  100,
+                  113
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "owner"
+              }
+            ]
+          }
+        },
+        {
+          "name": "user_permission",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  101,
+                  114,
+                  109,
+                  105,
+                  115,
+                  115,
+                  105,
+                  111,
+                  110,
+                  58
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "user_account"
+              }
+            ],
+            "program": {
+              "kind": "const",
+              "value": [
+                136,
+                161,
+                10,
+                196,
+                33,
+                152,
+                1,
+                214,
+                246,
+                106,
+                29,
+                60,
+                6,
+                152,
+                192,
+                102,
+                169,
+                175,
+                212,
+                217,
+                180,
+                252,
+                231,
+                71,
+                151,
+                141,
+                209,
+                5,
+                168,
+                212,
+                103,
+                82
+              ]
+            }
+          }
+        },
+        {
+          "name": "position_permission",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  101,
+                  114,
+                  109,
+                  105,
+                  115,
+                  115,
+                  105,
+                  111,
+                  110,
+                  58
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "position"
+              }
+            ],
+            "program": {
+              "kind": "const",
+              "value": [
+                136,
+                161,
+                10,
+                196,
+                33,
+                152,
+                1,
+                214,
+                246,
+                106,
+                29,
+                60,
+                6,
+                152,
+                192,
+                102,
+                169,
+                175,
+                212,
+                217,
+                180,
+                252,
+                231,
+                71,
+                151,
+                141,
+                209,
+                5,
+                168,
+                212,
+                103,
+                82
+              ]
+            }
+          }
+        },
+        {
+          "name": "dq_permission",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  101,
+                  114,
+                  109,
+                  105,
+                  115,
+                  115,
+                  105,
+                  111,
+                  110,
+                  58
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "dq"
+              }
+            ],
+            "program": {
+              "kind": "const",
+              "value": [
+                136,
+                161,
+                10,
+                196,
+                33,
+                152,
+                1,
+                214,
+                246,
+                106,
+                29,
+                60,
+                6,
+                152,
+                192,
+                102,
+                169,
+                175,
+                212,
+                217,
+                180,
+                252,
+                231,
+                71,
+                151,
+                141,
+                209,
+                5,
+                168,
+                212,
+                103,
+                82
+              ]
+            }
+          }
+        },
+        {
+          "name": "ephemeral_vault",
+          "writable": true,
+          "address": "MagicVau1t999999999999999999999999999999999"
+        },
+        {
+          "name": "permission_program",
+          "address": "ACLseoPoyC3cBqoUtkbjZ4aDrkurZW86v19pXz2XQnp1"
+        },
+        {
+          "name": "fee_escrow",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  102,
+                  101,
+                  101,
+                  95,
+                  101,
+                  115,
+                  99,
+                  114,
+                  111,
+                  119
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "magic_fee_vault",
+          "writable": true
+        },
+        {
+          "name": "magic_context",
+          "writable": true,
+          "address": "MagicContext1111111111111111111111111111111"
+        },
+        {
+          "name": "magic_program",
+          "address": "Magic11111111111111111111111111111111111111"
+        }
+      ],
+      "args": []
+    },
+    {
       "name": "unpause",
       "discriminator": [
         169,
