@@ -40,6 +40,7 @@
 // So session funding here is a plain `SystemProgram.transfer` from the
 // trader (owner) to `session` on base layer, same 0.01 SOL amount the brief
 // specifies, satisfying its actual intent ("session pays its own ER fees").
+import { randomBytes } from "crypto";
 import { writeFileSync } from "fs";
 import { dirname, resolve } from "path";
 import { fileURLToPath } from "url";
@@ -144,8 +145,10 @@ async function main() {
   console.log("faucet_init", faucetSig);
 
   console.log("=== init_user ===");
+  // Week 3: per-user secret salting this account's leaf in the public `BalancesRoot`.
+  const exitSalt = new Uint8Array(randomBytes(32));
   const initUserSig = await core.methods
-    .initUser()
+    .initUser(Array.from(exitSalt))
     .accounts({ owner: owner.publicKey, config, market, userAccount, position, disclosureQueue, systemProgram: SystemProgram.programId })
     .rpc();
   console.log("init_user", initUserSig);

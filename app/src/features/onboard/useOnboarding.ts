@@ -60,7 +60,13 @@ import {
   DEXXER_CORE_PROGRAM_ID,
 } from '@/src/lib/program'
 import { delegationTriple, pdas } from '@/src/lib/pdas'
-import { getOrCreateSessionKeypair, getSessionKeypair, sessionTopUpIx, SESSION_LAMPORTS } from '@/src/lib/session'
+import {
+  getOrCreateExitSalt,
+  getOrCreateSessionKeypair,
+  getSessionKeypair,
+  sessionTopUpIx,
+  SESSION_LAMPORTS,
+} from '@/src/lib/session'
 
 export type OnboardState =
   'Disconnected' | 'NotOnboarded' | 'Funded' | 'Initialized' | 'Delegated' | 'Credited' | 'Permissioned' | 'SessionSet'
@@ -170,6 +176,7 @@ interface OnboardCtx {
   poolAta: PublicKey
   ownerAta: PublicKey
   session: Keypair
+  exitSalt: Uint8Array
 }
 
 interface Mwa {
@@ -199,6 +206,7 @@ async function runFlow(
     poolAta,
     ownerAta,
     session,
+    exitSalt,
   } = ctx
   const core = dexxerCoreProgram(baseConn, owner)
 
@@ -233,7 +241,7 @@ async function runFlow(
   const userAccountInfo = await baseConn.getAccountInfo(userAccount, 'confirmed')
   if (!userAccountInfo) {
     const ix = await core.methods
-      .initUser()
+      .initUser(Array.from(exitSalt))
       .accounts({
         owner,
         config,
@@ -484,6 +492,7 @@ export function useOnboarding(): UseOnboarding {
       const ownerAta = getAssociatedTokenAddressSync(mint, owner)
       const session = await getOrCreateSessionKeypair(owner)
       setSessionPubkey(session.publicKey)
+      const exitSalt = await getOrCreateExitSalt(owner)
 
       const ctx: OnboardCtx = {
         owner,
@@ -499,6 +508,7 @@ export function useOnboarding(): UseOnboarding {
         poolAta,
         ownerAta,
         session,
+        exitSalt,
       }
       await runFlow(ctx, { signAndSendTransaction, signTransactions, getConnection }, appendLog, setState)
     } catch (e) {

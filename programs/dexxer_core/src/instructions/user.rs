@@ -206,11 +206,12 @@ pub struct InitUser<'info> {
     pub disclosure_queue: Box<Account<'info, DisclosureQueue>>,
     pub system_program: Program<'info, System>,
 }
-pub fn init_user(ctx: Context<InitUser>) -> Result<()> {
+pub fn init_user(ctx: Context<InitUser>, exit_salt: [u8; 32]) -> Result<()> {
     let o = ctx.accounts.owner.key();
     let u = &mut ctx.accounts.user_account;
     u.version = 1;
     u.owner = o;
+    u.exit_salt = exit_salt;
     u.bump = ctx.bumps.user_account;
     let p = &mut ctx.accounts.position;
     p.version = 1;

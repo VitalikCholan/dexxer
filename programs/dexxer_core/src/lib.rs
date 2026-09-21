@@ -83,8 +83,8 @@ pub mod dexxer_core {
     pub fn faucet_mint(ctx: Context<FaucetMint>, amount: u64) -> Result<()> {
         user::faucet_mint(ctx, amount)
     }
-    pub fn init_user(ctx: Context<InitUser>) -> Result<()> {
-        user::init_user(ctx)
+    pub fn init_user(ctx: Context<InitUser>, exit_salt: [u8; 32]) -> Result<()> {
+        user::init_user(ctx, exit_salt)
     }
     pub fn set_session(
         ctx: Context<SetSession>,

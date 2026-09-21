@@ -33,6 +33,7 @@ if ((process.env.DEXXER_NET ?? "local") === "devnet") {
   process.env.ER_VALIDATOR ??= "MTEWGuqxUpYZGFJQcp8tLN7x5v9BSeoFHYWQQ3n3xzo";
 }
 
+const { randomBytes } = await import("crypto");
 const { BN } = await import("@coral-xyz/anchor");
 const { SystemProgram, Transaction, sendAndConfirmTransaction, LAMPORTS_PER_SOL } = await import("@solana/web3.js");
 const { getOrCreateAssociatedTokenAccount, getAssociatedTokenAddressSync, TOKEN_PROGRAM_ID } = await import("@solana/spl-token");
@@ -139,8 +140,9 @@ async function main() {
     .faucetInit(new BN(DEPOSIT.toString()))
     .accounts({ owner: owner.publicKey, config, faucet: faucetPda, dusdcMint: boot.mint, mintAuth, ownerAta, systemProgram: SystemProgram.programId, tokenProgram: TOKEN_PROGRAM_ID })
     .rpc();
+  const exitSalt = new Uint8Array(randomBytes(32));
   const initUserSig = await core.methods
-    .initUser()
+    .initUser(Array.from(exitSalt))
     .accounts({ owner: owner.publicKey, config, market, userAccount, position, disclosureQueue, systemProgram: SystemProgram.programId })
     .rpc();
   console.log("faucet_init", faucetSig, "init_user", initUserSig);

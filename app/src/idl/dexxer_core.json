@@ -3593,7 +3593,17 @@
           "address": "11111111111111111111111111111111"
         }
       ],
-      "args": []
+      "args": [
+        {
+          "name": "exit_salt",
+          "type": {
+            "array": [
+              "u8",
+              32
+            ]
+          }
+        }
+      ]
     },
     {
       "name": "open_position",
@@ -5009,6 +5019,51 @@
       "code": 6030,
       "name": "WithdrawCooldown",
       "msg": "withdraw is on cooldown for this account"
+    },
+    {
+      "code": 6031,
+      "name": "CommitmentNotWritten",
+      "msg": "commitment not yet written for this closed position"
+    },
+    {
+      "code": 6032,
+      "name": "RevealTooEarly",
+      "msg": "reveal slot not reached"
+    },
+    {
+      "code": 6033,
+      "name": "QueueNotEmpty",
+      "msg": "disclosure queue not empty"
+    },
+    {
+      "code": 6034,
+      "name": "RootFull",
+      "msg": "balances root has no free leaf slot"
+    },
+    {
+      "code": 6035,
+      "name": "InvalidLeafAccount",
+      "msg": "invalid leaf account"
+    },
+    {
+      "code": 6036,
+      "name": "NotClosed",
+      "msg": "position is not closed"
+    },
+    {
+      "code": 6037,
+      "name": "BadDisclosureHash",
+      "msg": "disclosure does not match commitment hash"
+    },
+    {
+      "code": 6038,
+      "name": "BalanceNotZero",
+      "msg": "account balance must be zero to exit"
+    },
+    {
+      "code": 6039,
+      "name": "TooManyActions",
+      "msg": "too many actions in one commit bundle"
     }
   ],
   "types": [
@@ -5694,6 +5749,21 @@
           {
             "name": "last_withdraw_slot",
             "type": "u64"
+          },
+          {
+            "name": "exit_salt",
+            "docs": [
+              "Week 3 (spec §2.4.2): per-user secret that salts this account's leaf in",
+              "the public `BalancesRoot`. Supplied by the client at `init_user`; lives",
+              "only in this private account, so nobody can brute-force `free_margin`",
+              "from the published leaf hash."
+            ],
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
           },
           {
             "name": "bump",

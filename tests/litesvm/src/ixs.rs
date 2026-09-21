@@ -195,7 +195,7 @@ pub fn faucet_mint(owner: &Pubkey, wd: &World, amount: u64) -> Instruction {
         data: ix::FaucetMint { amount }.data(),
     }
 }
-pub fn init_user(owner: &Pubkey, wd: &World) -> Instruction {
+pub fn init_user(owner: &Pubkey, wd: &World, exit_salt: [u8; 32]) -> Instruction {
     Instruction {
         program_id: prog(),
         accounts: vec![
@@ -207,7 +207,7 @@ pub fn init_user(owner: &Pubkey, wd: &World) -> Instruction {
             w(&pdas::dq(owner)),
             r(&SYSTEM),
         ],
-        data: ix::InitUser {}.data(),
+        data: ix::InitUser { exit_salt }.data(),
     }
 }
 pub fn set_session(

@@ -121,7 +121,8 @@ impl World {
             h.send(&[ixs::faucet_init(&o, self, deposit)], &[&kp])
                 .unwrap();
         }
-        h.send(&[ixs::init_user(&o, self)], &[&kp]).unwrap();
+        h.send(&[ixs::init_user(&o, self, [0x5a; 32])], &[&kp])
+            .unwrap();
         let t = Trader {
             user: pdas::user(&o),
             position: pdas::position(&o, &self.market),
