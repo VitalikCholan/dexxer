@@ -6,7 +6,7 @@ use crate::{
 use anchor_lang::InstructionData;
 use dexxer_core::{
     instruction as ix,
-    state::{MarketParams, Side},
+    state::{DisclosureArgs, MarketParams, Side},
 };
 use solana_instruction::{AccountMeta, Instruction};
 use solana_pubkey::Pubkey;
@@ -372,5 +372,50 @@ pub fn withdraw(signer: &Pubkey, t: &Trader, wd: &World, amount: u64) -> Instruc
             r(&pdas::magic_program()),
         ],
         data: ix::Withdraw { amount }.data(),
+    }
+}
+/// Direct call to `write_commitment` by a plain wallet impersonating the action path:
+/// `caller` signs as `escrow_auth` (a wallet can legitimately sign for itself), and
+/// `escrow` is its derived action-escrow PDA — but **not** as a signer, since no wallet
+/// holds the private key for a PDA. This must be rejected by the `#[action]`
+/// escrow-signer / `source_program` checks.
+pub fn write_commitment_direct(
+    caller: &Pubkey,
+    wd: &World,
+    nonce: u64,
+    hash: [u8; 32],
+) -> Instruction {
+    Instruction {
+        program_id: prog(),
+        accounts: vec![
+            w(&pdas::commitment(nonce)),
+            r(&wd.config),
+            r(&SYSTEM),
+            r(&prog()),
+            rs(caller),
+            w(&pdas::action_escrow(caller)),
+        ],
+        data: ix::WriteCommitment { nonce, hash }.data(),
+    }
+}
+/// Direct call to `write_disclosure` — same attack shape as `write_commitment_direct`.
+pub fn write_disclosure_direct(
+    caller: &Pubkey,
+    wd: &World,
+    args: DisclosureArgs,
+    salt: [u8; 32],
+) -> Instruction {
+    Instruction {
+        program_id: prog(),
+        accounts: vec![
+            w(&pdas::disclosure(args.nonce)),
+            r(&pdas::commitment(args.nonce)),
+            r(&wd.config),
+            r(&SYSTEM),
+            r(&prog()),
+            rs(caller),
+            w(&pdas::action_escrow(caller)),
+        ],
+        data: ix::WriteDisclosure { args, salt }.data(),
     }
 }

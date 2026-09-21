@@ -14,7 +14,7 @@ pub mod risk;
 pub mod state;
 pub mod token;
 use instructions::*;
-use state::{MarketParams, Side};
+use state::{DisclosureArgs, MarketParams, Side};
 declare_id!("G2okX5Bae4CxfK8vzso1Ecc96QUv7E3P4YvxaZnaYXoV");
 
 #[ephemeral]
@@ -160,5 +160,19 @@ pub mod dexxer_core {
     }
     pub fn init_permissions(ctx: Context<InitPermissions>) -> Result<()> {
         user::init_permissions(ctx)
+    }
+    pub fn write_commitment(
+        ctx: Context<WriteCommitment>,
+        nonce: u64,
+        hash: [u8; 32],
+    ) -> Result<()> {
+        disclosure::write_commitment(ctx, nonce, hash)
+    }
+    pub fn write_disclosure(
+        ctx: Context<WriteDisclosure>,
+        args: DisclosureArgs,
+        salt: [u8; 32],
+    ) -> Result<()> {
+        disclosure::write_disclosure(ctx, args, salt)
     }
 }
