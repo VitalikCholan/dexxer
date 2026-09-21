@@ -495,6 +495,19 @@ Blockhash — з того з'єднання, куди шлемо. `skipPreflight
 
 ### 5.5 Екрани й стани
 
+**UI polish тижня 4 (затверджено 21.09.2026, жорстко 2–3 дні — не за рахунок Seeker/відео):**
+
+| Робимо | Як | Ціна |
+|---|---|---|
+| Графік ціни | live: тики mark від crank (~1/с) → sparkline/свічки за сесію; історія: Pyth Hermes public API для SOL/USD → свічки 1m/5m/1h; RN-бібліотека (`react-native-wagmi-charts` або `victory-native`) | ~1 день |
+| Portfolio-шапка | Total Equity (`free_margin` + `margin` + uPnL за mark), Available (`free_margin`), Unrealized P&L, Margin Ratio (equity/notional vs MMR) — усе з уже читаних `UserAccount`/`Position`/`Market` | ~½ дня |
+| Слайдер плеча | margin = notional / leverage замість вільного поля Margin (усуває `InvalidInput 6002` при плечі < 1x, спостережено на демо 21.09) | години |
+| **Privacy на видноті** | бейдж на позиції «🔒 Приватна — бачите лише ви (owner, session, crank); на Solscan — нічого»; перемикач **«Очима публіки»** — той самий екран як стороннього: порожньо / `DELeGG…`-оболонка (in-app версія curl-доказу §2.3) | ~½ дня |
+| Темна тема, market-header з 24h change | 24h change — з тієї ж Pyth-історії | ~½ дня |
+| History / Receipt / countdown розкриття | тиждень 3 (план `2026-09-22-week3-…`) | — |
+
+**Не буде — за дизайном, не «ще не встигли» (в README як v1+ з поясненням):** стакан (контрагент — пул, ціна — оракульний mark; книги фізично нема, як у GMX/Jupiter Perps); limit/open orders/TWAP/hidden (відкладених ордерів немає — `open_position` виконується миттєво за mark зі slippage-захистом; ордер-менеджер потребує crank-виконання — v1+); список ринків/Spot/Options (один SOL-PERP, §1.2); funding countdown (funding не в MVP); TP/SL (умовне закриття в кранку — програмна зміна).
+
 | Екран | Дані | Дії |
 |---|---|---|
 | Connect | MWA | Seeker detection; Digital Asset Links `dexxer.xyz/.well-known/assetlinks.json` — обов'язково |
@@ -640,7 +653,7 @@ Solana MCP `program_autofixer` — на кожну зміну програми �
 
 **Тиждень 3 · 12.10–18.10 — 13F, полірування.** `ClosedRecord` → `DisclosureQueue` → `write_commitment` → `reveal`; History; локальні push; TEE-атестація або fallback; crank-fallback; CI. П'ятниця: повний цикл + три кадри демо. **(week 3 scope, затверджено 21.09.2026, §2.4):** 13F-ядро на коміті `Pool` + `mark_committed`/`reveal`; `BalancesRoot` (квитанція, без L1-claim); `undelegate_user`; History-таб + Receipt-секція; CI; виміри M-A…M-E першими. **Вирізано** (spec'овий порядок жертв): локальні push, TEE-атестація в застосунку. Фактичний старт — 22.09 (≈3 тижні попереду календаря).
 
-**Тиждень 4 · 19–25.10 — Seeker, відео, подача.** Реальний Seeker; відео 2–3 хв; README; подачі. Пост №3.
+**Тиждень 4 · 19–25.10 — Seeker, відео, подача.** Реальний Seeker; відео 2–3 хв; README; подачі. Пост №3. **(затверджено 21.09.2026)** + UI polish 2–3 дні за §5.5 (графік mark, portfolio-шапка, слайдер плеча, privacy-бейдж/«очима публіки», темна тема) + UX-борг онбордингу (§7.1 #22: ≤2 MWA-промпти, pre-flight SOL, «Disconnect & forget», re-read session key). Порядок жертв усередині тижня 4: темна тема → 24h change → графік історії → **ніколи**: Seeker-тест, відео, privacy-бейдж.
 
 **Резерв · 26.10–02.11.**
 
