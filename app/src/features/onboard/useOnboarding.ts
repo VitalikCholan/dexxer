@@ -9,7 +9,10 @@
 // order — with every owner-signed step routed through Mobile Wallet Adapter
 // instead of a local `Keypair`:
 //   L1 steps (faucet_init, init_user, delegateSpl, delegate_user)
-//     -> MWA `signAndSendTransaction` (the wallet itself submits)
+//     -> MWA `signTransactions` (sign-only), then this app submits on
+//        `baseConn` — the reference fakewallet's own send path
+//        (`SendTransactionsUseCase`) rejects multi-ix txs like `delegateSpl`
+//        with "payloads invalid for signing" (see `sendL1` note below)
 //   ER steps (credit_deposit, init_permissions, set_session)
 //     -> MWA `signTransactions`, then this app sends the signed tx on the
 //        TEE connection and polls `getSignatureStatuses` itself — mirrors
@@ -72,18 +75,27 @@ function errText(e: unknown): string {
   return err?.message ?? String(e)
 }
 
-// --- L1 send: let MWA fetch+submit itself (blockhash can't expire mid MWA round-trip). ---
+// L1 send: sign via MWA (sign-only), then submit ourselves on `baseConn`.
+// We deliberately do NOT use the wallet's `signAndSendTransactions`: the
+// reference fakewallet's `SendTransactionsUseCase` throws
+// `InvalidTransactionsException` (JSON-RPC code -2, "payloads invalid for
+// signing") on multi-instruction transactions such as `delegateSpl` (3 eSPL
+// ixs) — reproduced on-device 21.09, while single-ix `faucet_init`/`init_user`
+// sent fine. The transaction itself is valid (owner-only signer, ~590 B). Own
+// submission to `rpc.magicblock.app/devnet` — the RPC that actually holds the
+// eSPL/dUSDC accounts — mirrors `sendErOwner` and sidesteps the wallet's send
+// path entirely. A fresh blockhash is fetched immediately before signing to
+// keep the MWA round-trip inside its validity window.
 async function sendL1(
   owner: PublicKey,
   ixs: TransactionInstruction[],
-  signAndSendTransaction: (tx: Transaction, minContextSlot: number) => Promise<string>,
+  signTransactions: (tx: Transaction) => Promise<Transaction>,
 ): Promise<string> {
   const tx = new Transaction().add(...ixs)
   tx.feePayer = owner
-  const { blockhash } = await baseConn.getLatestBlockhash()
-  tx.recentBlockhash = blockhash
-  const slot = await baseConn.getSlot()
-  const sig = await signAndSendTransaction(tx, slot)
+  tx.recentBlockhash = (await baseConn.getLatestBlockhash()).blockhash
+  const signed = await signTransactions(tx)
+  const sig = await baseConn.sendRawTransaction(signed.serialize(), { skipPreflight: true })
   await confirmOnConn(baseConn, sig)
   return sig
 }
@@ -211,7 +223,7 @@ async function runFlow(
         })
         .instruction(),
     )
-    appendLog(`faucet_init ${await sendL1(owner, ixs, mwa.signAndSendTransaction)}`)
+    appendLog(`faucet_init ${await sendL1(owner, ixs, mwa.signTransactions)}`)
   } else {
     appendLog('faucet_init: exists, skipped')
   }
@@ -232,7 +244,7 @@ async function runFlow(
         systemProgram: SystemProgram.programId,
       })
       .instruction()
-    appendLog(`init_user ${await sendL1(owner, [ix], mwa.signAndSendTransaction)}`)
+    appendLog(`init_user ${await sendL1(owner, [ix], mwa.signTransactions)}`)
   } else {
     appendLog('init_user: exists, skipped')
   }
@@ -247,7 +259,7 @@ async function runFlow(
       initVaultIfMissing: false,
       idempotent: false,
     })
-    appendLog(`delegateSpl ${await sendL1(owner, delegateSplIxs, mwa.signAndSendTransaction)}`)
+    appendLog(`delegateSpl ${await sendL1(owner, delegateSplIxs, mwa.signTransactions)}`)
 
     const ut = delegationTriple(userAccount)
     const pt = delegationTriple(position)
@@ -275,7 +287,7 @@ async function runFlow(
         systemProgram: SystemProgram.programId,
       })
       .instruction()
-    appendLog(`delegate_user ${await sendL1(owner, [delegateUserIx], mwa.signAndSendTransaction)}`)
+    appendLog(`delegate_user ${await sendL1(owner, [delegateUserIx], mwa.signTransactions)}`)
 
     await waitDelegated(userAccount, 'UserAccount', appendLog)
     await waitDelegated(position, 'Position', appendLog)
@@ -368,7 +380,7 @@ async function runFlow(
   const sessionBalance = await baseConn.getBalance(session.publicKey, 'confirmed')
   if (sessionBalance < SESSION_LAMPORTS / 2) {
     appendLog(
-      `fund session ${await sendL1(owner, [sessionTopUpIx(owner, session.publicKey)], mwa.signAndSendTransaction)}`,
+      `fund session ${await sendL1(owner, [sessionTopUpIx(owner, session.publicKey)], mwa.signTransactions)}`,
     )
   } else {
     appendLog('session lamports: already funded, skipped')
