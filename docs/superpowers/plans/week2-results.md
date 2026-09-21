@@ -1478,9 +1478,16 @@ Task 7-однаковий шлях підпису/поллінгу, і неза�
   §8 питання 7) — виміряно лише nonce 11–22 (0 списання, очікувано).
 - **Стародавні devnet `UserAccount`-акаунти зі старим layout лишаються стороненими** від кранка без
   міграції (§7.1 ризик №15) — одноразові тестові ідентичності, прийнято як сміття.
-- **Повний мобільний цикл Open→Close не підтверджено наживо** (§7.1 ризик №17) — заблоковано
-  devnet-airdrop-флакі і попередньо задокументованим Account-табним багом; шлях коду доведено
-  ідентичним проти референс-скриптів.
+- **Повний мобільний цикл Open→Close ПІДТВЕРДЖЕНО НАЖИВО** (§7.1 ризик №17 закрито, 21.09 вечір) —
+  емулятор `local_phone` + fakewallet проти devnet-tee: онбординг до `SessionSet` (включно з
+  ER-кроками `credit_deposit`/`init_permissions`/`set_session`, раніше pending-human), Open Long 1 SOL
+  session-ключем без промпту гаманця (sig `xyNZRdf…`), Position live, Close без промпту (sig `2HQvNej…`);
+  приватність наживо — base L1 = делегована оболонка під `DELeGG…`, TEE без токена = `value: null`.
+  Два блокери усунено: (a) fakewallet's `SendTransactionsUseCase` відхиляє multi-ix `delegateSpl` →
+  L1-кроки переведено на MWA `signTransactions` + сабміт застосунком; (b) eSPL re-cycle
+  `InvalidAccountOwner` на повторному ключі → fakewallet-ключ ротується через `pm clear`. Харнес-нотатки:
+  емулятор із `-dns-server 8.8.8.8,8.8.4.4` (DNS-блипи `rpc.magicblock.app`), `pm clear` обох застосунків
+  для чистого ключа.
 - **`cancel_crank` перевірено, `mark_committed`/`reveal`/`write_commitment`/`write_disclosure`/
   `undelegate_user` — не реалізовані взагалі** (поза мандатом тижня 2, §2.2/§4.2 позначено явно).
 - **`MarketRisk`'s bucket-структура й History/push/TEE-атестація в застосунку** — не в скоупі
