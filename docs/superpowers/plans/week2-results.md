@@ -1113,3 +1113,70 @@ SOL, зафіксований окремо). `devnet-admin` без змін ві
 `schedule_crank` sig `2EpKAV43CnRbgr5mUuAfxvmuUZ34ZzDrovkp55hBi2n5U3CKRK1fCcxGeivxXtfmY729PmmdhzzVfsh21f4aUjoC`,
 `task_id -8632762600545312817` — попри те, що (за поточною гіпотезою) заплановані тіки самі ще не
 долітають.
+
+## Fix round 2 (Task 6, контролер авторизував саме гіпотезу з дизайну): підхід виявився структурно неможливим — відкат до останнього робочого стану
+
+**Рулінг:** `schedule_crank` сам обчислює `crank_signer_pda(admin)` і **пише** його в
+`Config.scheduler_signer` до CPI, лишаючи `crank_tick`'s власний констрейнт незмінним (його друга
+гілка, `crank.key() == config.scheduler_signer`, мала б пройти сама собою, щойно поле міститиме
+реальний per-authority PDA). Для запису поля `config` знову має бути `mut`.
+
+**Реалізовано точно за рулінгом**, з документованими seeds/джерелом
+(`magicblock-magic-program-api/src/pda.rs`, той самий коміт `9c7a94470af1785d88f4c671571f87c146a93779`)
+у коментарі коду. Гаунтлет — увесь чистий (`anchor build`, LiteSVM 38/38, `dexxer_core` 46/46,
+`program_autofixer` 0 issues, `tsc --noEmit` чисто). Редеплой — sig
+`4wJm9cQUxdgY15RuitJYvxdU9EEEcXUDjVSznbbmRerJPud3kE5PMVXWYMZY1HGxLrKgb83fT1whj7izRWfUY7aj`.
+
+**Реальний прогін — та сама точна помилка, що й у fix round 1's Знахідці Б, тепер БЕЗ колізії
+`task_context`/`config` (яку round 3 виправив):** `TransactionError::InvalidWritableAccount`,
+`"Account 2: <config> was illegally used as writable"`, sig
+`67SnVv4xggXcFstQM16ByuTnmGzdnWsouzG8RWqZ9HNRnmsuUFwMvHcBqWdTJANfkdZjsbLZFctTEr7SMe3KFhot`.
+`accountKeys` підтверджено: `admin` (index0) з'являється рівно один раз, `task_context =
+admin.publicKey` — жодної колізії адрес цього разу.
+
+**Це остаточно, вже вдруге незалежно, підтверджує оригінальну (першу) гіпотезу з fix round 1: писабельний,
+неделегований акаунт (крім `task_context`, яким опікується сам Magic Program) у
+`ScheduleCrankCpi`'s `instruction_accounts` — заборонений, безумовно, незалежно від колізій адрес.**
+`Config` ніколи не делегований в ER (архітектурний факт, який не зміниться) — а `config` мусить
+бути присутнім у `instruction_accounts` (запланований `crank_tick` його читає). Із цих двох фактів
+випливає жорсткий структурний висновок: **`schedule_crank` НІКОЛИ не зможе писати
+`Config.scheduler_signer` (чи будь-яке інше поле `Config`) у тій самій транзакції, що й реєструє
+кранк — незалежно від того, які ще акаунти залучені.** Підхід цього рулінгу, хоч і правильний за
+задумом (decision-3 дизайну), наштовхується на цю on-chain властивість Magic Program, яку жодна
+клієнтська чи навіть проста програмна зміна не обходить.
+
+**Дія: відкат.** Файли (`crank.rs`, `state/config.rs`, `scripts/admin/schedule-crank.ts`) повернуто
+`git checkout` до коміту `47e7f04` (fix round 1, останній робочий стан) — байт-у-байт той самий
+бінарник (`sha256 9c6e0373816ccf1a70eab59675726154350bec13def0951838b75228a72fdf0a`, підтверджено
+`shasum` до і після ребілду). Редеплой цього відновленого бінарника — sig
+`dUxm3oA2Fj2tLPfZGqm7CbwrXqycthMjPLv69Kr36FR68FPoHaTB4E5uM7wJn4UfL2ZXuZ4vbShEJ2Cx5z1GBzx`. Перший
+повторний виклик `schedule_crank` одразу після редеплою впав з `ConstraintMut` на `config`
+(sig `2BHh4cq4bEqRg6CJCC4S5rpP3BFRijtY7LTWWuQwukJYSHTeYMUjFSKw5F7P8m26XViiFWcBfHuTamCgsYSiJ9ZK`) —
+**транзиторний артефакт поширення оновлення бінарника по TEE-кластеру**, не нова знахідка: повторна
+спроба за ~5 с пройшла успішно (sig
+`3zYdMYKfqKcNu2o9DHj3MqJcSqjV8LrUnvfok8q4CqhcE3WCjJKyGp5NcmUveMKj6hNkCa3xzhpHLNe5ZWFAxM1M`,
+`task_id -8632762600545312817`) — робочий стан fix round 1 підтверджено відновленим і живим.
+
+**Перевірка (b), утретє: усе ще негативна, очікувано.** `Market.mark_slot` — `321440622`, незмінний
+через ще 70+ с спостереження після відновлення (`06:17:27Z` → `06:18:37Z`), і `Config.scheduler_signer`
+лишається оригінальним `ER_VALIDATOR`-плейсхолдером (`MTEWGuqxUpYZGFJQcp8tLN7x5v9BSeoFHYWQQ3n3xzo`) —
+підтверджує, що невдала спроба цього раунду нічого не залишила напівзробленим (уся транзакція
+відкотилась атомарно, як і очікувалось).
+
+**Не ітеровано далі, як інструктовано.** Corінна причина лишається діагностованою з fix round 1
+(`crank_tick`'s власний three-way signer-констрейнт не приймає `crank_signer_pda(admin)`), але
+**механізм-кандидат для її вирішення звузився**: писати `crank_signer_pda(admin)` кудись у `Config`
+(будь-яке поле, не лише `scheduler_signer`) з-під `schedule_crank` — структурно неможливо. Лишається
+відкритим: чи `crank_tick`'s власний КОНСТРЕЙНТ (не `schedule_crank`) можна розширити четвертою
+гілкою, яка обчислює `crank_signer_pda(a.config.admin)` **на льоту, під час самого тіка** (без
+жодного попереднього запису в `Config`) — `crank_tick` сам ніколи не бере участі в
+`ScheduleCrankCpi`'s `instruction_accounts`, тож на нього обмеження "writable-undelegated" з цього
+раунду не поширюється; це вимагає зміни `crank_tick`'s констрейнту, яку обидва попередні рулінги
+явно захищали від змін. Контролер вирішує між ще одним раундом і паркуванням тіків планувальника
+як задачі тижня 3 (зовнішній crank-fallback скрипт уже забезпечує EMA-тіки, демо не залежить від
+цього).
+
+### Баланс (кінець fix round 2)
+
+`payer` **5.198650697 SOL** (один редеплой цього раунду + один відкатний редеплой, разом
+~0.0095 SOL).
