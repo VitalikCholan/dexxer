@@ -21,6 +21,7 @@ declare_id!("G2okX5Bae4CxfK8vzso1Ecc96QUv7E3P4YvxaZnaYXoV");
 #[program]
 pub mod dexxer_core {
     use super::*;
+    #[allow(clippy::too_many_arguments)]
     pub fn init_config(
         ctx: Context<InitConfig>,
         crank: Pubkey,

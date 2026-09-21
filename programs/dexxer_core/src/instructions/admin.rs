@@ -21,6 +21,9 @@ pub struct InitConfig<'info> {
     pub token_program: Program<'info, Token>,
     pub rent: Sysvar<'info, Rent>,
 }
+// Single admin bootstrap ix carrying 8 distinct config values; a params-struct
+// refactor would churn every caller (client + LiteSVM) for no runtime benefit.
+#[allow(clippy::too_many_arguments)]
 pub fn init_config(
     ctx: Context<InitConfig>,
     crank: Pubkey,
