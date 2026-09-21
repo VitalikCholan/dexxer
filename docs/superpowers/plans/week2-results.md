@@ -1,5 +1,18 @@
 # Тиждень 2 — результати
 
+Приватність (permissioned `[owner, session, crank]` члени, реалізована §2.1/§4.1 спеки), devnet-tee
+деплой `dexxer_core` (не спайк), `withdraw`, планувальник + `commit_aggregate` через делегований
+`FeeEscrow`, crank на devnet як permission-член, мобільний скелет (TEE-з'єднання, session-стор,
+онбординг, Trade/Position). Дев'ять задач (0–8), кожна із власним звітом у
+`.superpowers/sdd/2026-09-20-week2-privacy-devnet/task-N-report.md`; цей документ — виміряний
+підсумок для контролера й спеки, не заміна тих звітів. Статус мержу — **TBD**, гілка
+`week2-privacy-devnet`.
+
+Нижче: Task 1 (вимірювання, що визначили рішення (a)–(d) для решти тижня), Task 5 (devnet-tee
+інтеграція + два раунди фіксів), Task 6 (crank на devnet + три fix-раунди), потім короткі підсумки
+Tasks 2–4, 7–8 (дизайн/білд-задачі без власних вимірювальних розділів), і насамкінець — список
+відкритого для тижня 3.
+
 ## Task 1: Вимірювання на devnet-tee (M1–M4)
 
 Усі вимірювання — реальні транзакції на Solana devnet (`https://rpc.magicblock.app/devnet`) і TEE-ролапі
@@ -336,6 +349,111 @@ fee-vault, коли CPI-payer — делегований PDA (`counter`, не з
 
 `export PATH="$HOME/.nvm/versions/node/v24.18.0/bin:$PATH"` → `cd tests/er && npx tsc --noEmit` — чисто (0
 помилок) на фінальній версії `run.ts`/`00-measure.ts`.
+
+## Task 2: Приватні permission і члени
+
+Реалізує §2.1/§4.1's приватну 3-членну `EphemeralPermission`, відкладену з тижня 1. Новий
+`state/permissions.rs`: `OWNER_FLAGS`/`VIEWER_FLAGS`-константи, `build_members(owner, session,
+crank) -> Vec<Member>` — owner завжди перший з `OWNER_FLAGS` (`AUTHORITY_FLAG | TX_LOGS_FLAG |
+TX_BALANCES_FLAG | TX_MESSAGE_FLAG | ACCOUNT_SIGNATURES_FLAG`), session — лише якщо `!=
+Pubkey::default()`, crank — завжди останній з `VIEWER_FLAGS`.
+
+`init_permissions` тепер `is_private: true`, `members: build_members(...)`; гілкується на
+`perm.owner == PERMISSION_PROGRAM_ID` — `UpdateEphemeralPermissionCpi` (перемикає тиждень-1
+публічний permission на приватний) замість `CreateEphemeralPermissionCpi`. `set_session` після
+запису `session_key`/`session_expiry`/`actions_left` перебудовує всі три permission через
+`UpdateEphemeralPermissionCpi` (PDA сама підписує `invoke_signed` своїми seeds), пропускається
+per-PDA, якщо permission ще не створено.
+
+`Config` отримав чотири нові поля цього тижня одразу: `scheduler_signer`, `fee_payer`,
+`magic_fee_vault: Pubkey`, `crank_task_id: i64` — записані, але не прочитані жодною інструкцією на
+цьому кроці (наступні задачі їх споживають). `scheduler_signer` ініціалізується плоским
+`CRANK_SIGNER`-плейсхолдером (Task 1/6 пізніше знайшли правильне значення — per-authority PDA,
+записується окремо).
+
+**Знахідка (не в брифі):** додавання `config`/`market`/повного набору permission-акаунтів до
+`InitPermissions`/`SetSession` переповнило SBF stack frame (520/552 байт понад 4096, за
+діагностикою `anchor build`'s stack-offset). Виправлено бокс'уванням `config`/`market`/`user_account`
+в обох контекстах (та сама техніка, що вже застосована для `position`/`disclosure_queue`).
+
+**Гаунтлет:** `cargo test -p dexxer_core` **46/46** (42+4 нових `permissions::tests::*`); `anchor
+build` чисто; `cargo +nightly-2026-09-18 test -p dexxer_litesvm` **32/32**; `program_autofixer` — 0
+issues на кожному зміненому файлі; `tsc --noEmit` чисто в `tests/er` і `scripts`.
+
+**Свідомо не додано:** `MarketRisk.traders` (рулінг — реєстр потрібен лише якщо Task 1's M2 покаже,
+що gPA не працює для приватних акаунтів; M2 пізніше підтвердив, що працює, §3.5).
+
+Комміт: `4173667` — `feat(core): private permissions with owner/session/crank members; set_session
+rebuilds members`. Повний звіт — `task-2-report.md`.
+
+## Task 3: `withdraw` (ER-нога) + LiteSVM
+
+Перша версія `withdraw` — дзеркало `credit_deposit` у зворотний бік: owner-only signer (не session —
+гроші покидають систему), `require!(amount > 0)`, `require!(free_margin >= amount)`,
+`free_margin -= amount`/`pool.capital_total -= amount` (`checked_sub`), SPL-transfer vault→owner
+(підписано пулом), потім commit-intent лише для `user_account`, ворота на
+`magic_program.to_account_info().executable` (на LiteSVM Magic-програма не задеплоєна — CPI
+пропускається; на реальному ER — виконується).
+
+`magic_context`/`magic_program` — `UncheckedAccount` з `address = ...`-констрейнтом, не
+`Program<'info, MagicProgram>` (та обгортка провалила б валідацію акаунта на LiteSVM ще до власного
+`.executable`-гейту в тілі).
+
+Чотири LiteSVM-тести (`tests/litesvm/tests/withdraw.rs`): нуль відхилено, більше вільного
+відхилено, кошти рухаються + `free_margin` дебетується + інваріант тримається, сесія відхилена.
+**Знахідка тесту 3:** сесія як `owner`-підписант падає не на власному `DexxerError::Unauthorized`
+(`6019`), а на Anchor-вбудованому `ConstraintSeeds` (`2006`) — `user_account`'s seeds
+перевираховуються з (хибного) сесійного ключа ще до того, як `has_one = owner` у тілі встигає
+спрацювати; тест асертує саме `2006`, з коментарем-поясненням.
+
+**Гаунтлет:** `anchor build` чисто; LiteSVM **36/36** (32+4 нових); `cargo test -p dexxer_core`
+**46/46**; `program_autofixer` чисто. TS `tsc --noEmit` **не запускався** в межах цієї задачі —
+у сесії не було Node на `PATH`; позначено як ризик, перевірено пізніми задачами.
+
+`Config.magic_fee_vault` цей крок навмисно **не** підключив до `withdraw`'s builder (поза скоупом
+брифу) — це виявилось потрібним пізніше, у Task 5's fix round 3 (валідатор вимагає vault-акаунт у
+CPI щоразу, коли payer делегований, незалежно від ліміту комітів).
+
+Повний звіт — `task-3-report.md`.
+
+## Task 4: Планувальник і `commit_aggregate`
+
+`crank_tick`'s signer-констрейнт розширено третьою гілкою (`config.scheduler_signer`, поряд з
+`config.crank` і плоским `CRANK_SIGNER`). Нові інструкції: `schedule_crank`/`cancel_crank`
+(`ScheduleCrankCpi`/`CancelCrankCpi`, admin-gated, ER-only) і `commit_aggregate`/`commit_market`
+(новий `instructions/commit.rs`) — `commit_aggregate` комітить лише `Pool`, CPI-payer спершу
+`ctx.accounts.payer` (constrained `config.fee_payer`), `.magic_fee_vault(config.magic_fee_vault)`
+активує fee-vault-шлях; `commit_market` — той самий шаблон, admin-gated, без vault.
+
+**Lifetime-знахідка (SDK 0.16.2, не спекуляція — перевірено компіляцією):**
+`ScheduleCrankCpi`/`CancelCrankCpi`'s `compat::AccountInfo<'a>` — інваріантний у `'a`; свіжозібраний
+локальний масив `.to_account_info()`-клонів (як робить спайк `05-crank-tee` на іншій версії SDK) **не
+компілюється** проти 0.16.2 (`E0716: temporary value dropped while borrowed`). Обхід: Anchor's
+`ctx.remaining_accounts` — genuinely `'info`-scoped слайс — `schedule_crank` вимагає клієнта
+передати ті самі акаунти вдруге через `remainingAccounts`, звірені проти named-полів перед
+довірою. `MagicIntentBundleBuilder::commit(&[...])` цієї проблеми не має (одноелементні масиви).
+
+**`task_context`-акаунт:** жодна версія SDK (0.16.2)/`magicblock-magic-program-api` (0.10.1) не
+експортує PDA-деривацію для нього — `UncheckedAccount`, клієнт передає. Лишилось невирішеним аж до
+Task 6's fix round 1 (знайдено — потрібен writable, першим у `instruction_accounts`).
+
+**`magic_fee_vault_pda_from_validator`** — реальна, експортована деривація
+(`ephemeral_rollups_sdk::pda::magic_fee_vault_pda_from_validator(validator)`), контрастує з брифовим
+припущенням "можливо не існує"; не використана тут (рулінг), використана пізніше в devnet
+bootstrap.
+
+**Гаунтлет:** `anchor build` чисто; LiteSVM **36/36** (нові інструкції ER-only, не покриті
+LiteSVM); `cargo test -p dexxer_core` **46/46**; `program_autofixer` чисто на всіх змінених
+файлах; `tsc --noEmit` чисто в `tests/er` і `scripts` (IDL +4 інструкції).
+
+**Fix round 1 (контроль-ревʼю, Critical):** `schedule_crank` спершу не передавав writable
+`task_context` першим елементом `instruction_accounts` — `magicblock-magic-program-api`'s власний
+doc-коментар і SDK's unit-тест документують порядок `[task_context, ...]`. Виправлено: додано
+`task_context: UncheckedAccount` (мут) до `ScheduleCrank`, `remaining_accounts.len() == 7` тепер
+(`task_context` першим), звірка ідентичності перед передачею. Гаунтлет після фіксу — той самий,
+чистий (LiteSVM 36/36, `dexxer_core` 46/46, autofixer 0 issues, tsc чисто).
+
+Повний звіт (SDK-деталі, lifetime-аналіз) — `task-4-report.md`.
 
 ## Task 5: Devnet-tee інтеграція — приватний онбординг, витік-тест рівня 4, цикл комітів, withdraw
 
@@ -1264,3 +1382,100 @@ ER-планувальник тікає самостійно — **досягну
 writable-non-delegated-акаунт заборонений у `ScheduleCrankCpi`'s `instruction_accounts`, розв'язано
 переносом запису на базовий шар) — обидві знахідки задокументовані в коді (doc-коментарі
 `crank.rs`/`admin.rs`/`state/config.rs`) і тут, з повним ланцюжком підписів для відтворюваності.
+
+## Task 7: Мобільний скелет — TEE-з'єднання, session-стор, онбординг
+
+Нові `app/src/lib/`-файли: `pdas.ts` (деривація seeds, скопійована з `tests/er/lib/program.ts`),
+`program.ts` (`dexxerCoreProgram` з `ReadOnlyWallet`-заглушкою + ручні fixed-offset читання полів —
+знахідка нижче), `er.ts` (`useTeeConnection()` — owner-нога через MWA `signMessages` +
+`getAuthToken`), `session.ts` (`getOrCreateSessionKeypair` у `expo-secure-store`,
+`teeConnectionForSession` для session-signed доступу, `sessionTopUpIx` — звичайний
+`SystemProgram.transfer`, не `lamportsDelegatedTransferIx`, та сама причина, що в M2/M3/Task 5:
+сесія не делегована).
+
+Новий стейт-машин `useOnboarding.ts`: `Disconnected → NotOnboarded → Funded → Initialized →
+Delegated → Credited → Permissioned → SessionSet`, кожен крок ідемпотентний (перевіряє on-chain
+стан, пропускає зроблене) — дзеркалить `tests/er/devnet/01-onboard-private.ts`/`trader.ts`'s
+послідовність один-в-один (faucet → `init_user` → `delegateSpl` → `delegate_user` →
+`credit_deposit` → `init_permissions` → `set_session` → топ-ап сесії). `OnboardScreen.tsx` + новий
+таб.
+
+**Дві реальні знахідки на емуляторі (не в коді, який спочатку перевірявся — обидві знайдено й
+виправлено в тій самій сесії):**
+1. `@coral-xyz/anchor`'s `Program.account.<x>.fetch()` падає на Hermes/RN
+   (`buffer-layout`'s `UInt#decode`, `readUIntLE is not a function`) — Anchor-бандл закриває власне
+   посилання на буфер незалежно від `global.Buffer`. Виправлено: `polyfill.js` відновлює
+   `global.Buffer` (загальна гігієна) + ручні fixed-offset Borsh-читання
+   (`readConfigDusdcMint`/`readUserAccountSessionKey`/`readUserAccountFreeMargin`) в обхід
+   Anchor-декодера. Побудова інструкцій Anchor-бандлом не зачеплена.
+2. `Connection.confirmTransaction`'s websocket-підтвердження підвисає і на **base**-шарі
+   `rpc.magicblock.app/devnet` (раніше задокументовано лише для ER) — `init_user`'s підтвердження
+   зациклило `signatureSubscribe` попри те, що транзакція вже пройшла, зрештою OOM-крашнувши
+   Metro. Виправлено: `sendL1` тепер поллить `getSignatureStatuses`, як і ER-шлях.
+
+**Live-верифікація на емуляторі (Android AVD, реальний fakewallet, реальний devnet):** `faucet_init`
+і `init_user` підтверджені живими підписами на ланцюгу, ідемпотентність `init_user` підтверджена
+через рестарт застосунку. `delegateSpl` дійшов до MWA sign+send, але симуляція впала — root-caused
+до вже задокументованого eSPL-обмеження (M4: цикл небезпечно перециклювати на тій самій
+ідентичності), бо ідентичність емулятора вже проходила цикл раніше в сесії; повторна спроба зі
+свіжою ідентичністю заблокована ненадійним `requestAirdrop` на devnet. `delegate_user` →
+`SessionSet` **не досягнуто наживо** в цій сесії — позначено pending-human, той самий код-шлях, що
+й для двох уже доведених кроків.
+
+Повний звіт — `task-7-report.md`.
+
+## Task 8: Мобільний скелет — Trade і Position
+
+Розширює (не перебудовує) Task 7's `program.ts`/`pdas.ts`: `decodePosition`/`readPosition`,
+`decodeMarket`/`readMarket`, `computeUpnl` (дзеркалить `math.rs`'s `upnl`, JS `bigint`-ділення вже
+округлює до нуля — як Rust `i128`), `openPosition`/`closePosition` (підписуються **лише** session
+`Keypair` локально, без MWA — `sendSessionTx`/`confirmOnConn`, той самий поллінг-патерн, що Task 7's
+`sendL1`), `DEXXER_ERROR_MESSAGES` (усі 31 `DexxerError`-варіанти) + `describeTxError`.
+
+Нові екрани: `TradeScreen.tsx` (Long/Short, size/margin, ліміт-ціна `mark × 1.01`/`× 0.99` —
+дзеркалить `trade.rs`'s slippage-напрямок), `PositionScreen.tsx` (`useLiveAccount` —
+`onAccountChange` **плюс** безумовний 1s poll, не лише fallback: TEE-конфірм-websocket
+задокументовано ненадійний Task 7, а ≤2с свіжість потребує гарантії).
+
+**Offset-деривації звірені і проти поточного Rust-коду, і проти живих devnet-байтів** (не лише
+проти struct-арифметики): декодовано живий `Config` (`oracle_program`/`dusdc_mint` збігаються з
+`tests/er/lib/env.ts`'s константами), живий `Market` (128 B, `mark = 0` — ринок ще не засіяний,
+підтверджує, що `TradeScreen`'s guard "no mark price yet" — реальний, досяжний кейс, не мертвий
+код), і **реальний `Position`** з попереднього прогону `01-onboard-private.ts` — задекодовано
+`state=Closed, side=Long, size=0, margin=0, liq_price=0`, внутрішньо узгоджено з `finalize_close`'s
+відомою поведінкою — незалежне підтвердження offset-арифметики на справжньому, раніше
+Open-потім-Closed акаунті.
+
+**Live-верифікація на емуляторі:** Trade/Position-таби рендеряться коректно (Long/Short-тумблер,
+лімітна підказка перемикається правильно, стан "no session key" показано без крашу). **Повний
+Friday-демо-шлях (onboard → Open без MWA-промпту → Position оновлюється ≤2с → Close) не досягнуто**
+— той самий блокер, що й Task 7 (`requestAirdrop` ненадійний для свіжого гаманця), плюс окремо
+підтверджено: застосунку's власна кнопка "Request Airdrop" на Account-табі теж падає
+(`undefined is not a function`) — той самий клас багу, який Task 7 вже позначив як окрему,
+недоторкану цю задачею територію. `openPosition`/`closePosition` не виконані жодним реальним
+підписом у цій сесії — коректність спирається на звірений байт-у-байт IDL, доведений
+Task 7-однаковий шлях підпису/поллінгу, і незалежно підтверджені offset'и вище.
+
+Повний звіт — `task-8-report.md`.
+
+## Тижень 2 — відкрите для тижня 3
+
+- **`withdraw`'s коміт `UserAccount` ніколи не долетів до L1** (§7.1 ризик №13, §8 питання) — гроші
+  рухаються коректно, база лишається застарілою; потребує окремого дослідження з MagicBlock.
+- **Спільний `FeeEscrow` — griefing surface** (§7.1 ризик №14): мітигований `MIN_WITHDRAW` +
+  per-account cooldown, не усунений — sybil з багатьма акаунтами все ще може вичерпувати ескроу.
+- **Реальна вартість fee-vault-комітів після nonce 25** не виміряна (§7.1 нотатка при рішенні (c),
+  §8 питання 7) — виміряно лише nonce 11–22 (0 списання, очікувано).
+- **Стародавні devnet `UserAccount`-акаунти зі старим layout лишаються стороненими** від кранка без
+  міграції (§7.1 ризик №15) — одноразові тестові ідентичності, прийнято як сміття.
+- **Повний мобільний цикл Open→Close не підтверджено наживо** (§7.1 ризик №17) — заблоковано
+  devnet-airdrop-флакі і попередньо задокументованим Account-табним багом; шлях коду доведено
+  ідентичним проти референс-скриптів.
+- **`cancel_crank` перевірено, `mark_committed`/`reveal`/`write_commitment`/`write_disclosure`/
+  `undelegate_user` — не реалізовані взагалі** (поза мандатом тижня 2, §2.2/§4.2 позначено явно).
+- **`MarketRisk`'s bucket-структура й History/push/TEE-атестація в застосунку** — не в скоупі
+  тижня 2 (не в скоупі жодного тижня досі).
+- **Railway-деплой `crank-fallback`** — сам скрипт готовий (§7.1 ризик №3), деплой не зроблено.
+- **CI** — не зроблено жодного тижня; лишається ручний гаунтлет перед кожним PR.
+- **Uniform tx shape (ризик №4, мітигація (а))** — інструкції лишаються структурно різними;
+  cover-traffic-мітигація (б) підтверджена, форма tx — ще ні.

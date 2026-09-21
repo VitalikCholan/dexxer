@@ -40,11 +40,18 @@ pub fn init_config(
     c.tee_validator = tee_validator;
     c.dusdc_mint = ctx.accounts.dusdc_mint.key();
     c.disclosure_delay_slots = disclosure_delay_slots;
-    // Week-2 Task 1 M1: scheduled ticks on devnet-tee are signed by the TEE
-    // validator identity, not the `magicblock_magic_program_api::pda::CRANK_SIGNER`
-    // PDA — caller now supplies the real signer (devnet: `ER_VALIDATOR`; local
-    // mb-stack: its own validator identity). `crank_tick`'s constraint still
-    // accepts the `CRANK_SIGNER` PDA as a third branch (crank.rs untouched).
+    // Week-2 Task 1 M1: scheduled ticks are NOT signed by the flat
+    // `magicblock_magic_program_api::pda::CRANK_SIGNER` PDA — caller supplies
+    // the real signer here as a starting value. Task 6 (fix round 3) found the
+    // actual signer Magic Program uses for a scheduled `crank_tick` is the
+    // *per-authority* `crank_signer_pda(admin)` (seeds `["crank-executor",
+    // authority]`, authority = the `schedule_crank` payer), not this
+    // constructor's static value — on devnet this field is overwritten after
+    // `init_config` via the base-layer `set_scheduler_signer` admin ix with
+    // `crank_signer_pda(admin)` before `schedule_crank` is ever called (see
+    // `tests/er/lib/crank-signer.ts`, `scripts/admin/set-scheduler-signer.ts`).
+    // `crank_tick`'s constraint still accepts the flat `CRANK_SIGNER` PDA as a
+    // third branch (crank.rs untouched).
     c.scheduler_signer = scheduler_signer;
     c.fee_payer = fee_payer;
     c.magic_fee_vault = magic_fee_vault;

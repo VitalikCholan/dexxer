@@ -23,18 +23,26 @@
 - docs/solana-perp-privacy-landscape.md, docs/glossary-perp-privacy.md — ринок і терміни
 - docs/superpowers/plans/2026-09-19-week1-core.md — план тижня 1 (задачі, послідовність)
 - docs/superpowers/plans/week1-results.md — виміряні результати тижня 1 (Q1–Q3, CLI-прогін, CU, знахідки на mb-stack)
+- docs/superpowers/plans/2026-09-20-week2-privacy-devnet.md — план тижня 2 (приватність, devnet-tee, мобільний скелет)
+- docs/superpowers/plans/week2-results.md — виміряні результати тижня 2 (M1–M4, devnet-деплой, crank fix-раунди, мобільний скелет)
 
 ## Правила
 - Anchor 1.0.2, Solana 3.1.9, Rust 1.89, `ephemeral-rollups-sdk` 0.16.2 (`anchor`, `access-control`), TS SDK 0.17, `@solana/web3.js` v1 (не kit)
 - Округлення — завжди на користь пулу; вся математика в `math.rs`, `u128` проміжні, `checked_*`
-- Коміт агрегату — фіксованим інтервалом батчем, ніколи подієво і ніколи на кожну дію
+- Коміт агрегату — фіксованим інтервалом батчем, ніколи подієво і ніколи на кожну дію. **`commit_aggregate` комітить лише `Pool`; `UserAccount` комітиться лише всередині `withdraw`'s власного commit-intent** (week 2, 21.09.2026) — жодного окремого періодичного коміту `UserAccount` немає. Цей `withdraw`-коміт на реальному devnet-tee ще жодного разу не підтверджено таким, що долітає до L1 в межах спостереження (гроші рухаються коректно, байти акаунта на L1 лишаються застарілими) — не заявляти "готово" без нового вимірювання
 - Оракул: на кожне читання — feed id, `posted_slot > 0`, staleness, confidence, deviation. Stale → скіп ліквідацій, не ліквідація за старою ціною
 - `init_if_needed` не використовувати; `write_commitment` перевіряє escrow-підписанта
 - Solana MCP `program_autofixer` на кожну зміну програми до коміту
 - Skill `magicblock` — для ER/PER/eSPL/oracle/session keys; `solana-dev` — для Anchor/клієнтів/тестів
 - Мова документів і комітів — українська для docs, англійська для коду й commit messages
-- `crank_tick` приймає `Config.crank` або `CRANK_SIGNER`; кандидати ліквідації — `remaining_accounts` парами `[Position, UserAccount]`, ≤16
+- `crank_tick` приймає `Config.crank`, `Config.scheduler_signer` або плоский `CRANK_SIGNER`; кандидати ліквідації — `remaining_accounts` парами `[Position, UserAccount]`, ≤16. **Крank — permission-член кожної позиції** (`[owner, session, crank]`, week 2) — `getProgramAccounts` із crank-токеном повертає приватні акаунти, окремого реєстру кандидатів не потрібно
+- **Планувальник (week 2, 21.09.2026):** запланований `crank_tick` підписує Magic Program значенням `crank_signer_pda(admin)` (per-authority PDA, не плоский `CRANK_SIGNER`), яке має лежати в `Config.scheduler_signer` **до** `schedule_crank`. Пишеться окремою base-layer admin-інструкцією `set_scheduler_signer` (`AdminConfig`-патерн, як `pause`/`unpause`) — `schedule_crank` сам більше нічого в `Config` не пише (writable-неделегований акаунт у `ScheduleCrankCpi`'s `instruction_accounts` заборонений безумовно, підтверджено двічі)
+- `commit_aggregate`/`commit_market`/`withdraw`'s commit-intent платять через делегований `FeeEscrow` PDA (`[b"fee_escrow"]`, `init_fee_escrow`/`delegate_fee_escrow`), не `ctx.accounts.payer` напряму — акаунт, оголошений `Signer<'info>` на верхньому рівні прямо викликаної інструкції, структурно не може бути програмним PDA. `magic_fee_vault` потрібен у CPI щоразу, коли payer делегований, незалежно від ліміту комітів. `FeeEscrow` спільний — griefing surface, мітигований `withdraw`'s `MIN_WITHDRAW`/cooldown, не усунений
+- `withdraw`: `require!(amount ≥ MIN_WITHDRAW = 1_000_000)`, per-account cooldown `WITHDRAW_COOLDOWN_SLOTS = 300` через `UserAccount.last_withdraw_slot`
 - Пул — контрагент PnL через `Pool.protocol_liquidity`; інваріант тижня 1 (див. spec §3.6) перевіряється кожним LiteSVM-тестом трейдингу/кранка (`trade`, `resize`, `crank`, `invariants`) через `assert_invariant`
 - OI-леджер (`MarketRisk.oi_long`/`oi_short`) змінювати лише через `Position.oi_notional`, ніколи перерахунком з VWAP `entry` (`notional(size, entry)`) — подвійне округлення VWAP → notional може underflow'нути `checked_sub`
-- LiteSVM: `tests/litesvm` (`cargo +nightly-2026-09-18 test -p dexxer_litesvm`, потребує nightly через транзитивний `solana-syscalls`; `anchor build` перед першим прогоном)
+- LiteSVM: `tests/litesvm` (`cargo +nightly-2026-09-18 test -p dexxer_litesvm`, потребує nightly через транзитивний `solana-syscalls`; `anchor build` перед першим прогоном) — **39 тестів** (week 2)
 - mb-stack: `tests/er` (`npm run q1|q2`, детальніше `tests/er/README.md`); `scripts` — crank fallback і week-1 CLI демо (`npm run crank`, `npm run week1` у `scripts/`)
+- **Devnet-профіль (week 2, 21.09.2026):** `DEXXER_NET=devnet` перемикає `tests/er/lib/env.ts`'s `cfg()` на профіль `devnet` (base `https://rpc.magicblock.app/devnet`, TEE `https://devnet-tee.magicblock.app`, router, `ER_VALIDATOR`, `ORACLE`) замість `local` (mb-stack); `.env` усе одно переважає профіль за замовчуванням — статичні `import`-и `lib/env.js` мають виставляти `process.env.*` *до* динамічного `await import(...)`, інакше `.env`'s localhost-адреси мовчки перемагають (знахідка Task 1/5, виправлено в кожному devnet-скрипті бутстрап-обгорткою). `teeConn(kp)` — TEE-з'єднання з токеном (`getAuthToken`) на devnet, прозорий проксі на `erConn` локально
+- `keys/` — program keypairs (`keys/programs/*-keypair.json`) і devnet-ідентичності (`tests/er/.keys/*.json`); gitignored повністю, крім `keys/README.md` (`.gitignore`: `keys/*` + `!keys/README.md` — негація не працює на весь каталог, лише на файли всередині). **Ніколи не комітити нічого під `keys/`, крім `README.md`**
+- Solana MCP `program_autofixer` покриває навіть чисто doc-коментарні зміни в `.rs`-файлах — запускати завжди, не лише на логіку
