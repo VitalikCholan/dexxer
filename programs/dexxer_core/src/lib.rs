@@ -175,4 +175,7 @@ pub mod dexxer_core {
     ) -> Result<()> {
         disclosure::write_disclosure(ctx, args, salt)
     }
+    pub fn mark_committed(ctx: Context<MarkCommitted>) -> Result<()> {
+        disclosure::mark_committed(ctx)
+    }
 }

@@ -308,3 +308,154 @@ fn commit_aggregate_rejects_foreign_remaining_account() {
     );
     assert_custom_error(&r, 6000 + DexxerError::InvalidCandidate as u32);
 }
+
+// Task 4: `mark_committed` (ER, crank) — the bridge from `commit_aggregate`'s
+// `write_commitment` scheduling to a retired `ClosedRecord` in the owner's
+// `DisclosureQueue` and a `Position` reset back to `Empty`.
+fn commit_position(h: &mut Harness, w: &World, t: &Trader) {
+    let extra = vec![AccountMeta::new(t.position, false)];
+    h.send(
+        &[ixs::commit_aggregate(&w.fee_payer.pubkey(), w, &extra)],
+        &[&w.fee_payer],
+    )
+    .unwrap();
+}
+
+#[test]
+fn mark_committed_moves_record_and_frees_position() {
+    let mut h = Harness::new();
+    let w = world_with_price(&mut h);
+    let t = open_then_close(&mut h, &w);
+    commit_position(&mut h, &w, &t);
+    let before = h.account::<Position>(&t.position).closed.unwrap();
+    h.send(
+        &[ixs::mark_committed(&w.crank.pubkey(), &t, &w)],
+        &[&w.crank],
+    )
+    .unwrap();
+    let p = h.account::<Position>(&t.position);
+    assert_eq!(p.state, PositionState::Empty);
+    assert!(p.closed.is_none());
+    assert_eq!(
+        (
+            p.size,
+            p.entry,
+            p.margin,
+            p.liq_price,
+            p.oi_notional,
+            p.liq_ticks,
+            p.opened_slot
+        ),
+        (0, 0, 0, 0, 0, 0, 0)
+    );
+    let dq = h.account::<DisclosureQueue>(&t.dq);
+    assert_eq!(dq.len, 1);
+    assert_eq!(dq.records[dq.head as usize].nonce, before.nonce);
+    assert_eq!(dq.records[dq.head as usize].salt, before.salt);
+    assert_invariant(&h, &w, &[&t]);
+}
+
+#[test]
+fn mark_committed_requires_commitment_written() {
+    let mut h = Harness::new();
+    let w = world_with_price(&mut h);
+    let t = open_then_close(&mut h, &w); // no commit_aggregate
+    let r = h.send(
+        &[ixs::mark_committed(&w.crank.pubkey(), &t, &w)],
+        &[&w.crank],
+    );
+    assert_custom_error(&r, 6000 + DexxerError::CommitmentNotWritten as u32);
+}
+
+#[test]
+fn mark_committed_only_by_crank() {
+    let mut h = Harness::new();
+    let w = world_with_price(&mut h);
+    let t = open_then_close(&mut h, &w);
+    commit_position(&mut h, &w, &t);
+    let r = h.send(&[ixs::mark_committed(&t.kp.pubkey(), &t, &w)], &[&t.kp]);
+    assert_custom_error(&r, 6000 + DexxerError::Unauthorized as u32);
+}
+
+#[test]
+fn second_position_after_mark_committed() {
+    let mut h = Harness::new();
+    let w = world_with_price(&mut h);
+    let t = open_then_close(&mut h, &w);
+    commit_position(&mut h, &w, &t);
+    h.send(
+        &[ixs::mark_committed(&w.crank.pubkey(), &t, &w)],
+        &[&w.crank],
+    )
+    .unwrap();
+    // The week-1/2 "one position per trader per run" limit is gone:
+    h.send(
+        &[ixs::open_position(
+            &t.kp.pubkey(),
+            &t,
+            &w,
+            Side::Short,
+            SOL1,
+            M20,
+            P100,
+        )],
+        &[&t.kp],
+    )
+    .unwrap();
+    assert_eq!(
+        h.account::<Position>(&t.position).state,
+        PositionState::Open
+    );
+    assert_invariant(&h, &w, &[&t]);
+}
+
+#[test]
+fn mark_committed_queue_full() {
+    let mut h = Harness::new();
+    let w = world_with_price(&mut h);
+    let t = w.new_trader(&mut h, 10_000_000_000);
+    for _ in 0..DQ_CAPACITY {
+        h.send(
+            &[ixs::open_position(
+                &t.kp.pubkey(),
+                &t,
+                &w,
+                Side::Long,
+                SOL1,
+                M20,
+                P100,
+            )],
+            &[&t.kp],
+        )
+        .unwrap();
+        h.send(&[ixs::close_position(&t.kp.pubkey(), &t, &w, 0)], &[&t.kp])
+            .unwrap();
+        commit_position(&mut h, &w, &t);
+        h.send(
+            &[ixs::mark_committed(&w.crank.pubkey(), &t, &w)],
+            &[&w.crank],
+        )
+        .unwrap();
+    }
+    h.send(
+        &[ixs::open_position(
+            &t.kp.pubkey(),
+            &t,
+            &w,
+            Side::Long,
+            SOL1,
+            M20,
+            P100,
+        )],
+        &[&t.kp],
+    )
+    .unwrap();
+    h.send(&[ixs::close_position(&t.kp.pubkey(), &t, &w, 0)], &[&t.kp])
+        .unwrap();
+    commit_position(&mut h, &w, &t);
+    let r = h.send(
+        &[ixs::mark_committed(&w.crank.pubkey(), &t, &w)],
+        &[&w.crank],
+    );
+    assert_custom_error(&r, 6000 + DexxerError::QueueFull as u32);
+}

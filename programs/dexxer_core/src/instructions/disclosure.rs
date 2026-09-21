@@ -94,6 +94,57 @@ pub fn write_disclosure(
     Ok(())
 }
 
+#[derive(Accounts)]
+pub struct MarkCommitted<'info> {
+    pub crank: Signer<'info>,
+    #[account(seeds = [CONFIG_SEED], bump = config.bump,
+        constraint = crank.key() == config.crank @ DexxerError::Unauthorized)]
+    pub config: Box<Account<'info, Config>>,
+    #[account(mut, seeds = [POSITION_SEED, position.owner.as_ref(), position.market.as_ref()], bump = position.bump)]
+    pub position: Box<Account<'info, Position>>,
+    #[account(mut, seeds = [DQ_SEED, position.owner.as_ref()], bump = dq.bump)]
+    pub dq: Box<Account<'info, DisclosureQueue>>,
+}
+
+/// Crank observed the `Commitment` PDA on base (the ER cannot read L1 — spec
+/// risk #2) and now retires the closed record into the disclosure ring,
+/// returning the position to `Empty` so the trader can open again. Crank-
+/// asserted by design (spec risk #20); the L1 `Commitment` is public, so a
+/// crank that lies here is visible to anyone after the fact.
+///
+/// Order matters (controller ruling 7, week 3): validate -> push into the
+/// queue -> only then reset the position. `commitment_written` must never be
+/// cleared before the record is safely queued, since a failure between those
+/// two steps would otherwise let a later `commit_aggregate` re-emit
+/// `write_commitment` for a nonce that already has an L1 record.
+pub fn mark_committed(ctx: Context<MarkCommitted>) -> Result<()> {
+    let pos = &mut ctx.accounts.position;
+    require!(pos.state == PositionState::Closed, DexxerError::NotClosed);
+    let rec = pos.closed.ok_or(DexxerError::NotClosed)?;
+    require!(rec.commitment_written, DexxerError::CommitmentNotWritten);
+
+    let dq = &mut ctx.accounts.dq;
+    require!((dq.len as usize) < DQ_CAPACITY, DexxerError::QueueFull);
+    let idx = (dq.head as usize)
+        .checked_add(dq.len as usize)
+        .ok_or(DexxerError::MathOverflow)?
+        % DQ_CAPACITY;
+    dq.records[idx] = rec;
+    dq.len = dq.len.checked_add(1).ok_or(DexxerError::MathOverflow)?;
+
+    pos.closed = None;
+    pos.state = PositionState::Empty;
+    pos.side = Side::Long;
+    pos.size = 0;
+    pos.entry = 0;
+    pos.margin = 0;
+    pos.liq_price = 0;
+    pos.opened_slot = 0;
+    pos.liq_ticks = 0;
+    pos.oi_notional = 0;
+    Ok(())
+}
+
 /// A closed position whose commitment has not been emitted yet -> (nonce, hash).
 /// Used by `commit_aggregate` to decide whether a `Position` in `remaining_accounts`
 /// needs a `write_commitment` post-commit action this bundle.

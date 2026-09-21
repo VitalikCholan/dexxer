@@ -493,3 +493,13 @@ pub fn write_disclosure_direct_with_escrow_auth(
         data: ix::WriteDisclosure { args, salt }.data(),
     }
 }
+/// `mark_committed` (ER, crank): retires a `Closed && commitment_written` position's
+/// `ClosedRecord` into the owner's `DisclosureQueue` and frees the `Position` back
+/// to `Empty`. `MarkCommitted { crank, config, position, dq }` — no instruction args.
+pub fn mark_committed(crank: &Pubkey, t: &Trader, wd: &World) -> Instruction {
+    Instruction {
+        program_id: prog(),
+        accounts: vec![rs(crank), r(&wd.config), w(&t.position), w(&t.dq)],
+        data: ix::MarkCommitted {}.data(),
+    }
+}
