@@ -16,13 +16,22 @@
 // `runDisclosureCycle`: (1) finds `Position`s with `Closed &&
 // !closed.commitment_written` and `DisclosureQueue`s with at least one due
 // record (`reveal_after_slot <= slot`), builds a `remaining_accounts` list
-// for a single `commit_aggregate` call (signed by `Config.fee_payer` — see
-// the CANDIDATE-SELECTION HEURISTIC comment below), then (2) for every
-// Position already `commitment_written` (from an EARLIER cycle — a bundle
-// just sent in this same cycle has not propagated to L1 yet), checks
-// whether its `Commitment` PDA now exists on the base layer and, if so,
-// calls `mark_committed` (crank) to retire the record into `DisclosureQueue`
-// and free the `Position` back to `Empty`.
+// (possibly empty — see below) for a single `commit_aggregate` call (signed
+// by `Config.fee_payer` — see the CANDIDATE-SELECTION HEURISTIC comment
+// below), then (2) for every Position already `commitment_written` (from an
+// EARLIER cycle — a bundle just sent in this same cycle has not propagated
+// to L1 yet), checks whether its `Commitment` PDA now exists on the base
+// layer and, if so, calls `mark_committed` (crank) to retire the record into
+// `DisclosureQueue` and free the `Position` back to `Empty`.
+//
+// `commit_aggregate` IS the fixed-interval `Pool`+`BalancesRoot` commit
+// (CLAUDE.md: "фіксованим інтервалом батчем, ніколи подієво") — it is called
+// EVERY cycle, even with zero candidates (`remaining_accounts` empty), so a
+// quiet window (no closed positions, no due reveals) still lands
+// `runRootCycle`'s freshly computed root on L1. The program's own
+// `actions.is_empty()` branch on the Rust side already handles the
+// zero-candidate case (no post-commit actions attached, the `Pool`/
+// `BalancesRoot` commit itself still fires).
 //
 // CANDIDATE-SELECTION HEURISTIC (MAX_ACTIONS_PER_COMMIT = 4, program-enforced
 // via `TooManyActions`): every pending `Position` contributes exactly one
@@ -157,31 +166,35 @@ export async function runDisclosureCycle(ctx: DisclosureCtx): Promise<void> {
     candidates.push({ key: dueQueues[0].key, actions: Math.min(room, dueQueues[0].due) });
   }
 
-  if (candidates.length > 0) {
-    const totalActions = candidates.reduce((n, c) => n + c.actions, 0);
-    try {
-      const config = await accountNs(ctx.feePayerProg).config.fetch(pdas.config());
-      const ix = await ctx.feePayerProg.methods
-        .commitAggregate()
-        .accounts({
-          config: pdas.config(),
-          payer: ctx.feePayer.publicKey,
-          pool: ctx.pool,
-          balancesRoot: ctx.balancesRoot,
-          feeEscrow: ctx.feeEscrow,
-          magicFeeVault: config.magicFeeVault,
-          magicContext: MAGIC_CONTEXT_ID,
-          magicProgram: MAGIC_PROGRAM_ID,
-        })
-        .remainingAccounts(candidates.map((c) => ({ pubkey: c.key, isWritable: true, isSigner: false })))
-        .instruction();
-      const sig = await sendAndConfirmIx(ctx.feePayerConn, ctx.feePayer, ix);
-      console.log(`commit_aggregate: sig=${sig} actions=${totalActions}`);
-    } catch (e) {
-      console.error("commit_aggregate failed:", String(e));
-    }
-  } else {
-    console.log("commit_aggregate: nothing pending, skipped");
+  // `commit_aggregate` IS the fixed-interval `Pool`+`BalancesRoot` commit
+  // (CLAUDE.md: "фіксованим інтервалом батчем, ніколи подієво") — it must run
+  // every cycle regardless of whether there are any pending
+  // Position/DisclosureQueue candidates, or a quiet window would never carry
+  // `runRootCycle`'s freshly computed root to L1. The program's own
+  // `actions.is_empty()` branch already handles a zero-candidate call (no
+  // post-commit actions attached, `commit(&[pool, balances_root])` still
+  // fires). `remaining_accounts` is simply empty in that case.
+  const totalActions = candidates.reduce((n, c) => n + c.actions, 0);
+  try {
+    const config = await accountNs(ctx.feePayerProg).config.fetch(pdas.config());
+    const ix = await ctx.feePayerProg.methods
+      .commitAggregate()
+      .accounts({
+        config: pdas.config(),
+        payer: ctx.feePayer.publicKey,
+        pool: ctx.pool,
+        balancesRoot: ctx.balancesRoot,
+        feeEscrow: ctx.feeEscrow,
+        magicFeeVault: config.magicFeeVault,
+        magicContext: MAGIC_CONTEXT_ID,
+        magicProgram: MAGIC_PROGRAM_ID,
+      })
+      .remainingAccounts(candidates.map((c) => ({ pubkey: c.key, isWritable: true, isSigner: false })))
+      .instruction();
+    const sig = await sendAndConfirmIx(ctx.feePayerConn, ctx.feePayer, ix);
+    console.log(`commit_aggregate: sig=${sig} actions=${totalActions}`);
+  } catch (e) {
+    console.error("commit_aggregate failed:", String(e));
   }
 
   // --- (2) mark_committed: crank observes the L1 Commitment PDA (the ER

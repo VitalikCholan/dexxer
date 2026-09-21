@@ -116,6 +116,10 @@ async function main() {
           config,
           payer: feePayer.publicKey,
           pool: boot.pool,
+          // Task 5 added `balances_root` to `CommitAggregate` (commit.rs) —
+          // required by the IDL since then; this script predates that change
+          // (task-7 fix round 1, week 3).
+          balancesRoot: pdas.balancesRoot(),
           feeEscrow: boot.feeEscrow,
           magicFeeVault: MAGIC_FEE_VAULT,
           magicContext: MAGIC_CONTEXT_ID,
