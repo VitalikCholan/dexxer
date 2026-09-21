@@ -116,6 +116,48 @@ pub mod magic_actions {
 
         Ok(())
     }
+
+    /// Week-3 M-C: same `update_leaderboard` action, pushed `n` times into a
+    /// single commit bundle (`commit_aggregate`'s eventual `MAX_ACTIONS_PER_COMMIT`
+    /// shape). `update_leaderboard`'s own effect (`high_score = max(high_score,
+    /// counter.count)`) is idempotent across repeats — it cannot by itself tell
+    /// "1 action ran" from "n actions ran". The measurement script instead reads
+    /// how many `Instruction: UpdateLeaderboard` log lines the base commit tx
+    /// actually contains, which is the real "how many of n executed" signal.
+    pub fn commit_with_n_actions(ctx: Context<CommitAndUpdateLeaderboard>, n: u8) -> Result<()> {
+        let instruction_data =
+            anchor_lang::InstructionData::data(&crate::instruction::UpdateLeaderboard {});
+        let action_accounts = vec![
+            ShortAccountMeta {
+                pubkey: ctx.accounts.leaderboard.key().to_bytes().into(),
+                is_writable: true,
+            },
+            ShortAccountMeta {
+                pubkey: ctx.accounts.counter.key().to_bytes().into(),
+                is_writable: false,
+            },
+        ];
+        let actions: Vec<CallHandler> = (0..n)
+            .map(|_| CallHandler {
+                destination_program: crate::ID,
+                accounts: action_accounts.clone(),
+                args: ActionArgs::new(instruction_data.clone()),
+                escrow_authority: ctx.accounts.payer.to_account_info(),
+                compute_units: 200_000,
+            })
+            .collect();
+
+        MagicIntentBundleBuilder::new(
+            ctx.accounts.payer.to_account_info(),
+            ctx.accounts.magic_context.to_account_info(),
+            ctx.accounts.magic_program.to_account_info(),
+        )
+        .commit(&[ctx.accounts.counter.to_account_info()])
+        .add_post_commit_actions(actions)
+        .build_and_invoke()?;
+
+        Ok(())
+    }
 }
 
 #[derive(Accounts)]

@@ -10,7 +10,8 @@
     "devnet:leak": "DEXXER_NET=devnet tsx devnet/02-leak-test.ts",
     "devnet:commit": "DEXXER_NET=devnet tsx devnet/03-commit-cycle.ts",
     "devnet:withdraw": "DEXXER_NET=devnet tsx devnet/04-withdraw.ts",
-    "devnet:liquidation": "DEXXER_NET=devnet tsx devnet/05-crank-liquidation.ts"
+    "devnet:liquidation": "DEXXER_NET=devnet tsx devnet/05-crank-liquidation.ts",
+    "devnet:w3measure": "DEXXER_NET=devnet tsx devnet/w3-measure.ts"
   },
   "dependencies": {
     "@coral-xyz/anchor": "0.32.1",

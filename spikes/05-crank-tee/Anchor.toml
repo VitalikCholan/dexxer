@@ -6,7 +6,7 @@ resolution = true
 skip-lint = false
 
 [programs.devnet]
-crank_counter = "EEkgWoy8krpaxtP8msJeN4rJux2KX68MCHjasosD8CGE"
+crank_counter = "AsXtStXjZxwUd6UNVqJ9kQYJ9cYFdZbh2SeSWaZdX8bi"
 
 [programs.localnet]
 crank_counter = "6avjV8kWVhVf2NX6ZeE7SaqyqjRnCD6JDwhiUH6yFymz"
