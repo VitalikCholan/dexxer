@@ -773,3 +773,210 @@ apparently not safely re-cycleable"), але це — **не наслідок ц
 buffer-акаунтів.
 
 Повний опис — у `.superpowers/sdd/2026-09-20-week2-privacy-devnet/task-5-report.md` §"Fix round 2".
+
+## Task 6: Crank на devnet
+
+Fallback-скрипт (`scripts/crank-fallback/index.ts`) переведено на профіль `DEXXER_NET=devnet`
+(`teeConn(crank)` замість анонімного `erConn`, кандидати — gPA із crank-токеном, `feed` читається з
+живого `Market.feed`, а не з env); окремо написано `scripts/admin/schedule-crank.ts` для реєстрації
+запланованого `crank_tick` через Magic Actions. Запуск: `export PATH="$HOME/.nvm/versions/node/v24.18.0/bin:$PATH"`,
+далі `DEXXER_NET=devnet npx tsx scripts/admin/schedule-crank.ts` (з `tests/er/`) і
+`DEXXER_NET=devnet npm run crank` (з `scripts/`, або напряму `npx tsx crank-fallback/index.ts`).
+
+### `schedule_crank` — FAIL, програмна знахідка (не обхідний шлях, контролеру на рішення)
+
+**Статус: заблоковано, не потребує повторних спроб — помилка детермінована й повністю пояснена
+логами.** `DEXXER_NET=devnet npx tsx scripts/admin/schedule-crank.ts` (admin через `teeConn(admin)`,
+`task_id` = перші 8 байт SHA-256 program id як `i64` little-endian = `-8632762600545312817`,
+`interval_ms=1000`, `iterations=86400`, `task_context = config` PDA — контролер-рекомендований вибір із
+Task 1) падає на кожній спробі з `{"InstructionError":[0,"MissingRequiredSignature"]}`, sig
+`3VPaX7Fg6E8nji9zejREbqTNJu1RoL7rfXKycv1eXBeuqtiEXWS5xtuU2SfbYJvLZaRe8ybH8NFGyvWDn8SYp5hy`. Повні логи
+транзакції:
+
+```
+Program G2okX5Bae4CxfK8vzso1Ecc96QUv7E3P4YvxaZnaYXoV invoke [1]
+Program log: Instruction: ScheduleCrank
+Program Magic11111111111111111111111111111111111111 invoke [2]
+Crank ERR: only the crank signer PDA can be a signer in cranks (invalid signer: 'MTEWGuqxUpYZGFJQcp8tLN7x5v9BSeoFHYWQQ3n3xzo')
+Program Magic11111111111111111111111111111111111111 failed: missing required signature for instruction
+```
+
+**Корінна причина (підтверджена логами Magic Program напряму, не здогад):** Magic Program сам вимагає,
+щоб будь-який акаунт, позначений `is_signer: true` у ЗАПЛАНОВАНІЙ інструкції, був **саме**
+`CRANK_SIGNER` PDA (`magicblock_magic_program_api::pda::CRANK_SIGNER`,
+`431bz9ziJVBCqea1gSxzmxvm1Bn1qJoZzSNHoweNc1f1` — обчислено в Task 1 M1) — не довільна ідентичність.
+`programs/dexxer_core/src/instructions/crank.rs`'s `schedule_crank` будує `crank_tick_ix` з
+`AccountMeta::new_readonly(ctx.accounts.crank.key(), true)`, де `ctx.accounts.crank` жорстко
+обмежений констрейнтом `#[account(address = config.scheduler_signer @ ...)]` — тобто
+`config.scheduler_signer` = `ER_VALIDATOR` (`MTEWGuqxUpYZGFJQcp8tLN7x5v9BSeoFHYWQQ3n3xzo`, Task 1
+рішення (a)), не `CRANK_SIGNER`. Це напряму суперечить тому, що вимагає Magic Program при
+**реєстрації** запланованої інструкції.
+
+Важливо: це **не** суперечить Task 1 M1 (там виміряно, хто підписує вже виконані тіки спайку
+`05-crank-tee` — і це справді був `ER_VALIDATOR`) — той спайк використовував простішу власну
+`scheduleIncrement`-інструкцію, чия внутрішня scheduled-інструкція, судячи з усього, взагалі не
+позначала жоден акаунт `is_signer: true` (лічильник не потребує підписанта для власного інкременту),
+тому ця перевірка Magic Program там просто не спрацьовувала. `crank_tick`, натомість, оголошує
+`pub crank: Signer<'info>` — і саме тому `schedule_crank`'s власний CPI зобов'язаний позначити цей
+акаунт підписантом у збереженій інструкції, а Magic Program дозволяє це зробити лише для своєї
+PDA. Показово, що `crank_tick`'s constraint (`crank.rs`, рядок з потрійним `||`) **вже** приймає
+`CRANK_SIGNER` як третю гілку (додано в Task 4) — тобто на рівні `crank_tick` шлях через
+`CRANK_SIGNER` підтримується; розрив — лише в тому, яку адресу `schedule_crank` фактично записує в
+`crank_tick_ix` і якою адресою обмежено `ScheduleCrank.crank`.
+
+**Це програмна зміна (Rust), поза мандатом цієї задачі** (правило: "No program changes — if a
+program bug blocks you, STOP and report with evidence"). Робочий напрям для контролера: у
+`schedule_crank` будувати `crank_tick_ix`'s `crank`-мету з `CRANK_SIGNER` (SDK-константа), а не
+`ctx.accounts.crank.key()`, і, ймовірно, або прибрати `ScheduleCrank.crank`'s `address =
+config.scheduler_signer` (замінити на `CRANK_SIGNER`, або взагалі прибрати акаунт — таск-контекст
+CPI все одно не перевіряє його змістовно), або тримати обидва (окремий параметр). Наслідок для цієї
+задачі: **жоден `schedule_crank`-виклик не пройшов на реальному devnet-tee**, `Config.crank_task_id`
+лишається `0`, і тому **перевірка (b) — планувальник тікає без fallback-скрипта — не спостережувана
+в принципі** (немає жодного зареєстрованого таска, який міг би тікати). Прямо перевірено нижче: без
+fallback-скрипта `Market.mark_slot` **не** рухається (очікувано й узгоджено з цією знахідкою, не нова
+несправність).
+
+`cancel_crank` **не викликався** — нема що скасовувати (жоден `schedule_crank` не пройшов).
+Лишається невиміряним, як і в Task 1, тепер із додатковою причиною: сама передумова для тестування
+(живий запланований таск) недосяжна, поки `schedule_crank`'s знахідка не виправлена.
+
+### Друга реальна знахідка (по дорозі, теж не програмний баг — клієнтський фікс у скоупі задачі): застарілі `UserAccount` ламають `crank_tick` для ВСІХ кандидатів у тіку
+
+Перший запуск виправленого `crank-fallback/index.ts` проти реального devnet-tee (без жодних
+запланованих позицій ще) одразу падав на кожному тіку: `{"InstructionError":[0,{"Custom":3003}]}`
+(`AccountDidNotDeserialize`), sig (приклад)
+`kHB9VBEsbwbxk67QJz6WctR3FJFpqjiMZjykrW2kvD81W5DVysu3j9HCUchQaSDbg4Amcj2Kih4351oRt9w6tXb`. Логи:
+`"AnchorError ... Error Code: AccountDidNotDeserialize ... custom program error: 0xbbb"`.
+
+**Причина, підтверджена напряму (окремий діагностичний прогін через `getProgramAccounts` +
+`getMultipleAccountsInfo`):** gPA із crank-токеном знайшов **5** приватних `Position`-акаунтів,
+залишених із попередніх сесій Task 5 (кожен онбординг-прогін лишає свою позицію відкритою — жодна
+ніколи явно не закривалась). У 4 з 5 пов'язаний `UserAccount` мав **110 байт** — старий layout
+**до** Task 5's fix round 2 (`last_withdraw_slot: u64` додало 8 байт → 118 байт зараз). On-chain
+`UserAccount::try_deserialize` (в `crank_tick`, `crank.rs`) відхиляє коротший буфer — і оскільки
+інструкція обробляє всі пари `remaining_accounts` в одному циклі з `?` (early return), **один**
+застарілий кандидат зривав **увесь** тік, включно з дійсними кандидатами в тому ж чанку.
+
+**Виправлення (клієнтське, у скоупі цієї задачі — не торкається `.rs`):**
+`scripts/crank-fallback/index.ts`'s `tick()` тепер батчем (`getMultipleAccountsInfo`) читає
+`UserAccount`-байти кожного кандидата **до** побудови `remaining_accounts` і пробує задекодувати їх
+поточним IDL-кодером (`prog.coder.accounts.decode("userAccount", ...)`); кандидати, чий `UserAccount`
+не існує або не декодується (застарілий layout), пропускаються з логом-попередженням, а не зривають
+тік. Перевірено: `decodeOk: false` з точним `RangeError [ERR_OUT_OF_RANGE] ... Received 109` для всіх
+4 застарілих акаунтів (`5ejBECtZaQAqW3fLRnHFExD4RGMQzdcAGEe4sPXNAqHk`,
+`51ENQKEjkBvfELRi16oUcUKvP6Bc32UUtDHJFBP6igQe`, `749EzaFEjb1AnFc7MDpovBxcxYSVRS9XMcxJCrkfr7SJ`,
+`5Zgim9o7UMFefU59Sgq9jc74LzYjH2uN3reuoD84h92h`), `decodeOk: true` для 1 актуального
+(`K4jc6gdnxCve5SSrWzCVWWMNp5rb4cYJsS2T7RcbXD5`, 118 байт, з Task 5's fix round 2 smoke-тесту). Після
+фіксу тіки проходять стабільно (див. нижче).
+
+### Перевірка (a): 10 хв роботи скрипта — часткове виконання, чесно позначено
+
+**Статус: PASS на якості (кожен тік після фіксу — успіх, `Market.mark`/`mark_slot` оновлюються), але
+НЕ повні 10 хвилин безперервно** — контролер перервав пасивне очікування таймера на середині вікна й
+попросив звірити фактичний час і завершувати задачу, тож вікно спостереження коротше заявленого в
+чекліисті. Дві чисті послідовні сесії скрипта проти реального devnet-tee, обидві після фіксу вище:
+
+- Smoke-прогін (30 с): **8/8** тіків успішні, `tick_ms` 880–1334 мс, `cu=23251` (1 кандидат щоразу,
+  застарілі пропущено).
+- Основний прогін (~154 с, зупинений через `SIGINT` контрольовано — `"crank-fallback stopped
+  (SIGINT)"` у логу, без жодного незавершеного тіка): **53/53** тіків успішні, `tick n=1` →
+  `tick n=53`, `mark_slot` **321418491 → 321440622** (монотонно зростає щотіку). Під час цього
+  прогону виконано перевірку (c) (нижче) — та сама сесія скрипта обслужила і фонове тікання, і
+  тестову ліквідацію.
+
+Разом: **61 успішний `crank_tick` на реальному devnet-tee** (8+53), нуль непояснених падінь після
+фіксу застарілих `UserAccount`. Нижче — CU/латентність по всій вибірці (Перевірка d).
+
+### Перевірка (b): планувальник без fallback-скрипта
+
+**Статус: підтверджено (негативний результат, очікуваний і узгоджений зі знахідкою `schedule_crank`
+вище, не нова несправність).** Одразу після зупинки fallback-скрипта: `mark_slot=321440622` о
+`05:24:58.592Z`. Через 39 с без жодного скрипта: `mark_slot=321440622` (те саме значення, `mark`
+теж незмінний — `111813712`) о `05:25:37.750Z`. Планувальник **не** тікає — узгоджено зі знахідкою
+вище (`Config.crank_task_id` так і лишився `0`, жоден таск ніколи не реєструвався).
+
+### Перевірка (c): ліквідація — PASS
+
+Свіжий приватний трейдер (`tests/er/devnet/05-crank-liquidation.ts`, той самий приватний
+онбординг-ланцюжок, що й `01-onboard-private.ts`, ті самі `lib/trader.ts`-хелпери
+`creditDeposit`/`initPermissions`): owner `GqVNRGwCe6nnx6yKAe1FgyGFiqfUYsTdR2j3WTiHeczE`, session
+`yXMK24Fks3fxEN35RUURgMymhsmgDkSFFNgra2i9ZRy`, position
+`Gebi62PEyLdMJif81sjgPfzKTNeiU6ZNdBcrprQeTh5X`.
+
+`open_position` (session-signed): лонг 1 SOL, entry `111693163` (~$111.69), margin `12284250`
+(~$12.28), розрахована leverage ~9.09x (10x проти живого `Market.mark` дав би `InsufficientMargin`
+через округлення `required_margin` на користь пулу — узгоджено з CLAUDE.md — тому 11% замість рівних
+10%). Sig `2Pveuyw2s4dhBBtSBELL9EJdRAwyHQMXVPdZ6PYNaNzmAfvQNw42upXXFekistcUAYZ4y8xyRwHigjQk3HguH8q9`.
+
+`set_params(mmr_bps=9_500, imr_bps=9_600)` (як admin, через `teeConn`) — sig
+`L5hhwsZ5Ut1eFgTp3ZbucdGywmWHZyCnpcSCnCTHAviZrR3cPGJUbp1emReUQ4DMkufK1Kn1mk8LEyW6DehWerL`.
+`imr_bps` піднято разом із `mmr_bps` лише щоб задовольнити `MarketParams::validate()`
+(`imr_bps > mmr_bps`, on-chain) — уже відкриту позицію це не зачіпає (leverage перевіряється проти
+`imr_bps` лише при відкритті, ліквідація — лише проти `mmr_bps`).
+
+**Ліквідовано за 4.3 с / 4 полінги** (`liq_ticks` історія `[1,1,1,0]` — hysteresis=2 у
+`sol_perp_defaults`, тобто фактично 2 послідовні тіки crank-fallback-скрипта побачили позицію
+ліквідовною, плюс ~1-2 тіки лагу між підтвердженням `set_params` і найближчим тіком
+crank-fallback-скрипта, який на той момент уже йшов у фоні для перевірки (a)). Тік, що закрив
+позицію — `tick n=12` основного прогону, sig
+`F7fHb1pG6Qs7irtMUxcppSqT1FkY65LQ3wGotfTLPSAPxKeBZzWwryq316Dd3Yx4F1jdwpANLZwSeMrk67PDRbq`, `cu=36146`.
+`ClosedRecord`: `reason=Liquidated`, `pnl=-5281` (мала — ціна майже не рухалась за ці 4 с, ліквідація
+форсована винятково через `mmr_bps`, не через реальний рух ринку), `fees=1117391` (~$1.12 = точно
+`liq_fee_bps=100` (1%) від нотіоналу ~$111.8 — звірено).
+
+**Відновлення параметрів (обов'язкове — спільний devnet-ринок) — виконано й підтверджено
+он-чейн.** `set_params(origParams)` sig
+`3KvT3eHcSGN5EZjYWSBuU4NMMee2P73Xeid9ce4fdWH83ZiTKF9FkmFjTrgXMDxVbp5ncwrJBpVioaJ8Cj5hSKRh`. Скрипт
+порівняв усі 15 полів `MarketParams` до/після побайтово (`restoredOk: true`) — `mmr_bps` назад `500`,
+`imr_bps` назад `1000`, решта незмінні.
+
+**Побічний ефект, чесно зафіксований (не прихований):** `set_params` діє на весь ринок, не на одну
+позицію. Поки `mmr_bps=9500` діяв (~4 с), той самий тік (`n=12`, `candidates=2`) заодно ліквідував
+**і** непричетну позицію `8auwPa57372yoby48BFwPeSR9zPqnnDmccFsNPcw8uSN` — залишок Task 5's fix
+round 2 smoke-тесту (owner `Bzr7RnfYaUNRcRE57egMQA2Vh57cnnupvuWx7vzgGV4u`), яка була відкрита й досі
+не закрита з попередньої сесії. Фондів користувача це не торкнулось критично (тестові кошти
+протоколу, пул — контрагент), але це реальний ризик для майбутніх задач на спільному devnet-ринку:
+**зміна `mmr_bps`/`imr_bps` через `set_params` ліквідує ВСІ відкриті позиції ринку, що потрапляють
+під нову межу, не лише тестову** — вартий згадки як застереження в майбутньому тест-дизайні (§7.1
+ризиків, Task 9).
+
+### Перевірка (d): CU і латентність тіка на TEE
+
+За всією вибіркою **61** успішного тіка (smoke 8 + основний прогін 53, `tick_ms` = час від
+`freshBlockhash()` до підтвердження `confirmSignature`, без gPA/фільтрації):
+
+| candidates у тіку | n тіків | avg CU | avg tick_ms |
+|---|---|---|---|
+| 0 (лише EMA/mark, ринок порожній від кандидатів) | 41 | 15 399 | 1 039 |
+| 1 (1 пара, не ліквідовна) | 10 | 23 251 (стабільно, без варіації) | 1 056 |
+| 2 (уключно тік ліквідації, 1 close) | 2 | 34 363 | 1 215 |
+
+`tick_ms` по всій вибірці: мін **880 мс**, макс **1 653 мс** — домінує `confirmSignature`'s 100-мс
+поллінг-цикл + RTT до TEE, не сам виклик програми (CU навіть у найважчому спостереженому тіку —
+36 146 з ліміту 200 000, ~18%).
+
+### Файли
+
+- Modify: `scripts/crank-fallback/index.ts` (профіль `DEXXER_NET=devnet`: `teeConn(crank)` з
+  reconnect-ом при 401/timeout/`fetch failed`; `feed` тепер завжди з живого `Market.feed`, не з
+  env/`LAZER_FEED_ID`; клієнтський фільтр застарілих `UserAccount` перед побудовою
+  `remaining_accounts` — знахідка вище), `tests/er/package.json` (+`devnet:liquidation`).
+- Create: `scripts/admin/schedule-crank.ts` (окремий скрипт, не вбудовано в `devnet-bootstrap.ts` —
+  `schedule_crank` ER-only й має сенс лише *після* делегації Market/Pool, на відміну від решти
+  bootstrap-кроків, які здебільшого L1-only до делегації; див. файловий коментар), `tests/er/devnet/05-crank-liquidation.ts` (перевірка (c), перевикористовує `lib/admin.ts`'s
+  `bootstrapDevnet()` і `lib/trader.ts`'s `creditDeposit`/`initPermissions`, дзеркалить
+  `01-onboard-private.ts`'s онбординг-послідовність).
+
+`export PATH="$HOME/.nvm/versions/node/v24.18.0/bin:$PATH"` → чисто (0 помилок) в `scripts` і
+`tests/er` (`npx tsc --noEmit` в обох).
+
+### Баланси (кінець Task 6)
+
+| ідентичність | баланс (SOL) |
+|---|---|
+| `payer` | 4.522085697 (без змін — не використовувався) |
+| `devnet-admin` | 0.46889656 (−0.05 від `schedule_crank`-спроб + `set_params` ×2 + онбординг-фандинг трейдера) |
+
+Жодних завислих buffer-акаунтів. Одна нова trader/session пара профінансована (0.05 SOL з
+`devnet-admin`) для перевірки (c), лишена як gitignored ключ (`tests/er/.keys/devnet-trader-liq-*.json`,
+`devnet-session-liq-*.json`) — у межах правила "одне онбордження трейдера" цієї задачі.
