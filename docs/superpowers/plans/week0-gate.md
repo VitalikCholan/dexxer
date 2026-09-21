@@ -22,6 +22,20 @@ Rationale: the FAQ text above is Colosseum's general, evergreen policy (phrased 
 
 Caveat on which event this applies to (record for the controller, not a reason to flip the box): the page currently shows **"Crypto World's Fair"** (Sep 14 – Oct 12, 2026, multi-chain, prize tracks including a Solana track) as the *live* hackathon — not a hackathon starting 28.09 as assumed in this project's context. I read the official rules PDFs for both "Crypto World's Fair" (`https://colosseum.com/legal/Crypto%20World's%20Fair%20Hackathon%20Rules.pdf`, Contest Period Sep 14 – Oct 12, 2026) and "Solana Frontier Hackathon" (`https://colosseum.com/legal/Solana%20Frontier%20Hackathon%20Rules.pdf`, which turned out to be the **Spring** edition, Contest Period Apr 6 – May 11, 2026) in full — neither PDF contains a pre-existing-code clause itself; that clause lives only in the site FAQ quoted above. A Colosseum blog post ("Colosseum Codex: 2026 Hackathons", `https://blog.colosseum.com/2026-hackathons-updraft-course-offline-signer-cli/`) and an X post from Venture Launch both list Colosseum's second 2026 Solana hackathon window as **September 28 – November 2, 2026**, matching this project's assumption, but I could not find a dedicated rules page/PDF for that specific Sep 28 window distinct from "Crypto World's Fair" — it's unclear whether "Crypto World's Fair" (Sep 14 – Oct 12) replaced/absorbed that slot or whether a separate Sep 28 – Nov 2 Solana-only event will still be published later. Since the FAQ policy is worded generically for "Colosseum hackathons" and both rules PDFs I read are consistent with it (neither restricts pre-existing code further), the decision above should hold either way — but Tasks 13–14 should re-check `colosseum.com/hackathon` close to 28.09 to confirm which named event (and which rules PDF) Dexxer is actually entering.
 
+## Нагадування (week 2, 21.09.2026): перечитати правила 26–27.09
+
+Тижні 0–2 (весь код `programs/`, `app/`, `tests/`, `scripts/` цієї гілки) написані **до** 28.09 —
+рішення вище дозволяє це за умови (1) обов'язкового розкриття в submission-формі й (2) розуміння,
+що суддять лише зміни в межах вікна конкурсу, не сам факт наявності коду до нього. Жодна з задач
+тижня 0–2 цю невизначеність не закрила остаточно (яка саме подія — "Crypto World's Fair" 14.09–12.10
+чи окремий Solana-слот 28.09–02.11 — і чи є для неї окремий rules PDF).
+
+**Дія перед 28.09 (виконати 26–27.09, не пізніше):** повторно відкрити `colosseum.com/hackathon`,
+підтвердити (a) яка саме подія — назва, вікно конкурсу, rules PDF; (b) чи pre-existing-code clause
+з FAQ досі там і не змінилась; (c) конкретний механізм розкриття в submission-формі (яке поле, який
+формат). Якщо подія відрізняється від допущення вище — оновити рішення в цьому файлі, не мовчки
+подавати заявку. Це чисто процедурний крок (submission-форма), не блокер для продовження розробки.
+
 Also checked: Solana Mobile CLOCK IN dates: **found** (this is the "third Solana Mobile hackathon", rendered via an interactive site at `https://solanamobile.radiant.nexus/`, "EVENT INFO → KEY DATES" panel, read directly from the rendered page):
 - Submissions open: 8 Sep 2026
 - Submissions due: 9 Oct 2026, 09:59 GMT+3

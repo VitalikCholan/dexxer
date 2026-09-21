@@ -76,6 +76,8 @@ pub enum DexxerError {
     InvalidParams,
     #[msg("faucet daily limit exceeded")]
     FaucetLimit,
+    #[msg("withdraw is on cooldown for this account")]
+    WithdrawCooldown,
 }
 
 impl From<MathError> for anchor_lang::error::Error {

@@ -3,13 +3,20 @@ use crate::{
     state::*,
 };
 use anchor_lang::prelude::*;
-use magicblock_magic_program_api::pda::CRANK_SIGNER;
+use anchor_lang::solana_program::instruction::{AccountMeta, Instruction};
+use ephemeral_rollups_sdk::{
+    consts::MAGIC_PROGRAM_ID,
+    crank::{CancelCrankCpi, ScheduleCrankCpi},
+};
+use magicblock_magic_program_api::{args::ScheduleTaskArgs, pda::CRANK_SIGNER};
 
 #[derive(Accounts)]
 pub struct CrankTick<'info> {
     pub crank: Signer<'info>,
     #[account(seeds = [CONFIG_SEED], bump = config.bump,
-        constraint = crank.key() == config.crank || crank.key().to_bytes() == CRANK_SIGNER.to_bytes() @ DexxerError::Unauthorized)]
+        constraint = crank.key() == config.crank
+            || crank.key() == config.scheduler_signer
+            || crank.key().to_bytes() == CRANK_SIGNER.to_bytes() @ DexxerError::Unauthorized)]
     pub config: Account<'info, Config>,
     #[account(mut, seeds = [MARKET_SEED, &market.symbol], bump = market.bump)]
     pub market: Account<'info, Market>,
@@ -149,5 +156,196 @@ pub fn crank_tick<'info>(mut ctx: Context<'info, CrankTick<'info>>) -> Result<()
         pos.try_serialize(&mut &mut pos_ai.try_borrow_mut_data()?[..])?;
         user.try_serialize(&mut &mut user_ai.try_borrow_mut_data()?[..])?;
     }
+    Ok(())
+}
+
+// spec §8 Q2 / week-2 controller ruling task-4 #2: register `crank_tick` as a
+// Magic Actions scheduled task so the crank runs unattended inside the ER
+// (no external fallback scripts needed once this succeeds). ER-only,
+// admin-gated. The scheduled inner instruction carries NO remaining_accounts
+// (liquidation candidates are supplied by the fallback script's own
+// `crank_tick` calls, not by the scheduler) — accounts here mirror
+// `CrankTick` exactly: `crank` is whatever `Config.scheduler_signer`
+// currently holds (task-6 fix round 3 — see the function body's comment),
+// the rest are the market/pool state the tick reads and writes.
+#[derive(Accounts)]
+pub struct ScheduleCrank<'info> {
+    #[account(mut)]
+    pub admin: Signer<'info>,
+    // NOT `mut` (task-6 fix round 3, real on-chain evidence — see the function
+    // body's comment on the writable-account rejection): `Config` is never
+    // delegated to the ER (only Market/MarketRisk/Pool/FeeEscrow are), and the
+    // validator rejects the whole schedule transaction with
+    // `TransactionError::InvalidWritableAccount` ("Account N: <config> was
+    // illegally used as writable") when a non-delegated account other than
+    // `task_context` (which the Magic Program manages itself) shows up
+    // writable anywhere in `ScheduleCrankCpi`'s `instruction_accounts`. Since
+    // `config` must also appear there (the scheduled `crank_tick` reads it),
+    // it has to stay strictly read-only through this whole instruction —
+    // meaning `Config.crank_task_id` can't actually be persisted by this call
+    // (see the body comment for what replaces it).
+    #[account(seeds = [CONFIG_SEED], bump = config.bump, has_one = admin @ DexxerError::Unauthorized)]
+    pub config: Box<Account<'info, Config>>,
+    #[account(mut, seeds = [MARKET_SEED, &market.symbol], bump = market.bump)]
+    pub market: Box<Account<'info, Market>>,
+    #[account(mut, seeds = [RISK_SEED, market.key().as_ref()], bump = market_risk.bump, has_one = market)]
+    pub market_risk: Box<Account<'info, MarketRisk>>,
+    #[account(mut, seeds = [POOL_SEED, pool.mint.as_ref()], bump = pool.bump)]
+    pub pool: Box<Account<'info, Pool>>,
+    /// CHECK: validated in oracle::read_price when the scheduled crank_tick executes
+    pub feed: UncheckedAccount<'info>,
+    /// CHECK: the scheduled task's crank signer, validated in the function body
+    /// below against `config.scheduler_signer` (task-6 fix round 3 — the
+    /// client must have already called `set_scheduler_signer` on base with
+    /// `crank_signer_pda(admin)` before this; see that ix's doc comment in
+    /// `admin.rs` and the function body below for the full story).
+    pub crank: UncheckedAccount<'info>,
+    // Caller-supplied, same as `CancelCrank`'s: neither `ephemeral-rollups-sdk` 0.16.2
+    // nor `magicblock-magic-program-api` 0.10.1 expose an on-chain PDA derivation for
+    // this account (see task-4 report, "task_context" finding). Named here (rather than
+    // left implicit in `remaining_accounts`) purely for IDL self-documentation and
+    // identity-checking below; admin-gated so a wrong value here only fails the CPI.
+    /// CHECK: Magic Actions task-context account for the newly scheduled `task_id`
+    #[account(mut)]
+    pub task_context: UncheckedAccount<'info>,
+    /// CHECK: address-checked
+    #[account(address = MAGIC_PROGRAM_ID)]
+    pub magic_program: UncheckedAccount<'info>,
+}
+// Single explicit `'info` (not the elided two-lifetime default), matching
+// `crank_tick` above: `ScheduleCrankCpi`'s `compat::AccountInfo<'a>` is
+// invariant in `'a`, so `&ctx.accounts.admin` etc. below need the Context's
+// outer lifetime and the accounts struct's own lifetime unified into one.
+//
+// `instruction_accounts` needs a genuinely `'info`-scoped `&[AccountInfo]`.
+// A freshly built local array cannot provide one — its own backing memory
+// only lives for this function's stack frame, shorter than the generic
+// `'info` the invariant `compat::AccountInfo<'info>` type demands (verified
+// against the real 0.16.2 API; see task-4 report). `ctx.remaining_accounts`
+// is already `&'info [AccountInfo<'info>]` (Anchor's own guarantee — see the
+// comment on `crank_tick` above), so the client repeats the same seven
+// accounts there (`task_context` first — matching `ScheduleTask`'s own
+// documented account layout in `magicblock-magic-program-api`: 0 = payer,
+// 1 = task context account, 2..n = accounts included in the task; `payer`
+// itself is prepended by `ScheduleCrankCpi::invoke()`, so `remaining_accounts`
+// supplies everything from index 1 onward), then the same six `crank_tick`
+// accounts as before; check identity against the validated named fields
+// below before trusting them for the CPI.
+pub fn schedule_crank<'info>(
+    ctx: Context<'info, ScheduleCrank<'info>>,
+    task_id: i64,
+    interval_ms: i64,
+    iterations: i64,
+) -> Result<()> {
+    // Task-6 fix round 3 (controller ruling, supersedes round 2): fix round 2
+    // tried computing `crank_signer_pda(admin)` in THIS instruction and
+    // writing it into `Config.scheduler_signer` before the CPI below — proven
+    // structurally impossible on real devnet-tee, twice independently
+    // (`TransactionError::InvalidWritableAccount` — a writable, non-delegated
+    // account other than `task_context` is unconditionally rejected in
+    // `ScheduleCrankCpi`'s `instruction_accounts`, and `config` must be in
+    // that list for the scheduled `crank_tick` to read it). Fix round 3 moves
+    // the write to a NEW base-layer admin ix instead
+    // (`admin::set_scheduler_signer`, `instructions/admin.rs`) — base-layer
+    // writes to `Config` have no such restriction, only THIS specific ER CPI
+    // does. This instruction goes back to doing what it did before fix round
+    // 2 ever touched it: read `Config.scheduler_signer` (set on base,
+    // beforehand, to `crank_signer_pda(admin)` — same derivation fix round 2
+    // confirmed against the pinned validator source,
+    // `magicblock-magic-program-api/src/pda.rs` at commit
+    // `9c7a94470af1785d88f4c671571f87c146a93779`, mirrored client-side in
+    // `tests/er/lib/crank-signer.ts`) and use it as-is — no computation, no
+    // write, `config` stays read-only here exactly like fix round 1 left it.
+    let crank_signer = ctx.accounts.config.scheduler_signer;
+    require!(
+        ctx.accounts.crank.key() == crank_signer,
+        DexxerError::Unauthorized
+    );
+
+    let rem = ctx.remaining_accounts;
+    require!(rem.len() == 7, DexxerError::InvalidInput);
+    let expected = [
+        ctx.accounts.task_context.key(),
+        ctx.accounts.crank.key(),
+        ctx.accounts.config.key(),
+        ctx.accounts.market.key(),
+        ctx.accounts.market_risk.key(),
+        ctx.accounts.pool.key(),
+        ctx.accounts.feed.key(),
+    ];
+    for (ai, key) in rem.iter().zip(expected.iter()) {
+        require!(ai.key() == *key, DexxerError::InvalidInput);
+    }
+
+    let crank_tick_ix = Instruction {
+        program_id: crate::ID,
+        accounts: vec![
+            // `crank_signer` == `Config.scheduler_signer` (checked above,
+            // read once already) — see the comment above.
+            AccountMeta::new_readonly(crank_signer, true),
+            AccountMeta::new_readonly(ctx.accounts.config.key(), false),
+            AccountMeta::new(ctx.accounts.market.key(), false),
+            AccountMeta::new(ctx.accounts.market_risk.key(), false),
+            AccountMeta::new(ctx.accounts.pool.key(), false),
+            AccountMeta::new_readonly(ctx.accounts.feed.key(), false),
+        ],
+        data: anchor_lang::InstructionData::data(&crate::instruction::CrankTick {}),
+    };
+    ScheduleCrankCpi {
+        payer: &ctx.accounts.admin,
+        magic_program: &ctx.accounts.magic_program,
+        instruction_accounts: rem,
+        args: ScheduleTaskArgs {
+            task_id,
+            execution_interval_millis: interval_ms,
+            iterations,
+            instructions: vec![crank_tick_ix],
+        },
+    }
+    .invoke()?;
+    // `config` is read-only in this instruction (see the CHECK comment on
+    // `ScheduleCrank.config` above), so `Config.crank_task_id` cannot be
+    // written here — logged instead, the only durable record of which
+    // task_id this call registered.
+    msg!("schedule_crank: registered task_id={}", task_id);
+    Ok(())
+}
+
+// spec §8 Q2 / week-2 controller ruling task-4 #3: stop the scheduled crank
+// (e.g. before pausing the market for maintenance, or to replace it with a
+// new interval/iteration count via a fresh `schedule_crank` call). ER-only,
+// admin-gated.
+#[derive(Accounts)]
+pub struct CancelCrank<'info> {
+    pub admin: Signer<'info>,
+    // NOT `mut` — same reasoning as `ScheduleCrank.config` above; nothing
+    // here writes to `config` any more (see `cancel_crank`'s `task_id` arg).
+    #[account(seeds = [CONFIG_SEED], bump = config.bump, has_one = admin @ DexxerError::Unauthorized)]
+    pub config: Account<'info, Config>,
+    // Caller-supplied: neither `ephemeral-rollups-sdk` 0.16.2 nor
+    // `magicblock-magic-program-api` 0.10.1 expose an on-chain PDA derivation
+    // for this account (see task-4 report, "task_context" finding) — unlike
+    // `magic_context`/`magic_fee_vault`, which have fixed/derivable addresses.
+    /// CHECK: Magic Actions per-task context account for the task being cancelled
+    #[account(mut)]
+    pub task_context: UncheckedAccount<'info>,
+    /// CHECK: address-checked
+    #[account(address = MAGIC_PROGRAM_ID)]
+    pub magic_program: UncheckedAccount<'info>,
+}
+// `task_id` is now a caller-supplied argument, not read from
+// `Config.crank_task_id` (task-6 fix round 3): `ScheduleCrank.config` can no
+// longer persist that field (see its CHECK comment), so it would always read
+// back `0` here — the caller (the same client that ran `schedule_crank`,
+// which already knows/computed the task_id) passes it directly instead.
+pub fn cancel_crank<'info>(ctx: Context<'info, CancelCrank<'info>>, task_id: i64) -> Result<()> {
+    CancelCrankCpi {
+        authority: &ctx.accounts.admin,
+        task_context: &ctx.accounts.task_context,
+        magic_program: &ctx.accounts.magic_program,
+        crank_id: task_id,
+    }
+    .invoke()?;
+    msg!("cancel_crank: cancelled task_id={}", task_id);
     Ok(())
 }

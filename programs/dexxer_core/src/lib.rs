@@ -21,12 +21,16 @@ declare_id!("G2okX5Bae4CxfK8vzso1Ecc96QUv7E3P4YvxaZnaYXoV");
 #[program]
 pub mod dexxer_core {
     use super::*;
+    #[allow(clippy::too_many_arguments)]
     pub fn init_config(
         ctx: Context<InitConfig>,
         crank: Pubkey,
         oracle_program: Pubkey,
         tee_validator: Pubkey,
         disclosure_delay_slots: u64,
+        scheduler_signer: Pubkey,
+        fee_payer: Pubkey,
+        magic_fee_vault: Pubkey,
     ) -> Result<()> {
         admin::init_config(
             ctx,
@@ -34,6 +38,9 @@ pub mod dexxer_core {
             oracle_program,
             tee_validator,
             disclosure_delay_slots,
+            scheduler_signer,
+            fee_payer,
+            magic_fee_vault,
         )
     }
     pub fn init_market(
@@ -55,8 +62,20 @@ pub mod dexxer_core {
     pub fn unpause(ctx: Context<AdminConfig>) -> Result<()> {
         admin::unpause(ctx)
     }
+    pub fn set_scheduler_signer(
+        ctx: Context<AdminConfig>,
+        new_scheduler_signer: Pubkey,
+    ) -> Result<()> {
+        admin::set_scheduler_signer(ctx, new_scheduler_signer)
+    }
     pub fn seed_pool(ctx: Context<SeedPool>, amount: u64) -> Result<()> {
         admin::seed_pool(ctx, amount)
+    }
+    pub fn init_fee_escrow(ctx: Context<InitFeeEscrow>) -> Result<()> {
+        admin::init_fee_escrow(ctx)
+    }
+    pub fn delegate_fee_escrow(ctx: Context<DelegateFeeEscrow>) -> Result<()> {
+        admin::delegate_fee_escrow(ctx)
     }
     pub fn faucet_init(ctx: Context<FaucetInit>, amount: u64) -> Result<()> {
         user::faucet_init(ctx, amount)
@@ -77,6 +96,9 @@ pub mod dexxer_core {
     }
     pub fn credit_deposit(ctx: Context<CreditDeposit>, amount: u64) -> Result<()> {
         user::credit_deposit(ctx, amount)
+    }
+    pub fn withdraw(ctx: Context<Withdraw>, amount: u64) -> Result<()> {
+        user::withdraw(ctx, amount)
     }
     pub fn open_position(
         ctx: Context<Trade>,
@@ -106,6 +128,26 @@ pub mod dexxer_core {
     }
     pub fn crank_tick<'info>(ctx: Context<'info, CrankTick<'info>>) -> Result<()> {
         crank::crank_tick(ctx)
+    }
+    pub fn schedule_crank<'info>(
+        ctx: Context<'info, ScheduleCrank<'info>>,
+        task_id: i64,
+        interval_ms: i64,
+        iterations: i64,
+    ) -> Result<()> {
+        crank::schedule_crank(ctx, task_id, interval_ms, iterations)
+    }
+    pub fn cancel_crank<'info>(
+        ctx: Context<'info, CancelCrank<'info>>,
+        task_id: i64,
+    ) -> Result<()> {
+        crank::cancel_crank(ctx, task_id)
+    }
+    pub fn commit_aggregate(ctx: Context<CommitAggregate>) -> Result<()> {
+        commit::commit_aggregate(ctx)
+    }
+    pub fn commit_market(ctx: Context<CommitMarket>) -> Result<()> {
+        commit::commit_market(ctx)
     }
     pub fn delegate_market(ctx: Context<DelegateMarket>) -> Result<()> {
         admin::delegate_market(ctx)

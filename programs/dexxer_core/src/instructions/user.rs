@@ -5,16 +5,21 @@ use anchor_lang::{
 use anchor_spl::token::{self, Mint, MintTo, Token, TokenAccount};
 use ephemeral_rollups_sdk::{
     access_control::{
-        instructions::CreateEphemeralPermissionCpi,
+        instructions::{CreateEphemeralPermissionCpi, UpdateEphemeralPermissionCpi},
         structs::{EphemeralMembersArgs, EphemeralPermission, PERMISSION_SEED},
     },
     anchor::delegate,
-    consts::{EPHEMERAL_VAULT_ID, MAGIC_PROGRAM_ID, PERMISSION_PROGRAM_ID},
+    consts::{EPHEMERAL_VAULT_ID, MAGIC_CONTEXT_ID, MAGIC_PROGRAM_ID, PERMISSION_PROGRAM_ID},
     cpi::DelegateConfig,
+    ephem::{FoldableIntentBuilder, MagicIntentBundleBuilder},
     ephemeral_accounts::rent,
 };
 
-use crate::{errors::DexxerError, state::*, token::transfer_signed_by_owner};
+use crate::{
+    errors::DexxerError,
+    state::*,
+    token::{transfer_signed_by_owner, transfer_signed_by_pool},
+};
 
 /// Authorize an instruction as coming from either the account owner or a
 /// live, non-expired session key with remaining actions. Consumes one action
@@ -240,11 +245,43 @@ pub fn init_user(ctx: Context<InitUser>) -> Result<()> {
     Ok(())
 }
 
+// spec §8 Q2: rebuild the three per-user `EphemeralPermission` member lists
+// whenever the session key changes, so the new session key can read ER state
+// and the old one loses access. Same account set as `InitPermissions` (see
+// there for the market/permission-PDA shape) plus `config` for `config.crank`.
 #[derive(Accounts)]
 pub struct SetSession<'info> {
     pub owner: Signer<'info>,
+    // Boxed (same reason as `InitPermissions` below): this many accounts
+    // alongside each other blows the SBF stack frame in `try_accounts`.
+    #[account(seeds = [CONFIG_SEED], bump = config.bump)]
+    pub config: Box<Account<'info, Config>>,
+    #[account(seeds = [MARKET_SEED, &market.symbol], bump = market.bump)]
+    pub market: Box<Account<'info, Market>>,
     #[account(mut, seeds = [USER_SEED, owner.key().as_ref()], bump = user_account.bump, has_one = owner @ DexxerError::Unauthorized)]
-    pub user_account: Account<'info, UserAccount>,
+    pub user_account: Box<Account<'info, UserAccount>>,
+    #[account(mut, seeds = [POSITION_SEED, owner.key().as_ref(), market.key().as_ref()], bump = position.bump, has_one = owner @ DexxerError::Unauthorized)]
+    pub position: Box<Account<'info, Position>>,
+    #[account(mut, seeds = [DQ_SEED, owner.key().as_ref()], bump = disclosure_queue.bump, has_one = owner @ DexxerError::Unauthorized)]
+    pub disclosure_queue: Box<Account<'info, DisclosureQueue>>,
+    /// CHECK: permission PDAs under the permission program
+    #[account(mut, seeds = [PERMISSION_SEED, user_account.key().as_ref()], bump, seeds::program = PERMISSION_PROGRAM_ID)]
+    pub user_permission: UncheckedAccount<'info>,
+    /// CHECK:
+    #[account(mut, seeds = [PERMISSION_SEED, position.key().as_ref()], bump, seeds::program = PERMISSION_PROGRAM_ID)]
+    pub position_permission: UncheckedAccount<'info>,
+    /// CHECK:
+    #[account(mut, seeds = [PERMISSION_SEED, disclosure_queue.key().as_ref()], bump, seeds::program = PERMISSION_PROGRAM_ID)]
+    pub dq_permission: UncheckedAccount<'info>,
+    /// CHECK:
+    #[account(address = PERMISSION_PROGRAM_ID)]
+    pub permission_program: UncheckedAccount<'info>,
+    /// CHECK:
+    #[account(mut, address = EPHEMERAL_VAULT_ID)]
+    pub ephemeral_vault: UncheckedAccount<'info>,
+    /// CHECK:
+    #[account(address = MAGIC_PROGRAM_ID)]
+    pub magic_program: UncheckedAccount<'info>,
 }
 pub fn set_session(
     ctx: Context<SetSession>,
@@ -256,6 +293,53 @@ pub fn set_session(
     u.session_key = session_key;
     u.session_expiry = expiry;
     u.actions_left = actions;
+
+    let o = ctx.accounts.owner.key();
+    let m = ctx.accounts.market.key();
+    let members = build_members(o, session_key, ctx.accounts.config.crank);
+    let ub = [ctx.accounts.user_account.bump];
+    let pb = [ctx.accounts.position.bump];
+    let db = [ctx.accounts.disclosure_queue.bump];
+    let triples: [(AccountInfo, AccountInfo, Vec<&[u8]>); 3] = [
+        (
+            ctx.accounts.user_account.to_account_info(),
+            ctx.accounts.user_permission.to_account_info(),
+            vec![USER_SEED, o.as_ref(), &ub],
+        ),
+        (
+            ctx.accounts.position.to_account_info(),
+            ctx.accounts.position_permission.to_account_info(),
+            vec![POSITION_SEED, o.as_ref(), m.as_ref(), &pb],
+        ),
+        (
+            ctx.accounts.disclosure_queue.to_account_info(),
+            ctx.accounts.dq_permission.to_account_info(),
+            vec![DQ_SEED, o.as_ref(), &db],
+        ),
+    ];
+    for (acc, perm, seeds) in triples.iter() {
+        // Skip when the permission account doesn't exist yet: LiteSVM (no
+        // permission program at all) and the L1 (permissions only ever live
+        // in the ER, created there by `init_permissions` after delegation).
+        if perm.owner != &PERMISSION_PROGRAM_ID {
+            continue;
+        }
+        UpdateEphemeralPermissionCpi {
+            payer: acc.clone(),
+            permissioned_account: acc.clone(),
+            permission: perm.clone(),
+            vault: ctx.accounts.ephemeral_vault.to_account_info(),
+            magic_program: ctx.accounts.magic_program.to_account_info(),
+            permission_program: ctx.accounts.permission_program.to_account_info(),
+            authority: acc.clone(),
+            authority_is_signer: false, // PDA signs via the seeds below
+            args: EphemeralMembersArgs {
+                is_private: true,
+                members: members.clone(),
+            },
+        }
+        .invoke_signed(&[seeds.as_slice()])?;
+    }
     Ok(())
 }
 
@@ -291,6 +375,112 @@ pub fn credit_deposit(ctx: Context<CreditDeposit>, amount: u64) -> Result<()> {
         .capital_total
         .checked_add(amount)
         .ok_or(DexxerError::MathOverflow)?;
+    Ok(())
+}
+
+// Mirror image of `CreditDeposit`: owner-only (money leaves the system, so
+// the session-key path in `assert_trader` does not apply here), debits
+// `free_margin`/`pool.capital_total`, and transfers `vault_ata -> owner_ata`
+// signed by the pool PDA. `magic_context`/`magic_program` are plain
+// `UncheckedAccount`s (not the `#[commit]` macro's `Program<MagicProgram>`)
+// so the commit CPI can be gated on `magic_program.executable` in the body:
+// on LiteSVM no program is deployed at that fixed address, so the account is
+// absent/non-executable and the CPI is skipped; on the ER it is the real
+// Magic program and the CPI runs.
+//
+// Week-2 Task 5 fix round 1 (controller ruling, item 3): `withdraw`'s commit
+// intent originally used `owner` (a plain wallet) as the CPI payer. Verified
+// directly on devnet after the fix round's own program change landed
+// elsewhere: a real `withdraw` call's `UserAccount` commit intent had still
+// not reached base layer after 30+ minutes of polling (see task-5-report.md
+// "fix round 1" — genuinely stuck, not merely slow like `Pool`'s first
+// commit). Routed through the same `fee_escrow` PDA `commit_aggregate` now
+// uses, via `invoke_signed`.
+//
+// Fix round 1, round-trip 2: the first version of this fix omitted
+// `.magic_fee_vault(...)` (reasoned it wasn't needed — this path doesn't
+// need the fee-vault's higher commit ceiling). Real devnet run disagreed:
+// failed with `InstructionError::MissingAccount` ("An account required by
+// the instruction is missing"), a base Solana runtime error, not an Anchor
+// one — the validator expects the vault account in the CPI's account list
+// whenever the payer is delegated, independent of commit volume. Added here
+// to match `commit_aggregate` exactly. `config` is `Box`ed (same reason as
+// `InitPermissions`/`SetSession` elsewhere in this file): with `magic_fee_vault`
+// added alongside the existing `owner_ata`/`vault_ata`/`pool`/`user_account`,
+// this context blew the SBF stack frame (`Access violation in stack frame 5`)
+// without it.
+#[derive(Accounts)]
+pub struct Withdraw<'info> {
+    pub owner: Signer<'info>,
+    #[account(mut, seeds = [USER_SEED, owner.key().as_ref()], bump = user_account.bump, has_one = owner @ DexxerError::Unauthorized)]
+    pub user_account: Account<'info, UserAccount>,
+    #[account(mut, seeds = [POOL_SEED, pool.mint.as_ref()], bump = pool.bump, has_one = vault_ata)]
+    pub pool: Account<'info, Pool>,
+    #[account(mut, token::mint = pool.mint, token::authority = owner)]
+    pub owner_ata: Account<'info, TokenAccount>,
+    #[account(mut)]
+    pub vault_ata: Account<'info, TokenAccount>,
+    pub token_program: Program<'info, Token>,
+    #[account(seeds = [CONFIG_SEED], bump = config.bump)]
+    pub config: Box<Account<'info, Config>>,
+    #[account(mut, seeds = [FEE_ESCROW_SEED], bump = fee_escrow.bump)]
+    pub fee_escrow: Account<'info, FeeEscrow>,
+    /// CHECK: validator-scoped Magic Program fee vault; constrained to Config.magic_fee_vault
+    #[account(mut, constraint = magic_fee_vault.key() == config.magic_fee_vault @ DexxerError::Unauthorized)]
+    pub magic_fee_vault: UncheckedAccount<'info>,
+    /// CHECK: ER `MagicContext` PDA; only written when `magic_program` is executable (real ER)
+    #[account(mut, address = MAGIC_CONTEXT_ID)]
+    pub magic_context: UncheckedAccount<'info>,
+    /// CHECK: address-checked; gates the commit CPI via `.executable` in `withdraw`
+    #[account(address = MAGIC_PROGRAM_ID)]
+    pub magic_program: UncheckedAccount<'info>,
+}
+pub fn withdraw(ctx: Context<Withdraw>, amount: u64) -> Result<()> {
+    require!(amount >= MIN_WITHDRAW, DexxerError::InvalidParams);
+    let clock = Clock::get()?;
+    let u = &mut ctx.accounts.user_account;
+    let cooldown_ends = u
+        .last_withdraw_slot
+        .checked_add(WITHDRAW_COOLDOWN_SLOTS)
+        .ok_or(DexxerError::MathOverflow)?;
+    require!(clock.slot >= cooldown_ends, DexxerError::WithdrawCooldown);
+    require!(u.free_margin >= amount, DexxerError::InsufficientMargin);
+    u.free_margin = u
+        .free_margin
+        .checked_sub(amount)
+        .ok_or(DexxerError::MathOverflow)?;
+    u.last_withdraw_slot = clock.slot;
+    let p = &mut ctx.accounts.pool;
+    p.capital_total = p
+        .capital_total
+        .checked_sub(amount)
+        .ok_or(DexxerError::MathOverflow)?;
+    let mint = p.mint;
+    let pool_bump = p.bump;
+    transfer_signed_by_pool(
+        &ctx.accounts.token_program,
+        &ctx.accounts.vault_ata,
+        &ctx.accounts.owner_ata,
+        &ctx.accounts.pool.to_account_info(),
+        &mint,
+        pool_bump,
+        amount,
+    )?;
+    // Only in a real ER does a Magic program actually live at this address;
+    // on LiteSVM (and any environment without the ER runtime) it is absent,
+    // so skip the commit CPI rather than fail the withdrawal.
+    if ctx.accounts.magic_program.to_account_info().executable {
+        let bump = ctx.accounts.fee_escrow.bump;
+        let seeds: &[&[u8]] = &[FEE_ESCROW_SEED, &[bump]];
+        MagicIntentBundleBuilder::new(
+            ctx.accounts.fee_escrow.to_account_info(),
+            ctx.accounts.magic_context.to_account_info(),
+            ctx.accounts.magic_program.to_account_info(),
+        )
+        .magic_fee_vault(ctx.accounts.magic_fee_vault.to_account_info())
+        .commit(&[ctx.accounts.user_account.to_account_info()])
+        .build_and_invoke_signed(&[seeds])?;
+    }
     Ok(())
 }
 
@@ -347,17 +537,23 @@ pub fn delegate_user(ctx: Context<DelegateUser>) -> Result<()> {
     Ok(())
 }
 
-// spec §8 Q2: create the ER-side `EphemeralPermission` account for each of the
-// three delegated PDAs. Week 1: public (`is_private: false`, no members) —
-// week 2 flips this to private with `[owner, session, crank]` members.
+// spec §8 Q2: create — or, if already public from week 1, flip — the ER-side
+// `EphemeralPermission` account for each of the three delegated PDAs. Private
+// with `[owner, session, crank]` members (session omitted until issued).
 #[derive(Accounts)]
 pub struct InitPermissions<'info> {
     #[account(mut)]
     pub owner: Signer<'info>,
+    // Boxed (task-2 finding: with `config` added and every permission/vault/
+    // magic account alongside them, `config`/`market`/`user_account` blow the
+    // SBF stack frame in `try_accounts` even before `position`/
+    // `disclosure_queue` are counted).
+    #[account(seeds = [CONFIG_SEED], bump = config.bump)]
+    pub config: Box<Account<'info, Config>>,
     #[account(seeds = [MARKET_SEED, &market.symbol], bump = market.bump)]
-    pub market: Account<'info, Market>,
+    pub market: Box<Account<'info, Market>>,
     #[account(mut, seeds = [USER_SEED, owner.key().as_ref()], bump = user_account.bump, has_one = owner @ DexxerError::Unauthorized)]
-    pub user_account: Account<'info, UserAccount>,
+    pub user_account: Box<Account<'info, UserAccount>>,
     // Boxed: with the market/user_account/permission accounts alongside them,
     // Position + DisclosureQueue blow the SBF stack frame in `try_accounts`
     // (same reason as `InitUser` above).
@@ -387,6 +583,11 @@ pub struct InitPermissions<'info> {
 pub fn init_permissions(ctx: Context<InitPermissions>) -> Result<()> {
     let o = ctx.accounts.owner.key();
     let m = ctx.accounts.market.key();
+    let members = build_members(
+        o,
+        ctx.accounts.user_account.session_key,
+        ctx.accounts.config.crank,
+    );
     let ub = [ctx.accounts.user_account.bump];
     let pb = [ctx.accounts.position.bump];
     let db = [ctx.accounts.disclosure_queue.bump];
@@ -408,33 +609,46 @@ pub fn init_permissions(ctx: Context<InitPermissions>) -> Result<()> {
         ),
     ];
     for (acc, perm, seeds) in triples.iter() {
-        // Idempotent: already created. Task-13 finding on mb-stack: a freshly
-        // created `EphemeralPermission` account has 0 lamports (its rent is
-        // funded into the shared `ephemeral_vault`, not the account itself —
-        // confirmed by reading a real permission account back after
-        // creation), so `perm.lamports() > 0` never detects "already
-        // exists" and a second call re-invokes the CPI, which the Magic
-        // program then rejects on the already-initialized account
-        // (`invalid account data for instruction`). Ownership is the
-        // correct signal: an undelegated/uninitialized PDA here is owned by
-        // the System Program (or has no account at all), never by the
-        // Permission Program.
+        let args = EphemeralMembersArgs {
+            is_private: true,
+            members: members.clone(),
+        };
+        // Task-13 finding on mb-stack: a freshly created `EphemeralPermission`
+        // account has 0 lamports (its rent is funded into the shared
+        // `ephemeral_vault`, not the account itself), so `perm.lamports() > 0`
+        // never detects "already exists". Ownership is the correct signal: an
+        // undelegated/uninitialized PDA here is owned by the System Program
+        // (or has no account at all), never by the Permission Program. When
+        // it *is* owned by the Permission Program, a permission already
+        // exists (week 1's public one, or a prior private one) — update its
+        // members instead of re-creating, which the Magic program rejects on
+        // an already-initialized account (`invalid account data for
+        // instruction`).
         if perm.owner == &PERMISSION_PROGRAM_ID {
-            continue;
+            UpdateEphemeralPermissionCpi {
+                payer: acc.clone(),
+                permissioned_account: acc.clone(),
+                permission: perm.clone(),
+                vault: ctx.accounts.ephemeral_vault.to_account_info(),
+                magic_program: ctx.accounts.magic_program.to_account_info(),
+                permission_program: ctx.accounts.permission_program.to_account_info(),
+                authority: acc.clone(),
+                authority_is_signer: false, // PDA signs via the seeds below
+                args,
+            }
+            .invoke_signed(&[seeds.as_slice()])?;
+        } else {
+            CreateEphemeralPermissionCpi {
+                payer: acc.clone(),
+                permissioned_account: acc.clone(),
+                permission: perm.clone(),
+                vault: ctx.accounts.ephemeral_vault.to_account_info(),
+                magic_program: ctx.accounts.magic_program.to_account_info(),
+                permission_program: ctx.accounts.permission_program.to_account_info(),
+                args,
+            }
+            .invoke_signed(&[seeds.as_slice()])?;
         }
-        CreateEphemeralPermissionCpi {
-            payer: acc.clone(),
-            permissioned_account: acc.clone(),
-            permission: perm.clone(),
-            vault: ctx.accounts.ephemeral_vault.to_account_info(),
-            magic_program: ctx.accounts.magic_program.to_account_info(),
-            permission_program: ctx.accounts.permission_program.to_account_info(),
-            args: EphemeralMembersArgs {
-                is_private: false,
-                members: vec![],
-            },
-        }
-        .invoke_signed(&[seeds.as_slice()])?;
     }
     Ok(())
 }

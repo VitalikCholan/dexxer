@@ -57,6 +57,39 @@ fn only_admin_can_set_params_or_pause() {
     assert_custom_error(&r, 6000 + DexxerError::InvalidParams as u32);
 }
 
+// Task-6 fix round 3: set_scheduler_signer is a plain base-layer admin ix,
+// same AdminConfig-gated pattern as pause/unpause.
+#[test]
+fn only_admin_can_set_scheduler_signer() {
+    let mut h = Harness::new();
+    let w = World::bootstrap(&mut h);
+    let stranger = Keypair::new();
+    h.fund(&stranger.pubkey(), 1_000_000_000);
+    let new_signer = Keypair::new().pubkey();
+    let r = h.send(
+        &[ixs::set_scheduler_signer(
+            &stranger.pubkey(),
+            &w.config,
+            new_signer,
+        )],
+        &[&stranger],
+    );
+    assert!(r.is_err(), "stranger must not set scheduler_signer"); // ConstraintHasOne
+    h.send(
+        &[ixs::set_scheduler_signer(
+            &w.admin.pubkey(),
+            &w.config,
+            new_signer,
+        )],
+        &[&w.admin],
+    )
+    .unwrap();
+    assert_eq!(
+        h.account::<Config>(&w.config).scheduler_signer,
+        apk(new_signer)
+    );
+}
+
 #[test]
 fn seed_pool_requires_admin_and_nonzero() {
     let mut h = Harness::new();

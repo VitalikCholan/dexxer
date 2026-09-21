@@ -2,13 +2,23 @@
   "name": "dexxer-er-tests",
   "private": true,
   "type": "module",
-  "scripts": { "q1": "tsx q1-deposit.ts", "q2": "tsx q2-permissions.ts" },
+  "scripts": {
+    "q1": "tsx q1-deposit.ts",
+    "q2": "tsx q2-permissions.ts",
+    "devnet:measure": "DEXXER_NET=devnet tsx devnet/00-measure.ts",
+    "devnet:onboard": "DEXXER_NET=devnet tsx devnet/01-onboard-private.ts",
+    "devnet:leak": "DEXXER_NET=devnet tsx devnet/02-leak-test.ts",
+    "devnet:commit": "DEXXER_NET=devnet tsx devnet/03-commit-cycle.ts",
+    "devnet:withdraw": "DEXXER_NET=devnet tsx devnet/04-withdraw.ts",
+    "devnet:liquidation": "DEXXER_NET=devnet tsx devnet/05-crank-liquidation.ts"
+  },
   "dependencies": {
     "@coral-xyz/anchor": "0.32.1",
     "@magicblock-labs/ephemeral-rollups-sdk": "0.17.0",
     "@solana/spl-token": "^0.4.14",
     "@solana/web3.js": "^1.98.0",
-    "bs58": "^4.0.1"
+    "bs58": "^4.0.1",
+    "tweetnacl": "^1.0.3"
   },
   "devDependencies": { "tsx": "^4.19.0", "typescript": "^5.6.0" }
 }

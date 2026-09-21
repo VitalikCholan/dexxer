@@ -1,4 +1,4 @@
-import { Connection } from '@solana/web3.js'
+import { Connection, PublicKey } from '@solana/web3.js'
 
 /**
  * Base L1 devnet connection (web3.js v1). Used for anything that reads or
@@ -14,3 +14,14 @@ export const baseConn = new Connection('https://rpc.magicblock.app/devnet', 'con
  * position accounts live here, not on L1 — see docs/dexxer-architecture.md.
  */
 export const TEE_RPC = 'https://devnet-tee.magicblock.app'
+
+/** TEE RPC's websocket sibling (accountSubscribe etc.), same auth token. */
+export const TEE_WS = TEE_RPC.replace(/^https/, 'wss')
+
+/**
+ * devnet-tee's ER validator identity — the address PDAs are delegated *to*
+ * (`delegateSpl`'s `validator` option, `delegate_user`'s target). Matches
+ * `tests/er/lib/env.ts`'s `devnet` profile / week2-results.md §Task 1 M1
+ * (this is the TEE validator's own key, not a program-derived signer).
+ */
+export const ER_VALIDATOR = new PublicKey('MTEWGuqxUpYZGFJQcp8tLN7x5v9BSeoFHYWQQ3n3xzo')

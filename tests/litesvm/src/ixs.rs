@@ -27,6 +27,7 @@ fn rs(p: &Pubkey) -> AccountMeta {
     AccountMeta::new_readonly(*p, true)
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn init_config(
     admin: &Pubkey,
     mint: &Pubkey,
@@ -34,6 +35,9 @@ pub fn init_config(
     oracle_program: &Pubkey,
     tee_validator: &Pubkey,
     delay: u64,
+    scheduler_signer: &Pubkey,
+    fee_payer: &Pubkey,
+    magic_fee_vault: &Pubkey,
 ) -> Instruction {
     Instruction {
         program_id: prog(),
@@ -51,6 +55,9 @@ pub fn init_config(
             oracle_program: apk(*oracle_program),
             tee_validator: apk(*tee_validator),
             disclosure_delay_slots: delay,
+            scheduler_signer: apk(*scheduler_signer),
+            fee_payer: apk(*fee_payer),
+            magic_fee_vault: apk(*magic_fee_vault),
         }
         .data(),
     }
@@ -90,6 +97,18 @@ pub fn init_pool(admin: &Pubkey, mint: &Pubkey) -> Instruction {
         data: ix::InitPool {}.data(),
     }
 }
+pub fn init_fee_escrow(admin: &Pubkey) -> Instruction {
+    Instruction {
+        program_id: prog(),
+        accounts: vec![
+            s(admin),
+            r(&pdas::config()),
+            w(&pdas::fee_escrow()),
+            r(&SYSTEM),
+        ],
+        data: ix::InitFeeEscrow {}.data(),
+    }
+}
 pub fn set_params(
     admin: &Pubkey,
     config: &Pubkey,
@@ -114,6 +133,21 @@ pub fn unpause(admin: &Pubkey, config: &Pubkey) -> Instruction {
         program_id: prog(),
         accounts: vec![rs(admin), w(config)],
         data: ix::Unpause {}.data(),
+    }
+}
+// Task-6 fix round 3: base-layer admin ix, same AdminConfig shape as pause/unpause.
+pub fn set_scheduler_signer(
+    admin: &Pubkey,
+    config: &Pubkey,
+    new_scheduler_signer: Pubkey,
+) -> Instruction {
+    Instruction {
+        program_id: prog(),
+        accounts: vec![rs(admin), w(config)],
+        data: ix::SetSchedulerSigner {
+            new_scheduler_signer: apk(new_scheduler_signer),
+        }
+        .data(),
     }
 }
 pub fn seed_pool(admin: &Pubkey, wd: &World, amount: u64) -> Instruction {
@@ -183,9 +217,27 @@ pub fn set_session(
     expiry: i64,
     actions: u32,
 ) -> Instruction {
+    // `SetSession` gains the same permission/vault/magic/permission_program
+    // accounts `InitPermissions` has (task-2). On LiteSVM these are empty
+    // (system-owned, 0-lamport) PDAs — that's the point: the permission
+    // program doesn't exist here, so `perm.owner != PERMISSION_PROGRAM_ID`
+    // and the program skips the update CPI.
     Instruction {
         program_id: prog(),
-        accounts: vec![rs(signer), w(&t.user)],
+        accounts: vec![
+            rs(signer),
+            r(&pdas::config()),
+            r(&pdas::market()),
+            w(&t.user),
+            w(&t.position),
+            w(&t.dq),
+            w(&pdas::permission(&t.user)),
+            w(&pdas::permission(&t.position)),
+            w(&pdas::permission(&t.dq)),
+            r(&pdas::permission_program()),
+            w(&pdas::ephemeral_vault()),
+            r(&pdas::magic_program()),
+        ],
         data: ix::SetSession {
             session_key: apk(*session),
             expiry,
@@ -298,5 +350,27 @@ pub fn credit_deposit(signer: &Pubkey, t: &Trader, wd: &World, amount: u64) -> I
             r(&TOKEN),
         ],
         data: ix::CreditDeposit { amount }.data(),
+    }
+}
+pub fn withdraw(signer: &Pubkey, t: &Trader, wd: &World, amount: u64) -> Instruction {
+    // `owner_ata` is derived from `signer` (not necessarily the trader's real
+    // owner) so the session-key-rejection test can pass a mismatched signer
+    // and exercise the program's owner check.
+    Instruction {
+        program_id: prog(),
+        accounts: vec![
+            rs(signer),
+            w(&t.user),
+            w(&wd.pool),
+            w(&ata(signer, &wd.mint)),
+            w(&wd.pool_ata),
+            r(&TOKEN),
+            r(&wd.config),
+            w(&wd.fee_escrow),
+            w(&wd.magic_fee_vault),
+            w(&pdas::magic_context()),
+            r(&pdas::magic_program()),
+        ],
+        data: ix::Withdraw { amount }.data(),
     }
 }

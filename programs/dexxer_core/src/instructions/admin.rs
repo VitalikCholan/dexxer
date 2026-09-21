@@ -21,12 +21,18 @@ pub struct InitConfig<'info> {
     pub token_program: Program<'info, Token>,
     pub rent: Sysvar<'info, Rent>,
 }
+// Single admin bootstrap ix carrying 8 distinct config values; a params-struct
+// refactor would churn every caller (client + LiteSVM) for no runtime benefit.
+#[allow(clippy::too_many_arguments)]
 pub fn init_config(
     ctx: Context<InitConfig>,
     crank: Pubkey,
     oracle_program: Pubkey,
     tee_validator: Pubkey,
     disclosure_delay_slots: u64,
+    scheduler_signer: Pubkey,
+    fee_payer: Pubkey,
+    magic_fee_vault: Pubkey,
 ) -> Result<()> {
     let c = &mut ctx.accounts.config;
     c.version = 1;
@@ -37,6 +43,22 @@ pub fn init_config(
     c.tee_validator = tee_validator;
     c.dusdc_mint = ctx.accounts.dusdc_mint.key();
     c.disclosure_delay_slots = disclosure_delay_slots;
+    // Week-2 Task 1 M1: scheduled ticks are NOT signed by the flat
+    // `magicblock_magic_program_api::pda::CRANK_SIGNER` PDA — caller supplies
+    // the real signer here as a starting value. Task 6 (fix round 3) found the
+    // actual signer Magic Program uses for a scheduled `crank_tick` is the
+    // *per-authority* `crank_signer_pda(admin)` (seeds `["crank-executor",
+    // authority]`, authority = the `schedule_crank` payer), not this
+    // constructor's static value — on devnet this field is overwritten after
+    // `init_config` via the base-layer `set_scheduler_signer` admin ix with
+    // `crank_signer_pda(admin)` before `schedule_crank` is ever called (see
+    // `tests/er/lib/crank-signer.ts`, `scripts/admin/set-scheduler-signer.ts`).
+    // `crank_tick`'s constraint still accepts the flat `CRANK_SIGNER` PDA as a
+    // third branch (crank.rs untouched).
+    c.scheduler_signer = scheduler_signer;
+    c.fee_payer = fee_payer;
+    c.magic_fee_vault = magic_fee_vault;
+    c.crank_task_id = 0;
     c.bump = ctx.bumps.config;
     Ok(())
 }
@@ -117,6 +139,54 @@ pub fn init_pool(ctx: Context<InitPool>) -> Result<()> {
     Ok(())
 }
 
+// Week-2 Task 5 fix round 1 (controller ruling): the dedicated, delegatable
+// fee-escrow PDA that pays `commit_aggregate`'s intent CPI (see
+// state/fee_escrow.rs and instructions/commit.rs). Separate init ix — the
+// smallest coherent surface — rather than folding into `init_config`/
+// `init_pool`, so it stays independently testable and doesn't perturb their
+// existing account lists.
+#[derive(Accounts)]
+pub struct InitFeeEscrow<'info> {
+    #[account(mut)]
+    pub admin: Signer<'info>,
+    #[account(seeds = [CONFIG_SEED], bump = config.bump, has_one = admin @ DexxerError::Unauthorized)]
+    pub config: Account<'info, Config>,
+    #[account(init, payer = admin, space = 8 + FeeEscrow::INIT_SPACE, seeds = [FEE_ESCROW_SEED], bump)]
+    pub fee_escrow: Account<'info, FeeEscrow>,
+    pub system_program: Program<'info, System>,
+}
+pub fn init_fee_escrow(ctx: Context<InitFeeEscrow>) -> Result<()> {
+    let e = &mut ctx.accounts.fee_escrow;
+    e.version = 1;
+    e.bump = ctx.bumps.fee_escrow;
+    Ok(())
+}
+
+// Delegates the fee-escrow PDA to the TEE validator, same pattern as
+// `delegate_market`/`delegate_pool` above.
+#[delegate]
+#[derive(Accounts)]
+pub struct DelegateFeeEscrow<'info> {
+    #[account(mut)]
+    pub admin: Signer<'info>,
+    #[account(seeds = [CONFIG_SEED], bump = config.bump, has_one = admin @ DexxerError::Unauthorized)]
+    pub config: Account<'info, Config>,
+    /// CHECK: delegated PDA
+    #[account(mut, del, seeds = [FEE_ESCROW_SEED], bump)]
+    pub fee_escrow: UncheckedAccount<'info>,
+}
+pub fn delegate_fee_escrow(ctx: Context<DelegateFeeEscrow>) -> Result<()> {
+    ctx.accounts.delegate_fee_escrow(
+        &ctx.accounts.admin,
+        &[FEE_ESCROW_SEED],
+        DelegateConfig {
+            validator: Some(ctx.accounts.config.tee_validator),
+            ..Default::default()
+        },
+    )?;
+    Ok(())
+}
+
 #[derive(Accounts)]
 pub struct AdminMarket<'info> {
     pub admin: Signer<'info>,
@@ -143,6 +213,22 @@ pub fn pause(ctx: Context<AdminConfig>) -> Result<()> {
 }
 pub fn unpause(ctx: Context<AdminConfig>) -> Result<()> {
     ctx.accounts.config.paused = false;
+    Ok(())
+}
+// Task-6 fix round 3 (controller ruling, supersedes round 2's in-schedule_crank
+// write attempt): base-layer admin ix, same `AdminConfig` context/pattern as
+// `pause`/`unpause` above — `config` is writable here with no issue, because
+// this ix has nothing to do with `ScheduleCrankCpi`'s `instruction_accounts`
+// (the restriction fix round 2 hit twice — a writable, non-delegated account
+// there is unconditionally rejected — only applies to that specific CPI's
+// account list, not to ordinary base-layer writes to an undelegated `Config`).
+// Client computes `new_scheduler_signer = crank_signer_pda(admin)` the same
+// way `schedule_crank` used to (see `tests/er/lib/crank-signer.ts`) and calls
+// this once per admin before scheduling; `schedule_crank` then just reads
+// `Config.scheduler_signer` back (see `crank.rs`) instead of computing or
+// writing it itself.
+pub fn set_scheduler_signer(ctx: Context<AdminConfig>, new_scheduler_signer: Pubkey) -> Result<()> {
+    ctx.accounts.config.scheduler_signer = new_scheduler_signer;
     Ok(())
 }
 

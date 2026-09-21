@@ -1,0 +1,105 @@
+// app/src/lib/session.ts
+//
+// The session key: a locally-generated `Keypair` that signs ER trades
+// directly, without an MWA prompt per action — the entire point of session
+// keys (docs/dexxer-mobile-stack.md §3). It never leaves the device: stored
+// in `expo-secure-store` under `dexxer.session.<owner base58>`, one per
+// owner (SecureStore keys may only contain alphanumerics, `.`, `-`, `_` —
+// base58 satisfies that).
+//
+// Onboarding's `set_session` (owner-signed, via MWA) authorizes this key as
+// a `UserAccount`/`Position`/`DisclosureQueue` permission member
+// (`app/src/features/onboard/useOnboarding.ts`); once that lands, the
+// session key can sign ER instructions on its own, same as `crank`/`admin`
+// in `tests/er/lib/trader.ts`.
+import {
+  Connection,
+  Keypair,
+  LAMPORTS_PER_SOL,
+  PublicKey,
+  SystemProgram,
+  TransactionInstruction,
+} from '@solana/web3.js'
+import * as SecureStore from 'expo-secure-store'
+import nacl from 'tweetnacl'
+import { getAuthToken } from '@magicblock-labs/ephemeral-rollups-sdk'
+import { TEE_RPC, TEE_WS } from './solana'
+
+/** Base-layer lamports the session key needs to pay its own ER tx fees (spike-07 finding, `tests/er/devnet/01-onboard-private.ts`). */
+export const SESSION_LAMPORTS = 0.01 * LAMPORTS_PER_SOL
+
+function storageKey(owner: PublicKey): string {
+  return `dexxer.session.${owner.toBase58()}`
+}
+
+/** Load the owner's session `Keypair` from secure storage, generating and persisting one on first use. */
+export async function getOrCreateSessionKeypair(owner: PublicKey): Promise<Keypair> {
+  const key = storageKey(owner)
+  const existing = await SecureStore.getItemAsync(key)
+  if (existing) {
+    return Keypair.fromSecretKey(Uint8Array.from(JSON.parse(existing) as number[]))
+  }
+  const kp = Keypair.generate()
+  await SecureStore.setItemAsync(key, JSON.stringify(Array.from(kp.secretKey)))
+  return kp
+}
+
+/** Read the owner's session `Keypair` if one has already been created, without generating a new one. */
+export async function getSessionKeypair(owner: PublicKey): Promise<Keypair | null> {
+  const existing = await SecureStore.getItemAsync(storageKey(owner))
+  if (!existing) return null
+  return Keypair.fromSecretKey(Uint8Array.from(JSON.parse(existing) as number[]))
+}
+
+export async function clearSessionKeypair(owner: PublicKey): Promise<void> {
+  await SecureStore.deleteItemAsync(storageKey(owner))
+}
+
+interface CachedTeeConn {
+  conn: Connection
+  expiresAt: number
+}
+const cache = new Map<string, CachedTeeConn>()
+const REFRESH_SKEW_MS = 30_000
+
+/**
+ * The session's own TEE connection — authenticated by signing `getAuthToken`'s
+ * challenge locally with the stored keypair (no MWA prompt), mirroring
+ * `tests/er/lib/env.ts`'s `teeConn(session)`.
+ */
+export async function teeConnectionForSession(session: Keypair): Promise<Connection> {
+  const key = session.publicKey.toBase58()
+  const hit = cache.get(key)
+  if (hit && hit.expiresAt - REFRESH_SKEW_MS > Date.now()) return hit.conn
+  const auth = await getAuthToken(TEE_RPC, session.publicKey, async (m) => nacl.sign.detached(m, session.secretKey))
+  const conn = new Connection(`${TEE_RPC}?token=${auth.token}`, {
+    wsEndpoint: `${TEE_WS}?token=${auth.token}`,
+    commitment: 'confirmed',
+  })
+  cache.set(key, { conn, expiresAt: auth.expiresAt })
+  return conn
+}
+
+/**
+ * Base-layer transfer that gives `session` its own ER fee balance.
+ *
+ * Deviates from the literal brief instruction
+ * (`lamportsDelegatedTransferIx(owner, session, lamports)`): that SDK
+ * instruction requires its `destination` to already be a *delegated*
+ * base-layer account (`references/lamports-topup.md`, confirmed empirically
+ * in `tests/er/devnet/01-onboard-private.ts`'s header comment /
+ * `docs/superpowers/plans/week2-results.md` §Task 5 step 0.4) — `session` is
+ * a plain, never-delegated keypair (not a program PDA), so it can never
+ * satisfy that precondition. A plain `SystemProgram.transfer` is the
+ * mechanism actually proven to work across week-2's M1–M4 measurements: the
+ * ER clones a referenced non-delegated account's current base state
+ * (balance included), so holding base-layer SOL is enough for `session` to
+ * pay its own ER fees — the brief's actual intent.
+ */
+export function sessionTopUpIx(
+  owner: PublicKey,
+  session: PublicKey,
+  lamports = SESSION_LAMPORTS,
+): TransactionInstruction {
+  return SystemProgram.transfer({ fromPubkey: owner, toPubkey: session, lamports })
+}

@@ -17,8 +17,17 @@
 // programs/dexxer_core/src/instructions/trade.rs) against the ER
 // connection, since Market/Pool/UserAccount/Position are all delegated
 // there by `bootstrap()`. `setPrice` moves the mock oracle's feed on the ER
-// (the feed is delegated too, so this must go through `erConn`, signed by
-// the feed's write authority — the admin key, per `admin.ts`'s `init_feed`).
+// (the feed is delegated too, so this must go through an ER connection,
+// signed by the feed's write authority — the admin key, per `admin.ts`'s
+// `init_feed`).
+//
+// Task 5 (week 2): every ER-targeted call below resolves its connection via
+// `teeConn(kp)` (env.ts) instead of the module-level `erConn` — locally
+// (`DEXXER_NET` unset/"local") `teeConn` returns `erConn` unchanged (byte-
+// identical to week 1); on `DEXXER_NET=devnet` it authenticates against
+// `devnet-tee.magicblock.app` with `kp`'s own signature (spike-07), so every
+// signer here (owner, session, crank, admin) reads/writes with its own TEE
+// token rather than one shared connection.
 //
 // Every ER-targeted send below goes through `sendAndConfirmIx` (build the
 // instruction, sign, `sendRawTransaction`, poll `confirmSignature`) instead
@@ -43,7 +52,7 @@ import {
   delegateSpl,
   permissionPdaFromAccount,
 } from "@magicblock-labs/ephemeral-rollups-sdk";
-import { baseConn, ER_VALIDATOR, erConn, loadOrCreateKey, sendAndConfirmIx, waitAccountExists, waitDelegated } from "./env.js";
+import { baseConn, ER_VALIDATOR, loadOrCreateKey, sendAndConfirmIx, teeConn, waitAccountExists, waitDelegated } from "./env.js";
 import { DEXXER_CORE_PROGRAM_ID, accountNs, dexxerCoreProgram, delegationTriple, mockOracleProgram, pdas } from "./program.js";
 import { MOCK_CONF } from "./admin.js";
 import type { Bootstrapped } from "./admin.js";
@@ -76,12 +85,13 @@ export function solSize(n: number): bigint {
 
 /** `credit_deposit(amount)` on the ER, signed by `t`. Standalone (not just onboardTrader's internal use) so a caller can deposit again later, or — like q1-deposit.ts's negative test — deliberately try a second deposit and expect it to fail. */
 export async function creditDeposit(boot: Bootstrapped, t: Pick<Trader, "kp" | "userAccount" | "userAta">, amount: bigint): Promise<string> {
-  const core = dexxerCoreProgram(erConn, t.kp);
+  const conn = await teeConn(t.kp);
+  const core = dexxerCoreProgram(conn, t.kp);
   const ix = await core.methods
     .creditDeposit(new BN(amount.toString()))
     .accounts({ owner: t.kp.publicKey, userAccount: t.userAccount, pool: boot.pool, ownerAta: t.userAta, vaultAta: boot.poolAta, tokenProgram: TOKEN_PROGRAM_ID })
     .instruction();
-  return sendAndConfirmIx(erConn, t.kp, ix);
+  return sendAndConfirmIx(conn, t.kp, ix);
 }
 
 /**
@@ -94,7 +104,8 @@ export async function creditDeposit(boot: Bootstrapped, t: Pick<Trader, "kp" | "
  * `t` plus the fixed `market` PDA.
  */
 export async function initPermissions(t: Pick<Trader, "kp" | "userAccount" | "position" | "disclosureQueue">): Promise<string> {
-  const coreEr = dexxerCoreProgram(erConn, t.kp);
+  const conn = await teeConn(t.kp);
+  const coreEr = dexxerCoreProgram(conn, t.kp);
   const userPermission = permissionPdaFromAccount(t.userAccount);
   const positionPermission = permissionPdaFromAccount(t.position);
   const dqPermission = permissionPdaFromAccount(t.disclosureQueue);
@@ -114,7 +125,7 @@ export async function initPermissions(t: Pick<Trader, "kp" | "userAccount" | "po
       magicProgram: MAGIC_PROGRAM_ID,
     })
     .instruction();
-  return sendAndConfirmIx(erConn, t.kp, ix);
+  return sendAndConfirmIx(conn, t.kp, ix);
 }
 
 /**
@@ -253,16 +264,17 @@ export async function onboardTrader(
   await waitDelegated(baseConn, userAccount, `${name} UserAccount`);
   await waitDelegated(baseConn, position, `${name} Position`);
   await waitDelegated(baseConn, disclosureQueue, `${name} DisclosureQueue`);
-  await waitAccountExists(erConn, userAta, `${name} eATA (as userAta on ER)`);
+  const ownerTee = await teeConn(kp);
+  await waitAccountExists(ownerTee, userAta, `${name} eATA (as userAta on ER)`);
 
   const trader: Trader = { name, kp, userAccount, position, disclosureQueue, userAta, sigs, creditDepositCU: null };
 
-  const coreEr = dexxerCoreProgram(erConn, kp);
+  const coreEr = dexxerCoreProgram(ownerTee, kp);
   const userAccountState = await accountNs(coreEr).userAccount.fetch(userAccount);
   if (BigInt(userAccountState.freeMargin.toString()) === 0n) {
     const creditSig = await creditDeposit(boot, trader, deposit);
     sigs.creditDeposit = creditSig;
-    const tx = await erConn.getTransaction(creditSig, { commitment: "confirmed", maxSupportedTransactionVersion: 0 });
+    const tx = await ownerTee.getTransaction(creditSig, { commitment: "confirmed", maxSupportedTransactionVersion: 0 });
     trader.creditDepositCU = tx?.meta?.computeUnitsConsumed ?? null;
     console.log(`credit_deposit (${name})`, creditSig);
   } else {
@@ -271,7 +283,7 @@ export async function onboardTrader(
 
   if (doInitPermissions) {
     const userPermission = permissionPdaFromAccount(userAccount);
-    const permInfo = await erConn.getAccountInfo(userPermission, "confirmed");
+    const permInfo = await ownerTee.getAccountInfo(userPermission, "confirmed");
     if (!permInfo || !permInfo.owner.equals(PERMISSION_PROGRAM_ID)) {
       const sig = await initPermissions(trader);
       sigs.initPermissions = sig;
@@ -293,7 +305,8 @@ export async function openPosition(
   marginUsd: number,
   limitUsdPrice: number,
 ): Promise<string> {
-  const core = dexxerCoreProgram(erConn, t.kp);
+  const conn = await teeConn(t.kp);
+  const core = dexxerCoreProgram(conn, t.kp);
   const market = pdas.market();
   const ix = await core.methods
     .openPosition(
@@ -313,7 +326,7 @@ export async function openPosition(
       feed: boot.feed,
     })
     .instruction();
-  return sendAndConfirmIx(erConn, t.kp, ix);
+  return sendAndConfirmIx(conn, t.kp, ix);
 }
 
 /**
@@ -325,7 +338,8 @@ export async function openPosition(
  * that side (0 for Long, u64::MAX for Short) instead of sending 0 as-is.
  */
 export async function closePosition(boot: Bootstrapped, t: Trader, limitUsdPrice = 0): Promise<string> {
-  const core = dexxerCoreProgram(erConn, t.kp);
+  const conn = await teeConn(t.kp);
+  const core = dexxerCoreProgram(conn, t.kp);
   const posState = await accountNs(core).position.fetch(t.position);
   const isShort = "short" in posState.side;
   const limitArg: bigint = limitUsdPrice === 0 ? (isShort ? U64_MAX : 0n) : usd(limitUsdPrice);
@@ -343,28 +357,34 @@ export async function closePosition(boot: Bootstrapped, t: Trader, limitUsdPrice
       feed: boot.feed,
     })
     .instruction();
-  return sendAndConfirmIx(erConn, t.kp, ix);
+  return sendAndConfirmIx(conn, t.kp, ix);
 }
 
 /** Read `t`'s Position from the ER. No signer needed for a plain account read. */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export async function readPosition(t: Trader): Promise<any> {
-  const core = dexxerCoreProgram(erConn, t.kp);
+  const conn = await teeConn(t.kp);
+  const core = dexxerCoreProgram(conn, t.kp);
   return accountNs(core).position.fetch(t.position);
 }
 
 /**
  * Move the mock oracle's price on the ER. The feed PDA is delegated (see
- * `admin.ts`'s `delegate_feed`), so this must go through `erConn` with an ER
- * blockhash, signed by the feed's write authority (the admin key that ran
- * `init_feed`) — `mock_oracle::set_price` checks `authority == body[0..32]`.
+ * `admin.ts`'s `delegate_feed`), so this must go through an ER connection
+ * (locally `erConn`, on devnet a TEE-authenticated connection — see
+ * `teeConn`) with an ER blockhash, signed by the feed's write authority (the
+ * admin key that ran `init_feed`) — `mock_oracle::set_price` checks
+ * `authority == body[0..32]`. Local-only in practice (devnet uses the real
+ * Pricing Oracle, not `mock_oracle` — see `admin.ts` header comment), kept
+ * NET-aware for consistency with the rest of this file.
  */
 export async function setPrice(boot: Bootstrapped, price1e8: bigint): Promise<string> {
-  const oracle = mockOracleProgram(erConn, boot.admin);
+  const conn = await teeConn(boot.admin);
+  const oracle = mockOracleProgram(conn, boot.admin);
   const now = Math.floor(Date.now() / 1000);
   const ix = await oracle.methods
     .setPrice(new BN(price1e8.toString()), new BN(MOCK_CONF.toString()), new BN(now))
     .accounts({ authority: boot.admin.publicKey, feed: boot.feed })
     .instruction();
-  return sendAndConfirmIx(erConn, boot.admin, ix);
+  return sendAndConfirmIx(conn, boot.admin, ix);
 }
