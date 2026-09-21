@@ -67,12 +67,20 @@ fn only_admin_can_set_scheduler_signer() {
     h.fund(&stranger.pubkey(), 1_000_000_000);
     let new_signer = Keypair::new().pubkey();
     let r = h.send(
-        &[ixs::set_scheduler_signer(&stranger.pubkey(), &w.config, new_signer)],
+        &[ixs::set_scheduler_signer(
+            &stranger.pubkey(),
+            &w.config,
+            new_signer,
+        )],
         &[&stranger],
     );
     assert!(r.is_err(), "stranger must not set scheduler_signer"); // ConstraintHasOne
     h.send(
-        &[ixs::set_scheduler_signer(&w.admin.pubkey(), &w.config, new_signer)],
+        &[ixs::set_scheduler_signer(
+            &w.admin.pubkey(),
+            &w.config,
+            new_signer,
+        )],
         &[&w.admin],
     )
     .unwrap();

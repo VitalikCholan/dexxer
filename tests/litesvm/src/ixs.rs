@@ -136,7 +136,11 @@ pub fn unpause(admin: &Pubkey, config: &Pubkey) -> Instruction {
     }
 }
 // Task-6 fix round 3: base-layer admin ix, same AdminConfig shape as pause/unpause.
-pub fn set_scheduler_signer(admin: &Pubkey, config: &Pubkey, new_scheduler_signer: Pubkey) -> Instruction {
+pub fn set_scheduler_signer(
+    admin: &Pubkey,
+    config: &Pubkey,
+    new_scheduler_signer: Pubkey,
+) -> Instruction {
     Instruction {
         program_id: prog(),
         accounts: vec![rs(admin), w(config)],

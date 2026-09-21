@@ -80,10 +80,7 @@ fn withdraw_by_session_rejected() {
     // the instruction body (and its custom `Unauthorized` check) ever runs.
     // Confirmed empirically: this is the exact error the transaction fails
     // with, not `DexxerError::Unauthorized` (6000 + 19 = 6019).
-    let r = h.send(
-        &[ixs::withdraw(&session.pubkey(), &t, &w, 1)],
-        &[&session],
-    );
+    let r = h.send(&[ixs::withdraw(&session.pubkey(), &t, &w, 1)], &[&session]);
     assert_custom_error(&r, 2006);
 }
 
@@ -116,20 +113,29 @@ fn withdraw_cooldown_enforced() {
     let t = w.new_trader(&mut h, 1_000_000_000);
 
     // First withdraw: succeeds, sets `last_withdraw_slot`.
-    h.send(&[ixs::withdraw(&t.kp.pubkey(), &t, &w, 1_000_000)], &[&t.kp])
-        .unwrap();
+    h.send(
+        &[ixs::withdraw(&t.kp.pubkey(), &t, &w, 1_000_000)],
+        &[&t.kp],
+    )
+    .unwrap();
 
     // Immediate second withdraw (same slot, well within the 300-slot
     // cooldown): rejected.
-    let r = h.send(&[ixs::withdraw(&t.kp.pubkey(), &t, &w, 1_000_000)], &[&t.kp]);
+    let r = h.send(
+        &[ixs::withdraw(&t.kp.pubkey(), &t, &w, 1_000_000)],
+        &[&t.kp],
+    );
     assert_custom_error(&r, 6000 + DexxerError::WithdrawCooldown as u32);
 
     // Warp forward past the cooldown (current slot + 301 is comfortably past
     // last_withdraw_slot + WITHDRAW_COOLDOWN_SLOTS): now succeeds.
     let now_slot = h.svm.get_sysvar::<solana_clock::Clock>().slot;
     h.warp(now_slot + 301, 2_000_000);
-    h.send(&[ixs::withdraw(&t.kp.pubkey(), &t, &w, 1_000_000)], &[&t.kp])
-        .unwrap();
+    h.send(
+        &[ixs::withdraw(&t.kp.pubkey(), &t, &w, 1_000_000)],
+        &[&t.kp],
+    )
+    .unwrap();
 
     assert_eq!(
         h.account::<UserAccount>(&t.user).free_margin,

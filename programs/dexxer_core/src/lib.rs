@@ -61,7 +61,10 @@ pub mod dexxer_core {
     pub fn unpause(ctx: Context<AdminConfig>) -> Result<()> {
         admin::unpause(ctx)
     }
-    pub fn set_scheduler_signer(ctx: Context<AdminConfig>, new_scheduler_signer: Pubkey) -> Result<()> {
+    pub fn set_scheduler_signer(
+        ctx: Context<AdminConfig>,
+        new_scheduler_signer: Pubkey,
+    ) -> Result<()> {
         admin::set_scheduler_signer(ctx, new_scheduler_signer)
     }
     pub fn seed_pool(ctx: Context<SeedPool>, amount: u64) -> Result<()> {
@@ -133,7 +136,10 @@ pub mod dexxer_core {
     ) -> Result<()> {
         crank::schedule_crank(ctx, task_id, interval_ms, iterations)
     }
-    pub fn cancel_crank<'info>(ctx: Context<'info, CancelCrank<'info>>, task_id: i64) -> Result<()> {
+    pub fn cancel_crank<'info>(
+        ctx: Context<'info, CancelCrank<'info>>,
+        task_id: i64,
+    ) -> Result<()> {
         crank::cancel_crank(ctx, task_id)
     }
     pub fn commit_aggregate(ctx: Context<CommitAggregate>) -> Result<()> {

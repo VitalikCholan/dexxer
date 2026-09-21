@@ -59,9 +59,8 @@ pub fn magic_context() -> Pubkey {
 /// The ER `EphemeralPermission` PDA for `account`, under the permission program.
 pub fn permission(account: &Pubkey) -> Pubkey {
     let compat_account = ephemeral_rollups_sdk::compat::Pubkey::new_from_array(account.to_bytes());
-    let (pda, _) =
-        ephemeral_rollups_sdk::access_control::structs::EphemeralPermission::find_pda(
-            &compat_account,
-        );
+    let (pda, _) = ephemeral_rollups_sdk::access_control::structs::EphemeralPermission::find_pda(
+        &compat_account,
+    );
     compat_pk(pda)
 }
