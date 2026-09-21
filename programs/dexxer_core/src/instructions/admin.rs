@@ -205,6 +205,22 @@ pub fn unpause(ctx: Context<AdminConfig>) -> Result<()> {
     ctx.accounts.config.paused = false;
     Ok(())
 }
+// Task-6 fix round 3 (controller ruling, supersedes round 2's in-schedule_crank
+// write attempt): base-layer admin ix, same `AdminConfig` context/pattern as
+// `pause`/`unpause` above — `config` is writable here with no issue, because
+// this ix has nothing to do with `ScheduleCrankCpi`'s `instruction_accounts`
+// (the restriction fix round 2 hit twice — a writable, non-delegated account
+// there is unconditionally rejected — only applies to that specific CPI's
+// account list, not to ordinary base-layer writes to an undelegated `Config`).
+// Client computes `new_scheduler_signer = crank_signer_pda(admin)` the same
+// way `schedule_crank` used to (see `tests/er/lib/crank-signer.ts`) and calls
+// this once per admin before scheduling; `schedule_crank` then just reads
+// `Config.scheduler_signer` back (see `crank.rs`) instead of computing or
+// writing it itself.
+pub fn set_scheduler_signer(ctx: Context<AdminConfig>, new_scheduler_signer: Pubkey) -> Result<()> {
+    ctx.accounts.config.scheduler_signer = new_scheduler_signer;
+    Ok(())
+}
 
 #[derive(Accounts)]
 pub struct SeedPool<'info> {

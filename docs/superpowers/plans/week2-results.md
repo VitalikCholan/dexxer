@@ -1180,3 +1180,87 @@ admin.publicKey` — жодної колізії адрес цього разу.
 
 `payer` **5.198650697 SOL** (один редеплой цього раунду + один відкатний редеплой, разом
 ~0.0095 SOL).
+
+## Fix round 3 (Task 6, контролер: значення scheduler_signer пишеться на BASE) — ПРАЦЮЄ. Планувальник реально тікає.
+
+**Рулінг:** новий admin-інструкція `set_scheduler_signer(new_scheduler_signer: Pubkey)` на **базовому
+шарі** (той самий `AdminConfig`-патерн, що й `pause`/`unpause` — `config` тут `mut` без жодних проблем,
+бо ця інструкція взагалі не бере участі в `ScheduleCrankCpi`'s `instruction_accounts`, де саме й діє
+заборона з fix round 2). `schedule_crank` повертається до стану fix round 1 (нічого не пише) і просто
+читає `config.scheduler_signer` для `crank`-акаунта внутрішньої інструкції. `crank_tick` — незмінний.
+
+**Реалізовано точно за рулінгом:**
+- `programs/dexxer_core/src/instructions/admin.rs`: `set_scheduler_signer` — новий `AdminConfig`-гейтед
+  ix, пише `config.scheduler_signer = new_scheduler_signer`.
+- `programs/dexxer_core/src/instructions/crank.rs`: `schedule_crank` більше не обчислює
+  `crank_signer_pda` сам — читає `ctx.accounts.config.scheduler_signer` (одне присвоєння, без
+  `find_program_address`), `ScheduleCrank.config` лишається НЕ `mut` (як у fix round 1).
+- `tests/er/lib/crank-signer.ts` (новий) — спільний `crankSignerPda(authority)` клієнтський
+  хелпер, з точним посиланням на pinned джерело валідатора
+  (`magicblock-magic-program-api/src/pda.rs`, коміт `9c7a94470af1785d88f4c671571f87c146a93779`).
+- `tests/er/lib/admin.ts`'s `bootstrapDevnet()`: `init_config`'s `scheduler_signer`-арг тепер
+  `crankSignerPda(admin.publicKey)` для СВІЖИХ бутстрапів (замість `ER_VALIDATOR`).
+- `scripts/admin/set-scheduler-signer.ts` (новий) — для ІСНУЮЧОГО devnet `Config`: викликає новий ix
+  на `baseConn`, звіряє результат на ланцюгу.
+- `scripts/admin/schedule-crank.ts` — прибрано локальну `crankSignerPda`, імпортує спільну; додано
+  явну перевірку `Config.scheduler_signer == crank_signer_pda(admin)` перед відправкою (інакше `FAIL`
+  з чіткою інструкцією запустити `set-scheduler-signer.ts`).
+- LiteSVM: новий тест `only_admin_can_set_scheduler_signer` (stranger відхиляється, admin проходить,
+  значення звірене на ланцюгу) — **39/39** (38→39).
+
+**Гаунтлет:** `anchor build` чисто; LiteSVM **39/39**; `dexxer_core` **46/46**; `program_autofixer` —
+0 issues на `admin.rs`, `crank.rs`, `state/config.rs`; `tsc --noEmit` чисто в `scripts` і `tests/er`.
+
+**Редеплой:** sig
+`5862sZPZB4xa29KC2HusVRVBg7ReFM1NeJ76jiTJPbZQZzJNf9RdxG2nXieZ43eNpp9FpR2hYqk13Hbp3AFJV4hY`.
+
+**`set_scheduler_signer` на базовому шарі — успіх з першої спроби**, sig
+`23yweBXbrTjdBoWRdj73jNTG3dycMBmwozHCjgZi7U9WP9d8ttCjs3jHrMkrwWWkh9GDvUH53oi7hkeWDm6or5Hj`.
+`Config.scheduler_signer` (base): `MTEWGuqxUpYZGFJQcp8tLN7x5v9BSeoFHYWQQ3n3xzo` (старий ER_VALIDATOR-
+плейсхолдер) → `BbLTvs9vqNBpcj6DmVeqDmFfpLz4cxBM9Cr4HGb5w7wk` (`crank_signer_pda(admin)`), **звірено
+безпосередньо читанням акаунта після транзакції**, не лише за кодом виходу.
+
+**`schedule_crank` — успіх**, sig
+`61cYveYL5wfa2bP8uyd7BP1uhrjMRodogkhfE1KHu59WwYJ3xZEfA9fxS3jx1ETCxk98LvgSPDdDcKzBwrDcD9A7`,
+`task_id -8632762600545312817` (той самий, за формулою бріфу).
+
+### Перевірка (b) — **ПОЗИТИВНА.** Планувальник реально тікає, без жодного зовнішнього скрипта.
+
+Fallback-скрипт підтверджено незапущеним (`ps aux` порожній) протягом усього вікна. 8 замірів
+`Market.mark`/`mark_slot` за **183 секунди** (`06:28:07Z` → `06:31:10Z`, з інтервалом ~15-20 с):
+
+| час (UTC) | `mark` | `mark_slot` |
+|---|---|---|
+| 06:28:07 | 112448416 | 321821508 |
+| 06:28:45 | 112381490 | 321825308 |
+| 06:29:03 | 112362900 | 321827108 |
+| 06:29:21 | 112361171 | 321828908 |
+| 06:29:39 | 112353920 | 321830708 |
+| 06:29:57 | 112391243 | 321832508 |
+| 06:30:15 | 112411422 | 321834308 |
+| 06:30:33 | 112424084 | 321836108 |
+| 06:31:10 | 112392005 | 321839808 |
+
+`mark_slot` монотонно зростає щоразу (жодного застрягання), сумарно **+18 300 слотів за 183 с ≈ 100
+слотів/с**. `mark` — реальні, малі коливання EMA навколо ~$112.35–112.45 (не застигле значення й не
+випадковий шум) — узгоджено з живим Pyth Lazer-фідом через MagicBlock Pricing Oracle. **Це перше
+пряме підтвердження в цій сесії, що ER-планувальник Magic Actions самостійно виконує заплановані
+`crank_tick`-виклики на `dexxer_core` без жодного зовнішнього fallback-процесу.**
+
+**Планувальник лишено ПРАЦЮЮЧИМ** (не скасовано) — task_id `-8632762600545312817`, `iterations =
+86_400` (~24 години за інтервалу 1000 мс).
+
+### Баланс (кінець fix round 3 / Task 6 фінал)
+
+`payer` **5.193960697 SOL** (один редеплой цього раунду, ~0.0047 SOL; `set_scheduler_signer` і
+`schedule_crank` — ER/base-транзакції за рахунок `devnet-admin`, не `payer`).
+
+### Підсумок Task 6 (усі три fix-раунди)
+
+Обидві головні цілі задачі — (1) crank-fallback-скрипт як permission-member на devnet-tee, (2)
+ER-планувальник тікає самостійно — **досягнуті й підтверджені реальними транзакціями**. Дорога до
+(2) виявилась довшою за початковий рулінг (3 раунди, 2 незалежні on-chain властивості Magic Program
+виявлено й задокументовано: per-authority `crank_signer_pda`, не глобальний `CRANK_SIGNER`; і
+writable-non-delegated-акаунт заборонений у `ScheduleCrankCpi`'s `instruction_accounts`, розв'язано
+переносом запису на базовий шар) — обидві знахідки задокументовані в коді (doc-коментарі
+`crank.rs`/`admin.rs`/`state/config.rs`) і тут, з повним ланцюжком підписів для відтворюваності.

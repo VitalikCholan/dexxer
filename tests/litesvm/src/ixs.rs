@@ -135,6 +135,17 @@ pub fn unpause(admin: &Pubkey, config: &Pubkey) -> Instruction {
         data: ix::Unpause {}.data(),
     }
 }
+// Task-6 fix round 3: base-layer admin ix, same AdminConfig shape as pause/unpause.
+pub fn set_scheduler_signer(admin: &Pubkey, config: &Pubkey, new_scheduler_signer: Pubkey) -> Instruction {
+    Instruction {
+        program_id: prog(),
+        accounts: vec![rs(admin), w(config)],
+        data: ix::SetSchedulerSigner {
+            new_scheduler_signer: apk(new_scheduler_signer),
+        }
+        .data(),
+    }
+}
 pub fn seed_pool(admin: &Pubkey, wd: &World, amount: u64) -> Instruction {
     Instruction {
         program_id: prog(),

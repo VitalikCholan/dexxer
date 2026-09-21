@@ -37,6 +37,7 @@ import {
 import { getOrCreateAssociatedTokenAccount, TOKEN_PROGRAM_ID, ASSOCIATED_TOKEN_PROGRAM_ID } from "@solana/spl-token";
 import { delegateSpl } from "@magicblock-labs/ephemeral-rollups-sdk";
 import { NET, ORACLE, airdrop, baseConn, ER_VALIDATOR, loadOrCreateKey, waitDelegated } from "./env.js";
+import { crankSignerPda } from "./crank-signer.js";
 import {
   DELEGATION_PROGRAM_ID,
   DEXXER_CORE_PROGRAM_ID,
@@ -526,7 +527,15 @@ export async function bootstrapDevnet(): Promise<BootstrappedDevnet> {
         ORACLE,
         ER_VALIDATOR,
         new BN(DISCLOSURE_DELAY_SLOTS),
-        ER_VALIDATOR, // scheduler_signer — Task 1 M1: devnet-tee ticks are signed by the TEE validator identity, not CRANK_SIGNER
+        // scheduler_signer (task-6 fix round 3): crank_signer_pda(admin) for a
+        // FRESH bootstrap, not ER_VALIDATOR (Task 1 M1's value — that was the
+        // signer of ALREADY-scheduled ticks on a different, simpler spike
+        // program; it is NOT what the Magic Program accepts as a signer
+        // inside `dexxer_core`'s own scheduled `crank_tick`, see
+        // `crank-signer.ts` and week2-results.md §Task 6 for the full
+        // evidence trail). An EXISTING Config still needs a real
+        // `set_scheduler_signer` call — see `scripts/admin/set-scheduler-signer.ts`.
+        crankSignerPda(admin.publicKey),
         feePayer.publicKey,
         MAGIC_FEE_VAULT,
       )

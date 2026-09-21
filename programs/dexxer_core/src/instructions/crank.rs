@@ -8,7 +8,7 @@ use ephemeral_rollups_sdk::{
     consts::MAGIC_PROGRAM_ID,
     crank::{CancelCrankCpi, ScheduleCrankCpi},
 };
-use magicblock_magic_program_api::{args::ScheduleTaskArgs, pda::CRANK_SIGNER, pda::CRANK_SEED, CRANK_PROGRAM_ID};
+use magicblock_magic_program_api::{args::ScheduleTaskArgs, pda::CRANK_SIGNER};
 
 #[derive(Accounts)]
 pub struct CrankTick<'info> {
@@ -165,10 +165,9 @@ pub fn crank_tick<'info>(mut ctx: Context<'info, CrankTick<'info>>) -> Result<()
 // admin-gated. The scheduled inner instruction carries NO remaining_accounts
 // (liquidation candidates are supplied by the fallback script's own
 // `crank_tick` calls, not by the scheduler) — accounts here mirror
-// `CrankTick` exactly: `crank` is `crank_signer_pda(admin)`, a Magic-Program
-// PDA scoped to this schedule call's admin/payer (task-6 fix round 2 — see
-// the function body's comment), the rest are the market/pool state the tick
-// reads and writes.
+// `CrankTick` exactly: `crank` is whatever `Config.scheduler_signer`
+// currently holds (task-6 fix round 3 — see the function body's comment),
+// the rest are the market/pool state the tick reads and writes.
 #[derive(Accounts)]
 pub struct ScheduleCrank<'info> {
     #[account(mut)]
@@ -196,11 +195,10 @@ pub struct ScheduleCrank<'info> {
     /// CHECK: validated in oracle::read_price when the scheduled crank_tick executes
     pub feed: UncheckedAccount<'info>,
     /// CHECK: the scheduled task's crank signer, validated in the function body
-    /// below against `crank_signer_pda(admin)` — see that validation's comment
-    /// for the full story (task-6 fix round 1/2: the flat
-    /// `magicblock_magic_program_api::pda::CRANK_SIGNER` constant this
-    /// program's crate pins (0.10.1) is NOT what the live devnet-tee
-    /// validator actually checks).
+    /// below against `config.scheduler_signer` (task-6 fix round 3 — the
+    /// client must have already called `set_scheduler_signer` on base with
+    /// `crank_signer_pda(admin)` before this; see that ix's doc comment in
+    /// `admin.rs` and the function body below for the full story).
     pub crank: UncheckedAccount<'info>,
     // Caller-supplied, same as `CancelCrank`'s: neither `ephemeral-rollups-sdk` 0.16.2
     // nor `magicblock-magic-program-api` 0.10.1 expose an on-chain PDA derivation for
@@ -239,27 +237,26 @@ pub fn schedule_crank<'info>(
     interval_ms: i64,
     iterations: i64,
 ) -> Result<()> {
-    // Task-6 fix round 2 (real on-chain evidence, superseding fix round 1's flat
-    // `CRANK_SIGNER` attempt — see week2-results.md §Task 6): the deployed
-    // devnet-tee validator's Magic Program derives the accepted inner-instruction
-    // signer as `crank_signer_pda(task_authority)` — a PDA scoped to the
-    // schedule-transaction's PAYER (`ScheduleCrankCpi::instruction()` places
-    // `ctx.accounts.admin` at account index 0, which is exactly what the
-    // validator's `process_schedule_task` reads as `payer_pubkey`/`authority` —
+    // Task-6 fix round 3 (controller ruling, supersedes round 2): fix round 2
+    // tried computing `crank_signer_pda(admin)` in THIS instruction and
+    // writing it into `Config.scheduler_signer` before the CPI below — proven
+    // structurally impossible on real devnet-tee, twice independently
+    // (`TransactionError::InvalidWritableAccount` — a writable, non-delegated
+    // account other than `task_context` is unconditionally rejected in
+    // `ScheduleCrankCpi`'s `instruction_accounts`, and `config` must be in
+    // that list for the scheduled `crank_tick` to read it). Fix round 3 moves
+    // the write to a NEW base-layer admin ix instead
+    // (`admin::set_scheduler_signer`, `instructions/admin.rs`) — base-layer
+    // writes to `Config` have no such restriction, only THIS specific ER CPI
+    // does. This instruction goes back to doing what it did before fix round
+    // 2 ever touched it: read `Config.scheduler_signer` (set on base,
+    // beforehand, to `crank_signer_pda(admin)` — same derivation fix round 2
     // confirmed against the pinned validator source,
-    // `programs/magicblock/src/schedule_task/{mod,process_schedule_task}.rs`
-    // at commit 9c7a94470af1785d88f4c671571f87c146a93779) — NOT the flat,
-    // authority-independent `magicblock_magic_program_api::pda::CRANK_SIGNER`
-    // constant this program's pinned crate version (0.10.1) exports. That
-    // constant only exists because 0.10.1 predates the per-authority scheme;
-    // 0.10.1 doesn't export a `crank_signer_pda()` helper, so it's replicated
-    // here from the same source: `find_program_address([CRANK_SEED,
-    // authority.as_ref()], CRANK_PROGRAM_ID)`, `authority = ctx.accounts.admin`.
-    let crank_program_id = Pubkey::new_from_array(CRANK_PROGRAM_ID.to_bytes());
-    let (crank_signer, _crank_signer_bump) = Pubkey::find_program_address(
-        &[CRANK_SEED, ctx.accounts.admin.key().as_ref()],
-        &crank_program_id,
-    );
+    // `magicblock-magic-program-api/src/pda.rs` at commit
+    // `9c7a94470af1785d88f4c671571f87c146a93779`, mirrored client-side in
+    // `tests/er/lib/crank-signer.ts`) and use it as-is — no computation, no
+    // write, `config` stays read-only here exactly like fix round 1 left it.
+    let crank_signer = ctx.accounts.config.scheduler_signer;
     require!(
         ctx.accounts.crank.key() == crank_signer,
         DexxerError::Unauthorized
@@ -283,9 +280,8 @@ pub fn schedule_crank<'info>(
     let crank_tick_ix = Instruction {
         program_id: crate::ID,
         accounts: vec![
-            // crank_signer_pda(admin), not ctx.accounts.crank.key() literally
-            // (though they're required equal above) and not the flat
-            // CRANK_SIGNER — see the comment above.
+            // `crank_signer` == `Config.scheduler_signer` (checked above,
+            // read once already) — see the comment above.
             AccountMeta::new_readonly(crank_signer, true),
             AccountMeta::new_readonly(ctx.accounts.config.key(), false),
             AccountMeta::new(ctx.accounts.market.key(), false),

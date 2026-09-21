@@ -14,11 +14,22 @@ pub struct Config {
     // Week 2 (spec §8 Q2, controller ruling task-2 #1): scheduler/fee-payer/
     // fee-vault identities and the crank's Magic Actions task id, all
     // consumed by later tasks' instructions. Layout freezes here.
-    /// Signer of scheduled Magic Actions crank ticks, initialized once at
-    /// `init_config` time. Week-2 Task 1 M1: on devnet-tee this is the TEE
-    /// validator identity (`ER_VALIDATOR`), not the SDK's
-    /// `magicblock_magic_program_api::pda::CRANK_SIGNER` PDA — `crank_tick`'s
-    /// signer constraint also accepts that PDA as a fallback branch.
+    /// Signer of scheduled Magic Actions crank ticks — read directly by
+    /// `crank_tick`'s own signer constraint (its `config.scheduler_signer`
+    /// branch) and by `schedule_crank` (which embeds it, read-only, as the
+    /// scheduled instruction's signer meta). Must equal
+    /// `crank_signer_pda(Config.admin)` — the Magic Program's per-authority
+    /// crank-executor PDA (see `tests/er/lib/crank-signer.ts` for the
+    /// derivation and its pinned validator source) — for scheduled ticks to
+    /// actually execute; `init_config` seeds it with that value directly for
+    /// a fresh bootstrap, and `set_scheduler_signer` (task-6 fix round 3,
+    /// `instructions/admin.rs`) updates it later for an existing `Config`.
+    /// `set_scheduler_signer` is a plain base-layer admin write — unlike
+    /// `schedule_crank`, which can never write any `Config` field itself
+    /// (see `instructions/crank.rs`'s `ScheduleCrank.config` doc comment for
+    /// why: a writable, non-delegated account is unconditionally rejected in
+    /// `ScheduleCrankCpi`'s `instruction_accounts`, and `config` must be in
+    /// that list).
     pub scheduler_signer: Pubkey,
     /// Pays for scheduled crank transactions on the ER.
     pub fee_payer: Pubkey,

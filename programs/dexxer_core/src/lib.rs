@@ -61,6 +61,9 @@ pub mod dexxer_core {
     pub fn unpause(ctx: Context<AdminConfig>) -> Result<()> {
         admin::unpause(ctx)
     }
+    pub fn set_scheduler_signer(ctx: Context<AdminConfig>, new_scheduler_signer: Pubkey) -> Result<()> {
+        admin::set_scheduler_signer(ctx, new_scheduler_signer)
+    }
     pub fn seed_pool(ctx: Context<SeedPool>, amount: u64) -> Result<()> {
         admin::seed_pool(ctx, amount)
     }
