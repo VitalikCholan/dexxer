@@ -26,6 +26,14 @@ const MINT_AUTH_SEED = Buffer.from('mint_auth')
 const FEE_ESCROW_SEED = Buffer.from('fee_escrow')
 export const SOL_SYMBOL = Buffer.from([83, 79, 76, 0, 0, 0, 0, 0]) // b"SOL\0\0\0\0\0"
 
+// mock_oracle / Pricing Oracle feed seeds, matching tests/er/lib/program.ts
+// verbatim (both the local mock_oracle program and the real devnet Pricing
+// Oracle derive their feed PDA the same way: [FEED_SEED, LAZER_SEED, id]).
+const FEED_SEED = Buffer.from('price_feed')
+const LAZER_SEED = Buffer.from('pyth-lazer')
+/** SOL/USD Lazer feed id the devnet market was `init_market`'d with — matches `tests/er/lib/admin.ts`'s `LAZER_FEED_ID`. */
+export const LAZER_FEED_ID = '6'
+
 function pda(seeds: (Buffer | Uint8Array)[], programId: PublicKey): PublicKey {
   return PublicKey.findProgramAddressSync(seeds, programId)[0]
 }
@@ -46,6 +54,9 @@ export const pdas = {
   position: (owner: PublicKey, market: PublicKey) =>
     pda([POSITION_SEED, owner.toBuffer(), market.toBuffer()], DEXXER_CORE_PROGRAM_ID),
   disclosureQueue: (owner: PublicKey) => pda([DQ_SEED, owner.toBuffer()], DEXXER_CORE_PROGRAM_ID),
+  /** Oracle feed PDA, derived under `oracleProgram` (`Config.oracle_program` — the real devnet Pricing Oracle, not `dexxer_core`). */
+  feedUnder: (oracleProgram: PublicKey, lazerFeedId: string = LAZER_FEED_ID) =>
+    pda([FEED_SEED, LAZER_SEED, Buffer.from(lazerFeedId)], oracleProgram),
 }
 
 /** `#[delegate]`-generated buffer/record/metadata triple for a PDA owned by `dexxer_core`. */
