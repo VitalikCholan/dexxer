@@ -24,7 +24,17 @@ pub struct Config {
     pub fee_payer: Pubkey,
     /// Magic Program fee vault funding the crank schedule.
     pub magic_fee_vault: Pubkey,
-    /// Magic Actions scheduled-task id for the crank, set once registered.
+    /// Magic Actions scheduled-task id for the crank. Always `0` on-chain as
+    /// of task-6 fix round 3: `Config` is never delegated to the ER, and
+    /// `schedule_crank`/`cancel_crank` must keep `config` strictly read-only
+    /// in their Magic Program CPI (a writable, non-delegated account there
+    /// is rejected — `TransactionError::InvalidWritableAccount`, see
+    /// `instructions/crank.rs`'s `ScheduleCrank.config` doc comment), so
+    /// neither instruction can write this field. Left in place (not
+    /// removed, to avoid an account-layout migration) as a documented
+    /// vestigial field; the real task_id lives only in `schedule_crank`'s
+    /// logs and its caller's own records, and `cancel_crank` now takes
+    /// `task_id` as an explicit argument instead of reading this field.
     pub crank_task_id: i64,
     pub bump: u8,
 }

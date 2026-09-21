@@ -980,3 +980,136 @@ round 2 smoke-тесту (owner `Bzr7RnfYaUNRcRE57egMQA2Vh57cnnupvuWx7vzgGV4u`),
 Жодних завислих buffer-акаунтів. Одна нова trader/session пара профінансована (0.05 SOL з
 `devnet-admin`) для перевірки (c), лишена як gitignored ключ (`tests/er/.keys/devnet-trader-liq-*.json`,
 `devnet-session-liq-*.json`) — у межах правила "одне онбордження трейдера" цієї задачі.
+
+## Fix round (Task 6, контролер авторизував програмну зміну): `schedule_crank`/`cancel_crank` реально запрацювали; лишається одна проблема
+
+**Контекст.** Findng 1 вище (`schedule_crank` падає з `MissingRequiredSignature`, "only the crank
+signer PDA can be a signer in cranks") — програмний баг, поза мандатом основного проходу Task 6.
+Контролер авторизував програмну зміну саме для `schedule_crank`/`cancel_crank` (crank.rs), з
+рулінгом: використати `CRANK_SIGNER` (`magicblock_magic_program_api::pda::CRANK_SIGNER`) як
+readonly-signer у внутрішній інструкції замість `config.scheduler_signer`; не чіпати
+`crank_tick`'s власний констрейнт чи інші інструкції; лишити `scheduler_signer`-поле й
+`init_config`'s арг без змін.
+
+**Реальний прогін виявив ще ДВІ окремі, послідовні знахідки поза початковим рулінгом** — обидві
+підтверджені прямими логами транзакцій, не здогадом, і обидві виправлено в межах ТОГО САМОГО
+авторизованого проходу (той самий файл, `schedule_crank`/`cancel_crank`, жодних змін у
+`crank_tick`'s власному коді):
+
+### Знахідка А (програмна, `crank.rs`): `CRANK_SIGNER` (плаский) теж "invalid signer" — реальний підписант per-authority
+
+Спроба з плоским `CRANK_SIGNER` (`431bz9ziJVBCqea1gSxzmxvm1Bn1qJoZzSNHoweNc1f1`, значення з M1) —
+sig `3VPaX7Fg6E8nji9zejREbqTNJu1RoL7rfXKycv1eXBeuqtiEXWS5xtuU2SfbYJvLZaRe8ybH8NFGyvWDn8SYp5hy`, та сама
+помилка, тепер називає ЦЮ адресу невалідним підписантом. Пряме читання pinned джерела валідатора
+(`magicblock-labs/magicblock-validator`, commit `9c7a94470af1785d88f4c671571f87c146a93779`,
+`programs/magicblock/src/schedule_task/{mod,process_schedule_task,process_execute_task}.rs`, а
+також skill'а `magicblock`'s `references/cranks.md`) підтвердило: реальний прийнятний підписант —
+`crank_signer_pda(task_authority)` = `find_program_address(["crank-executor",
+authority.as_ref()], CRANK_PROGRAM_ID)`, де `task_authority` = payer-акаунт (index 0) інструкції
+`schedule_crank`/`ExecuteCrank`, тобто наш `admin` — **не** плаский `CRANK_SIGNER`
+(`magicblock-magic-program-api` 0.10.1, версія, запінена в цьому проєкті, ще не мала per-authority
+API; `crank_signer_pda()` відтворено вручну з тих самих `CRANK_SEED`/`CRANK_PROGRAM_ID`, які 0.10.1
+таки експортує). Виправлено: `schedule_crank` тепер обчислює `crank_signer_pda(ctx.accounts.admin)`
+і використовує це значення і для `require!`-перевірки `ScheduleCrank.crank`, і для
+`crank_tick_ix`'s account-мети.
+
+### Знахідка Б (програмна, `crank.rs`): `config` не може бути writable у `ScheduleCrankCpi`'s `instruction_accounts` — і причина не та, що спочатку здавалось
+
+Після знахідки А `schedule_crank` пройшов повз signer-перевірку, але впав з
+`TransactionError::InvalidWritableAccount` / `"Account 2: <config> was illegally used as writable"`
+(sig `29eRmcfGrqtTNaR1R7y1SScnWKYZkbjCPiKuuA7dD76CSGRTkdVoXaxgfo5AvBjoQvesBiuMEEgfQdB7VPdnuNKP`) — **у
+той момент, коли `dexxer_core`'s власна інструкція вже залогувала `success`** (транзакція все одно
+відкотилась цілком, атомарно — `Config.crank_task_id` лишився `0` навіть після цього "успіху").
+
+**Перша (робоча) гіпотеза:** `config` ніколи не делегований в ER, тож writable-акаунт у
+`instruction_accounts`, який не делегований, — заборонений. Виправлено прибиранням `mut` з
+`ScheduleCrank.config` (і, як наслідок, `cancel_crank`'s `config` теж; `Config.crank_task_id` більше
+неможливо писати жодною інструкцією — залишено як задокументоване vestigial-поле, реальний task_id
+тепер лише в логах і в `cancel_crank`'s явному аргументі `task_id: i64`).
+
+**Ця гіпотеза виявилась неповною.** Повторний прогін після прибирання `mut` — **та сама точнісінько
+помилка** (`Account 2: <config> illegally used as writable`, sig
+`2ct1kkj6AbqGP9HEsS4V3kfXm8rmHPSwNQQiWm7GFwLF2C4pUcpiW7fFmbQhzcPRL7WcsbGnyo5cPLfmy3uin9BK`), попри
+те, що `config` тепер readonly і в Rust-констрейнті, і в клієнтських `remainingAccounts`. Пряма
+перевірка скомпільованого повідомлення транзакції (`message.isAccountWritable(2)`) показала:
+**`config` усе одно `writable=true`** — справжня причина: `scripts/admin/schedule-crank.ts` (обидві
+спроби) передавало `task_context = config` (той самий PDA, за рекомендацією Task 1 — "будь-який
+консистентний акаунт підходить"), а `task_context` **легітимно** потребує `mut`
+(`#[account(mut)] pub task_context`, Magic Program сам пише туди). Solana компілює повідомлення
+транзакції з дедублікацією по pubkey і **найширшою** запитаною привілегією — тож `config`,
+з'являючись під ТОЮ САМОЮ адресою, що й writable `task_context`, успадковував writable незалежно
+від того, що скрипт просив для слоту "config" окремо. **Виправлено на клієнті** (без жодної
+Rust-зміни для цієї конкретної частини): `task_context` тепер `admin.publicKey` — той самий патерн,
+що й Task 1 M1's спайк ("duplicate payer, ticks still ran"), і безпечний, бо `admin` уже й так
+writable+signer у тій самій транзакції.
+
+**Результат:** `schedule_crank` **успішно пройшов** — sig
+`52hN5RVFcCSwVzNAEjCEBEkUJQqydhmBmoUE8UAiPmdF6X3fYSd2eanjAqZMwMRh1rbApxNCxSQNMGETc8eiPnni`
+(task_id `-8632762600545312817`), повторно перевірено ще раз офіційним закомміченим скриптом — sig
+`2EpKAV43CnRbgr5mUuAfxvmuUZ34ZzDrovkp55hBi2n5U3CKRK1fCcxGeivxXtfmY729PmmdhzzVfsh21f4aUjoC`.
+`cancel_crank` **теж перевірено наживо й успішно** (task-1's UNMEASURED статус закрито): sig
+`7yUTAp3o439WYJyugUeaf2BUVdYtTGvZ8CKE9LfbDwEa4JbTFMvqLB7meBKbVeSUunD8ZExgeAfE4kp85VAy2Gm`, лог
+`"Successfully added cancel request for task -8632762600545312817"`, `err: null`. `cancel_crank`
+тепер приймає `task_id: i64` явним аргументом (не читає `Config.crank_task_id` — те поле більше
+ніколи не пишеться, з причини знахідки Б).
+
+### Гаунтлет після обох виправлень
+
+`anchor build` чисто; `cargo +nightly-2026-09-18 test -p dexxer_litesvm` — **38/38**; `cargo test -p
+dexxer_core` — **46/46**; `program_autofixer` — 0 issues на `crank.rs`, `lib.rs`, `state/config.rs`;
+`npx tsc --noEmit` чисто в `scripts` і `tests/er`. Редеплой (двічі, по одному на кожен build):
+sig `3ZfBqzDd7B3VXHwz5GZNi5sJLtmm8tizAQt8RNF5p2eJXtsC2SMrECZnXqJ2om1H1VTM4wS3b3AA8gaxmgLcovRZ`
+(знахідка А), sig `2ippaGZApAG5o7FAp5gUS49P3wp8XNdnurR4Q2bRrwMonCU4iAczHao3gUf33J1XsirnXKBUem3TqecFbymNvvR6`
+(знахідка Б) — обидва рази без потреби `extend` (влізло в наявний program-data слек), чиста
+вартість ~0.005 SOL/раз.
+
+### Перевірка (b), повторно: **все ще негативний результат — але тепер із точним, іншим поясненням**
+
+Після успішної реєстрації (обома task_id, і `-8632762600545312817`, і контрольним позитивним
+`1789970609067` для діагностики) — `Market.mark_slot` **не зрушив ані на один слот за ~6+ хвилин
+сукупного спостереження** (кілька окремих вікон по 60–90 с, останнє — `06:06:32Z`, значення й досі
+`321440622`, те саме, що й до першої реєстрації). Це **не** та сама причина, що в оригінальній
+Finding 1 (яка блокувала саму РЕЄСТРАЦІЮ) — реєстрація тепер точно проходить (два різні task_id,
+підтверджено сигнатурами вище). Перевірено й відкинуто: знак `task_id` (позитивний контрольний
+task_id теж не затікав).
+
+**Найправдоподібніше пояснення (не підтверджене прямим логом, оскільки заплановані виконання не
+з'являються в жодній транзакції, яку можна прочитати через `getTransaction` — вони, схоже, повністю
+внутрішні до валідатора): `crank_tick`'s власний signer-констрейнт (`CrankTick.config`'s потрійний
+`||`, `crank.rs`, незмінений за прямою вказівкою рулінгу) не приймає `crank_signer_pda(admin)`.**
+Жодна з трьох гілок (`config.crank`, `config.scheduler_signer`, плаский `CRANK_SIGNER`) не дорівнює
+цьому per-authority значенню — а саме воно, підтверджено кроком вище (Знахідка А, пряме читання
+`process_execute_task.rs`), і є тим, чим Magic Program РЕАЛЬНО підписує заплановане виконання
+(`invoke_context.native_invoke(ix, &[crank_signer])`, `crank_signer = crank_signer_pda(authority)`).
+Якщо гіпотеза вірна, кожне заплановане виконання `crank_tick` падає на власному
+`DexxerError::Unauthorized` — мовчки, без жодного сліду, який ми можемо прочитати з цієї сесії.
+
+**Це вимагає ще однієї програмної зміни — саме в `crank_tick`'s констрейнті — яку поточний рулінг
+явно захищав від змін ("do not change crank.rs's constraint or any other instruction").** Зупинено
+тут, за тим самим правилом ("STOP and report with evidence, controller decides"): не чіпав
+`crank_tick` без окремої авторизації. Робочий напрям для контролера: `crank_tick`'s констрейнт
+міг би вирахувати `crank_signer_pda(a.config.admin)` (тим самим способом, що й `schedule_crank`
+тепер робить) як четверту гілку (або замінити третю) — `Config.admin` уже доступний у контексті.
+
+### Файли (fix round)
+
+- Modify: `programs/dexxer_core/src/instructions/crank.rs` (`ScheduleCrank`/`CancelCrank`:
+  `crank_signer_pda(admin)` замінює і плаский `CRANK_SIGNER`, і `config.scheduler_signer`;
+  `config` більше не `mut` у жодній з двох; `cancel_crank(task_id: i64)` — новий аргумент),
+  `programs/dexxer_core/src/lib.rs` (`cancel_crank`'s новий `task_id`-параметр прокинуто),
+  `programs/dexxer_core/src/state/config.rs` (doc-коментар на `crank_task_id`, поле лишається,
+  дані в ньому — ні), `scripts/admin/schedule-crank.ts` (`crank_signer_pda(admin)` замість
+  `ER_VALIDATOR`, потім замість плаского `CRANK_SIGNER`; `task_context = admin.publicKey`, не
+  `config`; `config` `isWritable: false` у `remainingAccounts`).
+- Create: `scripts/admin/cancel-crank.ts` (обчислює той самий `task_id` за формулою бріфу; викликає
+  `cancel_crank(task_id)`; той самий `task_context = admin.publicKey`).
+
+### Баланси (кінець fix round)
+
+`payer` **5.208025697 SOL** (двічі редеплой, ~0.005 SOL/раз, + оригінальний топ-ап контролера 0.7
+SOL, зафіксований окремо). `devnet-admin` без змін від кінця основного проходу Task 6
+(0.46889656 SOL) — schedule/cancel-виклики йдуть через ER, не через L1 SOL `devnet-admin`.
+Планувальник лишено **зареєстрованим** (не скасованим) — останній живий виклик:
+`schedule_crank` sig `2EpKAV43CnRbgr5mUuAfxvmuUZ34ZzDrovkp55hBi2n5U3CKRK1fCcxGeivxXtfmY729PmmdhzzVfsh21f4aUjoC`,
+`task_id -8632762600545312817` — попри те, що (за поточною гіпотезою) заплановані тіки самі ще не
+долітають.
