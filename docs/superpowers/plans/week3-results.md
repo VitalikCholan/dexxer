@@ -1133,8 +1133,7 @@ Anchor'ів Borsh-кодер не вміє zero_copy), `readUserAccountExitSalt`
 
 ## Тиждень 3 — відкрите для тижня 4
 
-- **Task 9 живий прогін на емуляторі + скріншоти для `docs/superpowers/plans/assets/`** — код готовий
-  (Approved review), живий цикл Open→Close→History→Receipt на `local_phone`/fakewallet ще не проведено.
+- **Task 9 живий прогін на емуляторі — ПРОВЕДЕНО 22.09** (`local_phone`, fakewallet, свіжий гаманець `45EjKM…`): onboarding → Open Long 1 SOL → Close → цикл crank-а (`commit_aggregate actions=4`, наступний цикл `root: filled=6`, `mark_committed owner=45EjKM… nonce=1`) → History показує запис, Trade знову дозволяє Open. Скріншоти: `assets/week3-01-onboarding-complete.png`, `assets/week3-02-history-after-mark-committed.png`. Знайдено й виправлено наживо: `runRootCycle` падав на `coder.accounts.size("UserAccount")` (camelCase, `a9dedf2`). Receipt ✓ і «розкрито ✓» — після наступних комітів, не зафіксовано скріншотом.
 - **Перший реальний прогін CI (`.github/workflows/ci.yml`) на PR** — локально все, що можна, перевірено;
   холодний GitHub-раннер (час `anchor build`/`avm install`, кеш для 3 `package-lock.json`) — не виміряно.
 - **Питання #23 до MagicBlock** — чи не-member програма може скопіювати байти приватного акаунта в
