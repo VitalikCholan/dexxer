@@ -79,8 +79,9 @@ Hedge mode / кілька позицій на ринок · limit/TP/SL · fundi
 | `Faucet` | `[b"faucet", owner]`, dexxer_core | L1 | — | публічний | rate-limit N dUSDC/добу |
 | `dUSDC` mint | mint authority = PDA dexxer_core | L1 | — | публічний | 6 decimals |
 | `Market` | `[b"market", b"SOL"]` | делегований у TEE | при зміні параметрів | **публічний в ER (без permission)** **(week 3, Task 11 — виправлено; §7.1 ризик #24)** — `delegate_market` не створює `EphemeralPermission` (код `instructions/admin.rs`'s `DelegateMarket`: *«Neither carries user-scoped fields, so no ER permission account is created for them here»*); попередній запис «permissioned `[crank, admin]`» був хибним, permission на `Market`/`MarketRisk` ніколи не створювався жодною інструкцією | параметри, mark-EMA, paused_open |
-| `MarketRisk` | `[b"risk", market]` | делегований | **ніколи** | **публічний в ER (без permission)** **(week 3, Task 11 — виправлено; §7.1 ризик #24)** | OI long/short, open_positions; **без бакетів на MVP (week 1, 20.09.2026, §8 Q4)** — `buckets: [LiqBucket; 64]` не реалізовано, кандидати на ліквідацію йдуть парами `[Position, UserAccount]` у `remaining_accounts`, не через вибірку `MarketRisk` |
+| `MarketRisk` | `[b"risk", market]` | делегований | **ніколи** | публічний в ER до тижня 4 (§7.1 #24); **week 4 (§2.5.1): permissioned `[crank, admin]` через `init_market_permissions`** | OI long/short, open_positions; **без бакетів на MVP (week 1, 20.09.2026, §8 Q4)** — `buckets: [LiqBucket; 64]` не реалізовано, кандидати на ліквідацію йдуть парами `[Position, UserAccount]` у `remaining_accounts`, не через вибірку `MarketRisk` |
 | `Pool` | `[b"pool", dUSDC]` | делегований | **фіксовано 5 хв** | **публічний в ER (без permission)** **(week 3, Task 11 — виправлено; §7.1 ризик #24)** — `delegate_pool` теж не створює `EphemeralPermission` (лише `UserAccount`/`Position`/`DisclosureQueue` через `init_permissions`, `instructions/user.rs`); попередній запис «permissioned» тут теж був хибним | capital_total, `protocol_liquidity` **(week 1, 20.09.2026)** — власний капітал пулу, контрагент PnL, сідується `seed_pool`; locked_total, fees, insurance, bad_debt_total |
+| `PoolLive` **(week 4, §2.5.1)** | `[b"pool_live", dUSDC]` | делегований | **ніколи** | permissioned `[crank, admin]` | живі лічильники `capital_total`, `protocol_liquidity`, `locked_total`, `fees_accrued`, `insurance`, `bad_debt_total`; єдине місце запису для торгових/грошових інструкцій; `Pool` стає знімком із огрубленням (крок 100 dUSDC; слот знімка = `last_commit_slot`), який пише лише `commit_aggregate` |
 | `UserAccount` | `[b"user", owner]` | делегований | ~~фіксовано 5 хв, усі разом~~ **(week 2, 21.09.2026)** — лише всередині `withdraw`'s власного commit-intent; `commit_aggregate` комітить **тільки `Pool`**, жодного періодичного коміту `UserAccount` немає | `[owner, session, crank]` | free_margin, locked_margin, session_key, expiry, actions_left, nonce, **`last_withdraw_slot: u64` (week 2)** — per-account cooldown. ~~Витік: locked_margin з гранулярністю 5 хв...~~ **(week 2)** витік зменшено: `UserAccount` тепер комітиться лише на `withdraw`, не кожні 5 хв — `locked_margin`/`free_margin` на L1 відстають до наступного виводу коштів, не оновлюються фоново. **Відкрите питання (тиждень 3, §7.1, §8):** сам цей `withdraw`-коміт на реальному devnet-tee жодного разу не долетів до L1 в межах спостереження — конфіг 1 (звичайний `owner`-payer): 30+ хв, і досі до-withdraw значення; конфіг 2 (`FeeEscrow`+vault payer, свіжа ідентичність): ще ~3.5 хв (третє незалежне підтвердження), і досі те саме — SPL-нога (ER `free_margin -=` і base ATA `+=`) щоразу коректна, лише байти `UserAccount` на L1 лишаються застарілими |
 | `Position` | `[b"position", owner, market]` | делегований | **нуль до закриття** | `is_private`, `[owner, session, crank]` | створюється раз при онбордингу; при закритті обнуляється; undelegate лише при виході після скрабу. **(week 3)** + `commitment_written: bool` — `commit_aggregate` емітує `write_commitment` лише для `Closed && !commitment_written`; `mark_committed` повертає `Empty` |
 | `DisclosureQueue` | `[b"dq", owner]` | делегований | **ніколи** | `[owner, crank]` | кільце N `ClosedRecord` до reveal |
@@ -180,8 +181,55 @@ Owner, ER: `require!(Position.Empty && DisclosureQueue порожня && free_ma
 | Root рахує програма інкрементально (підхід C) | коли довіра до crank-а щодо root-у стане неприйнятною | без crank-асерту, але log N хешів на кожній зміні балансу (CU), зміна лейауту |
 | **Власний L1-vault замість eSPL → суверенний exit** | пост-MVP, окремий редизайн кастоді з новим спеком | депозити в наш PDA-vault, ER = чистий облік, `claim_from_root(proof)` стає справжнім. Ціна: переписати deposit/`credit_deposit`/`withdraw`/`delegate_pool`, повернути собі проблему мосту L1↔ER (потрібен атестатор депозитів або per-deposit делеговані квитанції — конфлікт із «бекенду нема»), зламати зафіксоване арх-рішення тижня 0. Не тиждень 3 |
 | **ZK-доказ забезпеченості над приватним root-ом** (week 3 обговорення, 22.09.2026) | пост-MVP, після мітигації #24 (приватний робочий агрегат + публічний знімок) | Публічний знімок несе не сирі `protocol_liquidity`/`locked_total`, а `root + Groth16-proof + огрублений коефіцієнт забезпечення`: схема доводить інваріант §3.6 «Σ маржа + Σ нереалізований PnL за mark ≤ активи пулу» над приватними позиціями як private inputs, прив'язаними до `BalancesRoot`. Примітиви Solana: `alt_bn128` syscalls (BN254 pairing, верифікація Groth16 ≈170–500k CU — раз на 5-хв коміт, дешево), `sol_poseidon` (circomlib-сумісний; **листки root-у переводяться з keccak на Poseidon**, бо keccak у схемі дорогий), Agave 4.0 — BN254 G2 + BLS12-381 для batch-верифікації; тулчейн 2026 — Noir → Sunspot → Gnark-Groth16 + згенерований Solana-верифікатор, наша програма робить CPI у нього з `commit_aggregate`. Прувер = crank у TEE (лише там позиції у відкритому вигляді): ZK знімає довіру до TEE щодо **правдивості числа забезпеченості**, не щодо приватності виконання (вона лишається TEE). Виграш для приватності — differencing-атака при малому anonymity set втрачає точні дельти агрегату (лишається лише «solvent» + огрублений ratio). Ціна: trusted setup Groth16 (або UltraHonk/STARK без setup, але дорожча верифікація), окрема верифікатор-програма, аудит схеми, зміна хеш-примітиви — тижні роботи; пітч-теза «забезпеченість доведена математично, позиції не бачить ніхто» |
+| **Disclosure/root-цикли всередині MagicBlock scheduler** (week 4 обговорення) | пост-MVP | Потребує реєстру кандидатів у програмі (scheduled ix має фіксований список акаунтів), підписанта `crank_signer_pda` для `commit_aggregate` (сьогодні — `config.fee_payer`) і рішення про `mark_committed` (ER не бачить L1). До того — relayer на Railway (§2.5.2), scheduler `i64::MAX` лише для `crank_tick` |
 
 **Не в тижні 3:** локальні push, TEE-атестація в застосунку, increase/decrease UI, Railway для crank-fallback.
+
+### 2.5 Дизайн тижня 4: приватний агрегат, relayer, онбординг в один клік, UI, подача **(week 4, 22.09.2026)**
+
+Джерело рішень — брейншторм 22.09 (дедлайн ≥1 тиждень; емулятор + будь-який MWA-гаманець; Railway є; повний фікс #24). Порядок виконання — «інфраструктура спочатку»: 2.5.1 → 2.5.2 → 2.5.3 → 2.5.4 → 2.5.5, кожен наступний шар тестується на живому попередньому.
+
+**2.5.1 Ризик #24 — `PoolLive` (приватний робочий агрегат) + `Pool` як публічний знімок**
+
+- Новий акаунт `PoolLive` `[b"pool_live", dUSDC]`: делегований у TEE, **permissioned `[crank, admin]`** (`is_private`), **ніколи не комітиться**. Поля: `capital_total`, `protocol_liquidity`, `locked_total`, `fees_accrued`, `insurance`, `bad_debt_total` (усі живі лічильники, що сьогодні в `Pool`) + `version`, `mint`, `bump`.
+- Усі торгові й грошові інструкції (`open_position`, `close_position`, `resize`, `deposit`/`credit_deposit`, `withdraw`, `crank_tick`-ліквідації) пишуть **лише `PoolLive`**. Інваріант §3.6 і `assert_invariant` у LiteSVM читають `PoolLive`.
+- `Pool` лишається публічним і комітованим, стає **знімком**: ті самі числові поля, слот знімка — існуюче поле `last_commit_slot` (лейаут `Pool` не змінюється, міграції на devnet не треба); заповнює **лише `commit_aggregate`** копією з `PoolLive` з огрубленням до `SNAPSHOT_STEP = 100 dUSDC` (`100_000_000` одиниць): активи (`capital_total`, `protocol_liquidity`, `insurance`) — **вниз**, зобовʼязання (`locked_total`, `bad_debt_total`) — **вгору** (консервативно для читача забезпеченості); `fees_accrued` — вниз. Між комітами `Pool` у ER не змінюється → щоблочні дельти зникають.
+- `MarketRisk`: нова admin-інструкція `init_market_permissions` (ER) створює `EphemeralPermission [crank, admin]`; він і так ніколи не комітиться — конфлікту з #13 немає. Клієнту OI не потрібен.
+- Міграція devnet: `init_pool_live` (admin, base; копіює поточні значення з `Pool`) → `delegate_pool_live` → `init_market_permissions` → редеплой (~0.5 SOL extend + 5.3 SOL буфер-float). Індексер і Receipt читають лише знімок `Pool` на L1 — узгоджено з правилом «сервери читають публічне».
+- Що лишається: differencing на кроці 100 dUSDC при одному активному трейдері за 5 хв — anonymity-set, не архітектура; повне рішення — ZK-знімок (§2.4.5). LiteSVM: +6–8 тестів (запис у `PoolLive`, огрублення в обидва боки, `Pool` незмінний між комітами, permission на `MarketRisk`, інваріант, міграція).
+
+**2.5.2 Relayer на Railway + scheduler-резерв**
+
+- Один Node-процес `services/relayer` (перейменований і розширений `scripts/crank-fallback`), Dockerfile, деплой на Railway; ключі `crank`/`fee_payer` — Railway variables (base58), не файли; Railway volume для SQLite.
+- Три петлі: (1) **crank** — `crank_tick` щосекунди, disclosure/root-цикли раз на 300 тіків, `mark_committed` після появи `Commitment` на L1; `/healthz` (останній тік/коміт, баланси crank/fee-payer), алерт у лог при тиші >60 с або балансі < порогу; (2) **індексер публічних даних** — `accountSubscribe` L1 `Pool`/`BalancesRoot`, gПА `Disclosure`, підписка на оракул-акаунт (публічний) → ряд `mark` 1 с → свічки 1m/5m/15m; REST `/prices?tf=`, `/pool/history`, `/disclosures`, `/root/latest`; WS-канали `mark`, `pool`, `disclosure`; (3) **`POST /sponsor`** — дописує підпис `fee_payer` як платника комісії/rent у транзакції онбордингу (2.5.3), лише для whitelist-інструкцій (`init_user`, `init_position`, `init_dq`, `delegate_*`, `faucet_init`, eSPL `delegateSpl`) з `owner == підписант`; rate-limit 1 онбординг/год на owner, денний бюджет SOL.
+- Правило (CLAUDE.md, 22.09): relayer не тримає owner/session-токенів і не читає приватних акаунтів; crank-ключ — єдина привілейована ідентичність.
+- **Scheduler-резерв:** admin-скрипт `schedule_crank` з `iterations = i64::MAX` на devnet (закриває #18 фактично); relayer лише логує «резерв активний». Падіння Railway → ліквідації йдуть у TEE самі; disclosure/root чекають підйому (прийнято). Перенесення disclosure/root у scheduler — §2.4.5 (потребує реєстру кандидатів у програмі та іншого підписанта).
+- Тести: unit на агрегацію свічок і огрублення; smoke-скрипт `/healthz` + `/prices` після деплою; devnet 06/07/08 проти Railway-crank-а.
+
+**2.5.3 Онбординг в один клік і клієнтські читання**
+
+- Апка збирає весь онбординг у пачку і віддає гаманцю **одним `signTransactions([...])`**: L1 tx #1 `init_user`+`init_position`+`init_dq`(+`faucet_init` devnet); L1 tx #2 `delegate_user`+`delegate_position`+`delegate_dq`+`delegateSpl`; ER tx #3 `init_permissions`+`set_session`(+fund session). Апка шле їх послідовно з підтвердженням. Ідемпотентно: `getAccountInfo` кожного PDA → готові кроки пропускаються, обрив добудовується.
+- Спонсорований rent: tx #1–#2 з `feePayer = fee_payer`, підпис через relayer `/sponsor`; юзеру SOL не потрібен. ER tx #3 підписує юзер.
+- Депозит — окрема дія після онбордингу (Deposit sheet з faucet на devnet), не в пачці.
+- Читання: `useLiveAccount` → `accountSubscribe` через WS TEE-ендпоінту з owner-токеном (перший спайк тижня; fallback — polling 2 с). History читає `Position.closed` одразу після Close: «Committing…» → «Reveals in …» → «Revealed ✓». Trade слухає той самий `Position` — другий Open без рестарту (#22(f)).
+- Гаманці: MWA як є; перевірка на емуляторі з Phantom APK і fakewallet — пачка одним екраном в обох.
+
+**2.5.4 UI (§5.5) за макетами Claude Design**
+
+- Джерело візуалу — `docs/design/Dexxer App.dc.html` + `docs/design/tokens.json` (IBM Plex Sans/Mono, акцент `#7A5CFF`, dark only, без блюрів/тіней). Статус — інспірейшн: імплементація адаптує під логіку (реальні поля, стани, обмеження MVP), бриф — `docs/design/claude-design-prompt.md`.
+- Токени → `app/src/theme` (кольори, типографічна шкала, space 4–32, radius, layout); компоненти читають лише токени.
+- Таби: **Trade · Positions · History · Ledger · Account**; Developer-екрани (Demo/Spikes/старий Onboard) — у Account → Settings.
+- Trade: mark + 24h, бейдж свіжості оракула, лінійний графік mark 1m/5m/15m з WS індексера (`react-native-svg`; свічки — опційно, якщо індексер віддає OHLC), тікет Long/Short, Size, Margin (Available/Max), слайдер плеча 1–10× з превʼю liq-ціни/комісії/slippage-ліміту, «One position per market» при відкритій, банери stale-oracle / session-expired.
+- Positions: картка з живим uPnL, Close / Increase / Decrease (bottom sheets на `resize`), стан «Closed, awaiting commitment». History: статуси розкриття + explorer-лінк. **Ledger** (без гаманця): `Disclosure`-лента без власника, `Pool`-знімок з «rounded to 100 dUSDC» і слотом знімка, останній `BalancesRoot`. Account: баланси, Deposit/Withdraw (правила `MIN_WITHDRAW`/cooldown), Receipt ✓, Exit з чек-листом, Settings.
+- Стани: skeleton / empty / error+Retry / `SessionExpired` / `OraclePaused` / `ErUnreachable`. Перевірка: емулятор + Phantom APK, скріншоти всіх табів у `docs/superpowers/plans/assets/`.
+
+**2.5.5 Подача**
+
+- README з нуля: що/чому/як (діаграма з `docs/dexxer-architecture.md`), швидкий старт, чесні обмеження (#23–#26, anonymity set, TEE-довіра), roadmap (§2.4.5).
+- Відео 2–3 хв (`adb screenrecord`): підключення гаманця → онбординг одним екраном → Long → Close → History одразу → Ledger показує розкриття без власника → Receipt ✓ → Exit.
+- Пітч-текст; `docs/deployments.md` з devnet-адресами; тег `v0.4-mvp`; CI зелений.
+
+**Не в тижні 4:** ZK-знімок, власний vault, merkle при N>64, funding/TP/SL, мульти-маркет, TEE-атестація в застосунку, локальні push (перенесено), перенесення disclosure/root у scheduler.
 
 ## 3. Маржинальна математика й ліквідація
 
@@ -415,6 +463,8 @@ pub struct BalancesRoot {                   // [b"balances_root"], SIZE = 2072 B
 
 ### 4.2 Інструкції
 
+**Тиждень 4 (§2.5.1, план окремо):** `init_pool_live` (admin, base), `delegate_pool_live` (admin, base), `init_market_permissions` (admin, ER); `commit_aggregate` додатково копіює `PoolLive → Pool` з огрубленням і ставить `Pool.last_commit_slot`; торгові інструкції пишуть `PoolLive`. Точні сигнатури — у плані тижня 4 після імплементації.
+
 **Колонка «Підписант» — обов'язкова явна перевірка в коді, не опис.** `EphemeralPermission` гейтить **лише читання** акаунтів; сабміт і виконання транзакції не гейтяться зовсім, а `getAuthToken` видається будь-якому ключу з валідним підписом і членства не перевіряє (check 9, 19.09.2026). Тобто не-member спокійно надсилає tx у ER і мутує permissioned-акаунт, якщо сама інструкція його не зупинила. Кожна ER-інструкція сама доводить право підписанта: `has_one`/`constraint` проти `Config.crank`, `Position.owner`, `UserAccount.session_key`, плюс `session_expiry` і `actions_left`.
 
 **(week 1, 20.09.2026)** Таблиця нижче — фактичні інструкції тижня 1. Окремої `deposit`-інструкції на L1 нема: `credit_deposit` сам виконує SPL-transfer і нарахування в одній ER-tx (закриває §8 Q1, детально — §2.2). `init_market`/`init_pool`/`set_params`/`pause`/`unpause` розбито по рядках і доповнено новими адмінськими інструкціями (`seed_pool`, `delegate_market`, `delegate_pool`, `faucet_init`), яких не було в плані 18.09.
@@ -522,6 +572,8 @@ Blockhash — з того з'єднання, куди шлемо. `skipPreflight
 **Членство в permission ≠ право на дію (check 9, 19.09.2026).** Три різні перевірки, які легко сплутати: (1) видача auth-token (`getAuthToken`) — лише підпис, членство не перевіряється, токен отримує будь-хто; (2) **читання** permissioned-акаунта — гейтиться членством, не-member бачить `null`; (3) **сабміт і виконання tx** — не гейтиться нічим, крім логіки самої інструкції. У check 9 session key не був членом (читання давало `null`), але його tx успішно змінила лічильник. Наслідок для нас: session key має бути **і** в `members` (щоб клієнт читав `Position`/`UserAccount`), **і** перевірений у програмі через `UserAccount.session_key` + `session_expiry` + `actions_left` — одного членства мало, воно нічого не забороняє.
 
 ### 5.5 Екрани й стани
+
+**(week 4, 22.09.2026)** Актуальна структура екранів, таби й джерело візуалу — **§2.5.4** (макети Claude Design у `docs/design/`). Таблиця нижче — історія рішень 21.09; де розходиться — §2.5.4 переважає (зокрема: графік — лінія mark з індексера, свічки опційно; «Очима публіки» реалізовано як окремий таб **Ledger**).
 
 **UI polish тижня 4 (затверджено 21.09.2026, жорстко 2–3 дні — не за рахунок Seeker/відео):**
 
@@ -690,6 +742,8 @@ Solana MCP `program_autofixer` — на кожну зміну програми �
 **Тиждень 4 · 19–25.10 — Seeker, відео, подача.** Реальний Seeker; відео 2–3 хв; README; подачі. Пост №3. **(затверджено 21.09.2026)** + UI polish 2–3 дні за §5.5 (графік mark, portfolio-шапка, слайдер плеча, privacy-бейдж/«очима публіки», темна тема) + UX-борг онбордингу (§7.1 #22: ≤2 MWA-промпти, pre-flight SOL, «Disconnect & forget», re-read session key). Порядок жертв усередині тижня 4: темна тема → 24h change → графік історії → **ніколи**: Seeker-тест, відео, privacy-бейдж.
 
 **Резерв · 26.10–02.11.**
+
+**Тиждень 4 (план, від 22.09.2026, дедлайн ≥1 тиждень):** порядок §2.5 — (1) `PoolLive`/знімок/`MarketRisk`-permission + редеплой; (2) relayer на Railway (crank + індексер + `/sponsor`) + scheduler `i64::MAX`; (3) онбординг одним екраном зі спонсорованим rent, `accountSubscribe`, History одразу; (4) UI за макетами Claude Design (5 табів, Ledger); (5) README/відео/пітч/тег `v0.4-mvp`. Перевірка: емулятор + Phantom APK + fakewallet; devnet 06/07/08 проти Railway-crank-а. Не в тижні 4 — див. кінець §2.5.
 
 ### 7.4 Успіх
 
