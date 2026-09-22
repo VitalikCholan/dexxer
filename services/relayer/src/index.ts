@@ -38,6 +38,7 @@ import { shutdown } from "./shutdown.js";
 import type { RelayerConfig, RelayerState } from "./crank.js";
 import { attachWs, indexerRouter } from "./indexer/http.js";
 import type { IndexerStats } from "./indexer/accounts.js";
+import { ORACLE_STALE_MS, isStale } from "./indexer/prices.js";
 
 if ((process.env.DEXXER_NET ?? "local") === "devnet") {
   process.env.BASE_RPC ??= "https://rpc.magicblock.app/devnet";
@@ -111,10 +112,17 @@ if (cfg.indexerEnabled && !pool) {
 } else if (cfg.indexerEnabled && pool) {
   wsHub = attachWs(server);
   app.use(indexerRouter(pool));
-  const { startIndexer } = await import("./indexer/accounts.js");
-  const hub = wsHub;
-  stopIndexer = startIndexer({ pool, stats: indexerStats, broadcast: (msg) => hub.broadcast(msg) });
-  console.log("indexer: started (oracle candles, Pool/BalancesRoot snapshots, Disclosure feed, /ws)");
+  try {
+    const { startIndexer } = await import("./indexer/accounts.js");
+    const hub = wsHub;
+    stopIndexer = startIndexer({ pool, stats: indexerStats, broadcast: (msg) => hub.broadcast(msg) });
+    console.log("indexer: started (oracle candles, Pool/BalancesRoot snapshots, Disclosure feed, /ws)");
+  } catch (e) {
+    // Fix round 1 (code review): the indexer is a best-effort add-on — a
+    // failure starting its subscriptions (bad IDL path, RPC unreachable at
+    // boot, etc.) must never take the crank loop down with it.
+    console.error("indexer: failed to start, continuing without it", String(e));
+  }
 }
 
 app.use(
@@ -124,7 +132,11 @@ app.use(
     crankPubkey: cfg.crank.publicKey,
     feePayerPubkey: cfg.feePayer.publicKey,
     db: pool,
-    getIndexerSnapshot: () => ({ ...indexerStats, wsClients: wsHub?.clientCount() ?? 0 }),
+    getIndexerSnapshot: () => ({
+      ...indexerStats,
+      wsClients: wsHub?.clientCount() ?? 0,
+      oracleStale: isStale(indexerStats.lastTickTs, Date.now(), ORACLE_STALE_MS),
+    }),
   }),
 );
 

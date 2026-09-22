@@ -58,13 +58,35 @@ All endpoints return JSON. Base URL: the relayer's own domain.
 | Method & path | Query params | Returns |
 | --- | --- | --- |
 | `GET /prices` | `tf` (`1m`\|`5m`\|`15m`, default `1m`), `limit` (default 300, max 1000) | `{ tf, candles: [{ t, o, h, l, c }] }` — `t` unix ms, `o/h/l/c` are plain numbers (SOL/USD price, 1e6 scale) |
-| `GET /mark` | — | `{ price, slot, ts }` — `price` is a **string** (see Numbers below), or all-`null` if no tick has landed yet |
+| `GET /mark` | — | `{ price, slot, ts, stale }` — `price` is a **string** (see Numbers below), or all-`null`/`stale:true` if no tick has landed yet. `stale = now - ts > ORACLE_STALE_MS` (30s) — see "Oracle staleness" below |
 | `GET /pool/history` | `limit` (default 100, max 1000) | array of Pool snapshot rows, oldest→newest |
 | `GET /pool/latest` | — | one Pool snapshot row, or `null` |
 | `GET /disclosures` | `limit` (default 100, max 1000) | array of closed-trade disclosure rows, newest `closed_slot` first |
 | `GET /root/latest` | — | `{ root_slot, filled, leavesHex }`, or `null` |
-| `GET /healthz` | — | (Task 4) health payload, now also carrying `indexer: { ticks, lastTickTs, lastPoolSlot, disclosures, wsClients }` |
-| `GET /ws` (WebSocket, not REST) | — | pushes `{type:"mark",price,ts}` (throttled to ≤1/s), `{type:"pool",...}` on a new Pool snapshot, `{type:"disclosure",...}` on a newly discovered Disclosure |
+| `GET /healthz` | — | (Task 4) health payload, now also carrying `indexer: { ticks, lastTickTs, lastPoolSlot, disclosures, wsClients, oracleStale }` |
+| `GET /ws` (WebSocket, not REST) | — | pushes `{type:"mark",price,ts,stale}` (throttled to ≤1/s while live; exactly one extra `stale:true` frame when the feed transitions to stale — see below), `{type:"pool",...}` on a new Pool snapshot, `{type:"disclosure",...}` on a newly discovered Disclosure |
+
+### Oracle staleness (fix round 1)
+
+The base-layer copy of the delegated oracle feed is a stale **commit**
+snapshot (it only updates when `commit_aggregate` runs, not on every price
+tick) — failing over to it during a TEE outage would present frozen prices
+as if they were live, which is worse than being honest about the outage.
+So there is **no base-RPC fallback** for prices: the TEE reconnect/poll
+loop (`indexer/accounts.ts`) is the only oracle source, and staleness is
+surfaced explicitly instead:
+
+- `GET /mark`'s `stale` is computed per-request straight from the latest
+  stored tick's age (`isStale(ts, now, ORACLE_STALE_MS)`,
+  `ORACLE_STALE_MS = 30_000`, `src/indexer/prices.ts`).
+- The WS `mark` stream carries `stale` on every frame; while the feed is
+  live those are the normal throttled (≤1/s) `stale:false` frames, and the
+  moment the feed goes quiet for `ORACLE_STALE_MS` a watchdog emits exactly
+  **one** `stale:true` frame (not spammed every second for the whole
+  outage) using the last known price.
+- `/healthz`'s `indexer.oracleStale` is the same predicate against
+  `indexer.lastTickTs` — `true` if the indexer has never ticked at all.
+- `/prices` (candle history) is unaffected — it doesn't claim to be "now".
 
 A Pool snapshot row: `{ slot, ts, capital_total, protocol_liquidity, locked_total, fees_accrued, insurance, bad_debt_total }`.
 A disclosure row: `{ pubkey, side, size, entry, exit, pnl, fees, reason, opened_slot, closed_slot, nonce, ts }`.
@@ -131,7 +153,8 @@ Postgres — the crank loop is unaffected; only `/healthz`'s `lastTickAt`/
 
 ```sh
 npm test        # node:test — keypairFromEnv b58 round-trip, health-payload staleness logic,
-                 # candles.ts bucketing (pure), prices.ts::decodeFeed (golden vectors vs oracle.rs)
+                 # candles.ts bucketing (pure), prices.ts::decodeFeed (golden vectors vs oracle.rs),
+                 # prices.ts::isStale (staleness predicate)
 npx tsc --noEmit
 ```
 

@@ -10,7 +10,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { decodeFeed } from "../src/indexer/prices.js";
+import { decodeFeed, isStale } from "../src/indexer/prices.js";
 
 /** Mirrors oracle.rs's `fixture()`: 8 disc | 32 write_authority(0) | tag=1 | 32 feed_id | i64 price | u64 conf | i32 expo | i64 publish | i64 prev | i64 ema | u64 ema_conf | u64 posted | 1 trailing = 134 bytes. */
 function fixture(price: bigint, conf: bigint, expo: number, publish: bigint, posted: bigint): Buffer {
@@ -77,4 +77,32 @@ test("decodeFeed: unknown tag byte throws", () => {
   const d = fixture(1n, 0n, 8, 0n, 1n);
   d.writeUInt8(2, 40); // tag=2 is neither Partial(0) nor Full(1)
   assert.throws(() => decodeFeed(d));
+});
+
+test("decodeFeed: tag=0 (Partial) shifts offsets by one — mirrors oracle.rs::partial_tag_shifts_offsets_by_one", () => {
+  // Rust: `let mut d = fixture(10_000_000_000, 0, 8, 0, 1); d[40] = 0;
+  // d.insert(41, 3);` — start from the tag=1 fixture, flip the tag to 0
+  // (Partial), then INSERT one extra byte (num_signatures=3) at offset 41,
+  // shifting everything from there on by +1 (135 bytes total).
+  const base = fixture(10_000_000_000n, 0n, 8, 0n, 1n);
+  base.writeUInt8(0, 40); // tag = 0 (Partial)
+  const d = Buffer.concat([base.subarray(0, 41), Buffer.from([3]), base.subarray(41)]);
+  const f = decodeFeed(d);
+  assert.equal(f.price, 100_000_000n);
+});
+
+test("isStale: null lastTs is always stale", () => {
+  assert.equal(isStale(null, 1_000_000, 30_000), true);
+});
+
+test("isStale: within maxAgeMs is not stale", () => {
+  assert.equal(isStale(1_000_000 - 29_999, 1_000_000, 30_000), false);
+});
+
+test("isStale: past maxAgeMs is stale", () => {
+  assert.equal(isStale(1_000_000 - 30_001, 1_000_000, 30_000), true);
+});
+
+test("isStale: exactly maxAgeMs old is not yet stale (strict >)", () => {
+  assert.equal(isStale(1_000_000 - 30_000, 1_000_000, 30_000), false);
 });

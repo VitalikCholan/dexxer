@@ -35,7 +35,7 @@ import { Connection, Keypair, PublicKey } from "@solana/web3.js";
 import type { AccountInfo } from "@solana/web3.js";
 import { ORACLE, baseConn } from "../../../../tests/er/lib/env.js";
 import { DEXXER_CORE_PROGRAM_ID, DISCLOSURE_DISC, accountNs, decodeBalancesRoot, dexxerCoreProgram, pdas } from "../../../../tests/er/lib/program.js";
-import { decodeFeed } from "./prices.js";
+import { ORACLE_STALE_MS, decodeFeed, isStale } from "./prices.js";
 import { insertDisclosure, insertPoolSnapshot, insertRoot, insertTick } from "./store.js";
 import type { DisclosureRow } from "./store.js";
 import type { DbPool } from "../db.js";
@@ -154,6 +154,12 @@ export function startIndexer(deps: IndexerDeps): () => void {
   } else {
     const oracleConn = new Connection(erRpc, { commitment: "confirmed", wsEndpoint: erWs });
     let lastMarkAt = 0;
+    let lastPrice: bigint | null = null;
+    // Fix round 1 (code review): edge-triggered — `staleAnnounced` makes
+    // sure the WS "the feed went stale" frame is sent exactly once per
+    // outage, not on every watchdog tick (that would spam clients every
+    // second for the whole duration of a TEE outage).
+    let staleAnnounced = false;
     stops.push(
       subscribeAccountWithFallback(
         oracleConn,
@@ -168,6 +174,8 @@ export function startIndexer(deps: IndexerDeps): () => void {
           }
           if (feed.postedSlot === 0n) return; // unfilled/stale — CLAUDE.md's oracle rule
           const now = Date.now();
+          lastPrice = feed.price;
+          staleAnnounced = false; // fresh data — the next outage gets its own single announcement
           if (now - lastMarkAt < MARK_THROTTLE_MS) return;
           lastMarkAt = now;
           stats.ticks += 1;
@@ -175,12 +183,30 @@ export function startIndexer(deps: IndexerDeps): () => void {
           void insertTick(pool, { ts: now, price: feed.price, slot }).catch((e) =>
             console.error("indexer/oracle: insertTick failed", String(e)),
           );
-          broadcast({ type: "mark", price: feed.price.toString(), ts: now });
+          broadcast({ type: "mark", price: feed.price.toString(), ts: now, stale: false });
         },
         { checkIntervalMs: 1000, staleAfterMs: 3000 },
         "oracle",
       ),
     );
+
+    // Staleness watchdog (fix round 1, code review): the base-layer copy of
+    // the delegated oracle feed is a stale COMMIT snapshot, not a live
+    // fallback — a TEE outage must surface as `stale:true`, never as
+    // silently frozen prices served as if live. `/mark` computes staleness
+    // per-request straight off the DB row's `ts` (see http.ts); this
+    // watchdog is only for the WS push side, which has no "per-request"
+    // moment to compute it at — it must notice the transition itself.
+    const staleWatchdog = setInterval(() => {
+      const now = Date.now();
+      if (!staleAnnounced && isStale(stats.lastTickTs, now, ORACLE_STALE_MS)) {
+        staleAnnounced = true;
+        console.warn("indexer/oracle: feed stale, broadcasting stale:true once");
+        broadcast({ type: "mark", price: lastPrice !== null ? lastPrice.toString() : null, ts: now, stale: true });
+      }
+    }, 1000);
+    staleWatchdog.unref();
+    stops.push(() => clearInterval(staleWatchdog));
   }
 
   // --- Pool: base RPC, public account, written every ~5 min by commit_aggregate. ---

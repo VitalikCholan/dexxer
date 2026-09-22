@@ -34,9 +34,11 @@ export interface IndexerSnapshot {
   lastPoolSlot: number | null;
   disclosures: number;
   wsClients: number;
+  /** Fix round 1 (code review): `now - lastTickTs > ORACLE_STALE_MS` (indexer/prices.ts's `isStale`) — the base-layer feed copy is a stale commit snapshot, not a live fallback, so this must be surfaced rather than silently serving old prices. `true` (not `false`) when the indexer has never ticked at all. */
+  oracleStale: boolean;
 }
 
-const EMPTY_INDEXER_SNAPSHOT: IndexerSnapshot = { ticks: 0, lastTickTs: null, lastPoolSlot: null, disclosures: 0, wsClients: 0 };
+const EMPTY_INDEXER_SNAPSHOT: IndexerSnapshot = { ticks: 0, lastTickTs: null, lastPoolSlot: null, disclosures: 0, wsClients: 0, oracleStale: true };
 
 export interface HealthPayload {
   ok: boolean;

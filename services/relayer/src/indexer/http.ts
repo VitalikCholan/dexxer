@@ -19,6 +19,7 @@ import type { WebSocket } from "ws";
 import type { Server } from "http";
 import type { DbPool } from "../db.js";
 import { aggregateCandles, tfMsOf } from "./candles.js";
+import { ORACLE_STALE_MS, isStale } from "./prices.js";
 import { latestPoolSnapshot, latestRoot, latestTick, listDisclosures, listPoolSnapshots, listTicks } from "./store.js";
 import type { WsMessage } from "./accounts.js";
 
@@ -51,7 +52,12 @@ export function indexerRouter(pool: DbPool): Router {
 
   router.get("/mark", async (_req, res) => {
     const t = await latestTick(pool);
-    res.json(t ? { price: t.price.toString(), slot: t.slot, ts: t.ts } : { price: null, slot: null, ts: null });
+    const now = Date.now();
+    // Fix round 1 (code review): the base-layer copy of the delegated oracle
+    // feed is a stale commit snapshot, not a live fallback — so a TEE outage
+    // must surface as `stale:true` here, never as silently frozen prices.
+    const stale = isStale(t?.ts ?? null, now, ORACLE_STALE_MS);
+    res.json(t ? { price: t.price.toString(), slot: t.slot, ts: t.ts, stale } : { price: null, slot: null, ts: null, stale: true });
   });
 
   router.get("/pool/history", async (req, res) => {

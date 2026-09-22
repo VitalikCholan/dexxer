@@ -97,3 +97,24 @@ export function decodeFeed(data: Buffer | Uint8Array): DecodedFeed {
 
   return { price: price1e6, confBps, publishTime, postedSlot };
 }
+
+// --- Staleness (fix round 1, code review) ---
+//
+// Controller ruling revises the earlier "base RPC as a last resort"
+// fallback: the base-layer copy of the delegated oracle feed is a stale
+// COMMIT snapshot (the feed only ever gets committed on `commit_aggregate`,
+// not on every price update), so failing over to it on a TEE outage would
+// present frozen prices as if they were live — worse than surfacing the
+// staleness honestly. The fix keeps the existing TEE reconnect/poll loop
+// (accounts.ts) as the ONLY oracle source and instead makes staleness an
+// explicit, visible field on every price-bearing response (`/mark`, the WS
+// `mark` frame, `/healthz.indexer.oracleStale`) rather than silently
+// serving old data.
+
+/** A tick/mark is "live" only if it landed within the last `ORACLE_STALE_MS`. */
+export const ORACLE_STALE_MS = 30_000;
+
+/** Pure predicate — `lastTs === null` (never any data) also counts as stale. */
+export function isStale(lastTs: number | null, now: number, maxAgeMs: number): boolean {
+  return lastTs === null || now - lastTs > maxAgeMs;
+}
