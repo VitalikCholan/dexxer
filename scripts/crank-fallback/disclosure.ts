@@ -157,7 +157,7 @@ export async function runRootCycle(ctx: DisclosureCtx): Promise<void> {
   // make the whole `set_balances_root` batch fail (`InvalidLeafAccount`) if included
   // — filter by exact byte length (discriminator + `INIT_SPACE`, from the IDL coder,
   // i.e. `8 + UserAccount::INIT_SPACE`) before building any batch.
-  const expectedUserAccountLen = ctx.prog.coder.accounts.size("UserAccount");
+  const expectedUserAccountLen = ctx.prog.coder.accounts.size("userAccount") // camelCased by `new Program(idl)` — see index.ts;
   const currentUserAccs = userAccs.filter((u) => {
     const ok = u.account.data.length === expectedUserAccountLen;
     if (!ok) console.log(`skipped legacy: ${u.pubkey.toBase58()} len=${u.account.data.length}`);
