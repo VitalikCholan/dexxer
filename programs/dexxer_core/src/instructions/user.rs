@@ -790,6 +790,27 @@ pub fn undelegate_user(ctx: Context<UndelegateUser>) -> Result<()> {
     a.dq.len = 0;
     a.dq.records = [ClosedRecord::default(); DQ_CAPACITY];
 
+    // Flush the scrub to the account's raw data now, while this program is
+    // still its uncontested owner. `Account<'info, T>::exit()` re-serializes
+    // unconditionally (`exit_with_expected_owner` compares `T::owner()` to
+    // `crate::ID`, both compile-time constants for this program — it never
+    // reads the account's *live* owner field), and Anchor calls it again,
+    // automatically, after this function returns. Root cause of devnet
+    // `ExternalAccountDataModified` (Ruling 10): `commit_and_undelegate`
+    // below flips these accounts' owner away from this program before that
+    // automatic exit runs; the automatic write is a raw data-buffer write
+    // gated only by the runtime's owner check, so a write that changes bytes
+    // after the owner has moved trips it. Writing the scrub here — before
+    // any CPI reassigns ownership — makes the later automatic write a no-op
+    // (identical bytes), which the runtime does not flag regardless of the
+    // account's owner at that point. `position` is untouched by this
+    // function, so its automatic exit is already a no-op either way; flushed
+    // here too only for uniformity with `user_account`/`dq` and to stay safe
+    // if a future change starts mutating it.
+    a.user_account.exit(&crate::ID)?;
+    a.position.exit(&crate::ID)?;
+    a.dq.exit(&crate::ID)?;
+
     close_permission_if_present(
         &a.user_account.to_account_info(),
         &a.user_permission.to_account_info(),

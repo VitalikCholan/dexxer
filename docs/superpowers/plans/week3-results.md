@@ -493,3 +493,116 @@ BalancesRoot разом)**: escrow ER-баланс `200169040 → 198969040` л�
 
 Повний звіт (кожна команда, вивід, self-review, занепокоєння) —
 `.superpowers/sdd/2026-09-22-week3-disclosure-root-exit/task-8-report.md`.
+
+## Task 8 — M-A на dexxer_core: розслідування (рулінг 10)
+
+Розслідування `{"InstructionError":[0,"ExternalAccountDataModified"]}` з `undelegate_user`
+(devnet-tee, sig 1 `3SsSoNncVmLtZcttwTodkt8yexdxTUFnT4ELSGV4dAaCcFbUs4khumFuT7WGf95e8mtJHiJjWH5jsFLauirHjY6X`,
+sig 2 `44RWU8R8v8TsNJ1cH43HxUngNomhVS4KwxpXx8HY3E3nR8cktfH4AFwZiwgBpKS6rmVbBwkh4AxwqPMwGWDd6CKZ`; обидва
+атомарно відкотились — `UserAccount`/`Position`/`DisclosureQueue` лишились у власності Delegation
+Program). За дисципліною `systematic-debugging`: root cause до фіксу, мінімальна правка.
+
+### Root cause
+
+`Account<'info, T>::exit()` (Anchor 1.0.2, `anchor-lang-1.0.2/src/accounts/account.rs:255-268`,
+`exit_with_expected_owner`) серіалізує безумовно:
+
+```rust
+pub(crate) fn exit_with_expected_owner(
+    &self,
+    expected_owner: &Pubkey,
+    program_id: &Pubkey,
+) -> Result<()> {
+    // Only persist if the owner is the current program and the account is not closed.
+    if expected_owner == program_id && !crate::common::is_closed(self.info) {
+        let mut data = self.info.try_borrow_mut_data()?;
+        ...
+        self.account.try_serialize(&mut writer)?;
+    }
+    Ok(())
+}
+```
+
+`expected_owner` — це `T::owner()`, `program_id` — `&crate::ID`: для будь-якого акаунта `#[account]`
+цієї програми обидва завжди дорівнюють `dexxer_core::ID` на етапі компіляції. Перевірка ніколи не
+читає **живе** поле `owner` акаунта — вона тавтологічна. Anchor викликає `exit()` для кожного `mut`
+акаунта автоматично одразу після повернення з тіла інструкції (`Accounts::exit`, згенеровано
+`#[program]`-макросом) — це поза контролем коду інструкції.
+
+`undelegate_user` (`programs/dexxer_core/src/instructions/user.rs`, до фіксу) скрабить
+`user_account`/`dq` (тіло функції, коментар "Scrub") **у пам'яті**, потім тричі викликає
+`close_permission_if_present` (кожен раз `CloseEphemeralPermissionCpi` на Permission Program —
+жодних записів у дані `user_account`/`position`/`dq`, лише кредит lamports у payer, що не потребує
+владності), і нарешті один `commit_and_undelegate` (`MagicIntentBundleBuilder`,
+`ephemeral-rollups-sdk-0.16.2/src/ephem/mod.rs:220-271`, `build()`) — це CPI до Magic Program з
+інструкцією `ScheduleIntentBundle`, що включає `user_account`/`position`/`dq` як writable акаунти. ER
+відрізняється від L1 саме тим, що владність (owner) делегованих акаунтів на L1 — Delegation Program,
+а на ER — сама програма (`.agents/skills/magicblock/references/delegation.md:390-396`, "Account Owner
+Changes on Delegation"); механізм undelegate — ER-специфічне розширення виконання, не документоване
+в клієнтському SDK-крейті (сирці Magic/Permission Program не завантажені локально — поза скоупом цієї
+задачі, як і зазначено в брифі).
+
+Спайк (`spikes/01-private-counter-tee/programs/private-counter/src/lib.rs`, `exit()`, рядки 257-283)
+робить **той самий** порядок CPI (`CloseEphemeralPermissionCpi` → `commit_and_undelegate`) на **одному**
+`Account<'info, Counter>` mut-акаунті й пройшов з першої спроби. Відмінність не в кількості акаунтів
+самій по собі і не в типізації (`Account<>` — саме той тип, що документація `delegation.md:104-111`
+показує для одноакаунтного `undelegate`) — відмінність у тому, що обробник `exit()` **жодного разу не
+змінює** `counter`'s поля: автоматичний фінальний запис Anchor тоді серіалізує ті самі байти, що вже
+лежать у даних акаунта (no-op за вмістом). `undelegate_user`, навпаки, **змінює** `user_account`/`dq`
+(скраб) перед CPI, що (потенційно) переносить владність — тож фінальний автоматичний запис Anchor
+серіалізує **інші** байти, ніж ті, що вже на акаунті, у момент, коли виконуюча програма вже не
+власник → `ExternalAccountDataModified`. `position` у `undelegate_user` не змінюється жодним полем —
+для нього фінальний запис завжди no-op, як і в спайку.
+
+### Мінімальний фікс
+
+`programs/dexxer_core/src/instructions/user.rs`, `undelegate_user`: одразу після скрабу, до трьох
+`close_permission_if_present`, додано явний ранній флаш:
+
+```rust
+a.user_account.exit(&crate::ID)?;
+a.position.exit(&crate::ID)?;
+a.dq.exit(&crate::ID)?;
+```
+
+Це записує скрабовані байти в дані акаунта **поки програма — безсумнівний власник** (жодна CPI ще не
+виконалась). Фінальний автоматичний виклик Anchor `exit()` (після повернення з `undelegate_user`)
+тоді серіалізує **ідентичні** байти — вміст акаунта не змінюється відносно попереднього стану, тож
+рантайм-перевірка (яка фіксує порушення лише за розбіжністю вмісту, не за самим фактом виклику
+`try_borrow_mut_data`) не спрацьовує, незалежно від того, чи владність до того моменту вже перейшла.
+`position` включено в ранній флаш для одноманітності з `user_account`/`dq` і як захист про запас —
+сьогодні його запис завжди no-op, але явний ранній `exit()` лишається безпечним, якщо в майбутньому
+хтось додасть мутацію `position` у цю функцію, не помітивши цей інваріант. Порядок
+(скраб → ранній flush → close_permission ×3 → commit_and_undelegate), guard'и та приватність-коментарі
+не змінені.
+
+### Ліміт LiteSVM
+
+LiteSVM не деплоює Magic Program (`magic_program.to_account_info().executable` — false), тож CPI
+`commit_and_undelegate` у `undelegate_user` на LiteSVM **завжди пропускається** — LiteSVM не може ні
+відтворити, ні спростувати саму гіпотезу про перенесення владності всередині ER-транзакції; 5/5
+тестів `tests/litesvm/tests/undelegate.rs` (65 всього в `dexxer_litesvm`, паралельна задача рухає решту)
+підтверджують лише що скраб і guard'и не зламані цим фіксом — не що фікс усуває помилку на TEE.
+
+### Що має перевірити наступний прогін на devnet
+
+- `undelegate_user` після повного циклу (закрита позиція, порожня чергу, нульовий баланс) успішно
+  лендиться на L1 без `ExternalAccountDataModified` (обидва попередні сиг з рулінгу 10 — контрольна
+  група для порівняння).
+- Base-стан після успіху: `UserAccount`/`Position`/`DisclosureQueue` **знову** у власності
+  `dexxer_core`, не Delegation Program.
+- Байти `UserAccount`/`DisclosureQueue` на L1 — справді скрабовані (ті самі перевірки, що
+  `undelegate_scrubs_after_full_withdraw` робить на LiteSVM: `session_key`/`session_expiry`/
+  `actions_left`/`nonce`/`last_withdraw_slot`/`exit_salt` нульові, `dq.head`/`dq.len` нульові,
+  `owner` збережено).
+- Якщо помилка повториться попри фікс — це спростовує гіпотезу "автоматичний повторний запис
+  Anchor"; наступний крок тоді — читання сирців Permission/Delegation Program (поза скоупом цієї
+  задачі) для перевірки, чи саме `commit_and_undelegate` синхронно змінює `owner` всередині ER-tx,
+  чи помилка походить з іншого місця (наприклад, самого `close_permission`-CPI на трьох акаунтах
+  підряд, або взаємодії `fee_escrow`-як-делегованого-payer'а з `commit_and_undelegate` — цей шлях
+  досі ніколи не тестувався: усі попередні перевірені виклики `fee_escrow`+`MagicIntentBundleBuilder`
+  (`commit_aggregate`, `withdraw`) використовують лише `.commit(...)`, ніколи
+  `.commit_and_undelegate(...)`).
+
+Повний звіт (свідчення, перевірені гіпотези, гаунтлет) —
+`.superpowers/sdd/2026-09-22-week3-disclosure-root-exit/task-8c-report.md`.
