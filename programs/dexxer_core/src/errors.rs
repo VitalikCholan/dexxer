@@ -96,6 +96,8 @@ pub enum DexxerError {
     BalanceNotZero,
     #[msg("too many actions in one commit bundle")]
     TooManyActions,
+    #[msg("PoolLive mint does not match Pool mint")]
+    PoolLiveMismatch,
 }
 
 impl From<MathError> for anchor_lang::error::Error {

@@ -18,6 +18,7 @@ pub struct World {
     pub risk: Pubkey,
     pub pool: Pubkey,
     pub pool_ata: Pubkey,
+    pub pool_live: Pubkey,
     pub feed: Pubkey,
     pub fee_escrow: Pubkey,
     pub balances_root: Pubkey,
@@ -32,6 +33,17 @@ pub struct World {
 
 impl World {
     pub fn bootstrap(h: &mut Harness) -> World {
+        Self::bootstrap_inner(h, true)
+    }
+
+    /// Same as `bootstrap`, but stops short of `init_pool_live` — used by the
+    /// admin-only negative test, which needs the PDA to not yet exist so the
+    /// `has_one = admin` check (not "account already in use") is what fires.
+    pub fn bootstrap_without_pool_live(h: &mut Harness) -> World {
+        Self::bootstrap_inner(h, false)
+    }
+
+    fn bootstrap_inner(h: &mut Harness, with_pool_live: bool) -> World {
         let admin = Keypair::new();
         let crank = Keypair::new();
         let mint_kp = Keypair::new();
@@ -83,6 +95,7 @@ impl World {
             market,
             pool,
             pool_ata: ata(&pool, &mint),
+            pool_live: pdas::pool_live(&mint),
             feed: pdas::feed(&oracle_program),
             fee_escrow: pdas::fee_escrow(),
             balances_root: pdas::balances_root(),
@@ -120,6 +133,13 @@ impl World {
             &[&w.admin],
         )
         .unwrap();
+        if with_pool_live {
+            h.send(
+                &[ixs::init_pool_live(&w.admin.pubkey(), &w.mint)],
+                &[&w.admin],
+            )
+            .unwrap();
+        }
         w
     }
 

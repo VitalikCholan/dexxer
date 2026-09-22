@@ -109,6 +109,20 @@ pub fn init_fee_escrow(admin: &Pubkey) -> Instruction {
         data: ix::InitFeeEscrow {}.data(),
     }
 }
+pub fn init_pool_live(admin: &Pubkey, mint: &Pubkey) -> Instruction {
+    let p = pdas::pool(mint);
+    Instruction {
+        program_id: prog(),
+        accounts: vec![
+            s(admin),
+            r(&pdas::config()),
+            r(&p),
+            w(&pdas::pool_live(mint)),
+            r(&SYSTEM),
+        ],
+        data: ix::InitPoolLive {}.data(),
+    }
+}
 pub fn init_balances_root(admin: &Pubkey) -> Instruction {
     Instruction {
         program_id: prog(),

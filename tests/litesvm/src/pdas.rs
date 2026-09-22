@@ -38,6 +38,9 @@ pub fn fee_escrow() -> Pubkey {
 pub fn balances_root() -> Pubkey {
     pda(&[BALANCES_ROOT_SEED])
 }
+pub fn pool_live(mint: &Pubkey) -> Pubkey {
+    pda(&[POOL_LIVE_SEED, mint.as_ref()])
+}
 /// Hash-seeded (week-3 controller ruling 9): `nonce` is per-user, so two
 /// traders' first closes both land on nonce 1 and would collide on the same
 /// PDA if seeded by nonce. `hash` is `commitment_hash(&args, &salt)`.

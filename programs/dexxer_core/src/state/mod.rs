@@ -7,6 +7,7 @@ pub mod market;
 pub mod market_risk;
 pub mod permissions;
 pub mod pool;
+pub mod pool_live;
 pub mod position;
 pub mod user;
 pub use balances_root::*;
@@ -18,6 +19,7 @@ pub use market::*;
 pub use market_risk::*;
 pub use permissions::*;
 pub use pool::*;
+pub use pool_live::*;
 pub use position::*;
 pub use user::*;
 
@@ -34,6 +36,9 @@ pub const FEE_ESCROW_SEED: &[u8] = b"fee_escrow";
 pub const COMMIT_SEED: &[u8] = b"commit";
 pub const DISCLOSURE_SEED: &[u8] = b"disclosure";
 pub const BALANCES_ROOT_SEED: &[u8] = b"balances_root";
+pub const POOL_LIVE_SEED: &[u8] = b"pool_live";
+/// Public `Pool` snapshot granularity: 100 dUSDC (6 decimals). Assets round down, liabilities round up (spec §2.5.1).
+pub const SNAPSHOT_STEP: u64 = 100_000_000;
 /// Fixed leaf count — hides the real user count (spec §2.4.2). Merkle upgrade when N > 64.
 pub const ROOT_LEAVES: usize = 64;
 /// UserAccounts per `set_balances_root` call (tx size / CU budget).

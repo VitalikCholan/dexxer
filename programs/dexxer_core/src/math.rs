@@ -182,6 +182,19 @@ pub fn decrease_pnl(
     upnl(side, size_close, entry, exit)
 }
 
+/// Round down to a multiple of `step` (pool-favouring for assets in the public snapshot).
+pub fn floor_step(x: u64, step: u64) -> u64 {
+    x - x % step
+}
+/// Round up to a multiple of `step` (conservative for liabilities). Errors on overflow.
+pub fn ceil_step(x: u64, step: u64) -> Result<u64, MathError> {
+    let r = x % step;
+    if r == 0 {
+        return Ok(x);
+    }
+    x.checked_add(step - r).ok_or(MathError::Overflow)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -189,6 +202,18 @@ mod tests {
 
     const P: u64 = 150_000_000; // $150.000000
     const S: u64 = 10_000_000_000; // 10 SOL
+
+    #[test]
+    fn step_rounding() {
+        const S: u64 = 100_000_000;
+        assert_eq!(floor_step(0, S), 0);
+        assert_eq!(floor_step(99_999_999, S), 0);
+        assert_eq!(floor_step(250_000_000, S), 200_000_000);
+        assert_eq!(ceil_step(0, S).unwrap(), 0);
+        assert_eq!(ceil_step(1, S).unwrap(), 100_000_000);
+        assert_eq!(ceil_step(200_000_000, S).unwrap(), 200_000_000);
+        assert!(ceil_step(u64::MAX, S).is_err());
+    }
 
     #[test]
     fn notional_10_sol_at_150() {
