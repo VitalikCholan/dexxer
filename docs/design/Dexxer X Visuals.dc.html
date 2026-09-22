@@ -1,0 +1,497 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<meta name="design_doc_mode" content="canvas">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  body { margin: 0; background: #05060A; font-family: 'IBM Plex Sans', system-ui, sans-serif; }
+  a { color: #7A5CFF; text-decoration: none; }
+  a:hover { color: #A18EFF; }
+</style>
+</helmet>
+
+<section style="padding: 64px; display: flex; flex-direction: column; gap: 40px; background: #05060A;">
+
+  <div style="display: flex; flex-direction: column; gap: 10px; max-width: 900px;">
+    <div style="font-family: 'IBM Plex Mono', monospace; font-size: 13px; letter-spacing: 0.18em; text-transform: uppercase; color: #6C7484;">Dexxer · thread card · turn 5</div>
+    <div style="font-size: 34px; font-weight: 600; color: #EDEFF4; letter-spacing: -0.02em;">Card 1600×900</div>
+  </div>
+
+  <div id="5a" style="display: flex; flex-direction: column; gap: 18px; padding: 28px; background: #0B0D13; border: 1px solid #191D28; width: fit-content;">
+    <div style="display: flex; align-items: center; gap: 14px;">
+      <div style="font-family: 'IBM Plex Mono', monospace; font-size: 12px; font-weight: 600; letter-spacing: 0.1em; color: #05060A; background: #7A5CFF; padding: 4px 9px;">5a</div>
+      <div style="font-size: 17px; font-weight: 600; color: #EDEFF4;">Thread card</div>
+    </div>
+    <div id="export-card" style="position: relative; width: 1600px; height: 900px; background: #0A0B0F; overflow: hidden;">
+      <svg width="1600" height="900" viewBox="0 0 1600 900" style="position: absolute; inset: 0; opacity: 0.4;"><g opacity="0.070" fill="#7A5CFF"><rect x="59" y="652" width="8" height="254"></rect><rect x="40" y="745" width="46" height="96"></rect></g><g opacity="0.070" fill="#7A5CFF"><rect x="125" y="671" width="8" height="252"></rect><rect x="106" y="748" width="46" height="96"></rect></g><g opacity="0.070" fill="#7A5CFF"><rect x="191" y="671" width="8" height="220"></rect><rect x="172" y="755" width="46" height="96"></rect></g><g opacity="0.070" fill="#7A5CFF"><rect x="257" y="728" width="8" height="202"></rect><rect x="238" y="772" width="46" height="96"></rect></g><g opacity="0.073" fill="#7A5CFF"><rect x="323" y="708" width="8" height="212"></rect><rect x="304" y="772" width="46" height="96"></rect></g><g opacity="0.131" fill="#7A5CFF"><rect x="389" y="700" width="8" height="234"></rect><rect x="370" y="773" width="46" height="96"></rect></g><g opacity="0.188" fill="#7A5CFF"><rect x="455" y="665" width="8" height="270"></rect><rect x="436" y="757" width="46" height="96"></rect></g><g opacity="0.245" fill="#7A5CFF"><rect x="521" y="703" width="8" height="196"></rect><rect x="502" y="752" width="46" height="96"></rect></g><g opacity="0.302" fill="#7A5CFF"><rect x="587" y="692" width="8" height="224"></rect><rect x="568" y="776" width="46" height="96"></rect></g><g opacity="0.359" fill="#7A5CFF"><rect x="653" y="691" width="8" height="242"></rect><rect x="634" y="767" width="46" height="96"></rect></g><g opacity="0.417" fill="#7A5CFF"><rect x="719" y="700" width="8" height="246"></rect><rect x="700" y="780" width="46" height="96"></rect></g><g opacity="0.474" fill="#7A5CFF"><rect x="785" y="710" width="8" height="229"></rect><rect x="766" y="780" width="46" height="96"></rect></g><g opacity="0.531" fill="#7A5CFF"><rect x="851" y="722" width="8" height="245"></rect><rect x="832" y="775" width="46" height="96"></rect></g><g opacity="0.588" fill="#7A5CFF"><rect x="917" y="750" width="8" height="211"></rect><rect x="898" y="798" width="46" height="96"></rect></g><g opacity="0.645" fill="#7A5CFF"><rect x="983" y="737" width="8" height="216"></rect><rect x="964" y="815" width="46" height="96"></rect></g><g opacity="0.703" fill="#7A5CFF"><rect x="1049" y="765" width="8" height="211"></rect><rect x="1030" y="832" width="46" height="96"></rect></g><g opacity="0.760" fill="#7A5CFF"><rect x="1115" y="771" width="8" height="256"></rect><rect x="1096" y="843" width="46" height="96"></rect></g><g opacity="0.817" fill="#7A5CFF"><rect x="1181" y="779" width="8" height="203"></rect><rect x="1162" y="833" width="46" height="96"></rect></g><g opacity="0.850" fill="#7A5CFF"><rect x="1247" y="724" width="8" height="236"></rect><rect x="1228" y="805" width="46" height="96"></rect></g><g opacity="0.850" fill="#7A5CFF"><rect x="1313" y="718" width="8" height="207"></rect><rect x="1294" y="784" width="46" height="96"></rect></g><g opacity="0.850" fill="#7A5CFF"><rect x="1379" y="712" width="8" height="264"></rect><rect x="1360" y="784" width="46" height="96"></rect></g><g opacity="0.850" fill="#7A5CFF"><rect x="1445" y="687" width="8" height="221"></rect><rect x="1426" y="762" width="46" height="96"></rect></g><g opacity="0.850" fill="#7A5CFF"><rect x="1511" y="700" width="8" height="241"></rect><rect x="1492" y="765" width="46" height="96"></rect></g><g opacity="0.850" fill="#7A5CFF"><rect x="1577" y="703" width="8" height="252"></rect><rect x="1558" y="763" width="46" height="96"></rect></g><g opacity="0.850" fill="#7A5CFF"><rect x="1643" y="704" width="8" height="212"></rect><rect x="1624" y="747" width="46" height="96"></rect></g></svg>
+      <div style="position: absolute; left: 132px; top: 180px; display: flex; flex-direction: column; gap: 56px;">
+        <svg width="360" height="248" viewBox="46 100 296 200" style="display: block;"><g><path fill="#7A5CFF" fill-rule="evenodd" d="M56 110 H126 A90 90 0 0 1 126 290 H56 Z M96 150 H126 A50 50 0 0 1 126 250 H96 Z"></path><g fill="none" stroke="#7A5CFF" stroke-width="40" clip-path="inset(0 0 50% 0)"><path d="M 232 110 L 332 290"></path><path d="M 332 110 L 232 290"></path></g><g fill="none" stroke="#7A5CFF" stroke-width="40" opacity="0.38" clip-path="inset(50% 0 0 0)"><path d="M 232 110 L 332 290"></path><path d="M 332 110 L 232 290"></path></g></g></svg>
+        <div style="font-size: 132px; font-weight: 700; letter-spacing: -0.04em; color: #F2F3F7; line-height: 1;">Dexxer</div>
+      </div>
+    </div>
+    <div style="font-family: 'IBM Plex Mono', monospace; font-size: 13px; line-height: 1.6; color: #8A93A5; max-width: 900px;">Mark and name stacked in the upper left with the whole right half left open; the candle series sits low and muted, lifting toward the right edge.</div>
+  </div>
+
+</section>
+
+<section style="padding: 64px; display: flex; flex-direction: column; gap: 40px; background: #05060A;">
+
+  <div style="display: flex; flex-direction: column; gap: 10px; max-width: 900px;">
+    <div style="font-family: 'IBM Plex Mono', monospace; font-size: 13px; letter-spacing: 0.18em; text-transform: uppercase; color: #6C7484;">Dexxer · chart banners · turn 4</div>
+    <div style="font-size: 34px; font-weight: 600; color: #EDEFF4; letter-spacing: -0.02em;">Three candlestick banners</div>
+    <div style="font-family: 'IBM Plex Mono', monospace; font-size: 15px; line-height: 1.6; color: #8A93A5;">Same accent, same text composition, same empty avatar corner. Each field is a real random-walk candle series cropped by the frame and held clear of the text column, and each carries the logo's lit / 38%-shadow split instead of glow.</div>
+  </div>
+
+  <div id="4a" style="display: flex; flex-direction: column; gap: 18px; padding: 28px; background: #0B0D13; border: 1px solid #191D28; width: fit-content;">
+    <div style="display: flex; align-items: center; gap: 14px;">
+      <div style="font-family: 'IBM Plex Mono', monospace; font-size: 12px; font-weight: 600; letter-spacing: 0.1em; color: #05060A; background: #7A5CFF; padding: 4px 9px;">4a</div>
+      <div style="font-size: 17px; font-weight: 600; color: #EDEFF4;">Outlined field</div>
+    </div>
+    <div id="export-4a" style="position: relative; width: 1500px; height: 500px; background: #0A0B0F; overflow: hidden;">
+      <svg width="1500" height="500" viewBox="0 0 1500 500" style="position: absolute; inset: 0;"><g opacity="1"><line x1="917" y1="159" x2="917" y2="375" stroke="#7A5CFF" stroke-width="2"></line><rect x="900" y="261" width="34" height="48" fill="#7A5CFF" fill-opacity="0.1" stroke="#7A5CFF" stroke-width="2"></rect></g><g opacity="0.34"><line x1="973" y1="96" x2="973" y2="313" stroke="#7A5CFF" stroke-width="2"></line><rect x="956" y="193" width="34" height="68" fill="#7A5CFF" fill-opacity="0.05" stroke="#7A5CFF" stroke-width="2"></rect></g><g opacity="1"><line x1="1029" y1="20" x2="1029" y2="301" stroke="#7A5CFF" stroke-width="2"></line><rect x="1012" y="129" width="34" height="65" fill="#7A5CFF" fill-opacity="0.1" stroke="#7A5CFF" stroke-width="2"></rect></g><g opacity="1"><line x1="1085" y1="52" x2="1085" y2="203" stroke="#7A5CFF" stroke-width="2"></line><rect x="1068" y="121" width="34" height="48" fill="#7A5CFF" fill-opacity="0.1" stroke="#7A5CFF" stroke-width="2"></rect></g><g opacity="1"><line x1="1141" y1="64" x2="1141" y2="226" stroke="#7A5CFF" stroke-width="2"></line><rect x="1124" y="121" width="34" height="48" fill="#7A5CFF" fill-opacity="0.1" stroke="#7A5CFF" stroke-width="2"></rect></g><g opacity="1"><line x1="1197" y1="79" x2="1197" y2="192" stroke="#7A5CFF" stroke-width="2"></line><rect x="1180" y="143" width="34" height="48" fill="#7A5CFF" fill-opacity="0.1" stroke="#7A5CFF" stroke-width="2"></rect></g><g opacity="1"><line x1="1253" y1="90" x2="1253" y2="229" stroke="#7A5CFF" stroke-width="2"></line><rect x="1236" y="143" width="34" height="50" fill="#7A5CFF" fill-opacity="0.1" stroke="#7A5CFF" stroke-width="2"></rect></g><g opacity="0.34"><line x1="1309" y1="75" x2="1309" y2="254" stroke="#7A5CFF" stroke-width="2"></line><rect x="1292" y="136" width="34" height="57" fill="#7A5CFF" fill-opacity="0.05" stroke="#7A5CFF" stroke-width="2"></rect></g><g opacity="0.34"><line x1="1365" y1="2" x2="1365" y2="226" stroke="#7A5CFF" stroke-width="2"></line><rect x="1348" y="78" width="34" height="58" fill="#7A5CFF" fill-opacity="0.05" stroke="#7A5CFF" stroke-width="2"></rect></g><g opacity="1"><line x1="1421" y1="-25" x2="1421" y2="138" stroke="#7A5CFF" stroke-width="2"></line><rect x="1404" y="78" width="34" height="48" fill="#7A5CFF" fill-opacity="0.1" stroke="#7A5CFF" stroke-width="2"></rect></g><g opacity="1"><line x1="1477" y1="24" x2="1477" y2="160" stroke="#7A5CFF" stroke-width="2"></line><rect x="1460" y="72" width="34" height="48" fill="#7A5CFF" fill-opacity="0.1" stroke="#7A5CFF" stroke-width="2"></rect></g><g opacity="1"><line x1="1533" y1="9" x2="1533" y2="171" stroke="#7A5CFF" stroke-width="2"></line><rect x="1516" y="43" width="34" height="48" fill="#7A5CFF" fill-opacity="0.1" stroke="#7A5CFF" stroke-width="2"></rect></g></svg>
+      <div style="position: absolute; left: 260px; top: 167px; height: 166px; display: flex; flex-direction: column; justify-content: center; gap: 14px;">
+        <div style="display: flex; align-items: baseline; gap: 26px;">
+          <div style="font-size: 72px; font-weight: 700; letter-spacing: -0.035em; color: #F2F3F7; line-height: 1;">Dexxer</div>
+          <div style="width: 72px; height: 7px; background: #7A5CFF;"></div>
+        </div>
+        <div style="font-family: 'IBM Plex Mono', monospace; font-size: 26px; font-weight: 400; color: #AEB6C6; line-height: 1;">Private perps on Solana</div>
+        <div style="font-family: 'IBM Plex Mono', monospace; font-size: 15px; letter-spacing: 0.07em; text-transform: uppercase; color: #6E7788; border: 1px solid #262B38; padding: 6px 13px; align-self: flex-start;">Crypto World's Fair · Clock In hackathon participant</div>
+      </div>
+      <div style="position: absolute; right: 60px; bottom: 60px; font-family: 'IBM Plex Mono', monospace; font-size: 15px; letter-spacing: 0.07em; text-transform: uppercase; color: #6E7788;">Built for Seeker</div>
+    </div>
+    <div style="font-family: 'IBM Plex Mono', monospace; font-size: 13px; line-height: 1.6; color: #8A93A5; max-width: 900px;">Hairline candle outlines on black, bodies at 10% fill, cropped top and bottom — closest to the Aster reference but without bloom or particles. Roughly a third of the candles sit at 34% as the withheld set.</div>
+  </div>
+
+  <div id="4b" style="display: flex; flex-direction: column; gap: 18px; padding: 28px; background: #0B0D13; border: 1px solid #191D28; width: fit-content;">
+    <div style="display: flex; align-items: center; gap: 14px;">
+      <div style="font-family: 'IBM Plex Mono', monospace; font-size: 12px; font-weight: 600; letter-spacing: 0.1em; color: #05060A; background: #7A5CFF; padding: 4px 9px;">4b</div>
+      <div style="font-size: 17px; font-weight: 600; color: #EDEFF4;">Tilted rows</div>
+    </div>
+    <div id="export-4b" style="position: relative; width: 1500px; height: 500px; background: #0A0B0F; overflow: hidden;">
+      <svg width="1500" height="500" viewBox="0 0 1500 500" style="position: absolute; inset: 0;"><g transform="rotate(-17 750 250)"><g fill="#7A5CFF" opacity="1"><rect x="-81" y="8" width="18" height="324"></rect><rect x="-120" y="68" width="96" height="204"></rect></g><g fill="#7A5CFF" opacity="1"><rect x="67" y="2" width="18" height="314"></rect><rect x="28" y="62" width="96" height="194"></rect></g><g fill="#7A5CFF" opacity="1"><rect x="215" y="-12" width="18" height="354"></rect><rect x="176" y="48" width="96" height="234"></rect></g><g fill="#7A5CFF" opacity="1"><rect x="363" y="-15" width="18" height="357"></rect><rect x="324" y="45" width="96" height="237"></rect></g><g fill="#7A5CFF" opacity="1"><rect x="511" y="44" width="18" height="312"></rect><rect x="472" y="104" width="96" height="192"></rect></g><g fill="#7A5CFF" opacity="1"><rect x="659" y="60" width="18" height="341"></rect><rect x="620" y="120" width="96" height="221"></rect></g><g fill="#7A5CFF" opacity="1"><rect x="807" y="66" width="18" height="298"></rect><rect x="768" y="126" width="96" height="178"></rect></g><g fill="#7A5CFF" opacity="1"><rect x="955" y="28" width="18" height="446"></rect><rect x="916" y="88" width="96" height="326"></rect></g><g fill="#7A5CFF" opacity="1"><rect x="1103" y="11" width="18" height="473"></rect><rect x="1064" y="71" width="96" height="353"></rect></g><g fill="#7A5CFF" opacity="1"><rect x="1251" y="61" width="18" height="414"></rect><rect x="1212" y="121" width="96" height="294"></rect></g><g fill="#7A5CFF" opacity="1"><rect x="1399" y="123" width="18" height="278"></rect><rect x="1360" y="183" width="96" height="158"></rect></g><g fill="#7A5CFF" opacity="1"><rect x="1547" y="75" width="18" height="375"></rect><rect x="1508" y="135" width="96" height="255"></rect></g><g fill="#7A5CFF" opacity="1"><rect x="1695" y="103" width="18" height="375"></rect><rect x="1656" y="163" width="96" height="255"></rect></g><g fill="#7A5CFF" opacity="0.38"><rect x="-81" y="307" width="18" height="326"></rect><rect x="-120" y="367" width="96" height="206"></rect></g><g fill="#7A5CFF" opacity="0.38"><rect x="67" y="279" width="18" height="421"></rect><rect x="28" y="339" width="96" height="301"></rect></g><g fill="#7A5CFF" opacity="0.38"><rect x="215" y="320" width="18" height="352"></rect><rect x="176" y="380" width="96" height="232"></rect></g><g fill="#7A5CFF" opacity="0.38"><rect x="363" y="369" width="18" height="277"></rect><rect x="324" y="429" width="96" height="157"></rect></g><g fill="#7A5CFF" opacity="0.38"><rect x="511" y="289" width="18" height="474"></rect><rect x="472" y="349" width="96" height="354"></rect></g><g fill="#7A5CFF" opacity="0.38"><rect x="659" y="327" width="18" height="397"></rect><rect x="620" y="387" width="96" height="277"></rect></g><g fill="#7A5CFF" opacity="0.38"><rect x="807" y="353" width="18" height="381"></rect><rect x="768" y="413" width="96" height="261"></rect></g><g fill="#7A5CFF" opacity="0.38"><rect x="955" y="318" width="18" height="483"></rect><rect x="916" y="378" width="96" height="363"></rect></g><g fill="#7A5CFF" opacity="0.38"><rect x="1103" y="455" width="18" height="283"></rect><rect x="1064" y="515" width="96" height="163"></rect></g><g fill="#7A5CFF" opacity="0.38"><rect x="1251" y="361" width="18" height="428"></rect><rect x="1212" y="421" width="96" height="308"></rect></g><g fill="#7A5CFF" opacity="0.38"><rect x="1399" y="354" width="18" height="423"></rect><rect x="1360" y="414" width="96" height="303"></rect></g><g fill="#7A5CFF" opacity="0.38"><rect x="1547" y="382" width="18" height="396"></rect><rect x="1508" y="442" width="96" height="276"></rect></g><g fill="#7A5CFF" opacity="0.38"><rect x="1695" y="397" width="18" height="412"></rect><rect x="1656" y="457" width="96" height="292"></rect></g></g></svg>
+      <div style="position: absolute; left: 0; top: 0; bottom: 0; width: 960px; background: #0A0B0F;"></div>
+      <div style="position: absolute; left: 960px; top: 0; bottom: 0; width: 220px; background: linear-gradient(90deg, rgba(10,11,15,1) 0%, rgba(10,11,15,0) 100%);"></div>
+      <div style="position: absolute; left: 260px; top: 167px; height: 166px; display: flex; flex-direction: column; justify-content: center; gap: 14px;">
+        <div style="display: flex; align-items: baseline; gap: 26px;">
+          <div style="font-size: 72px; font-weight: 700; letter-spacing: -0.035em; color: #F2F3F7; line-height: 1;">Dexxer</div>
+          <div style="width: 72px; height: 7px; background: #7A5CFF;"></div>
+        </div>
+        <div style="font-family: 'IBM Plex Mono', monospace; font-size: 26px; font-weight: 400; color: #AEB6C6; line-height: 1;">Private perps on Solana</div>
+        <div style="font-family: 'IBM Plex Mono', monospace; font-size: 15px; letter-spacing: 0.07em; text-transform: uppercase; color: #6E7788; border: 1px solid #262B38; padding: 6px 13px; align-self: flex-start;">Crypto World's Fair · Clock In hackathon participant</div>
+      </div>
+      <div style="position: absolute; right: 60px; bottom: 60px; font-family: 'IBM Plex Mono', monospace; font-size: 15px; letter-spacing: 0.07em; text-transform: uppercase; color: #6E7788;">Built for Seeker</div>
+    </div>
+    <div style="font-family: 'IBM Plex Mono', monospace; font-size: 13px; line-height: 1.6; color: #8A93A5; max-width: 900px;">Two large candle rows rotated 17°, the lower row dropped to 38%, the left half of the frame held flat black so the copy sits on clean ground.</div>
+  </div>
+
+  <div id="4c" style="display: flex; flex-direction: column; gap: 18px; padding: 28px; background: #0B0D13; border: 1px solid #191D28; width: fit-content;">
+    <div style="display: flex; align-items: center; gap: 14px;">
+      <div style="font-family: 'IBM Plex Mono', monospace; font-size: 12px; font-weight: 600; letter-spacing: 0.1em; color: #05060A; background: #7A5CFF; padding: 4px 9px;">4c</div>
+      <div style="font-size: 17px; font-weight: 600; color: #EDEFF4;">Lit tape</div>
+    </div>
+    <div id="export-4c" style="position: relative; width: 1500px; height: 500px; background: #0A0B0F; overflow: hidden;">
+      <svg width="1500" height="500" viewBox="0 0 1500 500" style="position: absolute; inset: 0;"><g opacity="0.090" fill="#7A5CFF"><rect x="42" y="26" width="8" height="194"></rect><rect x="24" y="91" width="44" height="88"></rect></g><g opacity="0.090" fill="#7A5CFF"><rect x="104" y="14" width="8" height="196"></rect><rect x="86" y="49" width="44" height="88"></rect></g><g opacity="0.090" fill="#7A5CFF"><rect x="166" y="2" width="8" height="203"></rect><rect x="148" y="36" width="44" height="88"></rect></g><g opacity="0.090" fill="#7A5CFF"><rect x="228" y="37" width="8" height="164"></rect><rect x="210" y="76" width="44" height="88"></rect></g><g opacity="0.090" fill="#7A5CFF"><rect x="290" y="40" width="8" height="231"></rect><rect x="272" y="103" width="44" height="88"></rect></g><g opacity="0.090" fill="#7A5CFF"><rect x="352" y="61" width="8" height="234"></rect><rect x="334" y="132" width="44" height="88"></rect></g><g opacity="0.090" fill="#7A5CFF"><rect x="414" y="104" width="8" height="200"></rect><rect x="396" y="158" width="44" height="88"></rect></g><g opacity="0.090" fill="#7A5CFF"><rect x="476" y="110" width="8" height="224"></rect><rect x="458" y="167" width="44" height="88"></rect></g><g opacity="0.090" fill="#7A5CFF"><rect x="538" y="122" width="8" height="214"></rect><rect x="520" y="183" width="44" height="88"></rect></g><g opacity="0.090" fill="#7A5CFF"><rect x="600" y="131" width="8" height="183"></rect><rect x="582" y="173" width="44" height="88"></rect></g><g opacity="0.090" fill="#7A5CFF"><rect x="662" y="132" width="8" height="166"></rect><rect x="644" y="174" width="44" height="88"></rect></g><g opacity="0.090" fill="#7A5CFF"><rect x="724" y="140" width="8" height="199"></rect><rect x="706" y="183" width="44" height="88"></rect></g><g opacity="0.090" fill="#7A5CFF"><rect x="786" y="83" width="8" height="255"></rect><rect x="768" y="174" width="44" height="88"></rect></g><g opacity="0.198" fill="#7A5CFF"><rect x="848" y="103" width="8" height="210"></rect><rect x="830" y="188" width="44" height="88"></rect></g><g opacity="0.333" fill="#7A5CFF"><rect x="910" y="136" width="8" height="185"></rect><rect x="892" y="197" width="44" height="88"></rect></g><g opacity="0.467" fill="#7A5CFF"><rect x="972" y="104" width="8" height="224"></rect><rect x="954" y="151" width="44" height="88"></rect></g><g opacity="0.601" fill="#7A5CFF"><rect x="1034" y="31" width="8" height="236"></rect><rect x="1016" y="108" width="44" height="88"></rect></g><g opacity="0.736" fill="#7A5CFF"><rect x="1096" y="32" width="8" height="218"></rect><rect x="1078" y="95" width="44" height="88"></rect></g><g opacity="0.870" fill="#7A5CFF"><rect x="1158" y="34" width="8" height="172"></rect><rect x="1140" y="70" width="44" height="88"></rect></g><g opacity="1.000" fill="#7A5CFF"><rect x="1220" y="-3" width="8" height="216"></rect><rect x="1202" y="80" width="44" height="88"></rect></g><g opacity="1.000" fill="#7A5CFF"><rect x="1282" y="5" width="8" height="202"></rect><rect x="1264" y="79" width="44" height="88"></rect></g><g opacity="1.000" fill="#7A5CFF"><rect x="1344" y="26" width="8" height="167"></rect><rect x="1326" y="61" width="44" height="88"></rect></g><g opacity="1.000" fill="#7A5CFF"><rect x="1406" y="-2" width="8" height="230"></rect><rect x="1388" y="71" width="44" height="88"></rect></g><g opacity="1.000" fill="#7A5CFF"><rect x="1468" y="8" width="8" height="210"></rect><rect x="1450" y="52" width="44" height="88"></rect></g><g opacity="1.000" fill="#7A5CFF"><rect x="1530" y="-48" width="8" height="240"></rect><rect x="1512" y="35" width="44" height="88"></rect></g></svg>
+      <div style="position: absolute; left: 260px; top: 167px; height: 166px; display: flex; flex-direction: column; justify-content: center; gap: 14px;">
+        <div style="display: flex; align-items: baseline; gap: 26px;">
+          <div style="font-size: 72px; font-weight: 700; letter-spacing: -0.035em; color: #F2F3F7; line-height: 1;">Dexxer</div>
+          <div style="width: 72px; height: 7px; background: #7A5CFF;"></div>
+        </div>
+        <div style="font-family: 'IBM Plex Mono', monospace; font-size: 26px; font-weight: 400; color: #AEB6C6; line-height: 1;">Private perps on Solana</div>
+        <div style="font-family: 'IBM Plex Mono', monospace; font-size: 15px; letter-spacing: 0.07em; text-transform: uppercase; color: #6E7788; border: 1px solid #262B38; padding: 6px 13px; align-self: flex-start;">Crypto World's Fair · Clock In hackathon participant</div>
+      </div>
+      <div style="position: absolute; right: 60px; bottom: 60px; font-family: 'IBM Plex Mono', monospace; font-size: 15px; letter-spacing: 0.07em; text-transform: uppercase; color: #8A93A5;">Built for Seeker</div>
+    </div>
+    <div style="font-family: 'IBM Plex Mono', monospace; font-size: 13px; line-height: 1.6; color: #8A93A5; max-width: 900px;">One continuous price tape across the full width, ramping from near-invisible on the left to fully lit on the right: the position becomes visible only as the tape leaves the frame.</div>
+  </div>
+
+</section>
+
+<section style="padding: 64px; display: flex; flex-direction: column; gap: 56px; background: #05060A;">
+
+  <div style="display: flex; flex-direction: column; gap: 10px; max-width: 900px;">
+    <div style="font-family: 'IBM Plex Mono', monospace; font-size: 13px; letter-spacing: 0.18em; text-transform: uppercase; color: #6C7484;">Dexxer · final pair · turn 3</div>
+    <div style="font-size: 34px; font-weight: 600; color: #EDEFF4; letter-spacing: -0.02em;">Avatar and banner</div>
+    <div style="font-family: 'IBM Plex Mono', monospace; font-size: 15px; line-height: 1.6; color: #8A93A5;">D rebuilt as one filled contour — the stem is a single straight edge at x=56 for the full cap height, bowl radius 90 outer / 50 inner, so the stroke is exactly 40u everywhere. The X keeps both diagonals full length; below its midline it sits at 38% of the accent.</div>
+  </div>
+
+  <div style="display: flex; flex-wrap: wrap; gap: 40px;">
+
+    <div id="3a" style="display: flex; flex-direction: column; gap: 18px; padding: 28px; background: #0B0D13; border: 1px solid #191D28;">
+      <div style="display: flex; align-items: center; gap: 14px;">
+        <div style="font-family: 'IBM Plex Mono', monospace; font-size: 12px; font-weight: 600; letter-spacing: 0.1em; color: #05060A; background: #7A5CFF; padding: 4px 9px;">3a</div>
+        <div style="font-size: 17px; font-weight: 600; color: #EDEFF4;">Avatar — 400×400</div>
+      </div>
+      <div style="display: flex; align-items: flex-end; gap: 32px;">
+        <div id="export-avatar" style="width: 400px; height: 400px; overflow: hidden;">
+          <svg width="400" height="400" viewBox="0 0 400 400" style="display: block;"><rect x="0" y="0" width="400" height="400" fill="#0A0B0F"></rect><path fill="#7A5CFF" fill-rule="evenodd" d="M56 110 H126 A90 90 0 0 1 126 290 H56 Z M96 150 H126 A50 50 0 0 1 126 250 H96 Z"></path><g fill="none" stroke="#7A5CFF" stroke-width="40" clip-path="inset(0 0 50% 0)"><path d="M 232 110 L 332 290"></path><path d="M 332 110 L 232 290"></path></g><g fill="none" stroke="#7A5CFF" stroke-width="40" opacity="0.38" clip-path="inset(50% 0 0 0)"><path d="M 232 110 L 332 290"></path><path d="M 332 110 L 232 290"></path></g></svg>
+        </div>
+        <div style="display: flex; flex-direction: column; align-items: center; gap: 10px;">
+          <div style="width: 96px; height: 96px; overflow: hidden; border-radius: 50%;">
+            <svg width="96" height="96" viewBox="0 0 400 400" style="display: block;"><rect x="0" y="0" width="400" height="400" fill="#0A0B0F"></rect><path fill="#7A5CFF" fill-rule="evenodd" d="M56 110 H126 A90 90 0 0 1 126 290 H56 Z M96 150 H126 A50 50 0 0 1 126 250 H96 Z"></path><g fill="none" stroke="#7A5CFF" stroke-width="40" clip-path="inset(0 0 50% 0)"><path d="M 232 110 L 332 290"></path><path d="M 332 110 L 232 290"></path></g><g fill="none" stroke="#7A5CFF" stroke-width="40" opacity="0.38" clip-path="inset(50% 0 0 0)"><path d="M 232 110 L 332 290"></path><path d="M 332 110 L 232 290"></path></g></svg>
+          </div>
+          <div style="font-family: 'IBM Plex Mono', monospace; font-size: 11px; color: #6C7484;">96</div>
+        </div>
+        <div style="display: flex; flex-direction: column; align-items: center; gap: 10px;">
+          <div style="width: 48px; height: 48px; overflow: hidden; border-radius: 50%;">
+            <svg width="48" height="48" viewBox="0 0 400 400" style="display: block;"><rect x="0" y="0" width="400" height="400" fill="#0A0B0F"></rect><path fill="#7A5CFF" fill-rule="evenodd" d="M56 110 H126 A90 90 0 0 1 126 290 H56 Z M96 150 H126 A50 50 0 0 1 126 250 H96 Z"></path><g fill="none" stroke="#7A5CFF" stroke-width="40" clip-path="inset(0 0 50% 0)"><path d="M 232 110 L 332 290"></path><path d="M 332 110 L 232 290"></path></g><g fill="none" stroke="#7A5CFF" stroke-width="40" opacity="0.38" clip-path="inset(50% 0 0 0)"><path d="M 232 110 L 332 290"></path><path d="M 332 110 L 232 290"></path></g></svg>
+          </div>
+          <div style="font-family: 'IBM Plex Mono', monospace; font-size: 11px; color: #6C7484;">48</div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <div id="3b" style="display: flex; flex-direction: column; gap: 18px; padding: 28px; background: #0B0D13; border: 1px solid #191D28; width: fit-content;">
+    <div style="display: flex; align-items: center; gap: 14px;">
+      <div style="font-family: 'IBM Plex Mono', monospace; font-size: 12px; font-weight: 600; letter-spacing: 0.1em; color: #05060A; background: #7A5CFF; padding: 4px 9px;">3b</div>
+      <div style="font-size: 17px; font-weight: 600; color: #EDEFF4;">Banner — 1500×500</div>
+    </div>
+    <div id="export-banner" style="position: relative; width: 1500px; height: 500px; background: #0A0B0F; overflow: hidden;">
+      <div style="position: absolute; inset: 0; background-image: repeating-linear-gradient(45deg, rgba(122,92,255,0.10) 0 2px, transparent 2px 22px);"></div>
+      <div style="position: absolute; right: 0; top: 0; bottom: 0; width: 620px; background: linear-gradient(90deg, rgba(10,11,15,1) 0%, rgba(10,11,15,0) 42%);"></div>
+      <svg width="780" height="780" viewBox="0 0 400 400" style="position: absolute; right: -170px; top: -140px;"><g><path fill="#7A5CFF" fill-rule="evenodd" d="M56 110 H126 A90 90 0 0 1 126 290 H56 Z M96 150 H126 A50 50 0 0 1 126 250 H96 Z"></path><g fill="none" stroke="#7A5CFF" stroke-width="40" clip-path="inset(0 0 50% 0)"><path d="M 232 110 L 332 290"></path><path d="M 332 110 L 232 290"></path></g><g fill="none" stroke="#7A5CFF" stroke-width="40" opacity="0.38" clip-path="inset(50% 0 0 0)"><path d="M 232 110 L 332 290"></path><path d="M 332 110 L 232 290"></path></g></g></svg>
+      <div style="position: absolute; left: 260px; top: 167px; height: 166px; display: flex; flex-direction: column; justify-content: center; gap: 14px;">
+        <div style="display: flex; align-items: baseline; gap: 26px;">
+          <div style="font-size: 72px; font-weight: 700; letter-spacing: -0.035em; color: #F2F3F7; line-height: 1;">Dexxer</div>
+          <div style="width: 72px; height: 7px; background: #7A5CFF;"></div>
+        </div>
+        <div style="font-family: 'IBM Plex Mono', monospace; font-size: 26px; font-weight: 400; color: #AEB6C6; line-height: 1;">Private perps on Solana</div>
+        <div style="font-family: 'IBM Plex Mono', monospace; font-size: 15px; letter-spacing: 0.07em; text-transform: uppercase; color: #6E7788; border: 1px solid #262B38; padding: 6px 13px; align-self: flex-start;">Crypto World's Fair · Clock In hackathon participant</div>
+      </div>
+      <div style="position: absolute; right: 60px; bottom: 60px; font-family: 'IBM Plex Mono', monospace; font-size: 15px; letter-spacing: 0.07em; text-transform: uppercase; color: #8A93A5;">Built for Seeker</div>
+    </div>
+    <div style="font-family: 'IBM Plex Mono', monospace; font-size: 13px; line-height: 1.6; color: #8A93A5; max-width: 900px;">The same monogram, blown up and cropped by the right edge, with the identical lit / shadowed split; text composition, avatar clearance, 45° field and hackathon tag unchanged.</div>
+  </div>
+
+</section>
+
+<section style="padding: 64px; display: flex; flex-direction: column; gap: 56px; background: #05060A;">
+
+  <div style="display: flex; flex-direction: column; gap: 10px; max-width: 900px;">
+    <div style="font-family: 'IBM Plex Mono', monospace; font-size: 13px; letter-spacing: 0.18em; text-transform: uppercase; color: #6C7484;">Dexxer · DX monogram · turn 2</div>
+    <div style="font-size: 34px; font-weight: 600; color: #EDEFF4; letter-spacing: -0.02em;">Three DX monograms</div>
+    <div style="font-family: 'IBM Plex Mono', monospace; font-size: 15px; line-height: 1.6; color: #8A93A5;">One construction for all three: a geometric D (40u stem + exact 80u semicircle bowl) and an X of two mirrored diagonals, cap height 160u, uniform 40u stroke, tucked until the X tips touch the bowl. Each variant carries exactly one concealment device on the X.</div>
+  </div>
+
+  <div style="display: flex; flex-wrap: wrap; gap: 40px;">
+
+    <div id="2a" style="display: flex; flex-direction: column; gap: 18px; padding: 28px; background: #0B0D13; border: 1px solid #191D28;">
+      <div style="display: flex; align-items: center; gap: 14px;">
+        <div style="font-family: 'IBM Plex Mono', monospace; font-size: 12px; font-weight: 600; letter-spacing: 0.1em; color: #05060A; background: #7A5CFF; padding: 4px 9px;">2a</div>
+        <div style="font-size: 17px; font-weight: 600; color: #EDEFF4;">Hidden crossing</div>
+      </div>
+      <div style="display: flex; align-items: flex-end; gap: 24px;">
+        <div style="width: 400px; height: 400px; overflow: hidden;">
+          <svg width="400" height="400" viewBox="0 0 400 400" style="display: block;">
+            <rect x="0" y="0" width="400" height="400" fill="#0A0B0F"></rect>
+            <g fill="none" stroke="#7A5CFF" stroke-width="40">
+              <path d="M 78 120 L 78 280"></path>
+              <path d="M 78 120 L 116 120 A 80 80 0 0 1 116 280 L 78 280"></path>
+              <path d="M 326 120 L 206 280"></path>
+              <path d="M 206 120 L 326 280"></path>
+            </g>
+            <circle cx="266" cy="200" r="34" fill="#0A0B0F"></circle>
+          </svg>
+        </div>
+        <div style="display: flex; flex-direction: column; align-items: center; gap: 10px;">
+          <div style="width: 48px; height: 48px; border-radius: 50%; overflow: hidden;">
+            <svg width="48" height="48" viewBox="0 0 400 400" style="display: block;">
+              <rect x="0" y="0" width="400" height="400" fill="#0A0B0F"></rect>
+              <g fill="none" stroke="#7A5CFF" stroke-width="40">
+                <path d="M 78 120 L 78 280"></path>
+                <path d="M 78 120 L 116 120 A 80 80 0 0 1 116 280 L 78 280"></path>
+                <path d="M 326 120 L 206 280"></path>
+                <path d="M 206 120 L 326 280"></path>
+              </g>
+              <circle cx="266" cy="200" r="34" fill="#0A0B0F"></circle>
+            </svg>
+          </div>
+          <div style="font-family: 'IBM Plex Mono', monospace; font-size: 11px; color: #6C7484;">48</div>
+        </div>
+      </div>
+      <div style="font-family: 'IBM Plex Mono', monospace; font-size: 13px; line-height: 1.6; color: #8A93A5; max-width: 470px;">Both diagonals run full length; only the point where they meet is punched out. The X stays whole and the one thing the mark refuses to show is the crossing.</div>
+    </div>
+
+    <div id="2b" style="display: flex; flex-direction: column; gap: 18px; padding: 28px; background: #0B0D13; border: 1px solid #191D28;">
+      <div style="display: flex; align-items: center; gap: 14px;">
+        <div style="font-family: 'IBM Plex Mono', monospace; font-size: 12px; font-weight: 600; letter-spacing: 0.1em; color: #05060A; background: #7A5CFF; padding: 4px 9px;">2b</div>
+        <div style="font-size: 17px; font-weight: 600; color: #EDEFF4;">Lower half in shadow</div>
+      </div>
+      <div style="display: flex; align-items: flex-end; gap: 24px;">
+        <div style="width: 400px; height: 400px; overflow: hidden;">
+          <svg width="400" height="400" viewBox="0 0 400 400" style="display: block;">
+            <rect x="0" y="0" width="400" height="400" fill="#0A0B0F"></rect>
+            <g fill="none" stroke="#7A5CFF" stroke-width="40">
+              <path d="M 78 120 L 78 280"></path>
+              <path d="M 78 120 L 116 120 A 80 80 0 0 1 116 280 L 78 280"></path>
+            </g>
+            <g fill="none" stroke="#7A5CFF" stroke-width="40" clip-path="inset(0 0 50% 0)">
+              <path d="M 206 120 L 326 280"></path>
+              <path d="M 326 120 L 206 280"></path>
+            </g>
+            <g fill="none" stroke="#7A5CFF" stroke-width="40" opacity="0.24" clip-path="inset(50% 0 0 0)">
+              <path d="M 206 120 L 326 280"></path>
+              <path d="M 326 120 L 206 280"></path>
+            </g>
+          </svg>
+        </div>
+        <div style="display: flex; flex-direction: column; align-items: center; gap: 10px;">
+          <div style="width: 48px; height: 48px; border-radius: 50%; overflow: hidden;">
+            <svg width="48" height="48" viewBox="0 0 400 400" style="display: block;">
+              <rect x="0" y="0" width="400" height="400" fill="#0A0B0F"></rect>
+              <g fill="none" stroke="#7A5CFF" stroke-width="40">
+                <path d="M 78 120 L 78 280"></path>
+                <path d="M 78 120 L 116 120 A 80 80 0 0 1 116 280 L 78 280"></path>
+              </g>
+              <g fill="none" stroke="#7A5CFF" stroke-width="40" clip-path="inset(0 0 50% 0)">
+                <path d="M 206 120 L 326 280"></path>
+                <path d="M 326 120 L 206 280"></path>
+              </g>
+              <g fill="none" stroke="#7A5CFF" stroke-width="40" opacity="0.24" clip-path="inset(50% 0 0 0)">
+                <path d="M 206 120 L 326 280"></path>
+                <path d="M 326 120 L 206 280"></path>
+              </g>
+            </svg>
+          </div>
+          <div style="font-family: 'IBM Plex Mono', monospace; font-size: 11px; color: #6C7484;">48</div>
+        </div>
+      </div>
+      <div style="font-family: 'IBM Plex Mono', monospace; font-size: 13px; line-height: 1.6; color: #8A93A5; max-width: 470px;">Full DX, but the X drops to a shadow below its own midline — both letters stay complete and legible at any size.</div>
+    </div>
+
+    <div id="2c" style="display: flex; flex-direction: column; gap: 18px; padding: 28px; background: #0B0D13; border: 1px solid #191D28;">
+      <div style="display: flex; align-items: center; gap: 14px;">
+        <div style="font-family: 'IBM Plex Mono', monospace; font-size: 12px; font-weight: 600; letter-spacing: 0.1em; color: #05060A; background: #7A5CFF; padding: 4px 9px;">2c</div>
+        <div style="font-size: 17px; font-weight: 600; color: #EDEFF4;">Right half in shadow</div>
+      </div>
+      <div style="display: flex; align-items: flex-end; gap: 24px;">
+        <div style="width: 400px; height: 400px; overflow: hidden;">
+          <svg width="400" height="400" viewBox="0 0 400 400" style="display: block;">
+            <rect x="0" y="0" width="400" height="400" fill="#0A0B0F"></rect>
+            <g fill="none" stroke="#7A5CFF" stroke-width="40">
+              <path d="M 78 120 L 78 280"></path>
+              <path d="M 78 120 L 116 120 A 80 80 0 0 1 116 280 L 78 280"></path>
+            </g>
+            <g fill="none" stroke="#7A5CFF" stroke-width="40" clip-path="inset(0 50% 0 0)">
+              <path d="M 206 120 L 326 280"></path>
+              <path d="M 326 120 L 206 280"></path>
+            </g>
+            <g fill="none" stroke="#7A5CFF" stroke-width="40" opacity="0.24" clip-path="inset(0 0 0 50%)">
+              <path d="M 206 120 L 326 280"></path>
+              <path d="M 326 120 L 206 280"></path>
+            </g>
+          </svg>
+        </div>
+        <div style="display: flex; flex-direction: column; align-items: center; gap: 10px;">
+          <div style="width: 48px; height: 48px; border-radius: 50%; overflow: hidden;">
+            <svg width="48" height="48" viewBox="0 0 400 400" style="display: block;">
+              <rect x="0" y="0" width="400" height="400" fill="#0A0B0F"></rect>
+              <g fill="none" stroke="#7A5CFF" stroke-width="40">
+                <path d="M 78 120 L 78 280"></path>
+                <path d="M 78 120 L 116 120 A 80 80 0 0 1 116 280 L 78 280"></path>
+              </g>
+              <g fill="none" stroke="#7A5CFF" stroke-width="40" clip-path="inset(0 50% 0 0)">
+                <path d="M 206 120 L 326 280"></path>
+                <path d="M 326 120 L 206 280"></path>
+              </g>
+              <g fill="none" stroke="#7A5CFF" stroke-width="40" opacity="0.24" clip-path="inset(0 0 0 50%)">
+                <path d="M 206 120 L 326 280"></path>
+                <path d="M 326 120 L 206 280"></path>
+              </g>
+            </svg>
+          </div>
+          <div style="font-family: 'IBM Plex Mono', monospace; font-size: 11px; color: #6C7484;">48</div>
+        </div>
+      </div>
+      <div style="font-family: 'IBM Plex Mono', monospace; font-size: 13px; line-height: 1.6; color: #8A93A5; max-width: 470px;">The X drops to a shadow across its own vertical axis — the same device as 2b, turned 90°, so the tucked left half stays solid against the D.</div>
+    </div>
+
+  </div>
+
+  <div style="height: 1px; background: #191D28;"></div>
+
+  <div style="display: flex; flex-direction: column; gap: 10px; max-width: 900px;">
+    <div style="font-family: 'IBM Plex Mono', monospace; font-size: 13px; letter-spacing: 0.18em; text-transform: uppercase; color: #6C7484;">Dexxer · X account visuals · turn 1</div>
+    <div style="font-size: 34px; font-weight: 600; color: #EDEFF4; letter-spacing: -0.02em;">Three marks, two banners</div>
+    <div style="font-family: 'IBM Plex Mono', monospace; font-size: 15px; line-height: 1.6; color: #8A93A5;">Accent #7A5CFF on #0A0B0F. Every shape is ruler-and-compass: axis-aligned rectangles, exact 45° diagonals, a 90° arc gap. Marks are 400×400, banners 1500×500.</div>
+  </div>
+
+  <div style="display: flex; flex-wrap: wrap; gap: 40px;">
+
+    <div id="1a" style="display: flex; flex-direction: column; gap: 18px; padding: 28px; background: #0B0D13; border: 1px solid #191D28;">
+      <div style="display: flex; align-items: center; gap: 14px;">
+        <div style="font-family: 'IBM Plex Mono', monospace; font-size: 12px; font-weight: 600; letter-spacing: 0.1em; color: #05060A; background: #7A5CFF; padding: 4px 9px;">1a</div>
+        <div style="font-size: 17px; font-weight: 600; color: #EDEFF4;">Half candle</div>
+      </div>
+      <div style="display: flex; align-items: flex-end; gap: 24px;">
+        <div style="width: 400px; height: 400px; overflow: hidden;">
+          <svg width="400" height="400" viewBox="0 0 400 400" style="display: block;">
+            <rect x="0" y="0" width="400" height="400" fill="#0A0B0F"></rect>
+            <g fill="#7A5CFF" clip-path="inset(0 50% 0 0)">
+              <rect x="193" y="62" width="14" height="276"></rect>
+              <rect x="136" y="124" width="128" height="152"></rect>
+            </g>
+            <g fill="#7A5CFF" opacity="0.24" clip-path="inset(0 0 0 50%)">
+              <rect x="193" y="62" width="14" height="276"></rect>
+              <rect x="136" y="124" width="128" height="152"></rect>
+            </g>
+          </svg>
+        </div>
+        <div style="display: flex; flex-direction: column; align-items: center; gap: 10px;">
+          <div style="width: 48px; height: 48px; border-radius: 50%; overflow: hidden;">
+            <svg width="48" height="48" viewBox="0 0 400 400" style="display: block;">
+              <rect x="0" y="0" width="400" height="400" fill="#0A0B0F"></rect>
+              <g fill="#7A5CFF" clip-path="inset(0 50% 0 0)">
+                <rect x="193" y="62" width="14" height="276"></rect>
+                <rect x="136" y="124" width="128" height="152"></rect>
+              </g>
+              <g fill="#7A5CFF" opacity="0.24" clip-path="inset(0 0 0 50%)">
+                <rect x="193" y="62" width="14" height="276"></rect>
+                <rect x="136" y="124" width="128" height="152"></rect>
+              </g>
+            </svg>
+          </div>
+          <div style="font-family: 'IBM Plex Mono', monospace; font-size: 11px; color: #6C7484;">48</div>
+        </div>
+      </div>
+      <div style="font-family: 'IBM Plex Mono', monospace; font-size: 13px; line-height: 1.6; color: #8A93A5; max-width: 470px;">One candle split down its own centre axis: the left half is solid, the right half survives only as a shadow, so the position is half-visible.</div>
+    </div>
+
+    <div id="1b" style="display: flex; flex-direction: column; gap: 18px; padding: 28px; background: #0B0D13; border: 1px solid #191D28;">
+      <div style="display: flex; align-items: center; gap: 14px;">
+        <div style="font-family: 'IBM Plex Mono', monospace; font-size: 12px; font-weight: 600; letter-spacing: 0.1em; color: #05060A; background: #7A5CFF; padding: 4px 9px;">1b</div>
+        <div style="font-size: 17px; font-weight: 600; color: #EDEFF4;">Eclipsed step</div>
+      </div>
+      <div style="display: flex; align-items: flex-end; gap: 24px;">
+        <div style="width: 400px; height: 400px; overflow: hidden;">
+          <svg width="400" height="400" viewBox="0 0 400 400" style="display: block;">
+            <rect x="0" y="0" width="400" height="400" fill="#0A0B0F"></rect>
+            <circle cx="200" cy="200" r="150" fill="#7A5CFF"></circle>
+            <polyline points="66,268 116,268 116,216 166,216 166,164 216,164 216,112 268,112" fill="none" stroke="#0A0B0F" stroke-width="24"></polyline>
+            <rect x="232" y="0" width="168" height="400" fill="#0A0B0F"></rect>
+          </svg>
+        </div>
+        <div style="display: flex; flex-direction: column; align-items: center; gap: 10px;">
+          <div style="width: 48px; height: 48px; border-radius: 50%; overflow: hidden;">
+            <svg width="48" height="48" viewBox="0 0 400 400" style="display: block;">
+              <rect x="0" y="0" width="400" height="400" fill="#0A0B0F"></rect>
+              <circle cx="200" cy="200" r="150" fill="#7A5CFF"></circle>
+              <polyline points="66,268 116,268 116,216 166,216 166,164 216,164 216,112 268,112" fill="none" stroke="#0A0B0F" stroke-width="24"></polyline>
+              <rect x="232" y="0" width="168" height="400" fill="#0A0B0F"></rect>
+            </svg>
+          </div>
+          <div style="font-family: 'IBM Plex Mono', monospace; font-size: 11px; color: #6C7484;">48</div>
+        </div>
+      </div>
+      <div style="font-family: 'IBM Plex Mono', monospace; font-size: 13px; line-height: 1.6; color: #8A93A5; max-width: 470px;">A rising step line cut out of a disc, with the disc's right side sheared off by a straight edge: the trade continues past the point where anyone can see it.</div>
+    </div>
+
+    <div id="1c" style="display: flex; flex-direction: column; gap: 18px; padding: 28px; background: #0B0D13; border: 1px solid #191D28;">
+      <div style="display: flex; align-items: center; gap: 14px;">
+        <div style="font-family: 'IBM Plex Mono', monospace; font-size: 12px; font-weight: 600; letter-spacing: 0.1em; color: #05060A; background: #7A5CFF; padding: 4px 9px;">1c</div>
+        <div style="font-size: 17px; font-weight: 600; color: #EDEFF4;">Open quadrant</div>
+      </div>
+      <div style="display: flex; align-items: flex-end; gap: 24px;">
+        <div style="width: 400px; height: 400px; overflow: hidden;">
+          <svg width="400" height="400" viewBox="0 0 400 400" style="display: block;">
+            <rect x="0" y="0" width="400" height="400" fill="#0A0B0F"></rect>
+            <circle cx="200" cy="200" r="118" fill="none" stroke="#7A5CFF" stroke-width="40" stroke-dasharray="556.05 185.35"></circle>
+            <line x1="184" y1="216" x2="288" y2="112" stroke="#7A5CFF" stroke-width="40"></line>
+          </svg>
+        </div>
+        <div style="display: flex; flex-direction: column; align-items: center; gap: 10px;">
+          <div style="width: 48px; height: 48px; border-radius: 50%; overflow: hidden;">
+            <svg width="48" height="48" viewBox="0 0 400 400" style="display: block;">
+              <rect x="0" y="0" width="400" height="400" fill="#0A0B0F"></rect>
+              <circle cx="200" cy="200" r="118" fill="none" stroke="#7A5CFF" stroke-width="40" stroke-dasharray="556.05 185.35"></circle>
+              <line x1="184" y1="216" x2="288" y2="112" stroke="#7A5CFF" stroke-width="40"></line>
+            </svg>
+          </div>
+          <div style="font-family: 'IBM Plex Mono', monospace; font-size: 11px; color: #6C7484;">48</div>
+        </div>
+      </div>
+      <div style="font-family: 'IBM Plex Mono', monospace; font-size: 13px; line-height: 1.6; color: #8A93A5; max-width: 470px;">A 270° ring with one quadrant removed and a 45° trend line leaving through the opening: the chart exits the record.</div>
+    </div>
+
+  </div>
+
+  <div style="display: flex; flex-direction: column; gap: 40px;">
+
+    <div id="1d" style="display: flex; flex-direction: column; gap: 18px; padding: 28px; background: #0B0D13; border: 1px solid #191D28; width: fit-content;">
+      <div style="display: flex; align-items: center; gap: 14px;">
+        <div style="font-family: 'IBM Plex Mono', monospace; font-size: 12px; font-weight: 600; letter-spacing: 0.1em; color: #05060A; background: #7A5CFF; padding: 4px 9px;">1d</div>
+        <div style="font-size: 17px; font-weight: 600; color: #EDEFF4;">Banner — ruled grid</div>
+      </div>
+      <div id="banner-1d" style="position: relative; width: 1500px; height: 500px; background: #0A0B0F; overflow: hidden;">
+        <div style="position: absolute; inset: 0; background-image: repeating-linear-gradient(90deg, rgba(122,92,255,0.14) 0 1px, transparent 1px 50px); "></div>
+        <div style="position: absolute; inset: 0; background-image: repeating-linear-gradient(0deg, rgba(122,92,255,0.07) 0 1px, transparent 1px 50px);"></div>
+        <svg width="620" height="620" viewBox="0 0 400 400" style="position: absolute; right: -80px; top: -60px; opacity: 0.5;">
+          <g fill="#7A5CFF" clip-path="inset(0 50% 0 0)">
+            <rect x="193" y="62" width="14" height="276"></rect>
+            <rect x="136" y="124" width="128" height="152"></rect>
+          </g>
+          <g fill="#7A5CFF" opacity="0.22" clip-path="inset(0 0 0 50%)">
+            <rect x="193" y="62" width="14" height="276"></rect>
+            <rect x="136" y="124" width="128" height="152"></rect>
+          </g>
+        </svg>
+        <div style="position: absolute; left: 260px; top: 167px; height: 166px; display: flex; flex-direction: column; justify-content: center; gap: 22px;">
+          <div style="font-size: 92px; font-weight: 600; letter-spacing: -0.03em; color: #F2F3F7; line-height: 1;">Dexxer</div>
+          <div style="font-family: 'IBM Plex Mono', monospace; font-size: 30px; font-weight: 400; letter-spacing: 0.005em; color: #AEB6C6; line-height: 1;">Private perps on Solana</div>
+        </div>
+        <div style="position: absolute; right: 56px; top: 190px; font-family: 'IBM Plex Mono', monospace; font-size: 19px; line-height: 1.55; letter-spacing: 0.06em; text-transform: uppercase; color: #737C8D; text-align: right;">Crypto World's Fair · Clock In<br>hackathon participant</div>
+        <div style="position: absolute; right: 60px; bottom: 60px; font-family: 'IBM Plex Mono', monospace; font-size: 15px; letter-spacing: 0.07em; text-transform: uppercase; color: #8A93A5;">Built for Seeker</div>
+      </div>
+      <div style="font-family: 'IBM Plex Mono', monospace; font-size: 13px; line-height: 1.6; color: #8A93A5; max-width: 900px;">Order-book ruling as the only background texture, with the half candle bleeding off the right edge; hackathon credit sits top-right in the safe band, quiet but legible.</div>
+    </div>
+
+    <div id="1e" style="display: flex; flex-direction: column; gap: 18px; padding: 28px; background: #0B0D13; border: 1px solid #191D28; width: fit-content;">
+      <div style="display: flex; align-items: center; gap: 14px;">
+        <div style="font-family: 'IBM Plex Mono', monospace; font-size: 12px; font-weight: 600; letter-spacing: 0.1em; color: #05060A; background: #7A5CFF; padding: 4px 9px;">1e</div>
+        <div style="font-size: 17px; font-weight: 600; color: #EDEFF4;">Banner — cut field</div>
+      </div>
+      <div id="banner-1e" style="position: relative; width: 1500px; height: 500px; background: #0A0B0F; overflow: hidden;">
+        <div style="position: absolute; inset: 0; background-image: repeating-linear-gradient(45deg, rgba(122,92,255,0.10) 0 2px, transparent 2px 22px);"></div>
+        <div style="position: absolute; right: 0; top: 0; bottom: 0; width: 520px; background: linear-gradient(90deg, rgba(10,11,15,1) 0%, rgba(10,11,15,0) 40%);"></div>
+        <svg width="500" height="500" viewBox="0 0 400 400" style="position: absolute; right: 120px; top: 0;">
+          <circle cx="200" cy="200" r="150" fill="#7A5CFF"></circle>
+          <polyline points="66,268 116,268 116,216 166,216 166,164 216,164 216,112 268,112" fill="none" stroke="#0A0B0F" stroke-width="24"></polyline>
+          <rect x="232" y="0" width="168" height="400" fill="#0A0B0F"></rect>
+        </svg>
+        <div style="position: absolute; left: 260px; top: 167px; height: 166px; display: flex; flex-direction: column; justify-content: center; gap: 14px;">
+          <div style="display: flex; align-items: baseline; gap: 26px;">
+            <div style="font-size: 72px; font-weight: 700; letter-spacing: -0.035em; color: #F2F3F7; line-height: 1;">Dexxer</div>
+            <div style="width: 72px; height: 7px; background: #7A5CFF;"></div>
+          </div>
+          <div style="font-family: 'IBM Plex Mono', monospace; font-size: 26px; font-weight: 400; color: #AEB6C6; line-height: 1;">Private perps on Solana</div>
+          <div style="font-family: 'IBM Plex Mono', monospace; font-size: 15px; letter-spacing: 0.07em; text-transform: uppercase; color: #6E7788; border: 1px solid #262B38; padding: 6px 13px; align-self: flex-start;">Crypto World's Fair · Clock In hackathon participant</div>
+        </div>
+      <div style="position: absolute; right: 60px; bottom: 60px; font-family: 'IBM Plex Mono', monospace; font-size: 15px; letter-spacing: 0.07em; text-transform: uppercase; color: #8A93A5;">Built for Seeker</div>
+      </div>
+      <div style="font-family: 'IBM Plex Mono', monospace; font-size: 13px; line-height: 1.6; color: #8A93A5; max-width: 900px;">45° hatch field with the eclipsed disc anchoring the right side; the hackathon credit becomes a bordered tag just under the slogan, inside the mobile-safe band.</div>
+    </div>
+
+  </div>
+
+</section>
+
+</x-dc>
+<script type="text/x-dc" data-dc-script>
+class Component extends DCLogic {
+  renderVals() {
+    return {};
+  }
+}
+</script>
+</body>
+</html>

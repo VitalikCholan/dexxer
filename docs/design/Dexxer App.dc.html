@@ -1,0 +1,609 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<meta name="design_doc_mode" content="canvas">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  body { margin: 0; background: #05060A; font-family: 'IBM Plex Sans', system-ui, sans-serif; }
+  a { color: #7A5CFF; text-decoration: none; }
+  a:hover { color: #A18EFF; }
+</style>
+</helmet>
+
+<section style="padding: 64px; display: flex; flex-direction: column; gap: 48px; background: #05060A;">
+
+  <div style="display: flex; flex-direction: column; gap: 10px; max-width: 980px;">
+    <div style="font-family: 'IBM Plex Mono', monospace; font-size: 13px; letter-spacing: 0.18em; text-transform: uppercase; color: #6C7484;">Dexxer · mobile app · 390×844 · dark only</div>
+    <div style="font-size: 34px; font-weight: 600; color: #EDEFF4; letter-spacing: -0.02em;">Screens and components</div>
+    <div style="font-family: 'IBM Plex Mono', monospace; font-size: 14px; line-height: 1.6; color: #8A93A5;">IBM Plex Sans for text, IBM Plex Mono with tabular figures for every number and address. Accent #7A5CFF carried over from the approved avatar and banner. No blurs, no shadows, no gradients except the one fill under the mark line. Tokens in tokens.json.</div>
+  </div>
+
+  <div style="display: flex; flex-wrap: wrap; gap: 40px;">
+
+    <div style="display: flex; flex-direction: column; gap: 14px;">
+      <div style="font-family: 'IBM Plex Mono', monospace; font-size: 12px; letter-spacing: 0.1em; text-transform: uppercase; color: #6C7484;">00 · Connect</div>
+      <div data-screen-label="00 Connect" style="position: relative; width: 390px; height: 844px; background: #0A0B0F; border: 1px solid #232733; border-radius: 28px; overflow: hidden; display: flex; flex-direction: column;">
+        <div style="height: 44px; display: flex; align-items: center; justify-content: space-between; padding: 0 20px; font-family: 'IBM Plex Mono', monospace; font-size: 13px; color: #EDEFF4;">
+          <span>9:41</span><span style="letter-spacing: 0.12em; color: #8A93A5;">▪ ▪ ▪</span>
+        </div>
+        <div style="flex: 1; display: flex; flex-direction: column; justify-content: space-between; padding: 0 24px 40px;">
+          <div style="display: flex; flex-direction: column; align-items: flex-start; gap: 28px; padding-top: 140px;">
+            <svg width="132" height="92" viewBox="46 100 296 200" style="display: block;">
+              <path fill="#7A5CFF" fill-rule="evenodd" d="M56 110 H126 A90 90 0 0 1 126 290 H56 Z M96 150 H126 A50 50 0 0 1 126 250 H96 Z"></path>
+              <g fill="none" stroke="#7A5CFF" stroke-width="40" clip-path="inset(0 0 50% 0)"><path d="M 232 110 L 332 290"></path><path d="M 332 110 L 232 290"></path></g>
+              <g fill="none" stroke="#7A5CFF" stroke-width="40" opacity="0.38" clip-path="inset(50% 0 0 0)"><path d="M 232 110 L 332 290"></path><path d="M 332 110 L 232 290"></path></g>
+            </svg>
+            <div style="font-size: 26px; font-weight: 600; line-height: 1.3; letter-spacing: -0.01em; color: #EDEFF4; text-wrap: pretty;">Your position is yours alone. The world sees only the pool.</div>
+          </div>
+          <div style="display: flex; flex-direction: column; gap: 16px;">
+            <div style="height: 52px; border-radius: 10px; background: #7A5CFF; display: flex; align-items: center; justify-content: center; font-size: 16px; font-weight: 600; color: #05060A;">Connect wallet</div>
+            <div style="font-family: 'IBM Plex Mono', monospace; font-size: 12px; line-height: 1.5; color: #6C7484; text-align: center;">Mobile Wallet Adapter · Devnet</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div style="display: flex; flex-direction: column; gap: 14px;">
+      <div style="font-family: 'IBM Plex Mono', monospace; font-size: 12px; letter-spacing: 0.1em; text-transform: uppercase; color: #6C7484;">00 · Set up private account</div>
+      <div data-screen-label="00 Setup" style="position: relative; width: 390px; height: 844px; background: #0A0B0F; border: 1px solid #232733; border-radius: 28px; overflow: hidden; display: flex; flex-direction: column;">
+        <div style="height: 44px; display: flex; align-items: center; justify-content: space-between; padding: 0 20px; font-family: 'IBM Plex Mono', monospace; font-size: 13px; color: #EDEFF4;">
+          <span>9:41</span><span style="letter-spacing: 0.12em; color: #8A93A5;">▪ ▪ ▪</span>
+        </div>
+        <div style="flex: 1; display: flex; flex-direction: column; padding: 16px 16px 32px; gap: 24px;">
+          <div style="display: flex; flex-direction: column; gap: 8px; padding: 0 8px;">
+            <div style="font-size: 22px; font-weight: 600; letter-spacing: -0.01em; color: #EDEFF4;">Set up private account</div>
+            <div style="font-size: 15px; line-height: 1.5; color: #8A93A5;">Three steps, one wallet signature.</div>
+          </div>
+          <div style="display: flex; flex-direction: column; border: 1px solid #232733; border-radius: 14px; background: #12141B; overflow: hidden;">
+            <div style="display: flex; align-items: center; gap: 14px; padding: 18px 16px; border-bottom: 1px solid #232733;">
+              <div style="width: 22px; height: 22px; border-radius: 11px; background: #2FBF7F; display: flex; align-items: center; justify-content: center; font-size: 12px; font-weight: 700; color: #05060A;">✓</div>
+              <div style="flex: 1; font-size: 15px; color: #EDEFF4;">Create private accounts</div>
+              <div style="font-family: 'IBM Plex Mono', monospace; font-size: 12px; color: #6C7484;">L1</div>
+            </div>
+            <div style="display: flex; align-items: center; gap: 14px; padding: 18px 16px; border-bottom: 1px solid #232733;">
+              <div style="width: 22px; height: 22px; border-radius: 11px; border: 2px solid #7A5CFF; box-sizing: border-box;"></div>
+              <div style="flex: 1; font-size: 15px; color: #EDEFF4;">Move them into the private enclave</div>
+              <div style="font-family: 'IBM Plex Mono', monospace; font-size: 12px; color: #7A5CFF;">Signing</div>
+            </div>
+            <div style="display: flex; align-items: center; gap: 14px; padding: 18px 16px;">
+              <div style="width: 22px; height: 22px; border-radius: 11px; border: 2px solid #323847; box-sizing: border-box;"></div>
+              <div style="flex: 1; font-size: 15px; color: #8A93A5;">Activate session key</div>
+              <div style="font-family: 'IBM Plex Mono', monospace; font-size: 12px; color: #6C7484;">Enclave</div>
+            </div>
+          </div>
+          <div style="display: flex; flex-direction: column; gap: 10px; padding: 16px; border: 1px solid #232733; border-radius: 14px;">
+            <div style="display: flex; justify-content: space-between; gap: 12px;">
+              <div style="font-family: 'IBM Plex Mono', monospace; font-size: 12px; letter-spacing: 0.06em; text-transform: uppercase; color: #6C7484;">Owner</div>
+              <div style="font-family: 'IBM Plex Mono', monospace; font-size: 13px; color: #EDEFF4; font-variant-numeric: tabular-nums;">45Ej…rWnM</div>
+            </div>
+            <div style="display: flex; justify-content: space-between; gap: 12px;">
+              <div style="font-family: 'IBM Plex Mono', monospace; font-size: 12px; letter-spacing: 0.06em; text-transform: uppercase; color: #6C7484;">Session key</div>
+              <div style="font-family: 'IBM Plex Mono', monospace; font-size: 13px; color: #EDEFF4; font-variant-numeric: tabular-nums;">D1jm…S5Lz</div>
+            </div>
+          </div>
+          <div style="flex: 1;"></div>
+          <div style="display: flex; flex-direction: column; gap: 14px;">
+            <div style="height: 52px; border-radius: 10px; background: #7A5CFF; display: flex; align-items: center; justify-content: center; font-size: 16px; font-weight: 600; color: #05060A;">Confirm in wallet</div>
+            <div style="font-family: 'IBM Plex Mono', monospace; font-size: 12px; line-height: 1.5; color: #6C7484; text-align: center;">No SOL needed — we sponsor account rent</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div style="display: flex; flex-direction: column; gap: 14px;">
+      <div style="font-family: 'IBM Plex Mono', monospace; font-size: 12px; letter-spacing: 0.1em; text-transform: uppercase; color: #6C7484;">00 · Done</div>
+      <div data-screen-label="00 Done" style="position: relative; width: 390px; height: 844px; background: #0A0B0F; border: 1px solid #232733; border-radius: 28px; overflow: hidden; display: flex; flex-direction: column;">
+        <div style="height: 44px; display: flex; align-items: center; justify-content: space-between; padding: 0 20px; font-family: 'IBM Plex Mono', monospace; font-size: 13px; color: #EDEFF4;">
+          <span>9:41</span><span style="letter-spacing: 0.12em; color: #8A93A5;">▪ ▪ ▪</span>
+        </div>
+        <div style="flex: 1; display: flex; flex-direction: column; justify-content: space-between; padding: 0 24px 40px;">
+          <div style="display: flex; flex-direction: column; gap: 24px; padding-top: 220px;">
+            <div style="width: 44px; height: 44px; border-radius: 22px; background: rgba(47,191,127,0.14); display: flex; align-items: center; justify-content: center; font-size: 20px; color: #2FBF7F;">✓</div>
+            <div style="font-size: 26px; font-weight: 600; letter-spacing: -0.01em; color: #EDEFF4;">You're set.</div>
+            <div style="font-family: 'IBM Plex Mono', monospace; font-size: 15px; line-height: 1.5; color: #8A93A5;">Session key active for 24h.</div>
+          </div>
+          <div style="height: 52px; border-radius: 10px; background: #7A5CFF; display: flex; align-items: center; justify-content: center; font-size: 16px; font-weight: 600; color: #05060A;">Go to Trade</div>
+        </div>
+      </div>
+    </div>
+
+    <div style="display: flex; flex-direction: column; gap: 14px;">
+      <div style="font-family: 'IBM Plex Mono', monospace; font-size: 12px; letter-spacing: 0.1em; text-transform: uppercase; color: #6C7484;">01 · Trade</div>
+      <div data-screen-label="01 Trade" style="position: relative; width: 390px; height: 844px; background: #0A0B0F; border: 1px solid #232733; border-radius: 28px; overflow: hidden; display: flex; flex-direction: column;">
+        <div style="height: 44px; display: flex; align-items: center; justify-content: space-between; padding: 0 20px; font-family: 'IBM Plex Mono', monospace; font-size: 13px; color: #EDEFF4;">
+          <span>9:41</span><span style="letter-spacing: 0.12em; color: #8A93A5;">▪ ▪ ▪</span>
+        </div>
+        <div style="flex: 1; overflow: hidden; display: flex; flex-direction: column; gap: 14px; padding: 8px 16px 0;">
+          <div style="display: flex; align-items: flex-end; justify-content: space-between; gap: 12px;">
+            <div style="display: flex; flex-direction: column; gap: 6px;">
+              <div style="font-family: 'IBM Plex Mono', monospace; font-size: 12px; letter-spacing: 0.08em; text-transform: uppercase; color: #8A93A5;">SOL-PERP</div>
+              <div style="font-family: 'IBM Plex Mono', monospace; font-size: 34px; font-weight: 600; letter-spacing: -0.02em; color: #EDEFF4; font-variant-numeric: tabular-nums; line-height: 1;">$117.28</div>
+            </div>
+            <div style="display: flex; flex-direction: column; align-items: flex-end; gap: 8px;">
+              <div style="font-family: 'IBM Plex Mono', monospace; font-size: 15px; color: #2FBF7F; font-variant-numeric: tabular-nums;">+1.8%</div>
+              <div style="display: flex; align-items: center; gap: 6px; padding: 4px 8px; border: 1px solid #232733; border-radius: 999px;">
+                <div style="width: 6px; height: 6px; border-radius: 3px; background: #2FBF7F;"></div>
+                <div style="font-family: 'IBM Plex Mono', monospace; font-size: 11px; color: #8A93A5;">Pyth Lazer</div>
+              </div>
+            </div>
+          </div>
+          <div style="display: flex; flex-direction: column; gap: 8px;">
+            <svg width="358" height="150" viewBox="0 0 358 200" preserveAspectRatio="none" style="display: block;">
+              <line x1="0" y1="152.3" x2="312" y2="152.3" stroke="#232733" stroke-width="1"></line><text x="320" y="156.3" font-family="IBM Plex Mono, monospace" font-size="10" fill="#6C7484">116</text><line x1="0" y1="112.8" x2="312" y2="112.8" stroke="#232733" stroke-width="1"></line><text x="320" y="116.8" font-family="IBM Plex Mono, monospace" font-size="10" fill="#6C7484">117</text><line x1="0" y1="73.2" x2="312" y2="73.2" stroke="#232733" stroke-width="1"></line><text x="320" y="77.2" font-family="IBM Plex Mono, monospace" font-size="10" fill="#6C7484">118</text><line x1="0" y1="33.7" x2="312" y2="33.7" stroke="#232733" stroke-width="1"></line><text x="320" y="37.7" font-family="IBM Plex Mono, monospace" font-size="10" fill="#6C7484">119</text>
+              <line x1="0" y1="101.7" x2="312" y2="101.7" stroke="#2FBF7F" stroke-width="1" stroke-dasharray="2 3"></line>
+              <rect x="314" y="93.7" width="42" height="16" rx="3" fill="#2FBF7F"></rect>
+              <text x="335" y="105.2" text-anchor="middle" font-family="IBM Plex Mono, monospace" font-size="10" font-weight="600" fill="#05060A">117.28</text>
+              <rect x="5.2" y="32.6" width="1.2" height="24.2" fill="#E85B6B"></rect><rect x="2.2" y="37.7" width="6.0" height="17.9" fill="#E85B6B"></rect><rect x="15.6" y="43.5" width="1.2" height="19.0" fill="#2FBF7F"></rect><rect x="12.6" y="44.7" width="6.0" height="10.8" fill="#2FBF7F"></rect><rect x="26.0" y="36.2" width="1.2" height="11.9" fill="#E85B6B"></rect><rect x="23.0" y="44.7" width="6.0" height="2.4" fill="#E85B6B"></rect><rect x="36.4" y="30.1" width="1.2" height="27.3" fill="#2FBF7F"></rect><rect x="33.4" y="36.8" width="6.0" height="10.3" fill="#2FBF7F"></rect><rect x="46.8" y="33.8" width="1.2" height="35.1" fill="#E85B6B"></rect><rect x="43.8" y="36.8" width="6.0" height="25.6" fill="#E85B6B"></rect><rect x="57.2" y="49.1" width="1.2" height="16.7" fill="#2FBF7F"></rect><rect x="54.2" y="53.0" width="6.0" height="9.3" fill="#2FBF7F"></rect><rect x="67.6" y="47.4" width="1.2" height="24.9" fill="#E85B6B"></rect><rect x="64.6" y="53.0" width="6.0" height="11.3" fill="#E85B6B"></rect><rect x="78.0" y="61.0" width="1.2" height="27.3" fill="#E85B6B"></rect><rect x="75.0" y="64.4" width="6.0" height="22.2" fill="#E85B6B"></rect><rect x="88.4" y="76.9" width="1.2" height="35.5" fill="#E85B6B"></rect><rect x="85.4" y="86.6" width="6.0" height="18.9" fill="#E85B6B"></rect><rect x="98.8" y="81.7" width="1.2" height="34.8" fill="#2FBF7F"></rect><rect x="95.8" y="85.9" width="6.0" height="19.5" fill="#2FBF7F"></rect><rect x="109.2" y="63.8" width="1.2" height="24.1" fill="#2FBF7F"></rect><rect x="106.2" y="69.2" width="6.0" height="16.7" fill="#2FBF7F"></rect><rect x="119.6" y="66.4" width="1.2" height="15.7" fill="#E85B6B"></rect><rect x="116.6" y="69.2" width="6.0" height="2.7" fill="#E85B6B"></rect><rect x="130.0" y="65.4" width="1.2" height="17.5" fill="#E85B6B"></rect><rect x="127.0" y="71.9" width="6.0" height="5.5" fill="#E85B6B"></rect><rect x="140.4" y="75.5" width="1.2" height="7.8" fill="#E85B6B"></rect><rect x="137.4" y="77.5" width="6.0" height="1.5" fill="#E85B6B"></rect><rect x="150.8" y="75.3" width="1.2" height="3.3" fill="#2FBF7F"></rect><rect x="147.8" y="77.3" width="6.0" height="1.5" fill="#2FBF7F"></rect><rect x="161.2" y="61.7" width="1.2" height="24.0" fill="#2FBF7F"></rect><rect x="158.2" y="69.3" width="6.0" height="7.9" fill="#2FBF7F"></rect><rect x="171.6" y="60.6" width="1.2" height="14.7" fill="#2FBF7F"></rect><rect x="168.6" y="62.2" width="6.0" height="7.1" fill="#2FBF7F"></rect><rect x="182.0" y="54.0" width="1.2" height="26.1" fill="#E85B6B"></rect><rect x="179.0" y="62.2" width="6.0" height="8.1" fill="#E85B6B"></rect><rect x="192.4" y="66.2" width="1.2" height="13.5" fill="#E85B6B"></rect><rect x="189.4" y="70.3" width="6.0" height="4.9" fill="#E85B6B"></rect><rect x="202.8" y="57.6" width="1.2" height="26.9" fill="#2FBF7F"></rect><rect x="199.8" y="64.6" width="6.0" height="10.6" fill="#2FBF7F"></rect><rect x="213.2" y="59.0" width="1.2" height="20.9" fill="#E85B6B"></rect><rect x="210.2" y="64.6" width="6.0" height="10.0" fill="#E85B6B"></rect><rect x="223.6" y="65.9" width="1.2" height="23.4" fill="#E85B6B"></rect><rect x="220.6" y="74.6" width="6.0" height="4.1" fill="#E85B6B"></rect><rect x="234.0" y="75.2" width="1.2" height="32.4" fill="#E85B6B"></rect><rect x="231.0" y="78.8" width="6.0" height="19.0" fill="#E85B6B"></rect><rect x="244.4" y="86.3" width="1.2" height="14.6" fill="#2FBF7F"></rect><rect x="241.4" y="88.6" width="6.0" height="9.2" fill="#2FBF7F"></rect><rect x="254.8" y="66.6" width="1.2" height="29.9" fill="#2FBF7F"></rect><rect x="251.8" y="77.1" width="6.0" height="11.5" fill="#2FBF7F"></rect><rect x="265.2" y="74.8" width="1.2" height="11.6" fill="#E85B6B"></rect><rect x="262.2" y="77.1" width="6.0" height="8.7" fill="#E85B6B"></rect><rect x="275.6" y="82.6" width="1.2" height="27.2" fill="#E85B6B"></rect><rect x="272.6" y="85.8" width="6.0" height="14.8" fill="#E85B6B"></rect><rect x="286.0" y="73.5" width="1.2" height="29.5" fill="#2FBF7F"></rect><rect x="283.0" y="81.9" width="6.0" height="18.7" fill="#2FBF7F"></rect><rect x="296.4" y="76.3" width="1.2" height="31.5" fill="#E85B6B"></rect><rect x="293.4" y="81.9" width="6.0" height="17.5" fill="#E85B6B"></rect><rect x="306.8" y="94.8" width="1.2" height="10.5" fill="#E85B6B"></rect><rect x="303.8" y="99.4" width="6.0" height="2.3" fill="#E85B6B"></rect>
+              <text x="0" y="196" font-family="IBM Plex Mono, monospace" font-size="10" fill="#6C7484">06:00</text>
+              <text x="140" y="196" font-family="IBM Plex Mono, monospace" font-size="10" fill="#6C7484">12:00</text>
+              <text x="278" y="196" font-family="IBM Plex Mono, monospace" font-size="10" fill="#6C7484">18:00</text>
+            </svg>
+            <div style="display: flex; gap: 6px; padding: 3px; background: #12141B; border: 1px solid #232733; border-radius: 10px; width: fit-content;">
+              <div style="padding: 7px 16px; border-radius: 7px; background: #232733; font-family: 'IBM Plex Mono', monospace; font-size: 13px; color: #EDEFF4;">1m</div>
+              <div style="padding: 7px 16px; border-radius: 7px; font-family: 'IBM Plex Mono', monospace; font-size: 13px; color: #8A93A5;">5m</div>
+              <div style="padding: 7px 16px; border-radius: 7px; font-family: 'IBM Plex Mono', monospace; font-size: 13px; color: #8A93A5;">15m</div>
+            </div>
+          </div>
+          <div style="display: flex; flex-direction: column; gap: 12px;">
+            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 4px; padding: 4px; background: #12141B; border: 1px solid #232733; border-radius: 10px;">
+              <div style="height: 40px; border-radius: 7px; background: rgba(47,191,127,0.14); display: flex; align-items: center; justify-content: center; font-size: 15px; font-weight: 600; color: #2FBF7F;">Long</div>
+              <div style="height: 40px; border-radius: 7px; display: flex; align-items: center; justify-content: center; font-size: 15px; font-weight: 500; color: #8A93A5;">Short</div>
+            </div>
+            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px;">
+              <div style="display: flex; flex-direction: column; gap: 6px;">
+                <div style="font-family: 'IBM Plex Mono', monospace; font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; color: #6C7484;">Size</div>
+                <div style="height: 52px; padding: 0 14px; border: 1px solid #232733; border-radius: 10px; background: #12141B; display: flex; align-items: center; justify-content: space-between;">
+                  <div style="font-family: 'IBM Plex Mono', monospace; font-size: 17px; color: #EDEFF4; font-variant-numeric: tabular-nums;">1.00</div>
+                  <div style="font-family: 'IBM Plex Mono', monospace; font-size: 13px; color: #6C7484;">SOL</div>
+                </div>
+              </div>
+              <div style="display: flex; flex-direction: column; gap: 6px;">
+                <div style="font-family: 'IBM Plex Mono', monospace; font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; color: #6C7484;">Margin</div>
+                <div style="height: 52px; padding: 0 14px; border: 1px solid #232733; border-radius: 10px; background: #12141B; display: flex; align-items: center; justify-content: space-between;">
+                  <div style="font-family: 'IBM Plex Mono', monospace; font-size: 17px; color: #EDEFF4; font-variant-numeric: tabular-nums;">20.00</div>
+                  <div style="font-family: 'IBM Plex Mono', monospace; font-size: 12px; font-weight: 600; color: #7A5CFF;">MAX</div>
+                </div>
+              </div>
+            </div>
+            <div style="display: flex; justify-content: space-between; font-family: 'IBM Plex Mono', monospace; font-size: 12px; color: #6C7484;">
+              <span>Available: 980.00 dUSDC</span>
+              <span style="color: #EDEFF4;">2.0×</span>
+            </div>
+            <div style="display: flex; flex-direction: column; gap: 8px;">
+              <div style="position: relative; height: 4px; border-radius: 2px; background: #232733;">
+                <div style="position: absolute; left: 0; top: 0; height: 4px; width: 22%; border-radius: 2px; background: #7A5CFF;"></div>
+                <div style="position: absolute; left: 22%; top: -8px; width: 20px; height: 20px; margin-left: -10px; border-radius: 10px; background: #7A5CFF;"></div>
+              </div>
+              <div style="display: flex; justify-content: space-between; font-family: 'IBM Plex Mono', monospace; font-size: 11px; color: #6C7484;">
+                <span>1×</span><span>2×</span><span>5×</span><span>10×</span>
+              </div>
+            </div>
+            <div style="display: flex; flex-direction: column; gap: 6px; padding: 12px 14px; border: 1px solid #232733; border-radius: 12px;">
+              <div style="display: flex; justify-content: space-between; font-family: 'IBM Plex Mono', monospace; font-size: 13px;"><span style="color: #8A93A5;">Entry ≈</span><span style="color: #EDEFF4; font-variant-numeric: tabular-nums;">$117.28</span></div>
+              <div style="display: flex; justify-content: space-between; font-family: 'IBM Plex Mono', monospace; font-size: 13px;"><span style="color: #8A93A5;">Liq. price</span><span style="color: #EDEFF4; font-variant-numeric: tabular-nums;">$60.12</span></div>
+              <div style="display: flex; justify-content: space-between; font-family: 'IBM Plex Mono', monospace; font-size: 13px;"><span style="color: #8A93A5;">Fee</span><span style="color: #EDEFF4; font-variant-numeric: tabular-nums;">0.05 dUSDC</span></div>
+              <div style="display: flex; justify-content: space-between; font-family: 'IBM Plex Mono', monospace; font-size: 13px;"><span style="color: #8A93A5;">Slippage limit</span><span style="color: #EDEFF4; font-variant-numeric: tabular-nums;">mark × 1.01</span></div>
+            </div>
+            <div style="display: flex; flex-direction: column; gap: 10px;">
+              <div style="height: 52px; border-radius: 10px; background: #2FBF7F; display: flex; align-items: center; justify-content: center; font-size: 16px; font-weight: 600; color: #05060A;">Open Long</div>
+              <div style="font-family: 'IBM Plex Mono', monospace; font-size: 11px; color: #6C7484; text-align: center;">No wallet prompt — signed by your session key</div>
+            </div>
+          </div>
+        </div>
+        <div style="display: grid; grid-template-columns: repeat(5, 1fr); border-top: 1px solid #232733; background: #0A0B0F; padding: 10px 0 24px;">
+          <div style="display: flex; flex-direction: column; align-items: center; gap: 6px; font-family: 'IBM Plex Mono', monospace; font-size: 10px; letter-spacing: 0.06em; text-transform: uppercase; color: #7A5CFF;"><svg width="18" height="18" viewBox="0 0 18 18"><rect x="3" y="5" width="4" height="8" fill="#7A5CFF"></rect><rect x="4.4" y="2" width="1.2" height="14" fill="#7A5CFF"></rect><rect x="11" y="7" width="4" height="6" fill="#7A5CFF"></rect><rect x="12.4" y="4" width="1.2" height="12" fill="#7A5CFF"></rect></svg>Trade</div>
+          <div style="display: flex; flex-direction: column; align-items: center; gap: 6px; font-family: 'IBM Plex Mono', monospace; font-size: 10px; letter-spacing: 0.06em; text-transform: uppercase; color: #6C7484;"><svg width="18" height="18" viewBox="0 0 18 18"><rect x="2.5" y="4.5" width="13" height="9" rx="1.5" fill="none" stroke="#6C7484" stroke-width="1.4"></rect><rect x="5" y="8" width="8" height="1.4" fill="#6C7484"></rect></svg>Positions</div>
+          <div style="display: flex; flex-direction: column; align-items: center; gap: 6px; font-family: 'IBM Plex Mono', monospace; font-size: 10px; letter-spacing: 0.06em; text-transform: uppercase; color: #6C7484;"><svg width="18" height="18" viewBox="0 0 18 18"><circle cx="9" cy="9" r="6.3" fill="none" stroke="#6C7484" stroke-width="1.4"></circle><path d="M9 5.4 V9 L11.6 10.6" fill="none" stroke="#6C7484" stroke-width="1.4"></path></svg>History</div>
+          <div style="display: flex; flex-direction: column; align-items: center; gap: 6px; font-family: 'IBM Plex Mono', monospace; font-size: 10px; letter-spacing: 0.06em; text-transform: uppercase; color: #6C7484;"><svg width="18" height="18" viewBox="0 0 18 18"><rect x="3" y="4" width="12" height="1.4" fill="#6C7484"></rect><rect x="3" y="8.3" width="12" height="1.4" fill="#6C7484"></rect><rect x="3" y="12.6" width="8" height="1.4" fill="#6C7484"></rect></svg>Ledger</div>
+          <div style="display: flex; flex-direction: column; align-items: center; gap: 6px; font-family: 'IBM Plex Mono', monospace; font-size: 10px; letter-spacing: 0.06em; text-transform: uppercase; color: #6C7484;"><svg width="18" height="18" viewBox="0 0 18 18"><circle cx="9" cy="6.6" r="2.9" fill="none" stroke="#6C7484" stroke-width="1.4"></circle><path d="M3.6 14.4 A5.4 5.4 0 0 1 14.4 14.4" fill="none" stroke="#6C7484" stroke-width="1.4"></path></svg>Account</div>
+        </div>
+      </div>
+    </div>
+
+    <div style="display: flex; flex-direction: column; gap: 14px;">
+      <div style="font-family: 'IBM Plex Mono', monospace; font-size: 12px; letter-spacing: 0.1em; text-transform: uppercase; color: #6C7484;">01 · Trade — stale oracle, ticket locked</div>
+      <div data-screen-label="01 Trade blocked" style="position: relative; width: 390px; height: 844px; background: #0A0B0F; border: 1px solid #232733; border-radius: 28px; overflow: hidden; display: flex; flex-direction: column;">
+        <div style="height: 44px; display: flex; align-items: center; justify-content: space-between; padding: 0 20px; font-family: 'IBM Plex Mono', monospace; font-size: 13px; color: #EDEFF4;">
+          <span>9:41</span><span style="letter-spacing: 0.12em; color: #8A93A5;">▪ ▪ ▪</span>
+        </div>
+        <div style="flex: 1; overflow: hidden; display: flex; flex-direction: column; gap: 18px; padding: 8px 16px 0;">
+          <div style="display: flex; align-items: center; gap: 10px; padding: 12px 14px; border-radius: 10px; background: rgba(224,169,59,0.14); border: 1px solid rgba(224,169,59,0.4);">
+            <div style="width: 7px; height: 7px; border-radius: 4px; background: #E0A93B;"></div>
+            <div style="font-size: 13px; color: #E0A93B;">Oracle price is stale — trading paused</div>
+          </div>
+          <div style="display: flex; align-items: flex-end; justify-content: space-between; gap: 12px;">
+            <div style="display: flex; flex-direction: column; gap: 6px;">
+              <div style="font-family: 'IBM Plex Mono', monospace; font-size: 12px; letter-spacing: 0.08em; text-transform: uppercase; color: #8A93A5;">SOL-PERP</div>
+              <div style="font-family: 'IBM Plex Mono', monospace; font-size: 34px; font-weight: 600; letter-spacing: -0.02em; color: #6C7484; font-variant-numeric: tabular-nums; line-height: 1;">$117.28</div>
+            </div>
+            <div style="display: flex; align-items: center; gap: 6px; padding: 4px 8px; border: 1px solid #232733; border-radius: 999px;">
+              <div style="width: 6px; height: 6px; border-radius: 3px; background: #E0A93B;"></div>
+              <div style="font-family: 'IBM Plex Mono', monospace; font-size: 11px; color: #8A93A5;">Pyth Lazer</div>
+            </div>
+          </div>
+          <svg width="358" height="160" viewBox="0 0 358 200" preserveAspectRatio="none" style="display: block; opacity: 0.35;">
+            <line x1="0" y1="152.3" x2="312" y2="152.3" stroke="#232733" stroke-width="1"></line><text x="320" y="156.3" font-family="IBM Plex Mono, monospace" font-size="10" fill="#6C7484">116</text><line x1="0" y1="112.8" x2="312" y2="112.8" stroke="#232733" stroke-width="1"></line><text x="320" y="116.8" font-family="IBM Plex Mono, monospace" font-size="10" fill="#6C7484">117</text><line x1="0" y1="73.2" x2="312" y2="73.2" stroke="#232733" stroke-width="1"></line><text x="320" y="77.2" font-family="IBM Plex Mono, monospace" font-size="10" fill="#6C7484">118</text><line x1="0" y1="33.7" x2="312" y2="33.7" stroke="#232733" stroke-width="1"></line><text x="320" y="37.7" font-family="IBM Plex Mono, monospace" font-size="10" fill="#6C7484">119</text><rect x="5.2" y="32.6" width="1.2" height="24.2" fill="#E85B6B"></rect><rect x="2.2" y="37.7" width="6.0" height="17.9" fill="#E85B6B"></rect><rect x="15.6" y="43.5" width="1.2" height="19.0" fill="#2FBF7F"></rect><rect x="12.6" y="44.7" width="6.0" height="10.8" fill="#2FBF7F"></rect><rect x="26.0" y="36.2" width="1.2" height="11.9" fill="#E85B6B"></rect><rect x="23.0" y="44.7" width="6.0" height="2.4" fill="#E85B6B"></rect><rect x="36.4" y="30.1" width="1.2" height="27.3" fill="#2FBF7F"></rect><rect x="33.4" y="36.8" width="6.0" height="10.3" fill="#2FBF7F"></rect><rect x="46.8" y="33.8" width="1.2" height="35.1" fill="#E85B6B"></rect><rect x="43.8" y="36.8" width="6.0" height="25.6" fill="#E85B6B"></rect><rect x="57.2" y="49.1" width="1.2" height="16.7" fill="#2FBF7F"></rect><rect x="54.2" y="53.0" width="6.0" height="9.3" fill="#2FBF7F"></rect><rect x="67.6" y="47.4" width="1.2" height="24.9" fill="#E85B6B"></rect><rect x="64.6" y="53.0" width="6.0" height="11.3" fill="#E85B6B"></rect><rect x="78.0" y="61.0" width="1.2" height="27.3" fill="#E85B6B"></rect><rect x="75.0" y="64.4" width="6.0" height="22.2" fill="#E85B6B"></rect><rect x="88.4" y="76.9" width="1.2" height="35.5" fill="#E85B6B"></rect><rect x="85.4" y="86.6" width="6.0" height="18.9" fill="#E85B6B"></rect><rect x="98.8" y="81.7" width="1.2" height="34.8" fill="#2FBF7F"></rect><rect x="95.8" y="85.9" width="6.0" height="19.5" fill="#2FBF7F"></rect><rect x="109.2" y="63.8" width="1.2" height="24.1" fill="#2FBF7F"></rect><rect x="106.2" y="69.2" width="6.0" height="16.7" fill="#2FBF7F"></rect><rect x="119.6" y="66.4" width="1.2" height="15.7" fill="#E85B6B"></rect><rect x="116.6" y="69.2" width="6.0" height="2.7" fill="#E85B6B"></rect><rect x="130.0" y="65.4" width="1.2" height="17.5" fill="#E85B6B"></rect><rect x="127.0" y="71.9" width="6.0" height="5.5" fill="#E85B6B"></rect><rect x="140.4" y="75.5" width="1.2" height="7.8" fill="#E85B6B"></rect><rect x="137.4" y="77.5" width="6.0" height="1.5" fill="#E85B6B"></rect><rect x="150.8" y="75.3" width="1.2" height="3.3" fill="#2FBF7F"></rect><rect x="147.8" y="77.3" width="6.0" height="1.5" fill="#2FBF7F"></rect><rect x="161.2" y="61.7" width="1.2" height="24.0" fill="#2FBF7F"></rect><rect x="158.2" y="69.3" width="6.0" height="7.9" fill="#2FBF7F"></rect><rect x="171.6" y="60.6" width="1.2" height="14.7" fill="#2FBF7F"></rect><rect x="168.6" y="62.2" width="6.0" height="7.1" fill="#2FBF7F"></rect><rect x="182.0" y="54.0" width="1.2" height="26.1" fill="#E85B6B"></rect><rect x="179.0" y="62.2" width="6.0" height="8.1" fill="#E85B6B"></rect><rect x="192.4" y="66.2" width="1.2" height="13.5" fill="#E85B6B"></rect><rect x="189.4" y="70.3" width="6.0" height="4.9" fill="#E85B6B"></rect><rect x="202.8" y="57.6" width="1.2" height="26.9" fill="#2FBF7F"></rect><rect x="199.8" y="64.6" width="6.0" height="10.6" fill="#2FBF7F"></rect><rect x="213.2" y="59.0" width="1.2" height="20.9" fill="#E85B6B"></rect><rect x="210.2" y="64.6" width="6.0" height="10.0" fill="#E85B6B"></rect><rect x="223.6" y="65.9" width="1.2" height="23.4" fill="#E85B6B"></rect><rect x="220.6" y="74.6" width="6.0" height="4.1" fill="#E85B6B"></rect><rect x="234.0" y="75.2" width="1.2" height="32.4" fill="#E85B6B"></rect><rect x="231.0" y="78.8" width="6.0" height="19.0" fill="#E85B6B"></rect><rect x="244.4" y="86.3" width="1.2" height="14.6" fill="#2FBF7F"></rect><rect x="241.4" y="88.6" width="6.0" height="9.2" fill="#2FBF7F"></rect><rect x="254.8" y="66.6" width="1.2" height="29.9" fill="#2FBF7F"></rect><rect x="251.8" y="77.1" width="6.0" height="11.5" fill="#2FBF7F"></rect><rect x="265.2" y="74.8" width="1.2" height="11.6" fill="#E85B6B"></rect><rect x="262.2" y="77.1" width="6.0" height="8.7" fill="#E85B6B"></rect><rect x="275.6" y="82.6" width="1.2" height="27.2" fill="#E85B6B"></rect><rect x="272.6" y="85.8" width="6.0" height="14.8" fill="#E85B6B"></rect><rect x="286.0" y="73.5" width="1.2" height="29.5" fill="#2FBF7F"></rect><rect x="283.0" y="81.9" width="6.0" height="18.7" fill="#2FBF7F"></rect><rect x="296.4" y="76.3" width="1.2" height="31.5" fill="#E85B6B"></rect><rect x="293.4" y="81.9" width="6.0" height="17.5" fill="#E85B6B"></rect><rect x="306.8" y="94.8" width="1.2" height="10.5" fill="#E85B6B"></rect><rect x="303.8" y="99.4" width="6.0" height="2.3" fill="#E85B6B"></rect>
+          </svg>
+          <div style="display: flex; flex-direction: column; gap: 14px; padding: 20px 16px; border: 1px solid #232733; border-radius: 14px; background: #101219;">
+            <div style="font-size: 15px; font-weight: 600; color: #EDEFF4;">One position per market</div>
+            <div style="font-size: 14px; line-height: 1.5; color: #8A93A5;">Close it in Positions before opening another.</div>
+            <div style="height: 52px; border-radius: 10px; background: #1A1D25; display: flex; align-items: center; justify-content: center; font-size: 16px; font-weight: 600; color: #4A5161;">Open Long</div>
+          </div>
+          <div style="display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 14px 16px; border-radius: 10px; border: 1px solid #323847;">
+            <div style="font-size: 13px; color: #8A93A5;">Session expired</div>
+            <div style="padding: 8px 14px; border-radius: 8px; border: 1px solid #7A5CFF; font-size: 13px; font-weight: 600; color: #7A5CFF;">Re-authorize</div>
+          </div>
+        </div>
+        <div style="display: grid; grid-template-columns: repeat(5, 1fr); border-top: 1px solid #232733; background: #0A0B0F; padding: 10px 0 24px;">
+          <div style="display: flex; flex-direction: column; align-items: center; gap: 6px; font-family: 'IBM Plex Mono', monospace; font-size: 10px; letter-spacing: 0.06em; text-transform: uppercase; color: #7A5CFF;"><svg width="18" height="18" viewBox="0 0 18 18"><rect x="3" y="5" width="4" height="8" fill="#7A5CFF"></rect><rect x="4.4" y="2" width="1.2" height="14" fill="#7A5CFF"></rect><rect x="11" y="7" width="4" height="6" fill="#7A5CFF"></rect><rect x="12.4" y="4" width="1.2" height="12" fill="#7A5CFF"></rect></svg>Trade</div>
+          <div style="display: flex; flex-direction: column; align-items: center; gap: 6px; font-family: 'IBM Plex Mono', monospace; font-size: 10px; letter-spacing: 0.06em; text-transform: uppercase; color: #6C7484;"><svg width="18" height="18" viewBox="0 0 18 18"><rect x="2.5" y="4.5" width="13" height="9" rx="1.5" fill="none" stroke="#6C7484" stroke-width="1.4"></rect><rect x="5" y="8" width="8" height="1.4" fill="#6C7484"></rect></svg>Positions</div>
+          <div style="display: flex; flex-direction: column; align-items: center; gap: 6px; font-family: 'IBM Plex Mono', monospace; font-size: 10px; letter-spacing: 0.06em; text-transform: uppercase; color: #6C7484;"><svg width="18" height="18" viewBox="0 0 18 18"><circle cx="9" cy="9" r="6.3" fill="none" stroke="#6C7484" stroke-width="1.4"></circle><path d="M9 5.4 V9 L11.6 10.6" fill="none" stroke="#6C7484" stroke-width="1.4"></path></svg>History</div>
+          <div style="display: flex; flex-direction: column; align-items: center; gap: 6px; font-family: 'IBM Plex Mono', monospace; font-size: 10px; letter-spacing: 0.06em; text-transform: uppercase; color: #6C7484;"><svg width="18" height="18" viewBox="0 0 18 18"><rect x="3" y="4" width="12" height="1.4" fill="#6C7484"></rect><rect x="3" y="8.3" width="12" height="1.4" fill="#6C7484"></rect><rect x="3" y="12.6" width="8" height="1.4" fill="#6C7484"></rect></svg>Ledger</div>
+          <div style="display: flex; flex-direction: column; align-items: center; gap: 6px; font-family: 'IBM Plex Mono', monospace; font-size: 10px; letter-spacing: 0.06em; text-transform: uppercase; color: #6C7484;"><svg width="18" height="18" viewBox="0 0 18 18"><circle cx="9" cy="6.6" r="2.9" fill="none" stroke="#6C7484" stroke-width="1.4"></circle><path d="M3.6 14.4 A5.4 5.4 0 0 1 14.4 14.4" fill="none" stroke="#6C7484" stroke-width="1.4"></path></svg>Account</div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+</section>
+
+
+<section style="padding: 0 64px 48px; display: flex; flex-wrap: wrap; gap: 40px; background: #05060A;">
+
+  <div style="display: flex; flex-direction: column; gap: 14px;">
+    <div style="font-family: 'IBM Plex Mono', monospace; font-size: 12px; letter-spacing: 0.1em; text-transform: uppercase; color: #6C7484;">02 · Positions</div>
+    <div data-screen-label="02 Positions" style="position: relative; width: 390px; height: 844px; background: #0A0B0F; border: 1px solid #232733; border-radius: 28px; overflow: hidden; display: flex; flex-direction: column;">
+      <div style="height: 44px; display: flex; align-items: center; justify-content: space-between; padding: 0 20px; font-family: 'IBM Plex Mono', monospace; font-size: 13px; color: #EDEFF4;"><span>9:41</span><span style="letter-spacing: 0.12em; color: #8A93A5;">▪ ▪ ▪</span></div>
+      <div style="flex: 1; overflow: hidden; display: flex; flex-direction: column; gap: 20px; padding: 12px 16px 0;">
+        <div style="font-size: 22px; font-weight: 600; letter-spacing: -0.01em; color: #EDEFF4;">Positions</div>
+        <div style="display: flex; flex-direction: column; gap: 18px; padding: 18px 16px; border: 1px solid #232733; border-radius: 14px; background: #12141B;">
+          <div style="display: flex; align-items: center; justify-content: space-between; gap: 12px;">
+            <div style="display: flex; align-items: center; gap: 10px;">
+              <div style="font-size: 16px; font-weight: 600; color: #EDEFF4;">SOL-PERP</div>
+              <div style="padding: 3px 8px; border-radius: 5px; background: rgba(47,191,127,0.14); font-family: 'IBM Plex Mono', monospace; font-size: 11px; font-weight: 600; color: #2FBF7F;">LONG</div>
+              <div style="font-family: 'IBM Plex Mono', monospace; font-size: 12px; color: #8A93A5;">2.0×</div>
+            </div>
+          </div>
+          <div style="display: flex; flex-direction: column; gap: 4px;">
+            <div style="font-family: 'IBM Plex Mono', monospace; font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; color: #6C7484;">Unrealized PnL</div>
+            <div style="font-family: 'IBM Plex Mono', monospace; font-size: 30px; font-weight: 600; color: #2FBF7F; font-variant-numeric: tabular-nums; line-height: 1.1;">+0.77 dUSDC</div>
+            <div style="font-family: 'IBM Plex Mono', monospace; font-size: 14px; color: #2FBF7F; font-variant-numeric: tabular-nums;">+3.9%</div>
+          </div>
+          <div style="display: flex; flex-direction: column; gap: 9px;">
+            <div style="display: flex; justify-content: space-between; font-family: 'IBM Plex Mono', monospace; font-size: 13px;"><span style="color: #8A93A5;">Size</span><span style="color: #EDEFF4; font-variant-numeric: tabular-nums;">1.00 SOL</span></div>
+            <div style="display: flex; justify-content: space-between; font-family: 'IBM Plex Mono', monospace; font-size: 13px;"><span style="color: #8A93A5;">Entry</span><span style="color: #EDEFF4; font-variant-numeric: tabular-nums;">$117.28</span></div>
+            <div style="display: flex; justify-content: space-between; font-family: 'IBM Plex Mono', monospace; font-size: 13px;"><span style="color: #8A93A5;">Mark</span><span style="color: #EDEFF4; font-variant-numeric: tabular-nums;">$118.05</span></div>
+            <div style="display: flex; justify-content: space-between; font-family: 'IBM Plex Mono', monospace; font-size: 13px;"><span style="color: #8A93A5;">Margin</span><span style="color: #EDEFF4; font-variant-numeric: tabular-nums;">20.00 dUSDC</span></div>
+          </div>
+          <div style="display: flex; flex-direction: column; gap: 8px; padding-top: 4px;">
+            <div style="display: flex; justify-content: space-between; font-family: 'IBM Plex Mono', monospace; font-size: 13px;"><span style="color: #8A93A5;">Liq. price</span><span style="color: #EDEFF4; font-variant-numeric: tabular-nums;">$60.12</span></div>
+            <div style="position: relative; height: 4px; border-radius: 2px; background: #232733;">
+              <div style="position: absolute; left: 0; top: 0; height: 4px; width: 49%; border-radius: 2px; background: #2FBF7F;"></div>
+            </div>
+            <div style="font-family: 'IBM Plex Mono', monospace; font-size: 11px; color: #6C7484;">49% away from liquidation</div>
+          </div>
+          <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px; padding-top: 4px;">
+            <div style="height: 46px; border-radius: 9px; background: #E85B6B; display: flex; align-items: center; justify-content: center; font-size: 14px; font-weight: 600; color: #05060A;">Close</div>
+            <div style="height: 46px; border-radius: 9px; border: 1px solid #323847; display: flex; align-items: center; justify-content: center; font-size: 14px; font-weight: 600; color: #EDEFF4;">Increase</div>
+            <div style="height: 46px; border-radius: 9px; border: 1px solid #323847; display: flex; align-items: center; justify-content: center; font-size: 14px; font-weight: 600; color: #EDEFF4;">Decrease</div>
+          </div>
+        </div>
+        <div style="display: flex; align-items: center; gap: 10px; padding: 14px 16px; border: 1px solid #232733; border-radius: 12px; background: #101219;">
+          <svg width="16" height="16" viewBox="0 0 18 18"><circle cx="9" cy="9" r="6.3" fill="none" stroke="#E0A93B" stroke-width="1.4"></circle><path d="M9 5.4 V9 L11.6 10.6" fill="none" stroke="#E0A93B" stroke-width="1.4"></path></svg>
+          <div style="flex: 1; font-size: 13px; line-height: 1.4; color: #8A93A5;">Recording commitment on-chain (≤5 min)</div>
+        </div>
+      </div>
+      <div style="display: grid; grid-template-columns: repeat(5, 1fr); border-top: 1px solid #232733; padding: 10px 0 24px;">
+        <div style="display: flex; flex-direction: column; align-items: center; gap: 6px; font-family: 'IBM Plex Mono', monospace; font-size: 10px; letter-spacing: 0.06em; text-transform: uppercase; color: #6C7484;"><svg width="18" height="18" viewBox="0 0 18 18"><rect x="3" y="5" width="4" height="8" fill="#6C7484"></rect><rect x="4.4" y="2" width="1.2" height="14" fill="#6C7484"></rect><rect x="11" y="7" width="4" height="6" fill="#6C7484"></rect><rect x="12.4" y="4" width="1.2" height="12" fill="#6C7484"></rect></svg>Trade</div>
+        <div style="display: flex; flex-direction: column; align-items: center; gap: 6px; font-family: 'IBM Plex Mono', monospace; font-size: 10px; letter-spacing: 0.06em; text-transform: uppercase; color: #7A5CFF;"><svg width="18" height="18" viewBox="0 0 18 18"><rect x="2.5" y="4.5" width="13" height="9" rx="1.5" fill="none" stroke="#7A5CFF" stroke-width="1.4"></rect><rect x="5" y="8" width="8" height="1.4" fill="#7A5CFF"></rect></svg>Positions</div>
+        <div style="display: flex; flex-direction: column; align-items: center; gap: 6px; font-family: 'IBM Plex Mono', monospace; font-size: 10px; letter-spacing: 0.06em; text-transform: uppercase; color: #6C7484;"><svg width="18" height="18" viewBox="0 0 18 18"><circle cx="9" cy="9" r="6.3" fill="none" stroke="#6C7484" stroke-width="1.4"></circle><path d="M9 5.4 V9 L11.6 10.6" fill="none" stroke="#6C7484" stroke-width="1.4"></path></svg>History</div>
+        <div style="display: flex; flex-direction: column; align-items: center; gap: 6px; font-family: 'IBM Plex Mono', monospace; font-size: 10px; letter-spacing: 0.06em; text-transform: uppercase; color: #6C7484;"><svg width="18" height="18" viewBox="0 0 18 18"><rect x="3" y="4" width="12" height="1.4" fill="#6C7484"></rect><rect x="3" y="8.3" width="12" height="1.4" fill="#6C7484"></rect><rect x="3" y="12.6" width="8" height="1.4" fill="#6C7484"></rect></svg>Ledger</div>
+        <div style="display: flex; flex-direction: column; align-items: center; gap: 6px; font-family: 'IBM Plex Mono', monospace; font-size: 10px; letter-spacing: 0.06em; text-transform: uppercase; color: #6C7484;"><svg width="18" height="18" viewBox="0 0 18 18"><circle cx="9" cy="6.6" r="2.9" fill="none" stroke="#6C7484" stroke-width="1.4"></circle><path d="M3.6 14.4 A5.4 5.4 0 0 1 14.4 14.4" fill="none" stroke="#6C7484" stroke-width="1.4"></path></svg>Account</div>
+      </div>
+    </div>
+  </div>
+
+  <div style="display: flex; flex-direction: column; gap: 14px;">
+    <div style="font-family: 'IBM Plex Mono', monospace; font-size: 12px; letter-spacing: 0.1em; text-transform: uppercase; color: #6C7484;">03 · History</div>
+    <div data-screen-label="03 History" style="position: relative; width: 390px; height: 844px; background: #0A0B0F; border: 1px solid #232733; border-radius: 28px; overflow: hidden; display: flex; flex-direction: column;">
+      <div style="height: 44px; display: flex; align-items: center; justify-content: space-between; padding: 0 20px; font-family: 'IBM Plex Mono', monospace; font-size: 13px; color: #EDEFF4;"><span>9:41</span><span style="letter-spacing: 0.12em; color: #8A93A5;">▪ ▪ ▪</span></div>
+      <div style="flex: 1; overflow: hidden; display: flex; flex-direction: column; gap: 18px; padding: 12px 16px 0;">
+        <div style="font-size: 22px; font-weight: 600; letter-spacing: -0.01em; color: #EDEFF4;">History</div>
+        <div style="display: flex; align-items: flex-start; gap: 10px; padding: 14px 16px; border-radius: 12px; background: rgba(122,92,255,0.14);">
+          <div style="flex: 1; font-size: 13px; line-height: 1.5; color: #C3B8FF;">Your trades become public only after the delay — without your address.</div>
+          <div style="font-family: 'IBM Plex Mono', monospace; font-size: 15px; color: #8A93A5;">×</div>
+        </div>
+        <div style="display: flex; flex-direction: column; border: 1px solid #232733; border-radius: 14px; overflow: hidden;">
+          <div style="display: flex; align-items: center; gap: 12px; padding: 16px; border-bottom: 1px solid #232733;">
+            <div style="flex: 1; display: flex; flex-direction: column; gap: 5px;">
+              <div style="font-size: 15px; font-weight: 600; color: #EDEFF4;">Long 1.00 SOL</div>
+              <div style="font-family: 'IBM Plex Mono', monospace; font-size: 12px; color: #6C7484; font-variant-numeric: tabular-nums;">117.28 → 118.05 · 09:38</div>
+            </div>
+            <div style="display: flex; flex-direction: column; align-items: flex-end; gap: 6px;">
+              <div style="font-family: 'IBM Plex Mono', monospace; font-size: 15px; color: #2FBF7F; font-variant-numeric: tabular-nums;">+0.77</div>
+              <div style="padding: 3px 8px; border-radius: 5px; background: rgba(224,169,59,0.14); font-family: 'IBM Plex Mono', monospace; font-size: 10px; color: #E0A93B;">Committing…</div>
+            </div>
+          </div>
+          <div style="display: flex; align-items: center; gap: 12px; padding: 16px; border-bottom: 1px solid #232733;">
+            <div style="flex: 1; display: flex; flex-direction: column; gap: 5px;">
+              <div style="font-size: 15px; font-weight: 600; color: #EDEFF4;">Short 2.40 SOL</div>
+              <div style="font-family: 'IBM Plex Mono', monospace; font-size: 12px; color: #6C7484; font-variant-numeric: tabular-nums;">119.02 → 118.44 · 07:12</div>
+            </div>
+            <div style="display: flex; flex-direction: column; align-items: flex-end; gap: 6px;">
+              <div style="font-family: 'IBM Plex Mono', monospace; font-size: 15px; color: #2FBF7F; font-variant-numeric: tabular-nums;">+1.39</div>
+              <div style="padding: 3px 8px; border-radius: 5px; background: rgba(224,169,59,0.14); font-family: 'IBM Plex Mono', monospace; font-size: 10px; color: #E0A93B;">Reveals in 2h 14m</div>
+            </div>
+          </div>
+          <div style="display: flex; align-items: center; gap: 12px; padding: 16px; border-bottom: 1px solid #232733;">
+            <div style="flex: 1; display: flex; flex-direction: column; gap: 5px;">
+              <div style="font-size: 15px; font-weight: 600; color: #EDEFF4;">Long 0.50 SOL</div>
+              <div style="font-family: 'IBM Plex Mono', monospace; font-size: 12px; color: #6C7484; font-variant-numeric: tabular-nums;">116.40 → 115.02 · Yesterday</div>
+            </div>
+            <div style="display: flex; flex-direction: column; align-items: flex-end; gap: 6px;">
+              <div style="font-family: 'IBM Plex Mono', monospace; font-size: 15px; color: #E85B6B; font-variant-numeric: tabular-nums;">−0.69</div>
+              <div style="display: flex; align-items: center; gap: 5px; padding: 3px 8px; border-radius: 5px; background: rgba(47,191,127,0.14); font-family: 'IBM Plex Mono', monospace; font-size: 10px; color: #2FBF7F;">Revealed ✓ ↗</div>
+            </div>
+          </div>
+          <div style="display: flex; align-items: center; gap: 12px; padding: 16px;">
+            <div style="flex: 1; display: flex; flex-direction: column; gap: 5px;">
+              <div style="font-size: 15px; font-weight: 600; color: #EDEFF4;">Short 1.20 SOL</div>
+              <div style="font-family: 'IBM Plex Mono', monospace; font-size: 12px; color: #6C7484; font-variant-numeric: tabular-nums;">114.88 → 113.10 · Yesterday</div>
+            </div>
+            <div style="display: flex; flex-direction: column; align-items: flex-end; gap: 6px;">
+              <div style="font-family: 'IBM Plex Mono', monospace; font-size: 15px; color: #2FBF7F; font-variant-numeric: tabular-nums;">+2.14</div>
+              <div style="display: flex; align-items: center; gap: 5px; padding: 3px 8px; border-radius: 5px; background: rgba(47,191,127,0.14); font-family: 'IBM Plex Mono', monospace; font-size: 10px; color: #2FBF7F;">Revealed ✓ ↗</div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div style="display: grid; grid-template-columns: repeat(5, 1fr); border-top: 1px solid #232733; padding: 10px 0 24px;">
+        <div style="display: flex; flex-direction: column; align-items: center; gap: 6px; font-family: 'IBM Plex Mono', monospace; font-size: 10px; letter-spacing: 0.06em; text-transform: uppercase; color: #6C7484;"><svg width="18" height="18" viewBox="0 0 18 18"><rect x="3" y="5" width="4" height="8" fill="#6C7484"></rect><rect x="4.4" y="2" width="1.2" height="14" fill="#6C7484"></rect><rect x="11" y="7" width="4" height="6" fill="#6C7484"></rect><rect x="12.4" y="4" width="1.2" height="12" fill="#6C7484"></rect></svg>Trade</div>
+        <div style="display: flex; flex-direction: column; align-items: center; gap: 6px; font-family: 'IBM Plex Mono', monospace; font-size: 10px; letter-spacing: 0.06em; text-transform: uppercase; color: #6C7484;"><svg width="18" height="18" viewBox="0 0 18 18"><rect x="2.5" y="4.5" width="13" height="9" rx="1.5" fill="none" stroke="#6C7484" stroke-width="1.4"></rect><rect x="5" y="8" width="8" height="1.4" fill="#6C7484"></rect></svg>Positions</div>
+        <div style="display: flex; flex-direction: column; align-items: center; gap: 6px; font-family: 'IBM Plex Mono', monospace; font-size: 10px; letter-spacing: 0.06em; text-transform: uppercase; color: #7A5CFF;"><svg width="18" height="18" viewBox="0 0 18 18"><circle cx="9" cy="9" r="6.3" fill="none" stroke="#7A5CFF" stroke-width="1.4"></circle><path d="M9 5.4 V9 L11.6 10.6" fill="none" stroke="#7A5CFF" stroke-width="1.4"></path></svg>History</div>
+        <div style="display: flex; flex-direction: column; align-items: center; gap: 6px; font-family: 'IBM Plex Mono', monospace; font-size: 10px; letter-spacing: 0.06em; text-transform: uppercase; color: #6C7484;"><svg width="18" height="18" viewBox="0 0 18 18"><rect x="3" y="4" width="12" height="1.4" fill="#6C7484"></rect><rect x="3" y="8.3" width="12" height="1.4" fill="#6C7484"></rect><rect x="3" y="12.6" width="8" height="1.4" fill="#6C7484"></rect></svg>Ledger</div>
+        <div style="display: flex; flex-direction: column; align-items: center; gap: 6px; font-family: 'IBM Plex Mono', monospace; font-size: 10px; letter-spacing: 0.06em; text-transform: uppercase; color: #6C7484;"><svg width="18" height="18" viewBox="0 0 18 18"><circle cx="9" cy="6.6" r="2.9" fill="none" stroke="#6C7484" stroke-width="1.4"></circle><path d="M3.6 14.4 A5.4 5.4 0 0 1 14.4 14.4" fill="none" stroke="#6C7484" stroke-width="1.4"></path></svg>Account</div>
+      </div>
+    </div>
+  </div>
+
+  <div style="display: flex; flex-direction: column; gap: 14px;">
+    <div style="font-family: 'IBM Plex Mono', monospace; font-size: 12px; letter-spacing: 0.1em; text-transform: uppercase; color: #6C7484;">04 · Ledger</div>
+    <div data-screen-label="04 Ledger" style="position: relative; width: 390px; height: 844px; background: #0A0B0F; border: 1px solid #232733; border-radius: 28px; overflow: hidden; display: flex; flex-direction: column;">
+      <div style="height: 44px; display: flex; align-items: center; justify-content: space-between; padding: 0 20px; font-family: 'IBM Plex Mono', monospace; font-size: 13px; color: #EDEFF4;"><span>9:41</span><span style="letter-spacing: 0.12em; color: #8A93A5;">▪ ▪ ▪</span></div>
+      <div style="flex: 1; overflow: hidden; display: flex; flex-direction: column; gap: 18px; padding: 12px 16px 0;">
+        <div style="display: flex; flex-direction: column; gap: 6px;">
+          <div style="font-size: 22px; font-weight: 600; letter-spacing: -0.01em; color: #EDEFF4;">Ledger</div>
+          <div style="font-size: 13px; color: #8A93A5;">What the world can see.</div>
+        </div>
+        <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 4px; padding: 4px; background: #12141B; border: 1px solid #232733; border-radius: 10px;">
+          <div style="height: 36px; border-radius: 7px; background: #232733; display: flex; align-items: center; justify-content: center; font-size: 13px; font-weight: 600; color: #EDEFF4;">Disclosures</div>
+          <div style="height: 36px; border-radius: 7px; display: flex; align-items: center; justify-content: center; font-size: 13px; color: #8A93A5;">Pool</div>
+          <div style="height: 36px; border-radius: 7px; display: flex; align-items: center; justify-content: center; font-size: 13px; color: #8A93A5;">Root</div>
+        </div>
+        <div style="display: flex; flex-direction: column; border: 1px solid #232733; border-radius: 14px; overflow: hidden;">
+          <div style="display: flex; align-items: center; gap: 12px; padding: 14px 16px; border-bottom: 1px solid #232733;">
+            <div style="flex: 1; display: flex; flex-direction: column; gap: 4px;">
+              <div style="font-size: 14px; font-weight: 600; color: #EDEFF4;">Long 0.50 SOL</div>
+              <div style="font-family: 'IBM Plex Mono', monospace; font-size: 11px; color: #6C7484;">Trader: hidden by design</div>
+            </div>
+            <div style="display: flex; flex-direction: column; align-items: flex-end; gap: 4px;">
+              <div style="font-family: 'IBM Plex Mono', monospace; font-size: 14px; color: #E85B6B; font-variant-numeric: tabular-nums;">−0.69</div>
+              <div style="font-family: 'IBM Plex Mono', monospace; font-size: 11px; color: #6C7484; font-variant-numeric: tabular-nums;">116.40 → 115.02</div>
+            </div>
+          </div>
+          <div style="display: flex; align-items: center; gap: 12px; padding: 14px 16px; border-bottom: 1px solid #232733;">
+            <div style="flex: 1; display: flex; flex-direction: column; gap: 4px;">
+              <div style="font-size: 14px; font-weight: 600; color: #EDEFF4;">Short 1.20 SOL</div>
+              <div style="font-family: 'IBM Plex Mono', monospace; font-size: 11px; color: #6C7484;">Trader: hidden by design</div>
+            </div>
+            <div style="display: flex; flex-direction: column; align-items: flex-end; gap: 4px;">
+              <div style="font-family: 'IBM Plex Mono', monospace; font-size: 14px; color: #2FBF7F; font-variant-numeric: tabular-nums;">+2.14</div>
+              <div style="font-family: 'IBM Plex Mono', monospace; font-size: 11px; color: #6C7484; font-variant-numeric: tabular-nums;">114.88 → 113.10</div>
+            </div>
+          </div>
+          <div style="display: flex; align-items: center; gap: 12px; padding: 14px 16px;">
+            <div style="flex: 1; display: flex; flex-direction: column; gap: 4px;">
+              <div style="font-size: 14px; font-weight: 600; color: #EDEFF4;">Long 3.00 SOL</div>
+              <div style="font-family: 'IBM Plex Mono', monospace; font-size: 11px; color: #6C7484;">Trader: hidden by design</div>
+            </div>
+            <div style="display: flex; flex-direction: column; align-items: flex-end; gap: 4px;">
+              <div style="font-family: 'IBM Plex Mono', monospace; font-size: 14px; color: #2FBF7F; font-variant-numeric: tabular-nums;">+4.02</div>
+              <div style="font-family: 'IBM Plex Mono', monospace; font-size: 11px; color: #6C7484; font-variant-numeric: tabular-nums;">112.10 → 113.44</div>
+            </div>
+          </div>
+        </div>
+        <div style="display: flex; flex-direction: column; gap: 12px; padding: 16px; border: 1px solid #232733; border-radius: 14px; background: #12141B;">
+          <div style="font-family: 'IBM Plex Mono', monospace; font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; color: #6C7484;">Pool</div>
+          <div style="display: flex; justify-content: space-between; font-family: 'IBM Plex Mono', monospace; font-size: 13px;"><span style="color: #8A93A5;">Liquidity</span><span style="color: #EDEFF4; font-variant-numeric: tabular-nums;">1,250,000 dUSDC</span></div>
+          <div style="display: flex; justify-content: space-between; font-family: 'IBM Plex Mono', monospace; font-size: 13px;"><span style="color: #8A93A5;">Locked</span><span style="color: #EDEFF4; font-variant-numeric: tabular-nums;">48,200</span></div>
+          <div style="display: flex; justify-content: space-between; font-family: 'IBM Plex Mono', monospace; font-size: 13px;"><span style="color: #8A93A5;">Fees</span><span style="color: #EDEFF4; font-variant-numeric: tabular-nums;">1,930</span></div>
+          <div style="font-family: 'IBM Plex Mono', monospace; font-size: 11px; line-height: 1.5; color: #6C7484; font-variant-numeric: tabular-nums;">Updated at slot 332472270 · every 5 min<br>Values rounded to 100 dUSDC</div>
+        </div>
+        <div style="display: flex; align-items: center; gap: 12px; padding: 16px; border: 1px solid #232733; border-radius: 14px;">
+          <div style="flex: 1; display: flex; flex-direction: column; gap: 4px;">
+            <div style="font-family: 'IBM Plex Mono', monospace; font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; color: #6C7484;">Balances root</div>
+            <div style="font-family: 'IBM Plex Mono', monospace; font-size: 13px; color: #EDEFF4; font-variant-numeric: tabular-nums;">slot 332472270 · 64 leaves</div>
+            <div style="font-family: 'IBM Plex Mono', monospace; font-size: 12px; color: #8A93A5;">a91c…4f0e</div>
+          </div>
+          <div style="font-family: 'IBM Plex Mono', monospace; font-size: 15px; color: #7A5CFF;">↗</div>
+        </div>
+      </div>
+      <div style="display: grid; grid-template-columns: repeat(5, 1fr); border-top: 1px solid #232733; padding: 10px 0 24px;">
+        <div style="display: flex; flex-direction: column; align-items: center; gap: 6px; font-family: 'IBM Plex Mono', monospace; font-size: 10px; letter-spacing: 0.06em; text-transform: uppercase; color: #6C7484;"><svg width="18" height="18" viewBox="0 0 18 18"><rect x="3" y="5" width="4" height="8" fill="#6C7484"></rect><rect x="4.4" y="2" width="1.2" height="14" fill="#6C7484"></rect><rect x="11" y="7" width="4" height="6" fill="#6C7484"></rect><rect x="12.4" y="4" width="1.2" height="12" fill="#6C7484"></rect></svg>Trade</div>
+        <div style="display: flex; flex-direction: column; align-items: center; gap: 6px; font-family: 'IBM Plex Mono', monospace; font-size: 10px; letter-spacing: 0.06em; text-transform: uppercase; color: #6C7484;"><svg width="18" height="18" viewBox="0 0 18 18"><rect x="2.5" y="4.5" width="13" height="9" rx="1.5" fill="none" stroke="#6C7484" stroke-width="1.4"></rect><rect x="5" y="8" width="8" height="1.4" fill="#6C7484"></rect></svg>Positions</div>
+        <div style="display: flex; flex-direction: column; align-items: center; gap: 6px; font-family: 'IBM Plex Mono', monospace; font-size: 10px; letter-spacing: 0.06em; text-transform: uppercase; color: #6C7484;"><svg width="18" height="18" viewBox="0 0 18 18"><circle cx="9" cy="9" r="6.3" fill="none" stroke="#6C7484" stroke-width="1.4"></circle><path d="M9 5.4 V9 L11.6 10.6" fill="none" stroke="#6C7484" stroke-width="1.4"></path></svg>History</div>
+        <div style="display: flex; flex-direction: column; align-items: center; gap: 6px; font-family: 'IBM Plex Mono', monospace; font-size: 10px; letter-spacing: 0.06em; text-transform: uppercase; color: #7A5CFF;"><svg width="18" height="18" viewBox="0 0 18 18"><rect x="3" y="4" width="12" height="1.4" fill="#7A5CFF"></rect><rect x="3" y="8.3" width="12" height="1.4" fill="#7A5CFF"></rect><rect x="3" y="12.6" width="8" height="1.4" fill="#7A5CFF"></rect></svg>Ledger</div>
+        <div style="display: flex; flex-direction: column; align-items: center; gap: 6px; font-family: 'IBM Plex Mono', monospace; font-size: 10px; letter-spacing: 0.06em; text-transform: uppercase; color: #6C7484;"><svg width="18" height="18" viewBox="0 0 18 18"><circle cx="9" cy="6.6" r="2.9" fill="none" stroke="#6C7484" stroke-width="1.4"></circle><path d="M3.6 14.4 A5.4 5.4 0 0 1 14.4 14.4" fill="none" stroke="#6C7484" stroke-width="1.4"></path></svg>Account</div>
+      </div>
+    </div>
+  </div>
+
+  <div style="display: flex; flex-direction: column; gap: 14px;">
+    <div style="font-family: 'IBM Plex Mono', monospace; font-size: 12px; letter-spacing: 0.1em; text-transform: uppercase; color: #6C7484;">05 · Account</div>
+    <div data-screen-label="05 Account" style="position: relative; width: 390px; height: 844px; background: #0A0B0F; border: 1px solid #232733; border-radius: 28px; overflow: hidden; display: flex; flex-direction: column;">
+      <div style="height: 44px; display: flex; align-items: center; justify-content: space-between; padding: 0 20px; font-family: 'IBM Plex Mono', monospace; font-size: 13px; color: #EDEFF4;"><span>9:41</span><span style="letter-spacing: 0.12em; color: #8A93A5;">▪ ▪ ▪</span></div>
+      <div style="flex: 1; overflow: hidden; display: flex; flex-direction: column; gap: 18px; padding: 12px 16px 0;">
+        <div style="display: flex; align-items: center; justify-content: space-between; gap: 12px;">
+          <div style="font-size: 22px; font-weight: 600; letter-spacing: -0.01em; color: #EDEFF4;">Account</div>
+          <svg width="20" height="20" viewBox="0 0 18 18"><circle cx="9" cy="9" r="2.6" fill="none" stroke="#8A93A5" stroke-width="1.4"></circle><circle cx="9" cy="9" r="6.4" fill="none" stroke="#8A93A5" stroke-width="1.4" stroke-dasharray="3 3"></circle></svg>
+        </div>
+        <div style="display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 14px 16px; border: 1px solid #232733; border-radius: 12px;">
+          <div style="display: flex; align-items: center; gap: 10px;">
+            <div style="font-family: 'IBM Plex Mono', monospace; font-size: 14px; color: #EDEFF4; font-variant-numeric: tabular-nums;">45Ej…rWnM</div>
+            <svg width="14" height="14" viewBox="0 0 18 18"><rect x="3" y="3" width="9" height="9" rx="1.5" fill="none" stroke="#8A93A5" stroke-width="1.4"></rect><rect x="6" y="6" width="9" height="9" rx="1.5" fill="none" stroke="#8A93A5" stroke-width="1.4"></rect></svg>
+          </div>
+          <div style="padding: 4px 9px; border-radius: 5px; background: rgba(47,191,127,0.14); font-family: 'IBM Plex Mono', monospace; font-size: 11px; color: #2FBF7F;">23h left</div>
+        </div>
+        <div style="display: flex; flex-direction: column; gap: 14px; padding: 18px 16px; border: 1px solid #232733; border-radius: 14px; background: #12141B;">
+          <div style="display: flex; flex-direction: column; gap: 4px;">
+            <div style="font-family: 'IBM Plex Mono', monospace; font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; color: #6C7484;">Available</div>
+            <div style="font-family: 'IBM Plex Mono', monospace; font-size: 30px; font-weight: 600; color: #EDEFF4; font-variant-numeric: tabular-nums; line-height: 1.1;">980.00 dUSDC</div>
+          </div>
+          <div style="display: flex; justify-content: space-between; font-family: 'IBM Plex Mono', monospace; font-size: 13px;"><span style="color: #8A93A5;">Locked</span><span style="color: #EDEFF4; font-variant-numeric: tabular-nums;">20.00 dUSDC</span></div>
+          <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px;">
+            <div style="height: 48px; border-radius: 9px; background: #7A5CFF; display: flex; align-items: center; justify-content: center; font-size: 15px; font-weight: 600; color: #05060A;">Deposit</div>
+            <div style="height: 48px; border-radius: 9px; border: 1px solid #323847; display: flex; align-items: center; justify-content: center; font-size: 15px; font-weight: 600; color: #EDEFF4;">Withdraw</div>
+          </div>
+        </div>
+        <div style="display: flex; flex-direction: column; gap: 10px; padding: 16px; border: 1px solid #232733; border-radius: 14px;">
+          <div style="display: flex; align-items: center; justify-content: space-between; gap: 12px;">
+            <div style="font-size: 15px; font-weight: 600; color: #EDEFF4;">Receipt</div>
+            <div style="padding: 3px 8px; border-radius: 5px; background: rgba(47,191,127,0.14); font-family: 'IBM Plex Mono', monospace; font-size: 10px; color: #2FBF7F; font-variant-numeric: tabular-nums;">Attested at slot 332472270 ✓</div>
+          </div>
+          <div style="font-size: 13px; line-height: 1.5; color: #8A93A5;">Proof that the protocol owes you — without revealing how much.</div>
+        </div>
+        <div style="display: flex; flex-direction: column; gap: 12px; padding: 16px; border: 1px solid #232733; border-radius: 14px;">
+          <div style="font-size: 15px; font-weight: 600; color: #EDEFF4;">Exit</div>
+          <div style="display: flex; flex-direction: column; gap: 7px;">
+            <div style="display: flex; align-items: center; gap: 8px; font-family: 'IBM Plex Mono', monospace; font-size: 12px; color: #8A93A5;"><span style="color: #2FBF7F;">✓</span>No open position</div>
+            <div style="display: flex; align-items: center; gap: 8px; font-family: 'IBM Plex Mono', monospace; font-size: 12px; color: #8A93A5;"><span style="color: #6C7484;">○</span>History queue empty</div>
+            <div style="display: flex; align-items: center; gap: 8px; font-family: 'IBM Plex Mono', monospace; font-size: 12px; color: #8A93A5;"><span style="color: #6C7484;">○</span>Balance withdrawn</div>
+          </div>
+          <div style="height: 48px; border-radius: 9px; border: 1px solid rgba(232,91,107,0.5); display: flex; align-items: center; justify-content: center; font-size: 15px; font-weight: 600; color: #E85B6B;">Exit private account</div>
+        </div>
+      </div>
+      <div style="display: grid; grid-template-columns: repeat(5, 1fr); border-top: 1px solid #232733; padding: 10px 0 24px;">
+        <div style="display: flex; flex-direction: column; align-items: center; gap: 6px; font-family: 'IBM Plex Mono', monospace; font-size: 10px; letter-spacing: 0.06em; text-transform: uppercase; color: #6C7484;"><svg width="18" height="18" viewBox="0 0 18 18"><rect x="3" y="5" width="4" height="8" fill="#6C7484"></rect><rect x="4.4" y="2" width="1.2" height="14" fill="#6C7484"></rect><rect x="11" y="7" width="4" height="6" fill="#6C7484"></rect><rect x="12.4" y="4" width="1.2" height="12" fill="#6C7484"></rect></svg>Trade</div>
+        <div style="display: flex; flex-direction: column; align-items: center; gap: 6px; font-family: 'IBM Plex Mono', monospace; font-size: 10px; letter-spacing: 0.06em; text-transform: uppercase; color: #6C7484;"><svg width="18" height="18" viewBox="0 0 18 18"><rect x="2.5" y="4.5" width="13" height="9" rx="1.5" fill="none" stroke="#6C7484" stroke-width="1.4"></rect><rect x="5" y="8" width="8" height="1.4" fill="#6C7484"></rect></svg>Positions</div>
+        <div style="display: flex; flex-direction: column; align-items: center; gap: 6px; font-family: 'IBM Plex Mono', monospace; font-size: 10px; letter-spacing: 0.06em; text-transform: uppercase; color: #6C7484;"><svg width="18" height="18" viewBox="0 0 18 18"><circle cx="9" cy="9" r="6.3" fill="none" stroke="#6C7484" stroke-width="1.4"></circle><path d="M9 5.4 V9 L11.6 10.6" fill="none" stroke="#6C7484" stroke-width="1.4"></path></svg>History</div>
+        <div style="display: flex; flex-direction: column; align-items: center; gap: 6px; font-family: 'IBM Plex Mono', monospace; font-size: 10px; letter-spacing: 0.06em; text-transform: uppercase; color: #6C7484;"><svg width="18" height="18" viewBox="0 0 18 18"><rect x="3" y="4" width="12" height="1.4" fill="#6C7484"></rect><rect x="3" y="8.3" width="12" height="1.4" fill="#6C7484"></rect><rect x="3" y="12.6" width="8" height="1.4" fill="#6C7484"></rect></svg>Ledger</div>
+        <div style="display: flex; flex-direction: column; align-items: center; gap: 6px; font-family: 'IBM Plex Mono', monospace; font-size: 10px; letter-spacing: 0.06em; text-transform: uppercase; color: #7A5CFF;"><svg width="18" height="18" viewBox="0 0 18 18"><circle cx="9" cy="6.6" r="2.9" fill="none" stroke="#7A5CFF" stroke-width="1.4"></circle><path d="M3.6 14.4 A5.4 5.4 0 0 1 14.4 14.4" fill="none" stroke="#7A5CFF" stroke-width="1.4"></path></svg>Account</div>
+      </div>
+    </div>
+  </div>
+
+</section>
+
+<section style="padding: 0 64px 48px; display: flex; flex-direction: column; gap: 32px; background: #05060A;">
+
+  <div style="display: flex; flex-direction: column; gap: 8px;">
+    <div style="font-family: 'IBM Plex Mono', monospace; font-size: 13px; letter-spacing: 0.18em; text-transform: uppercase; color: #6C7484;">Shared components</div>
+    <div style="font-size: 26px; font-weight: 600; color: #EDEFF4; letter-spacing: -0.02em;">States and primitives</div>
+  </div>
+
+  <div style="display: flex; flex-wrap: wrap; gap: 24px;">
+
+    <div style="width: 390px; display: flex; flex-direction: column; gap: 14px; padding: 24px; background: #0A0B0F; border: 1px solid #232733; border-radius: 16px;">
+      <div style="font-family: 'IBM Plex Mono', monospace; font-size: 11px; letter-spacing: 0.1em; text-transform: uppercase; color: #6C7484;">Buttons</div>
+      <div style="height: 52px; border-radius: 10px; background: #7A5CFF; display: flex; align-items: center; justify-content: center; font-size: 16px; font-weight: 600; color: #05060A;">Primary</div>
+      <div style="height: 52px; border-radius: 10px; background: #6A4CEF; display: flex; align-items: center; justify-content: center; font-size: 16px; font-weight: 600; color: #05060A;">Primary · pressed</div>
+      <div style="height: 52px; border-radius: 10px; background: #7A5CFF; display: flex; align-items: center; justify-content: center; gap: 10px; font-size: 16px; font-weight: 600; color: #05060A;"><svg width="16" height="16" viewBox="0 0 18 18"><circle cx="9" cy="9" r="6.5" fill="none" stroke="#05060A" stroke-width="2" stroke-opacity="0.3"></circle><path d="M9 2.5 A6.5 6.5 0 0 1 15.5 9" fill="none" stroke="#05060A" stroke-width="2"></path></svg>Loading</div>
+      <div style="height: 52px; border-radius: 10px; background: #1A1D25; display: flex; align-items: center; justify-content: center; font-size: 16px; font-weight: 600; color: #4A5161;">Disabled</div>
+      <div style="height: 52px; border-radius: 10px; border: 1px solid #323847; display: flex; align-items: center; justify-content: center; font-size: 16px; font-weight: 600; color: #EDEFF4;">Secondary</div>
+      <div style="height: 52px; border-radius: 10px; border: 1px solid rgba(232,91,107,0.5); display: flex; align-items: center; justify-content: center; font-size: 16px; font-weight: 600; color: #E85B6B;">Destructive</div>
+      <div style="height: 52px; border-radius: 10px; display: flex; align-items: center; justify-content: center; font-size: 16px; font-weight: 600; color: #7A5CFF;">Ghost</div>
+    </div>
+
+    <div style="width: 390px; display: flex; flex-direction: column; gap: 14px; padding: 24px; background: #0A0B0F; border: 1px solid #232733; border-radius: 16px;">
+      <div style="font-family: 'IBM Plex Mono', monospace; font-size: 11px; letter-spacing: 0.1em; text-transform: uppercase; color: #6C7484;">Inputs &amp; controls</div>
+      <div style="display: flex; flex-direction: column; gap: 6px;">
+        <div style="font-family: 'IBM Plex Mono', monospace; font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; color: #6C7484;">Size</div>
+        <div style="height: 52px; padding: 0 14px; border: 1px solid #232733; border-radius: 10px; background: #12141B; display: flex; align-items: center; justify-content: space-between;">
+          <div style="font-family: 'IBM Plex Mono', monospace; font-size: 17px; color: #EDEFF4; font-variant-numeric: tabular-nums;">1.00</div>
+          <div style="font-family: 'IBM Plex Mono', monospace; font-size: 13px; color: #6C7484;">SOL</div>
+        </div>
+        <div style="font-family: 'IBM Plex Mono', monospace; font-size: 11px; color: #6C7484;">Available: 980.00 dUSDC</div>
+      </div>
+      <div style="height: 52px; padding: 0 14px; border: 1px solid #7A5CFF; border-radius: 10px; background: #12141B; display: flex; align-items: center; justify-content: space-between;">
+        <div style="font-family: 'IBM Plex Mono', monospace; font-size: 17px; color: #EDEFF4; font-variant-numeric: tabular-nums;">2.0</div>
+        <div style="font-family: 'IBM Plex Mono', monospace; font-size: 13px; color: #6C7484;">×</div>
+      </div>
+      <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 4px; padding: 4px; background: #12141B; border: 1px solid #232733; border-radius: 10px;">
+        <div style="height: 40px; border-radius: 7px; background: rgba(47,191,127,0.14); display: flex; align-items: center; justify-content: center; font-size: 15px; font-weight: 600; color: #2FBF7F;">Long</div>
+        <div style="height: 40px; border-radius: 7px; display: flex; align-items: center; justify-content: center; font-size: 15px; color: #8A93A5;">Short</div>
+      </div>
+      <div style="display: flex; flex-direction: column; gap: 8px; padding-top: 6px;">
+        <div style="position: relative; height: 4px; border-radius: 2px; background: #232733;">
+          <div style="position: absolute; left: 0; top: 0; height: 4px; width: 44%; border-radius: 2px; background: #7A5CFF;"></div>
+          <div style="position: absolute; left: 44%; top: -8px; width: 20px; height: 20px; margin-left: -10px; border-radius: 10px; background: #7A5CFF;"></div>
+        </div>
+        <div style="display: flex; justify-content: space-between; font-family: 'IBM Plex Mono', monospace; font-size: 11px; color: #6C7484;"><span>1×</span><span>2×</span><span>5×</span><span>10×</span></div>
+      </div>
+      <div style="display: flex; align-items: center; gap: 10px; padding: 12px 14px; border: 1px solid #232733; border-radius: 10px;">
+        <div style="flex: 1; font-family: 'IBM Plex Mono', monospace; font-size: 13px; color: #EDEFF4;">45Ej…rWnM</div>
+        <svg width="15" height="15" viewBox="0 0 18 18"><rect x="3" y="3" width="9" height="9" rx="1.5" fill="none" stroke="#8A93A5" stroke-width="1.4"></rect><rect x="6" y="6" width="9" height="9" rx="1.5" fill="none" stroke="#8A93A5" stroke-width="1.4"></rect></svg>
+        <div style="font-family: 'IBM Plex Mono', monospace; font-size: 14px; color: #8A93A5;">↗</div>
+      </div>
+    </div>
+
+    <div style="width: 390px; display: flex; flex-direction: column; gap: 14px; padding: 24px; background: #0A0B0F; border: 1px solid #232733; border-radius: 16px;">
+      <div style="font-family: 'IBM Plex Mono', monospace; font-size: 11px; letter-spacing: 0.1em; text-transform: uppercase; color: #6C7484;">Badges &amp; toasts</div>
+      <div style="display: flex; flex-wrap: wrap; gap: 8px;">
+        <div style="padding: 5px 10px; border-radius: 6px; background: #1C2029; font-family: 'IBM Plex Mono', monospace; font-size: 11px; color: #8A93A5;">Neutral</div>
+        <div style="padding: 5px 10px; border-radius: 6px; background: rgba(224,169,59,0.14); font-family: 'IBM Plex Mono', monospace; font-size: 11px; color: #E0A93B;">Pending</div>
+        <div style="padding: 5px 10px; border-radius: 6px; background: rgba(47,191,127,0.14); font-family: 'IBM Plex Mono', monospace; font-size: 11px; color: #2FBF7F;">Success ✓</div>
+        <div style="padding: 5px 10px; border-radius: 6px; background: rgba(224,169,59,0.14); font-family: 'IBM Plex Mono', monospace; font-size: 11px; color: #E0A93B;">Warning</div>
+        <div style="padding: 5px 10px; border-radius: 6px; background: rgba(232,91,107,0.14); font-family: 'IBM Plex Mono', monospace; font-size: 11px; color: #E85B6B;">Danger</div>
+      </div>
+      <div style="display: flex; align-items: center; gap: 10px; padding: 14px 16px; border-radius: 10px; background: #12141B; border: 1px solid rgba(47,191,127,0.4);">
+        <div style="color: #2FBF7F; font-size: 14px;">✓</div><div style="font-size: 14px; color: #EDEFF4;">Position opened</div>
+      </div>
+      <div style="display: flex; align-items: center; gap: 10px; padding: 14px 16px; border-radius: 10px; background: #12141B; border: 1px solid rgba(232,91,107,0.4);">
+        <div style="color: #E85B6B; font-size: 14px;">!</div><div style="font-size: 14px; color: #EDEFF4;">Slippage limit exceeded</div>
+      </div>
+      <div style="display: flex; flex-direction: column; gap: 10px; padding-top: 6px;">
+        <div style="height: 14px; width: 70%; border-radius: 4px; background: #1C2029;"></div>
+        <div style="height: 14px; width: 92%; border-radius: 4px; background: #1C2029;"></div>
+        <div style="height: 14px; width: 55%; border-radius: 4px; background: #1C2029;"></div>
+      </div>
+      <div style="display: flex; flex-direction: column; align-items: center; gap: 10px; padding: 26px 16px; border: 1px solid #232733; border-radius: 12px;">
+        <svg width="26" height="26" viewBox="0 0 18 18"><rect x="2.5" y="4.5" width="13" height="9" rx="1.5" fill="none" stroke="#4A5161" stroke-width="1.4"></rect></svg>
+        <div style="font-size: 14px; color: #8A93A5;">No open position</div>
+        <div style="padding: 10px 16px; border-radius: 8px; border: 1px solid #323847; font-size: 13px; font-weight: 600; color: #EDEFF4;">Go to Trade</div>
+      </div>
+      <div style="display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 14px 16px; border: 1px solid #323847; border-radius: 10px;">
+        <div style="font-size: 13px; color: #8A93A5;">Couldn't reach the enclave</div>
+        <div style="padding: 8px 14px; border-radius: 8px; border: 1px solid #7A5CFF; font-size: 13px; font-weight: 600; color: #7A5CFF;">Retry</div>
+      </div>
+    </div>
+
+    <div style="width: 390px; display: flex; flex-direction: column; gap: 14px; padding: 24px; background: #0A0B0F; border: 1px solid #232733; border-radius: 16px;">
+      <div style="font-family: 'IBM Plex Mono', monospace; font-size: 11px; letter-spacing: 0.1em; text-transform: uppercase; color: #6C7484;">Bottom sheet · Withdraw</div>
+      <div style="border-radius: 18px 18px 10px 10px; border: 1px solid #232733; background: #12141B; padding: 12px 16px 20px; display: flex; flex-direction: column; gap: 18px;">
+        <div style="width: 38px; height: 4px; border-radius: 2px; background: #323847; align-self: center;"></div>
+        <div style="font-size: 18px; font-weight: 600; color: #EDEFF4;">Withdraw</div>
+        <div style="height: 52px; padding: 0 14px; border: 1px solid #232733; border-radius: 10px; background: #0A0B0F; display: flex; align-items: center; justify-content: space-between;">
+          <div style="font-family: 'IBM Plex Mono', monospace; font-size: 17px; color: #EDEFF4; font-variant-numeric: tabular-nums;">250.00</div>
+          <div style="font-family: 'IBM Plex Mono', monospace; font-size: 13px; color: #6C7484;">dUSDC</div>
+        </div>
+        <div style="font-family: 'IBM Plex Mono', monospace; font-size: 12px; color: #6C7484;">Min 1 dUSDC · one withdrawal per ~2 min</div>
+        <div style="height: 52px; border-radius: 10px; background: #7A5CFF; display: flex; align-items: center; justify-content: center; font-size: 16px; font-weight: 600; color: #05060A;">Confirm</div>
+      </div>
+    </div>
+
+  </div>
+
+</section>
+</x-dc>
+</body>
+</html>
