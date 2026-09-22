@@ -16,7 +16,8 @@ pub struct DisclosureQueue {
     pub bump: u8,
 }
 
-/// L1 `[b"commit", nonce]` — written by the `write_commitment` Magic Action on the Pool commit.
+/// L1 `[b"commit", hash]` (seeded by the commitment hash, not the per-user nonce — week-3 ruling 9)
+/// — written by the `write_commitment` Magic Action on the Pool commit.
 #[account]
 #[derive(InitSpace)]
 pub struct Commitment {
