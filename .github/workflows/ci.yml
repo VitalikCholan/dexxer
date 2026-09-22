@@ -1,0 +1,99 @@
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  program:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.89.0"
+          components: rustfmt, clippy
+
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly-2026-09-18
+
+      - name: Cache Solana platform-tools
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/solana
+          key: ${{ runner.os }}-solana-3.1.9
+
+      - name: Cache avm / Anchor 1.0.2
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.avm
+            ~/.cargo/bin/avm
+            ~/.cargo/bin/anchor
+          key: ${{ runner.os }}-avm-anchor-1.0.2
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install Solana CLI
+        run: |
+          sh -c "$(curl -sSfL https://release.anza.xyz/v3.1.9/install)"
+          echo "$HOME/.local/share/solana/install/active_release/bin" >> "$GITHUB_PATH"
+
+      - name: Install Anchor 1.0.2
+        run: |
+          cargo install --git https://github.com/solana-foundation/anchor avm --locked --force
+          avm install 1.0.2
+          avm use 1.0.2
+
+      - run: cargo fmt --check
+
+      - run: cargo clippy -p dexxer_core -p mock_oracle -- -D warnings
+
+      - run: anchor build
+
+      - run: cargo test -p dexxer_core -p mock_oracle
+
+      - run: cargo +nightly-2026-09-18 test -p dexxer_litesvm
+
+  typescript:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24.18.0"
+          cache: npm
+          cache-dependency-path: |
+            tests/er/package-lock.json
+            scripts/package-lock.json
+            app/package-lock.json
+
+      - name: tests/er
+        run: |
+          cd tests/er
+          npm ci
+          npx tsc --noEmit
+          npm run selftest:hashes
+
+      - name: scripts
+        run: |
+          cd scripts
+          npm ci
+          npx tsc --noEmit
+
+      - name: app
+        run: |
+          cd app
+          npm ci
+          npx tsc --noEmit
+          npm run lint:check
