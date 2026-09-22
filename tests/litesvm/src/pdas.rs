@@ -38,11 +38,14 @@ pub fn fee_escrow() -> Pubkey {
 pub fn balances_root() -> Pubkey {
     pda(&[BALANCES_ROOT_SEED])
 }
-pub fn commitment(nonce: u64) -> Pubkey {
-    pda(&[COMMIT_SEED, &nonce.to_le_bytes()])
+/// Hash-seeded (week-3 controller ruling 9): `nonce` is per-user, so two
+/// traders' first closes both land on nonce 1 and would collide on the same
+/// PDA if seeded by nonce. `hash` is `commitment_hash(&args, &salt)`.
+pub fn commitment(hash: &[u8; 32]) -> Pubkey {
+    pda(&[COMMIT_SEED, hash])
 }
-pub fn disclosure(nonce: u64) -> Pubkey {
-    pda(&[DISCLOSURE_SEED, &nonce.to_le_bytes()])
+pub fn disclosure(hash: &[u8; 32]) -> Pubkey {
+    pda(&[DISCLOSURE_SEED, hash])
 }
 pub fn feed(oracle_program: &Pubkey) -> Pubkey {
     Pubkey::find_program_address(&[b"price_feed", b"pyth-lazer", b"6"], oracle_program).0

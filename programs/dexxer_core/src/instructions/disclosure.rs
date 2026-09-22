@@ -10,12 +10,17 @@ use ephemeral_rollups_sdk::pda::ephemeral_balance_pda_from_payer;
 /// destination program id as an extra account before the macro-injected
 /// escrow pair — `source_program` absorbs that slot so Anchor's positional
 /// deserialization stays aligned (see spikes/06-magic-action RESULT.md check 7).
+/// Seeded by the 32-byte commitment hash, not `nonce` (week-3 controller
+/// ruling 9): `nonce` is `UserAccount.nonce`, a per-user counter, so two
+/// traders' first closes both land on nonce 1 and collide on the same PDA.
+/// The hash is unique per record and reveals nothing about ordering (unlike
+/// a global counter on `Pool`, which would leak close order across users).
 #[action]
 #[derive(Accounts)]
 #[instruction(nonce: u64, hash: [u8; 32])]
 pub struct WriteCommitment<'info> {
     #[account(init, payer = escrow, space = 8 + Commitment::INIT_SPACE,
-        seeds = [COMMIT_SEED, &nonce.to_le_bytes()], bump)]
+        seeds = [COMMIT_SEED, &hash], bump)]
     pub commitment: Account<'info, Commitment>,
     /// Plain (never delegated) L1 account — readable here to pin `escrow_auth` to `Config.fee_payer`.
     #[account(seeds = [CONFIG_SEED], bump = config.bump)]
@@ -43,14 +48,19 @@ pub fn write_commitment(ctx: Context<WriteCommitment>, nonce: u64, hash: [u8; 32
     Ok(())
 }
 
+/// Both PDAs are seeded by `commitment_hash(&args, &salt)` (ruling 9, same
+/// reasoning as `WriteCommitment` above) — recomputed here from the ix args
+/// rather than passed as an extra argument, since the L1 action builder
+/// (`commit.rs`) already has `(args, salt)` in hand from `due_reveals` and
+/// this keeps `write_disclosure`'s signature unchanged from Task 3.
 #[action]
 #[derive(Accounts)]
 #[instruction(args: DisclosureArgs, salt: [u8; 32])]
 pub struct WriteDisclosure<'info> {
     #[account(init, payer = escrow, space = 8 + Disclosure::INIT_SPACE,
-        seeds = [DISCLOSURE_SEED, &args.nonce.to_le_bytes()], bump)]
+        seeds = [DISCLOSURE_SEED, &commitment_hash(&args, &salt)], bump)]
     pub disclosure: Account<'info, Disclosure>,
-    #[account(seeds = [COMMIT_SEED, &args.nonce.to_le_bytes()], bump = commitment.bump)]
+    #[account(seeds = [COMMIT_SEED, &commitment_hash(&args, &salt)], bump = commitment.bump)]
     pub commitment: Account<'info, Commitment>,
     #[account(seeds = [CONFIG_SEED], bump = config.bump)]
     pub config: Account<'info, Config>,

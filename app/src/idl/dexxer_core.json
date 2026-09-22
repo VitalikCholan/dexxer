@@ -5609,7 +5609,7 @@
               },
               {
                 "kind": "arg",
-                "path": "nonce"
+                "path": "hash"
               }
             ]
           }
@@ -5683,52 +5683,10 @@
       "accounts": [
         {
           "name": "disclosure",
-          "writable": true,
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  100,
-                  105,
-                  115,
-                  99,
-                  108,
-                  111,
-                  115,
-                  117,
-                  114,
-                  101
-                ]
-              },
-              {
-                "kind": "arg",
-                "path": "args.nonce"
-              }
-            ]
-          }
+          "writable": true
         },
         {
-          "name": "commitment",
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  99,
-                  111,
-                  109,
-                  109,
-                  105,
-                  116
-                ]
-              },
-              {
-                "kind": "arg",
-                "path": "args.nonce"
-              }
-            ]
-          }
+          "name": "commitment"
         },
         {
           "name": "config",

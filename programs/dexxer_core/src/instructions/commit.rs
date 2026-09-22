@@ -100,8 +100,8 @@ fn process_position_candidate<'info>(
             actions.len() < MAX_ACTIONS_PER_COMMIT,
             DexxerError::TooManyActions
         );
-        let (commitment, _) =
-            Pubkey::find_program_address(&[COMMIT_SEED, &nonce.to_le_bytes()], &crate::ID);
+        // Hash-seeded (ruling 9): `nonce` is per-user, `hash` is globally unique.
+        let (commitment, _) = Pubkey::find_program_address(&[COMMIT_SEED, &hash], &crate::ID);
         let data = crate::instruction::WriteCommitment { nonce, hash }.data();
         actions.push(CallHandler {
             destination_program: crate::ID,
@@ -147,10 +147,10 @@ fn process_disclosure_queue_candidate<'info>(
     require!(ai.key() == exp, DexxerError::InvalidCandidate);
     let room = MAX_ACTIONS_PER_COMMIT.saturating_sub(actions.len());
     for (args, salt) in due_reveals(&mut dq, slot, room)? {
-        let (disclosure, _) =
-            Pubkey::find_program_address(&[DISCLOSURE_SEED, &args.nonce.to_le_bytes()], &crate::ID);
-        let (commitment, _) =
-            Pubkey::find_program_address(&[COMMIT_SEED, &args.nonce.to_le_bytes()], &crate::ID);
+        // Hash-seeded (ruling 9), same hash as WriteDisclosure recomputes from (args, salt).
+        let hash = commitment_hash(&args, &salt);
+        let (disclosure, _) = Pubkey::find_program_address(&[DISCLOSURE_SEED, &hash], &crate::ID);
+        let (commitment, _) = Pubkey::find_program_address(&[COMMIT_SEED, &hash], &crate::ID);
         let data = crate::instruction::WriteDisclosure { args, salt }.data();
         actions.push(CallHandler {
             destination_program: crate::ID,

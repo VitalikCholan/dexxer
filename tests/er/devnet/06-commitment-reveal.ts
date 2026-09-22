@@ -17,30 +17,17 @@
 // therefore called exactly as `scripts/crank-fallback/disclosure.ts`'s
 // `runDisclosureCycle` already does it: signed by `Config.fee_payer` only.
 //
-// NONCE-COLLISION FINDING (measured while building this script — see
-// week3-results.md §Task 8): `Commitment`/`Disclosure` PDAs are seeded by
-// `[COMMIT_SEED | DISCLOSURE_SEED, nonce.to_le_bytes()]` alone — no owner
-// component (state/mod.rs's `pdas.commitment`/`pdas.disclosure`) — while
-// `nonce` is `UserAccount.nonce`, a PER-USER counter that starts at 0 and
-// increments to 1 on every trader's FIRST close (trade.rs `finalize_close`).
-// Every fresh trader's first close therefore targets the SAME global
-// `Commitment[1]`/`Disclosure[1]` PDA. Once any trader's `write_commitment`
-// for nonce 1 lands, every subsequent fresh trader's own nonce-1 commit
-// silently fails to `init` on L1 with a DIFFERENT (foreign) hash sitting at
-// that address forever — yet `mark_committed` does not verify L1 correctness
-// of the commitment it retires (only the ER-side, optimistically-set
-// `commitment_written` flag — see instructions/disclosure.rs's doc comment),
-// so the position still frees normally with a "corrupted" queue entry. This
-// script measured it directly: nonce 1 was already claimed by an earlier
-// probe run before 06 first ran, producing a hash mismatch that caught the
-// bug rather than a false PASS. `openCloseAndCommit` below therefore loops:
-// if the freshly committed nonce's on-chain `Commitment.hash` does not match
-// what this trader just closed, the record is treated as a discardable
-// collision (still `mark_committed`+drained via `commit_aggregate(dq)` so
-// the position/queue stay usable) and a new nonce is tried. This is a
-// genuine, pre-existing account-design gap (Tasks 2-6, not introduced here)
-// — out of scope to redesign under Task 8 (redeploy + scripts); documented
-// here and in week3-results.md rather than silently patched.
+// NONCE-COLLISION FINDING, now FIXED (Task 8b, controller ruling 9): the
+// original `Commitment`/`Disclosure` PDAs were seeded by `nonce` alone —
+// `UserAccount.nonce`, a PER-USER counter that starts at 0 and increments to
+// 1 on every trader's FIRST close (trade.rs `finalize_close`) — so every
+// fresh trader's first close targeted the SAME global `Commitment[1]` PDA and
+// the second one's `write_commitment` silently failed to `init`. Ruling 9:
+// both PDAs are now seeded by `commitmentHash(args, salt)` (32 bytes, unique
+// per record) instead — `pdas.commitment(hash)`/`pdas.disclosure(hash)`.
+// This script no longer needs (and has dropped) the collision-retry loop
+// that earlier measured and worked around the bug; see the pre-8b history of
+// this file in git for that workaround.
 //
 // PASS lines (brief, printed via `assert` so a fail exits(1) with a message):
 //   "M-B commitment landed", "hash matches", "second position opened",
@@ -87,7 +74,6 @@ const OPEN_SIZE_SOL = 1.0;
 const OPEN_MARGIN_USD = 20;
 const OPEN_LIMIT_USD = 1_000_000; // effectively "no slippage protection" for a Long open
 const TRADER_FUND_SOL = 0.05;
-const MAX_NONCE_ATTEMPTS = 50;
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const KEYS_DIR = resolve(HERE, "..", ".keys");
@@ -243,89 +229,50 @@ async function main() {
     }
   }
 
-  // === position cycles: retry nonces that collide with an already-claimed
-  // foreign Commitment PDA (see header comment) until a genuinely fresh one
-  // is found — that one is the script's real M-B record. ===
-  let realNonce: bigint | null = null;
-  let realArgs: Args | null = null;
-  let realSalt: Uint8Array | null = null;
-  let realCommitHash: Uint8Array | null = null;
-  let tCommitStart = 0;
-  let tCommitmentSeen = 0;
-  let commitPositionSig = "";
-  let openNSig = "";
-  let closeNSig = "";
-  let markNSig = "";
+  // === position #1: hash-seeded PDA (Task 8b) means no cross-trader
+  // collision is possible — a single open/close/commit cycle is enough. ===
+  console.log("\n=== position #1: open Long ===");
+  const openNSig = await openPosition(boot, traderCtx, "long", OPEN_SIZE_SOL, OPEN_MARGIN_USD, OPEN_LIMIT_USD);
+  console.log("open_position", openNSig);
+  const posAfterOpen = await accountNs(coreOwnerEr).position.fetch(position);
+  assert("open" in posAfterOpen.state, "position Open after open_position");
 
-  for (let attempt = 1; attempt <= MAX_NONCE_ATTEMPTS; attempt++) {
-    console.log(`\n=== position attempt #${attempt}: open Long ===`);
-    openNSig = await openPosition(boot, traderCtx, "long", OPEN_SIZE_SOL, OPEN_MARGIN_USD, OPEN_LIMIT_USD);
-    console.log("open_position", openNSig);
-    const posAfterOpen = await accountNs(coreOwnerEr).position.fetch(position);
-    assert("open" in posAfterOpen.state, `position attempt #${attempt} Open after open_position`);
+  console.log("=== position #1: close ===");
+  const closeNSig = await closePosition(boot, traderCtx, 0);
+  console.log("close_position", closeNSig);
+  const posAfterClose = await accountNs(coreOwnerEr).position.fetch(position);
+  assert("closed" in posAfterClose.state && posAfterClose.closed !== null, "ClosedRecord present");
+  const { args: realArgs, salt: realSalt } = recToArgs(posAfterClose.closed);
+  const realNonce = realArgs.nonce;
+  console.log(`ClosedRecord nonce=${realNonce} revealAfterSlot=${realArgs.revealAfterSlot}`);
+  const realCommitHash = commitmentHash(realArgs, realSalt);
 
-    console.log(`=== position attempt #${attempt}: close ===`);
-    closeNSig = await closePosition(boot, traderCtx, 0);
-    console.log("close_position", closeNSig);
-    const posAfterClose = await accountNs(coreOwnerEr).position.fetch(position);
-    assert("closed" in posAfterClose.state && posAfterClose.closed !== null, `ClosedRecord present, attempt #${attempt}`);
-    const { args, salt } = recToArgs(posAfterClose.closed);
-    console.log(`ClosedRecord nonce=${args.nonce} revealAfterSlot=${args.revealAfterSlot}`);
+  console.log("\n=== commit_aggregate(remaining=[position]) ===");
+  const tCommitStart = Date.now();
+  const commitPositionSig = await commitAggregate(position);
+  console.log("commit_aggregate (position) sig:", commitPositionSig, "(fee_payer-only signer — Ruling 8: measured PASS)");
 
-    console.log(`=== commit_aggregate(remaining=[position]) attempt #${attempt} ===`);
-    const t0 = Date.now();
-    const sig = await commitAggregate(position);
-    console.log("commit_aggregate (position) sig:", sig, "(fee_payer-only signer — Ruling 8: measured PASS)");
-
-    const commitmentPda = pdas.commitment(args.nonce);
-    const commitmentAcc = await pollBase(`Commitment[${args.nonce}] on base`, async () => {
-      try {
-        return await accountNs(coreBaseAdmin).commitment.fetch(commitmentPda);
-      } catch {
-        return null;
-      }
-    });
-    const t1 = Date.now();
-    const onChainHash = Uint8Array.from(commitmentAcc.hash as number[]);
-    const expectedHash = commitmentHash(args, salt);
-    const matches = Buffer.compare(Buffer.from(expectedHash), Buffer.from(onChainHash)) === 0;
-    console.log(`Commitment[${args.nonce}] visible on base after ${((t1 - t0) / 1000).toFixed(1)}s; hash ${matches ? "MATCHES" : "MISMATCH (foreign/collided nonce)"}`);
-
-    const markSig = await markCommitted();
-    const posAfterMark = await accountNs(coreOwnerEr).position.fetch(position);
-    assert("empty" in posAfterMark.state, `Position.state == Empty after mark_committed, attempt #${attempt}`);
-
-    if (matches) {
-      realNonce = args.nonce;
-      realArgs = args;
-      realSalt = salt;
-      realCommitHash = onChainHash;
-      tCommitStart = t0;
-      tCommitmentSeen = t1;
-      commitPositionSig = sig;
-      markNSig = markSig;
-      assert(matches, "M-B commitment landed");
-      assert(matches, "hash matches");
-      const dqNow = await accountNs(coreOwnerEr).disclosureQueue.fetch(disclosureQueue);
-      console.log(`DisclosureQueue.len after this mark_committed: ${dqNow.len}`);
-      assert(dqNow.len === 1, `DisclosureQueue.len == 1 (only the real record — prior collided attempts already drained)`);
-      break;
+  const commitmentPda = pdas.commitment(realCommitHash);
+  const commitmentAcc = await pollBase(`Commitment[hash] on base`, async () => {
+    try {
+      return await accountNs(coreBaseAdmin).commitment.fetch(commitmentPda);
+    } catch {
+      return null;
     }
+  });
+  const tCommitmentSeen = Date.now();
+  const onChainHash = Uint8Array.from(commitmentAcc.hash as number[]);
+  const matches = Buffer.compare(Buffer.from(realCommitHash), Buffer.from(onChainHash)) === 0;
+  console.log(`Commitment[hash] visible on base after ${((tCommitmentSeen - tCommitStart) / 1000).toFixed(1)}s; hash ${matches ? "MATCHES" : "MISMATCH"}`);
+  assert(matches, "M-B commitment landed");
+  assert(matches, "hash matches");
 
-    // Collided nonce: drain this bogus record out of the queue (wait for its
-    // reveal slot, then commit(dq)) so it never coexists with the real
-    // record and the queue never grows across retries.
-    console.log(`nonce ${args.nonce} collided with a pre-existing foreign Commitment — draining as bogus, retrying with a new nonce`);
-    console.log(`waiting for base slot >= ${args.revealAfterSlot} to drain the bogus record...`);
-    await waitForSlot(args.revealAfterSlot);
-    const drainSig = await commitAggregate(disclosureQueue);
-    console.log("commit_aggregate (dq, draining bogus record) sig:", drainSig);
-    await sleep(3000);
-    const dqAfterDrain = await accountNs(coreOwnerEr).disclosureQueue.fetch(disclosureQueue);
-    console.log(`DisclosureQueue.len after draining bogus attempt #${attempt}: ${dqAfterDrain.len}`);
-  }
-
-  assert(realNonce !== null && realArgs !== null && realSalt !== null && realCommitHash !== null, `found a genuinely fresh nonce within ${MAX_NONCE_ATTEMPTS} attempts`);
+  const markNSig = await markCommitted();
+  const posAfterMark = await accountNs(coreOwnerEr).position.fetch(position);
+  assert("empty" in posAfterMark.state, "Position.state == Empty after mark_committed");
+  const dqNow = await accountNs(coreOwnerEr).disclosureQueue.fetch(disclosureQueue);
+  console.log(`DisclosureQueue.len after mark_committed: ${dqNow.len}`);
+  assert(dqNow.len === 1, "DisclosureQueue.len == 1");
 
   // === position #2 (brief's "second position": proves Position reuse) ===
   console.log("\n=== position #2: open Long (same trader, proves Position reuse) ===");
@@ -339,8 +286,8 @@ async function main() {
   console.log("close_position #2", close2Sig);
 
   // === wait for slot >= reveal_after_slot of the real record, then reveal ===
-  console.log(`\n=== waiting for base slot >= reveal_after_slot = ${realArgs!.revealAfterSlot} ===`);
-  await waitForSlot(realArgs!.revealAfterSlot);
+  console.log(`\n=== waiting for base slot >= reveal_after_slot = ${realArgs.revealAfterSlot} ===`);
+  await waitForSlot(realArgs.revealAfterSlot);
   console.log("reveal slot reached");
 
   console.log("\n=== commit_aggregate(remaining=[disclosure_queue]) ===");
@@ -348,7 +295,7 @@ async function main() {
   const commitDqSig = await commitAggregate(disclosureQueue);
   console.log("commit_aggregate (dq) sig:", commitDqSig);
 
-  const disclosurePda = pdas.disclosure(realNonce!);
+  const disclosurePda = pdas.disclosure(realCommitHash);
   const disclosureAcc = await pollBase("Disclosure on base", async () => {
     try {
       return await accountNs(coreBaseAdmin).disclosure.fetch(disclosurePda);
@@ -357,21 +304,21 @@ async function main() {
     }
   });
   const t3 = Date.now();
-  console.log(`Disclosure[${realNonce}] visible on base after ${((t3 - t2) / 1000).toFixed(1)}s (ER sig -> base)`);
+  console.log(`Disclosure[hash] visible on base after ${((t3 - t2) / 1000).toFixed(1)}s (ER sig -> base)`);
   assert(true, "disclosure landed");
 
   assert(new PublicKey(disclosureAcc.owner).equals(PublicKey.default), "Disclosure.owner == Pubkey.default()");
-  assert(new PublicKey(disclosureAcc.market).equals(realArgs!.market), "Disclosure.market == ClosedRecord.market");
-  assert(sideIndex(disclosureAcc.side) === realArgs!.side, "Disclosure.side == ClosedRecord.side");
-  assert(BigInt(disclosureAcc.size.toString()) === realArgs!.size, "Disclosure.size == ClosedRecord.size");
-  assert(BigInt(disclosureAcc.entry.toString()) === realArgs!.entry, "Disclosure.entry == ClosedRecord.entry");
-  assert(BigInt(disclosureAcc.exit.toString()) === realArgs!.exit, "Disclosure.exit == ClosedRecord.exit");
-  assert(BigInt(disclosureAcc.pnl.toString()) === realArgs!.pnl, "Disclosure.pnl == ClosedRecord.pnl");
-  assert(BigInt(disclosureAcc.fees.toString()) === realArgs!.fees, "Disclosure.fees == ClosedRecord.fees");
-  assert(reasonIndex(disclosureAcc.reason) === realArgs!.reason, "Disclosure.reason == ClosedRecord.reason");
-  assert(BigInt(disclosureAcc.openedSlot.toString()) === realArgs!.openedSlot, "Disclosure.opened_slot == ClosedRecord.opened_slot");
-  assert(BigInt(disclosureAcc.closedSlot.toString()) === realArgs!.closedSlot, "Disclosure.closed_slot == ClosedRecord.closed_slot");
-  assert(BigInt(disclosureAcc.nonce.toString()) === realArgs!.nonce, "Disclosure.nonce == ClosedRecord.nonce");
+  assert(new PublicKey(disclosureAcc.market).equals(realArgs.market), "Disclosure.market == ClosedRecord.market");
+  assert(sideIndex(disclosureAcc.side) === realArgs.side, "Disclosure.side == ClosedRecord.side");
+  assert(BigInt(disclosureAcc.size.toString()) === realArgs.size, "Disclosure.size == ClosedRecord.size");
+  assert(BigInt(disclosureAcc.entry.toString()) === realArgs.entry, "Disclosure.entry == ClosedRecord.entry");
+  assert(BigInt(disclosureAcc.exit.toString()) === realArgs.exit, "Disclosure.exit == ClosedRecord.exit");
+  assert(BigInt(disclosureAcc.pnl.toString()) === realArgs.pnl, "Disclosure.pnl == ClosedRecord.pnl");
+  assert(BigInt(disclosureAcc.fees.toString()) === realArgs.fees, "Disclosure.fees == ClosedRecord.fees");
+  assert(reasonIndex(disclosureAcc.reason) === realArgs.reason, "Disclosure.reason == ClosedRecord.reason");
+  assert(BigInt(disclosureAcc.openedSlot.toString()) === realArgs.openedSlot, "Disclosure.opened_slot == ClosedRecord.opened_slot");
+  assert(BigInt(disclosureAcc.closedSlot.toString()) === realArgs.closedSlot, "Disclosure.closed_slot == ClosedRecord.closed_slot");
+  assert(BigInt(disclosureAcc.nonce.toString()) === realArgs.nonce, "Disclosure.nonce == ClosedRecord.nonce");
 
   const argsFromDisclosure: Args = {
     market: new PublicKey(disclosureAcc.market),
@@ -385,10 +332,10 @@ async function main() {
     openedSlot: BigInt(disclosureAcc.openedSlot.toString()),
     closedSlot: BigInt(disclosureAcc.closedSlot.toString()),
     nonce: BigInt(disclosureAcc.nonce.toString()),
-    revealAfterSlot: realArgs!.revealAfterSlot, // not stored on Disclosure; reuse the value bound into the original hash
+    revealAfterSlot: realArgs.revealAfterSlot, // not stored on Disclosure; reuse the value bound into the original hash
   };
-  const recomputedHash = commitmentHash(argsFromDisclosure, realSalt!);
-  assert(Buffer.compare(Buffer.from(recomputedHash), Buffer.from(realCommitHash!)) === 0, "hash verified on-chain");
+  const recomputedHash = commitmentHash(argsFromDisclosure, realSalt);
+  assert(Buffer.compare(Buffer.from(recomputedHash), Buffer.from(realCommitHash)) === 0, "hash verified on-chain");
 
   console.log("\n=== timings ===");
   console.log(`commit_aggregate(position) ER sig -> Commitment visible on base: ${((tCommitmentSeen - tCommitStart) / 1000).toFixed(1)}s`);
@@ -399,7 +346,7 @@ async function main() {
     JSON.stringify(
       {
         runId, traderName, owner: owner.publicKey.toBase58(), position: position.toBase58(), disclosureQueue: disclosureQueue.toBase58(),
-        nonce: realNonce!.toString(), commitmentPda: pdas.commitment(realNonce!).toBase58(), disclosurePda: disclosurePda.toBase58(),
+        nonce: realNonce.toString(), commitmentPda: commitmentPda.toBase58(), disclosurePda: disclosurePda.toBase58(),
         sigs: { fundSig, faucetSig, initUserSig, delegateSplSig, delegateUserSig, creditSig, initPermSig, openNSig, closeNSig, commitPositionSig, markNSig, open2Sig, close2Sig, commitDqSig },
       },
       null,

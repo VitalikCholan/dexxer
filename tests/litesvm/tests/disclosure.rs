@@ -21,8 +21,11 @@ fn prog() -> Pubkey {
 /// `write_disclosure_direct_call_rejected` exercise the same escrow-signer /
 /// `source_program` gate as `write_commitment_direct_call_rejected`, instead of
 /// failing earlier on a merely-missing `commitment` account.
+/// `hash` both derives the `Commitment` PDA (ruling 9, week 3 — hash-seeded,
+/// not nonce-seeded) and is stored as the account's own `hash` field, matching
+/// what a real `write_commitment` produces.
 fn seed_commitment(h: &mut Harness, nonce: u64, hash: [u8; 32]) {
-    let (pda, bump) = Pubkey::find_program_address(&[COMMIT_SEED, &nonce.to_le_bytes()], &prog());
+    let (pda, bump) = Pubkey::find_program_address(&[COMMIT_SEED, &hash], &prog());
     let commitment = Commitment {
         version: 1,
         hash,
@@ -100,13 +103,17 @@ fn write_disclosure_direct_call_rejected() {
     };
     // A real `Commitment` must already exist for `write_disclosure` to reach the
     // escrow-signer check at all (its own account is read-only, seeds-checked).
-    seed_commitment(&mut h, args.nonce, [7u8; 32]);
+    // The `Commitment` is now hash-seeded (ruling 9), so it must be seeded at
+    // the exact hash `write_disclosure_direct` will derive from (args, salt).
+    let salt = [1u8; 32];
+    let hash = commitment_hash(&args, &salt);
+    seed_commitment(&mut h, args.nonce, hash);
     let r = h.send(
         &[ixs::write_disclosure_direct(
             &stranger.pubkey(),
             &w,
             args,
-            [1u8; 32],
+            salt,
         )],
         &[&stranger],
     );
@@ -137,7 +144,8 @@ fn write_commitment_prefunded_target_still_blocked_by_escrow_signer() {
     let mut h = Harness::new();
     let w = World::bootstrap(&mut h);
     let nonce = 2u64;
-    let target = pdas::commitment(nonce);
+    let hash = [9u8; 32];
+    let target = pdas::commitment(&hash);
     let rent = h
         .svm
         .minimum_balance_for_rent_exemption(8 + Commitment::INIT_SPACE);
@@ -146,7 +154,7 @@ fn write_commitment_prefunded_target_still_blocked_by_escrow_signer() {
     let fee_payer = w.admin.pubkey();
     let r = h.send(
         &[ixs::write_commitment_direct_with_escrow_auth(
-            &fee_payer, &w, nonce, [9u8; 32],
+            &fee_payer, &w, nonce, hash,
         )],
         &[],
     );
@@ -176,8 +184,10 @@ fn write_disclosure_prefunded_target_still_blocked_by_escrow_signer() {
         nonce,
         reveal_after_slot: 3,
     };
-    seed_commitment(&mut h, nonce, [7u8; 32]);
-    let target = pdas::disclosure(nonce);
+    let salt = [1u8; 32];
+    let hash = commitment_hash(&args, &salt);
+    seed_commitment(&mut h, nonce, hash);
+    let target = pdas::disclosure(&hash);
     let rent = h
         .svm
         .minimum_balance_for_rent_exemption(8 + Disclosure::INIT_SPACE);
@@ -185,7 +195,7 @@ fn write_disclosure_prefunded_target_still_blocked_by_escrow_signer() {
     let fee_payer = w.admin.pubkey();
     let r = h.send(
         &[ixs::write_disclosure_direct_with_escrow_auth(
-            &fee_payer, &w, args, [1u8; 32],
+            &fee_payer, &w, args, salt,
         )],
         &[],
     );
@@ -458,4 +468,67 @@ fn mark_committed_queue_full() {
         &[&w.crank],
     );
     assert_custom_error(&r, 6000 + DexxerError::QueueFull as u32);
+}
+
+// Task 8b (ruling 9): `nonce` is `UserAccount.nonce`, a per-user counter — two
+// different traders' first close both land on nonce 1. Before this task,
+// `Commitment`/`Disclosure` were seeded by nonce alone, so the second trader's
+// `write_commitment` would collide with (and fail to `init` over) the first's.
+// Seeding by `commitment_hash(&args, &salt)` instead makes the PDA unique per
+// record regardless of the colliding nonce.
+#[test]
+fn commitments_from_two_traders_do_not_collide() {
+    let mut h = Harness::new();
+    let w = world_with_price(&mut h);
+    let t1 = open_then_close(&mut h, &w);
+    let t2 = open_then_close(&mut h, &w);
+
+    let rec1 = h.account::<Position>(&t1.position).closed.unwrap();
+    let rec2 = h.account::<Position>(&t2.position).closed.unwrap();
+    assert_eq!(
+        rec1.nonce, 1,
+        "test bug: expected each trader's first close"
+    );
+    assert_eq!(
+        rec2.nonce, 1,
+        "test bug: expected each trader's first close"
+    );
+
+    let hash1 = commitment_hash(&DisclosureArgs::from(&rec1), &rec1.salt);
+    let hash2 = commitment_hash(&DisclosureArgs::from(&rec2), &rec2.salt);
+    assert_ne!(
+        hash1, hash2,
+        "distinct closes (different owner/entry/exit/slot) must hash differently"
+    );
+    let commitment1 = pdas::commitment(&hash1);
+    let commitment2 = pdas::commitment(&hash2);
+    assert_ne!(
+        commitment1, commitment2,
+        "same-nonce Commitment PDAs must not collide across traders"
+    );
+
+    // Both commit in the same bundle; both actions target distinct PDAs and
+    // both positions flip commitment_written — no `init`-over-existing failure.
+    let extra = vec![
+        AccountMeta::new(t1.position, false),
+        AccountMeta::new(t2.position, false),
+    ];
+    h.send(
+        &[ixs::commit_aggregate(&w.fee_payer.pubkey(), &w, &extra)],
+        &[&w.fee_payer],
+    )
+    .unwrap();
+    assert!(
+        h.account::<Position>(&t1.position)
+            .closed
+            .unwrap()
+            .commitment_written
+    );
+    assert!(
+        h.account::<Position>(&t2.position)
+            .closed
+            .unwrap()
+            .commitment_written
+    );
+    assert_invariant(&h, &w, &[&t1, &t2]);
 }

@@ -19,9 +19,10 @@
 // `Closed` (its own record was never committed — 06 only drives record #1's
 // reveal), DisclosureQueue empty (06's own last step drained it), and
 // nonzero free_margin. This script closes that gap: commit+mark_committed
-// position #2's record (reusing 06's collision-retry helper — same global
-// nonce-collision property applies to ANY closed record, not just 06's),
-// drain whatever lands in the queue, withdraw(all), then undelegate.
+// position #2's record, drain whatever lands in the queue, withdraw(all),
+// then undelegate. Task 8b (ruling 9): `Commitment` is now hash-seeded, so
+// (unlike the pre-8b version of this file) a single commit is always
+// sufficient — no nonce-collision retry loop needed.
 //
 // Run: `npm run devnet:undelegate` (from tests/er). Requires
 // `06-commitment-reveal.ts` to have run (`.keys/devnet-run-mb-latest.json`).
@@ -64,7 +65,6 @@ if (NET !== "devnet") {
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const KEYS_DIR = resolve(HERE, "..", ".keys");
-const MAX_NONCE_ATTEMPTS = 50;
 const UNDELEGATE_POLL_MS = 180_000;
 
 function recToArgsAndSalt(rec: any) {
@@ -150,38 +150,32 @@ async function main() {
   }
 
   // === Step 1: if Position is Closed (06's second position, never
-  // committed), commit+mark_committed it — same nonce-collision-retry logic
-  // as 06 (see that file's header comment). If already Empty (a re-run),
-  // skip. ===
+  // committed), commit+mark_committed it. If already Empty (a re-run), skip.
+  // Task 8b: Commitment is hash-seeded, so a single commit always lands at
+  // its own dedicated PDA — no collision, no retry loop needed.
   const posNow = await accountNs(coreOwnerEr).position.fetch(position);
   if ("closed" in posNow.state) {
     console.log("\n=== closing out the still-Closed position from 06's second close ===");
-    for (let attempt = 1; attempt <= MAX_NONCE_ATTEMPTS; attempt++) {
-      const pos = await accountNs(coreOwnerEr).position.fetch(position);
-      if (!("closed" in pos.state)) break;
-      const { args, salt } = recToArgsAndSalt(pos.closed);
-      const sig = await commitAggregate(position);
-      console.log(`commit_aggregate(position) attempt #${attempt} sig=${sig}`);
-      const commitmentAcc = await pollBase(`Commitment[${args.nonce}]`, async () => {
-        try {
-          return await accountNs(coreBaseAdmin).commitment.fetch(pdas.commitment(args.nonce));
-        } catch {
-          return null;
-        }
-      });
-      const onChainHash = Uint8Array.from(commitmentAcc.hash as number[]);
-      const matches = Buffer.compare(Buffer.from(commitmentHash(args, salt)), Buffer.from(onChainHash)) === 0;
-      console.log(`nonce ${args.nonce}: ${matches ? "fresh (correct hash)" : "collided (foreign hash, will still drain)"}`);
-      const markSig = await markCommitted();
-      sigs.closeoutMark = markSig;
-      // Drain regardless of match: due_reveals pops the record structurally
-      // once its reveal slot passes, whether or not the L1 hash it points at
-      // is this trader's own (see 06's header comment on this property).
-      await waitForSlot(args.revealAfterSlot);
-      const drainSig = await commitAggregate(disclosureQueue);
-      console.log(`drained via commit_aggregate(dq): ${drainSig}`);
-      await sleep(3000);
-    }
+    const { args, salt } = recToArgsAndSalt(posNow.closed);
+    const hash = commitmentHash(args, salt);
+    const sig = await commitAggregate(position);
+    console.log(`commit_aggregate(position) sig=${sig}`);
+    const commitmentAcc = await pollBase(`Commitment[hash]`, async () => {
+      try {
+        return await accountNs(coreBaseAdmin).commitment.fetch(pdas.commitment(hash));
+      } catch {
+        return null;
+      }
+    });
+    const onChainHash = Uint8Array.from(commitmentAcc.hash as number[]);
+    const matches = Buffer.compare(Buffer.from(hash), Buffer.from(onChainHash)) === 0;
+    assert(matches, "closeout commitment hash matches (hash-seeded, no collision possible)");
+    const markSig = await markCommitted();
+    sigs.closeoutMark = markSig;
+    await waitForSlot(args.revealAfterSlot);
+    const drainSig = await commitAggregate(disclosureQueue);
+    console.log(`drained via commit_aggregate(dq): ${drainSig}`);
+    await sleep(3000);
     const posAfter = await accountNs(coreOwnerEr).position.fetch(position);
     assert("empty" in posAfter.state, "Position.state == Empty before undelegate_user");
   } else {

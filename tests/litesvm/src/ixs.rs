@@ -6,7 +6,7 @@ use crate::{
 use anchor_lang::InstructionData;
 use dexxer_core::{
     instruction as ix,
-    state::{DisclosureArgs, MarketParams, Side},
+    state::{commitment_hash, DisclosureArgs, MarketParams, Side},
 };
 use solana_instruction::{AccountMeta, Instruction};
 use solana_pubkey::Pubkey;
@@ -415,10 +415,10 @@ fn write_commitment_direct_accounts(
     escrow_auth_meta: AccountMeta,
     escrow_auth_key: &Pubkey,
     wd: &World,
-    nonce: u64,
+    hash: &[u8; 32],
 ) -> Vec<AccountMeta> {
     vec![
-        w(&pdas::commitment(nonce)),
+        w(&pdas::commitment(hash)),
         r(&wd.config),
         r(&SYSTEM),
         r(&prog()),
@@ -439,7 +439,7 @@ pub fn write_commitment_direct(
 ) -> Instruction {
     Instruction {
         program_id: prog(),
-        accounts: write_commitment_direct_accounts(rs(caller), caller, wd, nonce),
+        accounts: write_commitment_direct_accounts(rs(caller), caller, wd, &hash),
         data: ix::WriteCommitment { nonce, hash }.data(),
     }
 }
@@ -458,20 +458,21 @@ pub fn write_commitment_direct_with_escrow_auth(
 ) -> Instruction {
     Instruction {
         program_id: prog(),
-        accounts: write_commitment_direct_accounts(r(escrow_auth), escrow_auth, wd, nonce),
+        accounts: write_commitment_direct_accounts(r(escrow_auth), escrow_auth, wd, &hash),
         data: ix::WriteCommitment { nonce, hash }.data(),
     }
 }
 /// Same split as `write_commitment_direct_accounts`, for `write_disclosure`.
+/// `hash` is `commitment_hash(args, salt)` — both PDAs are seeded by it (ruling 9).
 fn write_disclosure_direct_accounts(
     escrow_auth_meta: AccountMeta,
     escrow_auth_key: &Pubkey,
     wd: &World,
-    args: &DisclosureArgs,
+    hash: &[u8; 32],
 ) -> Vec<AccountMeta> {
     vec![
-        w(&pdas::disclosure(args.nonce)),
-        r(&pdas::commitment(args.nonce)),
+        w(&pdas::disclosure(hash)),
+        r(&pdas::commitment(hash)),
         r(&wd.config),
         r(&SYSTEM),
         r(&prog()),
@@ -486,9 +487,10 @@ pub fn write_disclosure_direct(
     args: DisclosureArgs,
     salt: [u8; 32],
 ) -> Instruction {
+    let hash = commitment_hash(&args, &salt);
     Instruction {
         program_id: prog(),
-        accounts: write_disclosure_direct_accounts(rs(caller), caller, wd, &args),
+        accounts: write_disclosure_direct_accounts(rs(caller), caller, wd, &hash),
         data: ix::WriteDisclosure { args, salt }.data(),
     }
 }
@@ -500,9 +502,10 @@ pub fn write_disclosure_direct_with_escrow_auth(
     args: DisclosureArgs,
     salt: [u8; 32],
 ) -> Instruction {
+    let hash = commitment_hash(&args, &salt);
     Instruction {
         program_id: prog(),
-        accounts: write_disclosure_direct_accounts(r(escrow_auth), escrow_auth, wd, &args),
+        accounts: write_disclosure_direct_accounts(r(escrow_auth), escrow_auth, wd, &hash),
         data: ix::WriteDisclosure { args, salt }.data(),
     }
 }

@@ -103,11 +103,16 @@ function pda(seeds: (Buffer | Uint8Array)[], programId: PublicKey): PublicKey {
   return PublicKey.findProgramAddressSync(seeds, programId)[0];
 }
 
-/** `u64::to_le_bytes()` equivalent for a PDA seed. */
-function u64leSeed(n: bigint | number): Buffer {
-  const b = Buffer.alloc(8);
-  b.writeBigUInt64LE(BigInt(n));
-  return b;
+/** Accepts either a 32-byte `Uint8Array`/`Buffer` or a hex string (with or without `0x`). */
+function hashSeed(hash: Uint8Array | string): Buffer {
+  if (typeof hash === "string") {
+    const hex = hash.startsWith("0x") ? hash.slice(2) : hash;
+    const b = Buffer.from(hex, "hex");
+    if (b.length !== 32) throw new Error(`commitment hash must be 32 bytes, got ${b.length}`);
+    return b;
+  }
+  if (hash.length !== 32) throw new Error(`commitment hash must be 32 bytes, got ${hash.length}`);
+  return Buffer.from(hash);
 }
 
 export const pdas = {
@@ -132,10 +137,12 @@ export const pdas = {
   feed: (lazerFeedId: string) => pda([FEED_SEED, LAZER_SEED, Buffer.from(lazerFeedId)], MOCK_ORACLE_PROGRAM_ID),
   /** Same feed PDA derivation as `feed`, but under an arbitrary oracle program (Task 0: the real devnet Pricing Oracle, not `mock_oracle`). */
   feedUnder: (oracleProgram: PublicKey, lazerFeedId: string) => pda([FEED_SEED, LAZER_SEED, Buffer.from(lazerFeedId)], oracleProgram),
-  // Week 3 (Task 7): PDAs for the 13F/BalancesRoot pipeline, matching
-  // programs/dexxer_core/src/state/mod.rs seeds verbatim.
-  commitment: (nonce: bigint | number) => pda([COMMIT_SEED, u64leSeed(nonce)], DEXXER_CORE_PROGRAM_ID),
-  disclosure: (nonce: bigint | number) => pda([DISCLOSURE_SEED, u64leSeed(nonce)], DEXXER_CORE_PROGRAM_ID),
+  // Week 3 (Task 7/8b): PDAs for the 13F/BalancesRoot pipeline, matching
+  // programs/dexxer_core/src/state/mod.rs seeds verbatim. Hash-seeded, not
+  // nonce-seeded (ruling 9, Task 8b) — `nonce` is per-user and collides
+  // across traders; `hash` is `commitmentHash(args, salt)`, 32 bytes or hex.
+  commitment: (hash: Uint8Array | string) => pda([COMMIT_SEED, hashSeed(hash)], DEXXER_CORE_PROGRAM_ID),
+  disclosure: (hash: Uint8Array | string) => pda([DISCLOSURE_SEED, hashSeed(hash)], DEXXER_CORE_PROGRAM_ID),
   balancesRoot: () => pda([BALANCES_ROOT_SEED], DEXXER_CORE_PROGRAM_ID),
 };
 

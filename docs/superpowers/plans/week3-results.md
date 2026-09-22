@@ -606,3 +606,112 @@ LiteSVM не деплоює Magic Program (`magic_program.to_account_info().exec
 
 Повний звіт (свідчення, перевірені гіпотези, гаунтлет) —
 `.superpowers/sdd/2026-09-22-week3-disclosure-root-exit/task-8c-report.md`.
+
+## Task 8b — хеш-сідовані `Commitment`/`Disclosure` (рулінг 9)
+
+Task 8 (розділ вище, "Знахідка: колізія nonce на глобальних PDA") виявив: PDA `Commitment`/
+`Disclosure` сідувалися лише `nonce.to_le_bytes()` (`[COMMIT_SEED, nonce]` / `[DISCLOSURE_SEED,
+nonce]`), а `nonce` — це `UserAccount.nonce`, лічильник **на юзера**, що стартує з 0 і стає 1 на
+першому `close` будь-якого трейдера. Перший `close` будь-яких двох різних трейдерів тому цілить у
+**той самий** глобальний PDA `Commitment[1]`/`Disclosure[1]` — другий `write_commitment` падає на
+`init` (акаунт уже зайнятий). Рулінг 9: сідувати обидва PDA хешем комітменту замість nonce —
+`[COMMIT_SEED, hash]`, `[DISCLOSURE_SEED, hash]`, де `hash = commitment_hash(&args, &salt)` — унікальний
+на кожен запис і privacy-нейтральний (на відміну від глобального лічильника на `Pool`, який видавав
+би порядок закриттів між усіма трейдерами). Поле `nonce` лишається в `DisclosureArgs`/`ClosedRecord`
+як було — це bookkeeping-поле, не seed.
+
+### Дизайн seed-виразу
+
+`WriteCommitment` уже мала `#[instruction(nonce: u64, hash: [u8; 32])]` (Task 2) — досить було
+змінити `seeds = [COMMIT_SEED, &nonce.to_le_bytes()]` на `seeds = [COMMIT_SEED, &hash]` (готовий
+аргумент інструкції, нуль додаткової роботи).
+
+`WriteDisclosure` приймає `(args: DisclosureArgs, salt: [u8; 32])`, без окремого поля `hash` — хеш
+довелося рахувати прямо у виразі seed: `seeds = [DISCLOSURE_SEED, &commitment_hash(&args, &salt)]`
+(і так само для читання `commitment` — `seeds = [COMMIT_SEED, &commitment_hash(&args, &salt)]`,
+`bump = commitment.bump`). Керована процедурним макросом Anchor 1.0.2 підстановка виразу-виклику
+функції (не просто константи/аргумента) в `seeds =` **компілюється без змін** — `cargo check -p
+dexxer_core` пройшов з першої спроби, жодного альтернативного явного `hash`-аргументу з `require!`
+не знадобилося. Дублювання обчислення `commitment_hash` (у двох місцях виразу seeds) прийнятне —
+keccak дешевий, і оптимізатор Anchor-макросу все одно генерує окремі виклики для кожного constraint.
+
+Клієнтська сторона (`commit.rs::process_position_candidate`/`process_disclosure_queue_candidate`,
+які самі будують `CallHandler`-акаунти для `write_commitment`/`write_disclosure`) вже мала `hash` у
+руках (`pending_commitment`/`due_reveals` обидва повертають `(..., hash)` — жодних додаткових
+обчислень, лише заміна `find_program_address(&[SEED, &nonce.to_le_bytes()], ...)` на
+`find_program_address(&[SEED, &hash], ...)`.
+
+### Тест на колізію (TDD)
+
+Новий LiteSVM-тест `commitments_from_two_traders_do_not_collide`
+(`tests/litesvm/tests/disclosure.rs`): два різні трейдери, кожен відкриває і закриває свою першу
+позицію (`open_then_close` — обидва `ClosedRecord.nonce == 1`, підтверджено `assert_eq!` перед
+основною перевіркою — так тест довів би, що сценарій колізії справді відтворений, а не випадково
+уникнутий різними nonce). Обчислені `commitment_hash` для двох записів — різні (`assert_ne!`), тому й
+похідні PDA `pdas::commitment(&hash1)`/`pdas::commitment(&hash2)` — різні адреси. Обидва позиції
+комітяться в одному виклику `commit_aggregate(remaining=[pos1, pos2])` — обидва прапорці
+`commitment_written` успішно виставляються, без падіння на `init`-колізії, яка була б неминучою до
+цього фіксу (в тому самому `commit_aggregate`-виклику другий `write_commitment`-екшн націлився б у
+вже зайнятий `Commitment[1]`). LiteSVM: 64 → **65** тестів.
+
+### Крank пропускає застарілий layout (друга знахідка Task 8)
+
+Task 8 також знайшов: 8 з 12 `UserAccount` на девнеті — з layout до `exit_salt`/`last_withdraw_slot`
+(тижні 1-2), коротші за поточний, і ламають увесь батч `set_balances_root` (`InvalidLeafAccount`),
+бо Rust-сторона не падає чисто на декодуванні застарілого/коротшого акаунта. Task 8 обійшов це лише
+в одноразовому devnet-скрипті (`07-balances-root.ts`); Task 8b переносить той самий фільтр у
+постійний crank-fallback (`scripts/crank-fallback/disclosure.ts`), який реально працюватиме проти
+живого mixed-layout стану:
+
+- `runRootCycle`: перед побудовою батчів `set_balances_root` фільтрує `UserAccount`-акаунти за точною
+  довжиною байтів — `ctx.prog.coder.accounts.size("UserAccount")` (дискримінатор + `8 +
+  UserAccount::INIT_SPACE`, з IDL-кодера, не хардкод) — і логує кожен пропуск (`skipped legacy:
+  <pubkey> len=<n>`).
+- `runDisclosureCycle`: `decodeOrSkip` обгортає декодування `Position`/`DisclosureQueue` (`try`/`catch`
+  навколо `coder.accounts.decode`, яке на застарілому/коротшому буфері кидає `RangeError
+  [ERR_OUT_OF_RANGE]` замість чистої помилки) — акаунт, що не декодується, пропускається з тим самим
+  логом, не валить увесь цикл.
+- `mark_committed`-гейт (той самий файл) тепер шукає `Commitment` за
+  `pdas.commitment(commitmentHash(argsFromClosedRecord(record), record.salt))` замість
+  `pdas.commitment(nonce)` — узгоджено з рулінгом 9.
+
+### Клієнт: TS/App
+
+- `tests/er/lib/program.ts`, `app/src/lib/pdas.ts`: `pdas.commitment`/`pdas.disclosure` тепер беруть
+  `hash: Uint8Array | string` (32 байти або hex) замість `nonce: bigint | number`.
+- `tests/er/devnet/06-commitment-reveal.ts`: прибрано nonce-колізійний retry-цикл (`MAX_NONCE_ATTEMPTS`,
+  drain-бридж через `commit_aggregate(dq)` для "чужого" nonce) — з хеш-сідованими PDA колізія
+  структурно неможлива, один цикл open/close/commit/reveal достатній.
+- `tests/er/devnet/08-undelegate.ts`: той самий retry-цикл прибрано з кроку "закрити позицію #2
+  перед undelegate" — один `commit_aggregate` + `mark_committed` тепер завжди влучає у власний PDA.
+- App: `HistoryScreen.tsx` тепер зіставляє власну історію з публічними `Disclosure` на L1 за
+  `commitmentHash(args, salt)`, а не за `nonce` — `Disclosure.nonce` теж лишається per-user полем, тож
+  зіставлення лише за ним теоретично показало б рядок **чужого** трейдера, якщо їхні nonce
+  збіглися. Хеш рахується з ще-непроявленого `ClosedRecord` (де є `salt`; у розкритому `Disclosure`
+  його вже нема) і зберігається в `expo-secure-store` під `dexxer.hashes.<owner>` (перейменовано з
+  `dexxer.nonces.<owner>`; старі nonce-записи не мігруються — прийнятно для devnet-кешу, що
+  переповнюється з живої `DisclosureQueue`). Розкриті записи тепер читаються прямим точковим
+  запитом `pdas.disclosure(hash)` через `getMultipleAccountsInfo`, а не повним
+  `getProgramAccounts`-сканом з фільтром по nonce. `commitmentHash`/`assertCommitmentGolden`
+  (`app/src/lib/program.ts`) — той самий golden vector, що й `tests/er/lib/hashes.selftest.ts` і
+  Rust `commitment_hash_golden_vector`, перевіряється під `__DEV__` поряд із `assertLeafGolden`.
+- `app/src/idl/dexxer_core.json` — перекопійовано байт-в-байт з `target/idl/dexxer_core.json` після
+  `anchor build`: для `WriteDisclosure`'s `disclosure`/`commitment` акаунтів Anchor більше не може
+  виразити `pda`-метадані в IDL (seed — виклик функції, не константа/аргумент), тому цей блок просто
+  зникає з IDL для цих двох акаунтів — очікувано, не регресія.
+
+### Гаунтлет
+
+`program_autofixer` (0 issues на обох змінених `.rs`), `cargo fmt --all -- --check`, `cargo clippy -p
+dexxer_core -- -D warnings`, `anchor build` (жодного stack-offset попередження на функції
+`dexxer_core` — уся "syn"/"anchor_syn" пітьма в виводі передує цій зміні), `cargo test -p dexxer_core`
+51/51, `cargo +nightly-2026-09-18 test -p dexxer_litesvm` 65/65 (64 + 1 новий), `npx tsc --noEmit` у
+`tests/er`/`scripts`/`app` — чисто, `npm run selftest:hashes` 3/3, `cd app && npm run lint:check` —
+чисто.
+
+Файли: `programs/dexxer_core/src/instructions/{disclosure,commit}.rs`; `tests/litesvm/src/{pdas,ixs}.rs`,
+`tests/litesvm/tests/disclosure.rs`; `tests/er/lib/program.ts`,
+`tests/er/devnet/{06-commitment-reveal,08-undelegate}.ts`, `scripts/crank-fallback/disclosure.ts`;
+`app/src/lib/{pdas,program}.ts`, `app/src/features/history/HistoryScreen.tsx`,
+`app/src/idl/dexxer_core.json`; `docs/superpowers/specs/2026-09-18-dexxer-mvp-design.md` (§2.1, текст
+seed).
