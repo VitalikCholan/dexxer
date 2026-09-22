@@ -39,6 +39,7 @@ import type { RelayerConfig, RelayerState } from "./crank.js";
 import { attachWs, indexerRouter } from "./indexer/http.js";
 import type { IndexerStats } from "./indexer/accounts.js";
 import { ORACLE_STALE_MS, isStale } from "./indexer/prices.js";
+import { DEFAULT_DAILY_BUDGET_SOL, pgSponsorStore, simulateCostEstimator, sponsorRouter, sponsorSnapshot } from "./sponsor.js";
 
 if ((process.env.DEXXER_NET ?? "local") === "devnet") {
   process.env.BASE_RPC ??= "https://rpc.magicblock.app/devnet";
@@ -68,6 +69,7 @@ const cfg: RelayerConfig = {
   sponsorEnabled: process.env.SPONSOR_ENABLED === "true",
   databaseUrl: process.env.DATABASE_URL,
 };
+const sponsorDailyBudgetSol = Number(process.env.SPONSOR_DAILY_SOL ?? DEFAULT_DAILY_BUDGET_SOL);
 
 const state: RelayerState = { lastTickAt: null, lastCommitAt: null, tick: 0, errors: [] };
 
@@ -125,10 +127,32 @@ if (cfg.indexerEnabled && !pool) {
   }
 }
 
+const baseConn = new Connection(cfg.baseRpc, "confirmed");
+
+// Task 6: `/sponsor` — fee_payer co-signs whitelisted onboarding txs (see
+// sponsor.ts's header comment). Needs Postgres for the rate-limit/budget
+// store, same gating pattern as the indexer above.
+let getSponsorHealthSnapshot: (() => Promise<{ today_sol: number; count_today: number }>) | undefined;
+if (cfg.sponsorEnabled && !pool) {
+  console.warn("sponsor: SPONSOR_ENABLED=true but no DATABASE_URL — /sponsor disabled (needs Postgres for the rate-limit store)");
+} else if (cfg.sponsorEnabled && pool) {
+  const store = pgSponsorStore(pool);
+  app.use(
+    sponsorRouter({
+      feePayer: cfg.feePayer,
+      store,
+      estimateLamports: simulateCostEstimator(baseConn, cfg.feePayer),
+      dailyBudgetSol: sponsorDailyBudgetSol,
+    }),
+  );
+  getSponsorHealthSnapshot = sponsorSnapshot(store);
+  console.log(`sponsor: /sponsor enabled (daily budget ${sponsorDailyBudgetSol} SOL)`);
+}
+
 app.use(
   healthRouter({
     state,
-    baseConn: new Connection(cfg.baseRpc, "confirmed"),
+    baseConn,
     crankPubkey: cfg.crank.publicKey,
     feePayerPubkey: cfg.feePayer.publicKey,
     db: pool,
@@ -137,6 +161,7 @@ app.use(
       wsClients: wsHub?.clientCount() ?? 0,
       oracleStale: isStale(indexerStats.lastTickTs, Date.now(), ORACLE_STALE_MS),
     }),
+    getSponsorSnapshot: getSponsorHealthSnapshot,
   }),
 );
 

@@ -40,6 +40,13 @@ export interface IndexerSnapshot {
 
 const EMPTY_INDEXER_SNAPSHOT: IndexerSnapshot = { ticks: 0, lastTickTs: null, lastPoolSlot: null, disclosures: 0, wsClients: 0, oracleStale: true };
 
+/** Task 6 (sponsor): today's rolling-24h sponsor spend — zeroed when sponsoring is disabled or no Postgres. */
+export interface SponsorHealthSnapshot {
+  today_sol: number;
+  count_today: number;
+}
+const EMPTY_SPONSOR_SNAPSHOT: SponsorHealthSnapshot = { today_sol: 0, count_today: 0 };
+
 export interface HealthPayload {
   ok: boolean;
   lastTickAt: number | null;
@@ -51,6 +58,7 @@ export interface HealthPayload {
   schedulerActive: boolean;
   db: "ok" | "error";
   indexer: IndexerSnapshot;
+  sponsor: SponsorHealthSnapshot;
 }
 
 /** Pure: no I/O, so this is what test/health.test.ts exercises directly. */
@@ -61,6 +69,7 @@ export function buildHealthPayload(
   feePayerSol: number | null,
   dbStatus: "ok" | "error",
   indexer?: IndexerSnapshot,
+  sponsor?: SponsorHealthSnapshot,
 ): HealthPayload {
   const stale = state.lastTickAt === null || now - state.lastTickAt > STALE_MS;
   return {
@@ -73,6 +82,7 @@ export function buildHealthPayload(
     schedulerActive: false,
     db: dbStatus,
     indexer: indexer ?? EMPTY_INDEXER_SNAPSHOT,
+    sponsor: sponsor ?? EMPTY_SPONSOR_SNAPSHOT,
   };
 }
 
@@ -84,6 +94,8 @@ export interface HealthDeps {
   db: DbPool | null;
   /** Task 5: getter (not a value) so `/healthz` always reads the indexer's live counters rather than a snapshot captured at router-construction time. */
   getIndexerSnapshot?: () => IndexerSnapshot;
+  /** Task 6: async getter (a Postgres query) for today's sponsor spend/count — undefined when sponsoring is disabled. */
+  getSponsorSnapshot?: () => Promise<SponsorHealthSnapshot>;
 }
 
 interface BalanceCache {
@@ -123,7 +135,8 @@ export function healthRouter(deps: HealthDeps): Router {
       dbStatus = "error"; // no DATABASE_URL configured (local dev without Postgres — see db.ts)
     }
 
-    const payload = buildHealthPayload(deps.state, now, cache.crankSol, cache.feePayerSol, dbStatus, deps.getIndexerSnapshot?.());
+    const sponsor = deps.getSponsorSnapshot ? await deps.getSponsorSnapshot().catch(() => undefined) : undefined;
+    const payload = buildHealthPayload(deps.state, now, cache.crankSol, cache.feePayerSol, dbStatus, deps.getIndexerSnapshot?.(), sponsor);
     res.status(payload.ok ? 200 : 503).json(payload);
   });
 

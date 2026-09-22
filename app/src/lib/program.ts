@@ -111,6 +111,22 @@ export function readConfigOracleProgram(data: Buffer): PublicKey {
   return new PublicKey(data.subarray(CONFIG_ORACLE_PROGRAM_OFFSET, CONFIG_ORACLE_PROGRAM_OFFSET + 32))
 }
 
+/**
+ * `Config.fee_payer` offset (Task 6, week 4): `CONFIG_DUSDC_MINT_OFFSET`
+ * (already past admin/crank/paused/oracle_program/tee_validator) +
+ * dusdc_mint(32) + disclosure_delay_slots(8) + scheduler_signer(32) —
+ * matches `app/src/idl/dexxer_core.json`'s `Config` type field order
+ * exactly (`version, admin, crank, paused, oracle_program, tee_validator,
+ * dusdc_mint, disclosure_delay_slots, scheduler_signer, fee_payer, ...`).
+ * `useOnboarding.ts`'s batched flow sets `tx.feePayer` to this for the two
+ * L1 transactions it hands to the relayer's `POST /sponsor`.
+ */
+const CONFIG_FEE_PAYER_OFFSET = CONFIG_DUSDC_MINT_OFFSET + 32 + 8 + 32
+
+export function readConfigFeePayer(data: Buffer): PublicKey {
+  return new PublicKey(data.subarray(CONFIG_FEE_PAYER_OFFSET, CONFIG_FEE_PAYER_OFFSET + 32))
+}
+
 // --- Task 8: Position/Market manual decodes + session-signed Trade ixs ---
 //
 // Offsets below follow the same fixed-offset approach as the block above
@@ -378,7 +394,11 @@ export function describeTxError(e: unknown): string {
  * locked_margin(8) + nonce(8) + last_withdraw_slot(8) = 117.
  */
 const USER_ACCOUNT_EXIT_SALT_OFFSET =
-  USER_ACCOUNT_FREE_MARGIN_OFFSET + 8 /* free_margin */ + 8 /* locked_margin */ + 8 /* nonce */ + 8 /* last_withdraw_slot */
+  USER_ACCOUNT_FREE_MARGIN_OFFSET +
+  8 /* free_margin */ +
+  8 /* locked_margin */ +
+  8 /* nonce */ +
+  8 /* last_withdraw_slot */
 
 export function readUserAccountExitSalt(data: Buffer): Uint8Array {
   return Uint8Array.from(data.subarray(USER_ACCOUNT_EXIT_SALT_OFFSET, USER_ACCOUNT_EXIT_SALT_OFFSET + 32))
@@ -542,10 +562,14 @@ export function decodeDisclosure(data: Buffer): DecodedDisclosure {
  * above), so results still need filtering by nonce — see
  * `HistoryScreen.tsx`.
  */
-export const DISCLOSURE_DISC = new BorshAccountsCoder(DEXXER_CORE_IDL).accountDiscriminator('Disclosure').toString('base64')
+export const DISCLOSURE_DISC = new BorshAccountsCoder(DEXXER_CORE_IDL)
+  .accountDiscriminator('Disclosure')
+  .toString('base64')
 
 /** Read every `Disclosure` account on `conn` (base layer) matching the discriminator filter — unfiltered by nonce, see `DISCLOSURE_DISC`. */
-export async function readAllDisclosures(conn: Connection): Promise<{ pubkey: PublicKey; disclosure: DecodedDisclosure }[]> {
+export async function readAllDisclosures(
+  conn: Connection,
+): Promise<{ pubkey: PublicKey; disclosure: DecodedDisclosure }[]> {
   const accounts = await conn.getProgramAccounts(DEXXER_CORE_PROGRAM_ID, {
     commitment: 'confirmed',
     filters: [{ memcmp: { offset: 0, bytes: DISCLOSURE_DISC, encoding: 'base64' } }],

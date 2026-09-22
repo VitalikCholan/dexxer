@@ -1,30 +1,42 @@
 // app/src/features/onboard/useOnboarding.ts
 //
-// State machine driving Task 7's onboarding screen:
+// State machine driving the onboarding screen:
 //   NotOnboarded -> Funded -> Initialized -> Delegated -> Credited ->
 //   Permissioned -> SessionSet
 //
+// Task 6 (week 4): `advance()` now runs `runBatchedOnboarding` — faucet_init
+// (+ATA-create if missing) + init_user + delegateSpl + delegate_user +
+// init_permissions + set_session (+ the session fee top-up) collected into
+// up to four transactions and signed in ONE `mwa.signTransactions([...])`
+// call, with the two L1 transactions sponsored by the relayer's
+// `POST /sponsor` (`services/relayer/src/sponsor.ts`) so the owner never
+// pays a network fee for them. `credit_deposit` (crediting `free_margin`)
+// is deliberately NOT part of the batch — see `runDevDeposit` below and
+// Task 10's real Deposit screen.
+//
+// The original step-by-step flow (`runFlow`, one MWA prompt per
+// instruction/small group) is kept intact behind `LEGACY_ONBOARDING` below
+// for quick rollback/debugging — set it to `true` to go back to it.
 // Mirrors `tests/er/devnet/01-onboard-private.ts` / `tests/er/lib/trader.ts`
 // (`onboardTrader`) step-for-step — same instructions, same accounts, same
 // order — with every owner-signed step routed through Mobile Wallet Adapter
-// instead of a local `Keypair`:
-//   L1 steps (faucet_init, init_user, delegateSpl, delegate_user)
-//     -> MWA `signTransactions` (sign-only), then this app submits on
-//        `baseConn` — the reference fakewallet's own send path
-//        (`SendTransactionsUseCase`) rejects multi-ix txs like `delegateSpl`
-//        with "payloads invalid for signing" (see `sendL1` note below)
-//   ER steps (credit_deposit, init_permissions, set_session)
-//     -> MWA `signTransactions`, then this app sends the signed tx on the
-//        TEE connection and polls `getSignatureStatuses` itself — mirrors
-//        `tests/er/lib/env.ts`'s `sendAndConfirmIx`/`confirmSignature`
-//        (the ER validator's confirmation websocket is unreliable, per that
-//        file's header comment)
+// instead of a local `Keypair`.
+//
+// L1 sends: MWA `signTransactions` (sign-only), then this app submits on
+// `baseConn` itself — the reference fakewallet's own send path
+// (`SendTransactionsUseCase`) rejects multi-ix txs like `delegateSpl` with
+// "payloads invalid for signing" (found task-7 emulator verification).
+// ER sends: same pattern against the owner's TEE connection, polling
+// `getSignatureStatuses` instead of `Connection.confirmTransaction` (the ER
+// validator's confirmation websocket is unreliable — see
+// `tests/er/lib/env.ts`'s `confirmSignature` for the root cause).
 //
 // Every step checks on-chain state first and skips if already done
 // (idempotent, like `onboardTrader`), so `advance()` (the screen's single
 // "Continue" action) is safe to call again after a partial failure — a
 // re-tap resumes from wherever onboarding actually broke, and running it
-// again on an already-onboarded wallet is a fast no-op all the way through.
+// again on an already-onboarded wallet is a fast no-op all the way through
+// (in the batched flow: zero transactions to sign, so zero wallet prompts).
 import { useCallback, useState } from 'react'
 import {
   Connection,
@@ -55,11 +67,13 @@ import { useTeeConnection } from '@/src/lib/er'
 import {
   dexxerCoreProgram,
   readConfigDusdcMint,
+  readConfigFeePayer,
   readUserAccountFreeMargin,
   readUserAccountSessionKey,
   DEXXER_CORE_PROGRAM_ID,
 } from '@/src/lib/program'
 import { delegationTriple, pdas } from '@/src/lib/pdas'
+import { sponsorTx, SponsorError } from '@/src/lib/sponsor'
 import {
   getOrCreateExitSalt,
   getOrCreateSessionKeypair,
@@ -70,6 +84,21 @@ import {
 
 export type OnboardState =
   'Disconnected' | 'NotOnboarded' | 'Funded' | 'Initialized' | 'Delegated' | 'Credited' | 'Permissioned' | 'SessionSet'
+
+/** Set `true` to fall back to the original one-prompt-per-step flow (`runFlow`) — see file header. */
+const LEGACY_ONBOARDING = false
+
+export type BatchPhase = 'Idle' | 'Collecting' | 'Signing' | 'Submitting' | 'Done' | 'Failed'
+
+export interface BatchProgress {
+  phase: BatchPhase
+  /** Which leg is in flight/failed — 'faucet+init_user' | 'delegate' | 'permissions+session' | 'session top-up'. */
+  step: string | null
+  i: number
+  n: number
+}
+
+const IDLE_BATCH_PROGRESS: BatchProgress = { phase: 'Idle', step: null, i: 0, n: 0 }
 
 /** Faucet/deposit amount — 1,000 dUSDC (6 decimals), same as `tests/er/devnet/01-onboard-private.ts`. */
 const DEPOSIT = 1_000_000_000n
@@ -183,7 +212,8 @@ interface OnboardCtx {
 
 interface Mwa {
   signAndSendTransaction: (tx: Transaction, minContextSlot: number) => Promise<string>
-  signTransactions: (tx: Transaction) => Promise<Transaction>
+  /** Matches `@wallet-ui/react-native-web3js`'s real overload: an array in, an array out, ONE wallet prompt for the whole batch (`use-mobile-wallet.d.ts`). */
+  signTransactions: <K extends Transaction | Transaction[]>(tx: K) => Promise<K>
   getConnection: (owner: PublicKey) => Promise<Connection>
 }
 
@@ -390,13 +420,364 @@ async function runFlow(
   // === fund session's own ER fee balance (base-layer transfer — see session.ts header comment) ===
   const sessionBalance = await baseConn.getBalance(session.publicKey, 'confirmed')
   if (sessionBalance < SESSION_LAMPORTS / 2) {
-    appendLog(
-      `fund session ${await sendL1(owner, [sessionTopUpIx(owner, session.publicKey)], mwa.signTransactions)}`,
-    )
+    appendLog(`fund session ${await sendL1(owner, [sessionTopUpIx(owner, session.publicKey)], mwa.signTransactions)}`)
   } else {
     appendLog('session lamports: already funded, skipped')
   }
   setState('SessionSet')
+}
+
+/**
+ * `credit_deposit` alone (ER, owner-signed, unsponsored — not on the /sponsor
+ * whitelist and not meant to be: it moves the owner's own dUSDC into the
+ * pool, not a rent/fee cost fee_payer should ever front). Extracted out of
+ * the legacy `runFlow` above so the batched flow (which does NOT run this
+ * automatically — see file header) can still offer it as a standalone
+ * "Deposit (dev)" action; Task 10 replaces this with the real Deposit
+ * screen. Idempotent: a no-op if `free_margin` is already nonzero.
+ */
+async function runDevDeposit(
+  ctx: OnboardCtx,
+  mwa: Pick<Mwa, 'signTransactions' | 'getConnection'>,
+  appendLog: (s: string) => void,
+  setState: (s: OnboardState) => void,
+): Promise<void> {
+  const { owner, userAccount, pool, poolLive, ownerAta, poolAta } = ctx
+  const ownerTee = await mwa.getConnection(owner)
+  const coreEr = dexxerCoreProgram(ownerTee, owner)
+  const userAccountInfoEr = await ownerTee.getAccountInfo(userAccount, 'confirmed')
+  const freeMargin = userAccountInfoEr ? readUserAccountFreeMargin(userAccountInfoEr.data) : 0n
+  if (freeMargin !== 0n) {
+    appendLog('credit_deposit: free_margin already nonzero, skipped')
+    return
+  }
+  const ix = await coreEr.methods
+    .creditDeposit(new BN(DEPOSIT.toString()))
+    .accounts({ owner, userAccount, pool, poolLive, ownerAta, vaultAta: poolAta, tokenProgram: TOKEN_PROGRAM_ID })
+    .instruction()
+  appendLog(`credit_deposit ${await sendErOwner(ownerTee, owner, [ix], mwa.signTransactions)}`)
+  setState('Credited')
+}
+
+// --- Task 6 (week 4): batched onboarding — one signTransactions([...])
+// prompt for everything owner-signed L1/ER through SessionSet, with the two
+// L1 transactions sponsored by the relayer (fee_payer co-signs via
+// POST /sponsor — see app/src/lib/sponsor.ts and
+// services/relayer/src/sponsor.ts). See file header for the full design.
+
+interface BatchLeg {
+  /** Log/progress label — also `BatchProgress.step` while this leg is in flight. */
+  label: string
+  ixs: TransactionInstruction[]
+  conn: Connection
+  feePayer: PublicKey
+  /** L1 legs go through `/sponsor` (fee_payer co-signs); the ER leg and the session top-up don't — see file header. */
+  sponsor: boolean
+  /** `OnboardState` to report once this leg lands. */
+  onLanded: OnboardState[]
+}
+
+/**
+ * Inspects on-chain state (L1 + ER) and returns only the transaction legs
+ * still needed — an already-onboarded wallet gets back an empty array (zero
+ * wallet prompts). Fetches `ownerTee` unconditionally (one MWA
+ * `signMessages` prompt) since even a "what's left" check needs it to read
+ * ER-side permission/session state once delegation has happened.
+ */
+async function collectBatchLegs(
+  ctx: OnboardCtx,
+  mwa: Pick<Mwa, 'getConnection'>,
+  feePayerPubkey: PublicKey,
+  appendLog: (s: string) => void,
+): Promise<BatchLeg[]> {
+  const {
+    owner,
+    config,
+    mint,
+    market,
+    userAccount,
+    position,
+    disclosureQueue,
+    faucetPda,
+    mintAuth,
+    ownerAta,
+    session,
+    exitSalt,
+  } = ctx
+  const core = dexxerCoreProgram(baseConn, owner)
+  const legs: BatchLeg[] = []
+
+  // --- L1a: [createAta?] + faucet_init + init_user ---
+  const l1a: TransactionInstruction[] = []
+  const faucetInfo = await baseConn.getAccountInfo(faucetPda, 'confirmed')
+  if (!faucetInfo) {
+    const ataInfo = await baseConn.getAccountInfo(ownerAta, 'confirmed')
+    if (!ataInfo) l1a.push(createAssociatedTokenAccountIdempotentInstruction(owner, ownerAta, owner, mint))
+    l1a.push(
+      await core.methods
+        .faucetInit(new BN(DEPOSIT.toString()))
+        .accounts({
+          owner,
+          config,
+          faucet: faucetPda,
+          dusdcMint: mint,
+          mintAuth,
+          ownerAta,
+          systemProgram: SystemProgram.programId,
+          tokenProgram: TOKEN_PROGRAM_ID,
+        })
+        .instruction(),
+    )
+  } else {
+    appendLog('faucet_init: exists, skipped')
+  }
+  const userAccountInfo = await baseConn.getAccountInfo(userAccount, 'confirmed')
+  if (!userAccountInfo) {
+    l1a.push(
+      await core.methods
+        .initUser(Array.from(exitSalt))
+        .accounts({
+          owner,
+          config,
+          market,
+          userAccount,
+          position,
+          disclosureQueue,
+          systemProgram: SystemProgram.programId,
+        })
+        .instruction(),
+    )
+  } else {
+    appendLog('init_user: exists, skipped')
+  }
+  if (l1a.length > 0)
+    legs.push({
+      label: 'faucet+init_user',
+      ixs: l1a,
+      conn: baseConn,
+      feePayer: feePayerPubkey,
+      sponsor: true,
+      onLanded: ['Funded', 'Initialized'],
+    })
+
+  // --- L1b: delegateSpl + delegate_user ---
+  // `userAccountInfo` above is `null` both when the account doesn't exist
+  // yet (about to be created by L1a) and — irrelevantly here — when it does
+  // exist but isn't delegated; either way delegation is still pending.
+  const delegated = userAccountInfo !== null && userAccountInfo.owner.equals(DELEGATION_PROGRAM_ID)
+  const l1b: TransactionInstruction[] = []
+  if (!delegated) {
+    const delegateSplIxs = await delegateSpl(owner, mint, DEPOSIT, {
+      validator: ER_VALIDATOR,
+      initVaultIfMissing: false,
+      idempotent: false,
+    })
+    l1b.push(...delegateSplIxs)
+    const ut = delegationTriple(userAccount)
+    const pt = delegationTriple(position)
+    const dt = delegationTriple(disclosureQueue)
+    l1b.push(
+      await core.methods
+        .delegateUser()
+        .accounts({
+          owner,
+          config,
+          market,
+          bufferUserAccount: ut.buffer,
+          delegationRecordUserAccount: ut.record,
+          delegationMetadataUserAccount: ut.metadata,
+          userAccount,
+          bufferPosition: pt.buffer,
+          delegationRecordPosition: pt.record,
+          delegationMetadataPosition: pt.metadata,
+          position,
+          bufferDisclosureQueue: dt.buffer,
+          delegationRecordDisclosureQueue: dt.record,
+          delegationMetadataDisclosureQueue: dt.metadata,
+          disclosureQueue,
+          ownerProgram: DEXXER_CORE_PROGRAM_ID,
+          delegationProgram: DELEGATION_PROGRAM_ID,
+          systemProgram: SystemProgram.programId,
+        })
+        .instruction(),
+    )
+  } else {
+    appendLog('delegate: already delegated, skipped')
+  }
+  if (l1b.length > 0)
+    legs.push({
+      label: 'delegate',
+      ixs: l1b,
+      conn: baseConn,
+      feePayer: feePayerPubkey,
+      sponsor: true,
+      onLanded: ['Delegated'],
+    })
+
+  // --- Er: init_permissions + set_session (owner-paid, unsponsored — same as today) ---
+  const ownerTee = await mwa.getConnection(owner)
+  const coreEr = dexxerCoreProgram(ownerTee, owner)
+  const userPermission = permissionPdaFromAccount(userAccount)
+  const positionPermission = permissionPdaFromAccount(position)
+  const dqPermission = permissionPdaFromAccount(disclosureQueue)
+  const permAccounts = {
+    owner,
+    config,
+    market,
+    userAccount,
+    position,
+    disclosureQueue,
+    userPermission,
+    positionPermission,
+    dqPermission,
+    permissionProgram: PERMISSION_PROGRAM_ID,
+    ephemeralVault: EPHEMERAL_VAULT_ID,
+    magicProgram: MAGIC_PROGRAM_ID,
+  }
+  const er: TransactionInstruction[] = []
+  if (delegated) {
+    // Already delegated (a previous run got this far) — real ER state exists, check it.
+    const permInfo = await ownerTee.getAccountInfo(userPermission, 'confirmed')
+    if (!permInfo || !permInfo.owner.equals(PERMISSION_PROGRAM_ID)) {
+      er.push(await coreEr.methods.initPermissions().accounts(permAccounts).instruction())
+    } else {
+      appendLog('init_permissions: exists, skipped')
+    }
+    const userAccountInfoEr = await ownerTee.getAccountInfo(userAccount, 'confirmed')
+    const sessionKeyOnChain = userAccountInfoEr ? readUserAccountSessionKey(userAccountInfoEr.data) : PublicKey.default
+    if (!sessionKeyOnChain.equals(session.publicKey)) {
+      const expiry = Math.floor(Date.now() / 1000) + SESSION_EXPIRY_SECS
+      er.push(
+        await coreEr.methods
+          .setSession(session.publicKey, new BN(expiry), SESSION_ACTIONS)
+          .accounts(permAccounts)
+          .instruction(),
+      )
+    } else {
+      appendLog('set_session: already set to this device session key, skipped')
+    }
+  } else {
+    // Not delegated yet — the ER validator has nothing to read for these
+    // PDAs until L1b lands, so both steps are unconditionally needed once
+    // it does (this same batch's L1b, in the normal fresh-onboarding case).
+    er.push(await coreEr.methods.initPermissions().accounts(permAccounts).instruction())
+    const expiry = Math.floor(Date.now() / 1000) + SESSION_EXPIRY_SECS
+    er.push(
+      await coreEr.methods
+        .setSession(session.publicKey, new BN(expiry), SESSION_ACTIONS)
+        .accounts(permAccounts)
+        .instruction(),
+    )
+  }
+  if (er.length > 0)
+    legs.push({
+      label: 'permissions+session',
+      ixs: er,
+      conn: ownerTee,
+      feePayer: owner,
+      sponsor: false,
+      onLanded: ['Permissioned', 'SessionSet'],
+    })
+
+  // --- session fee top-up (L1, owner-funded, unsponsored — see session.ts header comment) ---
+  const sessionBalance = await baseConn.getBalance(session.publicKey, 'confirmed')
+  if (sessionBalance < SESSION_LAMPORTS / 2) {
+    legs.push({
+      label: 'session top-up',
+      ixs: [sessionTopUpIx(owner, session.publicKey)],
+      conn: baseConn,
+      feePayer: owner,
+      sponsor: false,
+      onLanded: [],
+    })
+  } else {
+    appendLog('session lamports: already funded, skipped')
+  }
+
+  return legs
+}
+
+/**
+ * Collects whatever's left (`collectBatchLegs`), signs every leg's
+ * transaction in ONE `mwa.signTransactions([...])` call, then submits each
+ * sequentially — L1 legs through `/sponsor` first (L1a before L1b: L1b's
+ * `delegate_user` needs L1a's `init_user` to have landed), then the ER leg,
+ * then the session top-up. `onProgress` reports `Collecting -> Signing ->
+ * Submitting(i/n) -> Done | Failed(step)` for the UI; `setState` still
+ * drives the coarse `OnboardState` the screen's progress bar already
+ * understands (each leg's `onLanded` states, in order).
+ */
+async function runBatchedOnboarding(
+  ctx: OnboardCtx,
+  mwa: Mwa,
+  appendLog: (s: string) => void,
+  setState: (s: OnboardState) => void,
+  onProgress: (p: BatchProgress) => void,
+): Promise<void> {
+  onProgress({ phase: 'Collecting', step: null, i: 0, n: 0 })
+  const configInfo = await baseConn.getAccountInfo(ctx.config, 'confirmed')
+  if (!configInfo) throw new Error('Config PDA not found — protocol not bootstrapped on this devnet deployment')
+  const feePayerPubkey = readConfigFeePayer(configInfo.data)
+
+  const legs = await collectBatchLegs(ctx, mwa, feePayerPubkey, appendLog)
+  if (legs.length === 0) {
+    appendLog('onboarding: nothing left to do')
+    onProgress({ phase: 'Done', step: null, i: 0, n: 0 })
+    return
+  }
+
+  const txs = await Promise.all(
+    legs.map(async (leg) => {
+      const tx = new Transaction().add(...leg.ixs)
+      tx.feePayer = leg.feePayer
+      tx.recentBlockhash = (await leg.conn.getLatestBlockhash()).blockhash
+      return tx
+    }),
+  )
+
+  onProgress({ phase: 'Signing', step: null, i: 0, n: legs.length })
+  let signed: Transaction[]
+  try {
+    signed = await mwa.signTransactions(txs)
+  } catch (e) {
+    onProgress({ phase: 'Failed', step: 'signing', i: 0, n: legs.length })
+    throw e
+  }
+
+  for (let i = 0; i < legs.length; i++) {
+    const leg = legs[i]
+    onProgress({ phase: 'Submitting', step: leg.label, i: i + 1, n: legs.length })
+    try {
+      let toSend = signed[i]
+      if (leg.sponsor) {
+        try {
+          toSend = await sponsorTx(toSend)
+        } catch (e) {
+          const msg = e instanceof SponsorError ? `sponsor rejected (${e.status}): ${e.message}` : errText(e)
+          throw new Error(`${leg.label}: ${msg}`)
+        }
+      }
+      const sig = await leg.conn.sendRawTransaction(toSend.serialize(), { skipPreflight: true })
+      await confirmOnConn(leg.conn, sig)
+      appendLog(`${leg.label} ${sig}`)
+      // `delegate_user`'s three accounts don't appear as delegated on L1
+      // immediately after the tx confirms — poll BEFORE the next leg (the ER
+      // leg reads these same PDAs on the ER validator, which only clones a
+      // delegated account after L1 shows it delegated), mirroring the
+      // legacy flow's ordering.
+      if (leg.label === 'delegate') {
+        await waitDelegated(ctx.userAccount, 'UserAccount', appendLog)
+        await waitDelegated(ctx.position, 'Position', appendLog)
+        await waitDelegated(ctx.disclosureQueue, 'DisclosureQueue', appendLog)
+      }
+    } catch (e) {
+      onProgress({ phase: 'Failed', step: leg.label, i: i + 1, n: legs.length })
+      throw e
+    }
+    for (const s of leg.onLanded) setState(s)
+  }
+
+  onProgress({ phase: 'Done', step: null, i: legs.length, n: legs.length })
 }
 
 /** Cheap, L1-only progress check — no ER auth prompt, safe to call on mount/owner change. */
@@ -425,10 +806,14 @@ export interface UseOnboarding {
   busy: boolean
   log: string[]
   error: string | null
+  /** Task 6: `Collecting -> Signing -> Submitting(i/n) -> Done | Failed(step)` — only meaningful while `LEGACY_ONBOARDING` is false. */
+  batchProgress: BatchProgress
   connectWallet: () => Promise<void>
   refresh: () => Promise<void>
   /** Runs onboarding forward from wherever it currently stands, all the way to `SessionSet` (or the first failure). */
   advance: () => Promise<void>
+  /** Task 6: standalone "Deposit (dev)" action — `credit_deposit` alone, not part of the batch. See `runDevDeposit`. */
+  runDeposit: () => Promise<void>
 }
 
 export function useOnboarding(): UseOnboarding {
@@ -439,8 +824,10 @@ export function useOnboarding(): UseOnboarding {
   const [log, setLog] = useState<string[]>([])
   const [error, setError] = useState<string | null>(null)
   const [sessionPubkey, setSessionPubkey] = useState<PublicKey | null>(null)
+  const [batchProgress, setBatchProgress] = useState<BatchProgress>(IDLE_BATCH_PROGRESS)
 
   const owner = account ? toPublicKey(account.address) : null
+  const mwa: Mwa = { signAndSendTransaction, signTransactions, getConnection }
 
   const appendLog = useCallback((s: string) => setLog((prev) => [...prev, s]), [])
 
@@ -472,6 +859,43 @@ export function useOnboarding(): UseOnboarding {
     }
   }, [owner])
 
+  const buildCtx = useCallback(async (o: PublicKey): Promise<OnboardCtx> => {
+    const config = pdas.config()
+    const configInfo = await baseConn.getAccountInfo(config, 'confirmed')
+    if (!configInfo) throw new Error('Config PDA not found — protocol not bootstrapped on this devnet deployment')
+    const mint = readConfigDusdcMint(configInfo.data)
+    const market = pdas.market()
+    const userAccount = pdas.userAccount(o)
+    const position = pdas.position(o, market)
+    const disclosureQueue = pdas.disclosureQueue(o)
+    const faucetPda = pdas.faucet(o)
+    const mintAuth = pdas.mintAuth()
+    const pool = pdas.pool(mint)
+    const poolLive = pdas.poolLive(mint)
+    const poolAta = pdas.poolAta(mint)
+    const ownerAta = getAssociatedTokenAddressSync(mint, o)
+    const session = await getOrCreateSessionKeypair(o)
+    setSessionPubkey(session.publicKey)
+    const exitSalt = await getOrCreateExitSalt(o)
+    return {
+      owner: o,
+      config,
+      mint,
+      market,
+      userAccount,
+      position,
+      disclosureQueue,
+      faucetPda,
+      mintAuth,
+      pool,
+      poolLive,
+      poolAta,
+      ownerAta,
+      session,
+      exitSalt,
+    }
+  }, [])
+
   const advance = useCallback(async () => {
     if (!owner) {
       await connectWallet()
@@ -480,48 +904,46 @@ export function useOnboarding(): UseOnboarding {
     setBusy(true)
     setError(null)
     try {
-      const config = pdas.config()
-      const configInfo = await baseConn.getAccountInfo(config, 'confirmed')
-      if (!configInfo) throw new Error('Config PDA not found — protocol not bootstrapped on this devnet deployment')
-      const mint = readConfigDusdcMint(configInfo.data)
-      const market = pdas.market()
-      const userAccount = pdas.userAccount(owner)
-      const position = pdas.position(owner, market)
-      const disclosureQueue = pdas.disclosureQueue(owner)
-      const faucetPda = pdas.faucet(owner)
-      const mintAuth = pdas.mintAuth()
-      const pool = pdas.pool(mint)
-      const poolLive = pdas.poolLive(mint)
-      const poolAta = pdas.poolAta(mint)
-      const ownerAta = getAssociatedTokenAddressSync(mint, owner)
-      const session = await getOrCreateSessionKeypair(owner)
-      setSessionPubkey(session.publicKey)
-      const exitSalt = await getOrCreateExitSalt(owner)
-
-      const ctx: OnboardCtx = {
-        owner,
-        config,
-        mint,
-        market,
-        userAccount,
-        position,
-        disclosureQueue,
-        faucetPda,
-        mintAuth,
-        pool,
-        poolLive,
-        poolAta,
-        ownerAta,
-        session,
-        exitSalt,
+      const ctx = await buildCtx(owner)
+      if (LEGACY_ONBOARDING) {
+        await runFlow(ctx, mwa, appendLog, setState)
+      } else {
+        await runBatchedOnboarding(ctx, mwa, appendLog, setState, setBatchProgress)
       }
-      await runFlow(ctx, { signAndSendTransaction, signTransactions, getConnection }, appendLog, setState)
     } catch (e) {
       setError(errText(e))
     } finally {
       setBusy(false)
     }
-  }, [owner, connectWallet, signAndSendTransaction, signTransactions, getConnection, appendLog])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [owner, connectWallet, buildCtx, appendLog, signAndSendTransaction, signTransactions, getConnection])
 
-  return { owner, session: sessionPubkey, state, busy, log, error, connectWallet, refresh, advance }
+  const runDeposit = useCallback(async () => {
+    if (!owner) return
+    setBusy(true)
+    setError(null)
+    try {
+      const ctx = await buildCtx(owner)
+      await runDevDeposit(ctx, mwa, appendLog, setState)
+    } catch (e) {
+      setError(errText(e))
+    } finally {
+      setBusy(false)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [owner, buildCtx, appendLog, signTransactions, getConnection])
+
+  return {
+    owner,
+    session: sessionPubkey,
+    state,
+    busy,
+    log,
+    error,
+    batchProgress,
+    connectWallet,
+    refresh,
+    advance,
+    runDeposit,
+  }
 }

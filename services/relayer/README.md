@@ -104,6 +104,34 @@ reach REST/WS clients as JSON **strings**. Candle `o/h/l/c` (SOL/USD price
 in 1e6 scale) and every `slot`/`ts`/`limit`/`nonce`-adjacent small integer
 stay plain JSON **numbers** — nowhere near 2^53.
 
+## Sponsor (Task 6)
+
+`SPONSOR_ENABLED=true` (needs `DATABASE_URL`) mounts `POST /sponsor` — the
+`fee_payer` key co-signs a whitelisted, already owner-signed onboarding
+transaction so the app can batch `faucet_init`/`init_user`/`delegateSpl`/
+`delegate_user` into one `signTransactions([...])` prompt. See
+`src/sponsor.ts`'s header comment for the exact whitelist (dexxer_core
+`{faucet_init, init_user, delegate_user}` by 8-byte discriminator, plus the
+three eSPL instructions `delegateSpl(..., {initVaultIfMissing:false,
+idempotent:false})` emits), the signature checks, and why `fee_payer`
+currently only ever fronts the flat network fee (not PDA rent — the
+program's `payer = owner` account constraints debit the owner's own
+balance regardless of who `tx.feePayer` is).
+
+```
+POST /sponsor
+{ "tx": "<base64 Transaction, owner already signed, tx.feePayer = fee_payer>" }
+-> 200 { "tx": "<base64, now also fee_payer-signed>" }
+-> 400 { "error": "<specific reason>" }   # not whitelisted / bad signature / budget exceeded / ...
+-> 429 { "error": "...", "retryAfterMs": N }  # one sponsor per owner per 60 min
+```
+
+The relayer never calls `sendRawTransaction` for a sponsored tx — the
+caller submits it themselves, same as every other owner-signed step in
+`useOnboarding.ts`. Rate limit + daily budget are tracked in Postgres
+(`migrations/002_sponsors.sql`'s `sponsors` table); `/healthz`'s `sponsor`
+field (`{ today_sol, count_today }`) reports the rolling 24h spend.
+
 ## Env vars
 
 | Var | Required | Notes |
@@ -115,7 +143,8 @@ stay plain JSON **numbers** — nowhere near 2^53.
 | `DATABASE_URL` | prod | Postgres connection string (Railway reference variable to the Postgres plugin); unset = no persistence, `/healthz`'s `db` reports `"error"` |
 | `CRANK_INTERVAL_MS` | no (default `1000`) | tick cadence |
 | `INDEXER_ENABLED` | no (default `false`) | Task 5: starts the public-data indexer (see above) — needs `DATABASE_URL`, disabled with a warning if it's unset |
-| `SPONSOR_ENABLED` | no (default `false`) | reserved for Task 6 |
+| `SPONSOR_ENABLED` | no (default `false`) | Task 6: starts `POST /sponsor` (see below) — needs `DATABASE_URL`, disabled with a warning if it's unset |
+| `SPONSOR_DAILY_SOL` | no (default `0.5`) | rolling 24h cap on sponsored lamports across all owners |
 
 Never commit key values. Encode a local keyfile for Railway with:
 

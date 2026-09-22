@@ -1,11 +1,18 @@
 // app/src/features/onboard/OnboardScreen.tsx
 //
-// Task 7: the private onboarding flow, driven by `useOnboarding()`. One
-// "Continue" button drives the whole sequence — faucet -> init_user ->
-// delegate -> credit_deposit -> init_permissions -> set_session -> session
-// top-up (see useOnboarding.ts header) — each step idempotent, so tapping it
-// again after a failure (network blip, a declined MWA prompt) resumes from
-// wherever it broke instead of restarting.
+// The private onboarding flow, driven by `useOnboarding()`. One "Continue"
+// button drives the whole sequence — [createAta] + faucet_init + init_user
+// + delegateSpl + delegate_user + init_permissions + set_session + session
+// top-up, collected into up to four transactions and signed in ONE wallet
+// prompt (Task 6, week 4 — see useOnboarding.ts header); `batchProgress`
+// below surfaces `Collecting -> Signing -> Submitting(i/n) -> Done |
+// Failed(step)`. Each step is idempotent, so tapping "Continue" again after
+// a failure (network blip, a declined MWA prompt, a relayer rejection)
+// resumes from wherever it broke instead of restarting.
+//
+// `credit_deposit` is NOT part of the batch (Task 10 owns the real Deposit
+// screen) — the "Deposit (dev)" button below runs it standalone, same as
+// before, for anyone testing past onboarding without waiting for Task 10.
 import { useEffect } from 'react'
 import { Button, ScrollView, Text, View } from 'react-native'
 import { AppPage } from '@/components/app-page'
@@ -39,7 +46,8 @@ function progressFraction(state: OnboardState): number {
 }
 
 export function OnboardScreen() {
-  const { owner, session, state, busy, log, error, connectWallet, refresh, advance } = useOnboarding()
+  const { owner, session, state, busy, log, error, batchProgress, connectWallet, refresh, advance, runDeposit } =
+    useOnboarding()
 
   useEffect(() => {
     void refresh()
@@ -81,6 +89,18 @@ export function OnboardScreen() {
           </View>
         </View>
 
+        {owner && batchProgress.phase !== 'Idle' ? (
+          <View style={{ gap: 4 }}>
+            <Text style={{ fontWeight: '600' }}>Batch</Text>
+            <Text>
+              {batchProgress.phase}
+              {batchProgress.phase === 'Submitting' || batchProgress.phase === 'Failed'
+                ? ` — ${batchProgress.step ?? ''} (${batchProgress.i}/${batchProgress.n})`
+                : ''}
+            </Text>
+          </View>
+        ) : null}
+
         {error ? (
           <Text selectable style={{ color: '#ef4444' }}>
             {error}
@@ -96,6 +116,8 @@ export function OnboardScreen() {
             disabled={busy || done}
           />
         )}
+
+        {owner ? <Button title="Deposit (dev)" onPress={() => void runDeposit()} disabled={busy} /> : null}
 
         <View style={{ gap: 4 }}>
           <Text style={{ fontWeight: '600' }}>Log</Text>
