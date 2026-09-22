@@ -563,6 +563,100 @@ SOL + два top-up'и `devnet-admin` по +0.1 SOL (
 **base**) — необхідні, бо ruling-8-пробник і повторні прогони 06/07 з'їли поріг `requireFunded`
 0.3 SOL на `devnet-admin`.
 
+### Раунд 2 (після 8b/8c)
+
+Редеплой + повторний прогін 06/07/08 на HEAD `a428ecd` (включає 8b — хеш-сідовані `Commitment`/
+`Disclosure` PDA — і 8c — явний `exit()` у `undelegate_user` до CPI, що змінює власника). Свіжі
+трейдери в обох скриптах (нові `run id`), жодних правок коду цього раунду, крім
+`tests/er/devnet/08-undelegate.ts`'s fallback-гілки (додано `getTransaction`
+json+jsonParsed/`getSignatureStatuses` на випадок повторного FAIL — не знадобилось, `undelegate_user`
+приземлився).
+
+**Редеплой.** Новий бінарник **1 044 728 B** — **менший** за поточну ємність на базі (1 048 272 B),
+тож **extend не знадобився**. IDL звірено: `cmp target/idl/dexxer_core.json
+app/src/idl/dexxer_core.json` — байт-у-байт ідентичні. Усі підписи нижче — **base**.
+
+| крок | підпис (base) | деталі | payer до → після |
+|---|---|---|---|
+| `solana program deploy … --url https://rpc.magicblock.app/devnet --use-rpc` (fallback, з першої спроби) | `473MWJ5KfQtJHMzUvPeFERGQDuhRqaGmDUYeS7HPPga4KuvuLXSetsd4tupt6JyvGPXCyDJfh5yihFsbmKJRqUTu` | upgrade, внутрішній буфер закрито атомарно | 6.228740713 → 6.223560713 |
+
+Жодних завислих буферів (`solana program show --buffers --buffer-authority <payer> -u devnet` —
+порожньо). `solana program show`: `Data Length: 1048272 bytes` (незмінно, extend не робився),
+`Balance: 5.3261006 SOL`. **Чиста вартість: 0.005180000 SOL.**
+
+**M-B round 2 (`06-commitment-reveal.ts`) — PASS, з першої спроби, без жодної колізії nonce.**
+Трейдер `Dxssa29ZyNPzDcV6HGBWLstqMScFBCgtd37TkY3Yf9Ni` (run `1790056883639`). Онбординг — **base**;
+торгові/committer-дії — **ER**.
+
+| крок | шар | підпис |
+|---|---|---|
+| open #1 | **ER** | `5GQstyGameF3NLbV7LZiKPjnBziTJkzRCXdE5a86MFxfsnhehBrd9Lo8prSKi6b9qKzp3vbSf4JzswySmWMMATgU` |
+| close #1 (nonce 1, hash-сідований) | **ER** | `5PZTfEEvCxo7frcCtK3FgfG1t1aZs1qxEzKGMVAh5UUk5Xcx5HYU6b8FsYiSVaRohTM4B78TtEMg7G8N9qH5rZf8` |
+| commit_aggregate(position) | **ER** | `4W8jCtTA14u9wRkoo1E4G5V2xRJqVgJQuJKycsWPTTx8meRtNhCe1CFPchrNG3Zt1VERPU8SPi2DEPJ2EQFR9LtD` — Commitment[hash] на base за **1.4 с**, хеш збігся з першої спроби |
+| open #2 (друга позиція) | **ER** | `5dftk8M1qkJUkEcZ38xa4wGZXfAMtk5DybcKY1KRTVDGCrd6QPoN1zoPy4hnoPoCHAygAKa6u3VsDT6UDnvPnRDh` |
+| close #2 | **ER** | `2cqi169EW46eavRtgxqX4BgSyoMkYimJE8MGx2vDwswZGLXZCnyKLJGBsKc6MTbjJ1xkBvbBhSipGBt7Zz3V6Yjg` |
+| commit_aggregate(dq, reveal) | **ER** | `5nXztCkj267WzNhcSaeXwiH5auyNK5CoroMgQUZTq1mp99KtPur6DQzN1wME9mygTCPmei1k4Eok8SchYkhmE6N` — Disclosure[hash] на base за **3.0 с** |
+
+Усі п'ять PASS-рядків підтверджено: `M-B commitment landed`, `hash matches`, `second position
+opened`, `disclosure landed`, `hash verified on-chain`. **Жодного retry-циклу — колізія nonce з
+раунду 1 більше не відтворюється** (8b підтверджено на реальному прогоні, не лише за задумом коду).
+
+**M-E round 2 (`07-balances-root.ts`) — PASS.** Legacy-скіп лишено як inline-варіант у самому
+`07-balances-root.ts` (decode + PDA-звірка), НЕ імпорт `runRootCycle` з
+`scripts/crank-fallback/disclosure.ts` (та сама причина, що в раунді 1 — уникнути, щоб `tests/er`'s
+`tsc --noEmit` тягнув граф сусіднього проєкту; обидва варіанти тепер фільтрують той самий набір,
+crank-скрипт — за довжиною байтів через `coder.accounts.size`, `07` — спробою декоду + звіркою PDA).
+`UserAccount`-скан: **13** знайдено (12 + новий трейдер round 2), **5** сучасного layout, **8**
+застарілих пропущено (той самий набір, що й раунд 1 — жодного нового legacy-акаунта не додалось).
+Цикл 1: `filled=5`, `root_slot=330306271`, відомий трейдер (той самий, що в M-B round 2) знайдений на
+індексі 1. Цикл 2: `root_slot=330307170`, **64/64 листків змінились**. **12× `commit_aggregate`**:
+escrow ER-баланс `198247040 → 195847040` лампортів, **рівно −200 000 щоразу, 12/12** — **вдвічі
+дорожче за раунд 1** (там було −100 000/коміт); не досліджено, чому саме вдвічі (можливі кандидати:
+інший нонс-діапазон ескроу після стількох комітів сьогодні, чи залежність вартості від кількості
+листків/розміру `BalancesRoot`-payload — не розрізнено цим вимірюванням, як і в раунді 1).
+
+**M-A round 2 (`08-undelegate.ts`) — PASS. `undelegate_user` приземлився.** Закриття лишкової
+позиції #2 з 06 (nonce hash-сідований, збігся з першої спроби, **ER**
+`2dD9AnrZg7JJ3MqChx7MiKoUZo94vGMtqX2UU5s8fkqdbY3wexKDshgdeAZvL1pxZLuBr2jg5wUXPs8pQkATPQNU`), дренаж
+черги (**ER** `3PgmGnjdj7m4Dgg85w11D83NjT4VFen8vw9U45NnN9qCLLZrb2HbQQhxB35e6hPoNiWq3wSHamdeY6fDzBPiezz4`),
+`withdraw(all=999734702)` (**ER** `5hzFowC1Eq8v8FL39bLTjbvUhAmzeaT7hDXFYQcN8iLHuGmbpr3guwsvhRH2GPnPxfV25nq7txR24FHTsa5LFKsE`)
+— усе PASS. `undelegate_user` (owner-TEE, **ER**) сам:
+sig **ER** `3422sohxAKSVmsBwiNU2bnP4cwCsh9uVeiDnE4v6dqArgvg2m9rcuwEwc8DincruURianTrv8tojNGbephdfJt92`
+— **успіх, без жодної помилки** (порівняно з двома `ExternalAccountDataModified` у раунді 1). Base
+owner-flip підтверджено полінгом за **4.4 с** (з ліміту 180 с). Скраб перевірено на **base**:
+`session_key==default`, `exit_salt==0`, `last_withdraw_slot==0`, `DisclosureQueue.len==0`,
+`Position.state==Empty`. Незалежно перевірено прямим `solana account`-читанням (не лише скриптом):
+
+| акаунт | адреса | Owner (base) |
+|---|---|---|
+| Position | `FT4un2Gn4hM2axgERDFvGKKmPHxqwxNuYbs1gNk8pFNv` | `G2okX5Bae4CxfK8vzso1Ecc96QUv7E3P4YvxaZnaYXoV` |
+| DisclosureQueue | `3hqcpdMX1vSg2LN8bEAuNPFQ7dWQyhnFQXmufQbNzc1N` | `G2okX5Bae4CxfK8vzso1Ecc96QUv7E3P4YvxaZnaYXoV` |
+| UserAccount | `Gi4yXLTMzGuc2U5s2bapyou3MWVvCW7w7HM6rkesTzwM` | `G2okX5Bae4CxfK8vzso1Ecc96QUv7E3P4YvxaZnaYXoV` |
+
+Усі три — `dexxer_core`, не `DELeGGvXpWV2fqJUhqcF5ZSYMS4JTLjteaAMARRSaeSh` (Delegation Program).
+**M-A confirmed on dexxer_core.** 8c's гіпотеза (Anchor's автоматичний post-handler `exit()`
+переписував скрабнуті байти ПІСЛЯ того, як `commit_and_undelegate` уже змінив ефективного власника,
+трапляючи `ExternalAccountDataModified`) підтверджена практично: явний ранній `exit()` для
+`user_account`/`position`/`dq` до CPI повністю усунув помилку на реальному devnet-tee, з першої
+спроби після фіксу.
+
+**Гаунтлет раунду 2:** `npx tsc --noEmit` чисто в `tests/er`, `scripts`, `app`. Rust не змінювався
+цього раунду (лише fallback-логування у `08-undelegate.ts`).
+
+**Баланси після раунду 2:**
+
+| ідентичність | після раунду 1 (SOL) | після раунду 2 (SOL) | дельта |
+|---|---|---|---|
+| `payer` | 5.228740713 | 6.123555713 | payer профінансовано користувачем ззовні до 6.228740713 перед раундом 2 (не моя дія); з цього старту раунд 2 витратив редеплой 0.005180000 SOL + один топ-ап `devnet-admin` +0.1 SOL → 6.123555713 |
+| `devnet-admin` | 0.35488156 | 0.40487656 | +0.05 (нетто: +0.1 топ-ап від payer − ~0.05 власних витрат раунду, зокрема фандинг нового трейдера 0.05 SOL) |
+| `devnet-fee-payer` | 0.25 | 0.25 | 0 |
+| `devnet-crank` | 0.1 | 0.1 | 0 |
+| трейдер `Dxssa29ZyNPzDcV6HGBWLstqMScFBCgtd37TkY3Yf9Ni` (06/08 round 2) | — (не існував) | 0.033108688 | +0.033108688 (з 0.05 фандингу) |
+
+Топ-ап `devnet-admin` раунду 2: +0.1 SOL, sig **base**
+`5H1pARUesMqsrDuCVZbTCNf2rvMo6aPeHXrrNRvjPKfcePXVkizV9Yrs9RzfvVzVZiq1FXCvLGcYQyFbntfL3FMF` (перед
+07, поріг `requireFunded` 0.3 SOL опинився впритул).
+
 ### Файли
 
 - Create: `tests/er/devnet/06-commitment-reveal.ts`, `07-balances-root.ts`, `08-undelegate.ts`.
@@ -570,7 +664,11 @@ SOL + два top-up'и `devnet-admin` по +0.1 SOL (
   `tests/er/devnet/03-commit-cycle.ts` (застарілий doc-коментар "лише Pool комітиться" →
   "Pool і BalancesRoot"), `tests/er/devnet/07-balances-root.ts` (fix round 1: doc-коментар
   "7 of 12" → "8 of 12", звірено з реальним логом прогону), цей файл (§Task 8).
-- Жодних змін у `programs/` — M-C не перевимірювався на реальній формі, рулінг 8 не зажадав Rust-шляху.
+- Раунд 2: Modify `tests/er/devnet/08-undelegate.ts` (fallback-гілка: `getTransaction`
+  json+jsonParsed/`getSignatureStatuses` на випадок повторного FAIL — не знадобилось).
+- Жодних змін у `programs/` цією задачею напряму — 8b/8c (рулінги 9/10) прийшли окремими комітами
+  (`9eb22e8`, `c756c04`), уже review-схвалені; Task 8 round 2 лише редеплоїв і перевірив їх на
+  реальному devnet.
 
 Повний звіт (кожна команда, вивід, self-review, занепокоєння) —
 `.superpowers/sdd/2026-09-22-week3-disclosure-root-exit/task-8-report.md`.

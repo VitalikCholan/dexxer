@@ -277,6 +277,38 @@ async function main() {
     console.log("Position owner:", posInfo?.owner.toBase58() ?? "null");
     console.log("DisclosureQueue owner:", dqInfo?.owner.toBase58() ?? "null");
     console.log("sigs:", JSON.stringify(sigs, null, 2));
+    // Round 2 (fix round 2 requirement): if undelegate_user still fails,
+    // capture the ER-side transaction directly (json + jsonParsed) plus
+    // getSignatureStatuses, rather than only the confirm error — the fuller
+    // evidence a follow-up investigation needs.
+    console.log("\n=== capturing ER tx evidence for undelegate_user (sig:", sigs.undelegateUser, ") ===");
+    try {
+      const txJson = await ownerConn.getTransaction(sigs.undelegateUser, { commitment: "confirmed", maxSupportedTransactionVersion: 0 });
+      console.log("getTransaction (default/json):", JSON.stringify(txJson, null, 2));
+    } catch (e) {
+      console.log("getTransaction (default/json) failed:", String(e));
+    }
+    try {
+      // web3.js Connection doesn't expose an encoding param directly on
+      // getTransaction; hit the ER RPC's jsonParsed encoding via a raw call.
+      const raw = await fetch(ownerConn.rpcEndpoint, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          jsonrpc: "2.0", id: 1, method: "getTransaction",
+          params: [sigs.undelegateUser, { commitment: "confirmed", maxSupportedTransactionVersion: 0, encoding: "jsonParsed" }],
+        }),
+      });
+      console.log("getTransaction (jsonParsed):", JSON.stringify(await raw.json(), null, 2));
+    } catch (e) {
+      console.log("getTransaction (jsonParsed) failed:", String(e));
+    }
+    try {
+      const statuses = await ownerConn.getSignatureStatuses([sigs.undelegateUser]);
+      console.log("getSignatureStatuses:", JSON.stringify(statuses, null, 2));
+    } catch (e) {
+      console.log("getSignatureStatuses failed:", String(e));
+    }
     process.exit(1);
   }
 
