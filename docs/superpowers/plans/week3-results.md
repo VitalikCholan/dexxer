@@ -1,11 +1,14 @@
 # Тиждень 3 — результати
 
 13F-розкриття, `BalancesRoot`, вихід (`undelegate_user`). Гілка `week3-disclosure-root-exit`,
-HEAD на старті `1351b75`. Документ веде той самий формат, що й `week2-results.md`: виміряний
+база `53ae985` (week 2 фінал). Документ веде той самий формат, що й `week2-results.md`: виміряний
 підсумок для контролера й спеки, не заміна власних task-звітів
-(`.superpowers/sdd/2026-09-22-week3-disclosure-root-exit/task-N-report.md`).
+(`.superpowers/sdd/2026-09-22-week3-disclosure-root-exit/task-N-report.md`). Задачі 0 і 2–10 нижче —
+короткі виміряні підсумки (комміти, гаунтлет, ключові знахідки); Задача 1 (виміри M-A/M-C/M-D на
+спайках) і Задача 8 (редеплой + devnet M-B/M-E/M-A, два раунди) — з повними таблицями, бо саме вони
+несуть цифри, на які спирається решта тижня.
 
-Нижче — Task 1: виміри M-A, M-C, M-D на спайках (`spikes/01-private-counter-tee`,
+Нижче — Task 0 (стан/seeds/помилки), потім Task 1: виміри M-A, M-C, M-D на спайках (`spikes/01-private-counter-tee`,
 `spikes/06-magic-action`, `spikes/05-crank-tee`), реальні транзакції на Solana devnet
 (`https://rpc.magicblock.app/devnet`) і TEE-ролапі (`https://devnet-tee.magicblock.app`).
 Запуск: `export PATH="$HOME/.nvm/versions/node/v24.18.0/bin:$PATH"`, потім з `spikes/`:
@@ -15,6 +18,29 @@ HEAD на старті `1351b75`. Документ веде той самий ф
 деплою, див. fix round 1), `npx tsx 05-crank-tee/w3-md.ts`; або оркестратор
 `tests/er/devnet/w3-measure.ts` (`npm run devnet:w3measure` у `tests/er/`, M-A + M-C; M-D — лише
 з `RUN_MD=1`, бо спайк 05 треба задеплоїти заново — див. §M-D нижче).
+
+## Task 0: Стан, seeds, помилки, `exit_salt` в `init_user`
+
+Комміт `1351b75`. `state/mod.rs`: `COMMIT_SEED`/`DISCLOSURE_SEED`/`BALANCES_ROOT_SEED`/`ROOT_LEAVES=64`/
+`ROOT_BATCH=16`/`MAX_ACTIONS_PER_COMMIT=4`/`ACTION_ESCROW_INDEX=255`. `UserAccount.exit_salt: [u8;32]`.
+Новий `state/balances_root.rs` (`BalancesRoot`, `leaf()`/`pad()` — keccak256, без нової залежності).
+`DisclosureCommitment` перейменовано/переформовано в `Commitment { version, hash, slot, nonce, bump }`;
+`Disclosure` отримав `version`/`bump`; новий `DisclosureArgs` + `commitment_hash(args, salt)`. 9 нових
+кодів помилок `6031`–`6039`, строго в кінець. `init_user(exit_salt: [u8;32])` — усі клієнтські виклики
+знайдено й оновлено (`tests/litesvm/src/ixs.rs`, `tests/er/lib/trader.ts`,
+`tests/er/devnet/{01-onboard-private,05-crank-liquidation}.ts`, `app/src/features/onboard/useOnboarding.ts`
++ новий `app/src/lib/session.ts::getOrCreateExitSalt`).
+
+**Реальна регресія, знайдена й виправлена поза брифом:** додавання 32 байтів до `UserAccount` зіштовхнуло
+`Trade::try_accounts`'s SBF-стек-фрейм на 8 байтів понад ліміт 4096 (8 із 9 `crank.rs`-тестів падали
+`ProgramFailedToComplete`) — виправлено бокс'уванням `user_account` у `instructions/trade.rs`'s `Trade`
+(той самий патерн, що вже застосований до `Position`).
+
+Гаунтлет: `cargo test -p dexxer_core` **49/49** (46+3 нових); `anchor build` чисто (крім латентного
+попередження на `BalancesRoot::try_deserialize_unchecked`, +24 B понад ліміт — жодна інструкція його ще
+не використовує, прапорцем передано в Task 5, де й підтвердилось — див. рулінг 5); LiteSVM **39/39**;
+`program_autofixer` чисто на всіх 8 змінених файлах; `tsc --noEmit` чисто в `tests/er`/`scripts`/`app`
+(після ресинку IDL); `cargo fmt`/`clippy` чисто. Повний звіт — `task-0-report.md`.
 
 ## Task 1: Виміри M-A, M-C, M-D на спайках (devnet)
 
@@ -358,6 +384,111 @@ self-reschedule-CPI не використовувати (підтверджен�
 з новим `devnet/w3-measure.ts`. `mcp__solana-mcp-server__program_autofixer` на всіх трьох
 `lib.rs`-файлах (канонічний стан, framework `anchor`): **0 issues, 0 suggestions на кожному**.
 
+## Task 2: `write_commitment`/`write_disclosure` — L1 `#[action]`-інструкції
+
+Комміт `2360638` + fix round 1 `26c605d`. `instructions/disclosure.rs` (новий): `WriteCommitment`/
+`WriteDisclosure`, змодельовані на перевіреному спайку `spikes/06-magic-action`'s `UpdateLeaderboard` —
+`source_program` (`address = crate::ID`), `escrow_auth` (== `config.fee_payer`), `escrow` (`mut, signer`,
+Magic escrow PDA) — усі три гейти на `InvalidActionSigner`. `write_commitment` пише `Commitment`;
+`write_disclosure` звіряє `commitment_hash(&args, &salt) == commitment.hash` (`BadDisclosureHash`
+інакше), пише `Disclosure { owner: Pubkey::default(), ... }`.
+
+Оригінальні негативні тести асертували `PrivilegeEscalation` (CPI-рівневий збій `init`'s
+`system_program::create_account`, не сам констрейнт `escrow`-підписанта) — ревʼю знайшло, що
+пре-фандований target PDA обходить саме цей шлях (Anchor'ів `init` деградує до `allocate`+`assign`,
+жодного `Transfer` CPI). Fix round 1 додав два тести на пре-фандований PDA, які прямо доводять
+`InvalidActionSigner` (6024) як фінальний гейт. LiteSVM **41 → 43**. Повний звіт — `task-2-report.md`.
+
+## Task 3: `commit_aggregate` емітує `write_commitment`/`write_disclosure`
+
+Комміт `2085288` + fix round 1 `5e4ee42`. Нові чисті хелпери `pending_commitment(&Position)`/
+`due_reveals(&mut DisclosureQueue, slot, max)`. `commit_aggregate` тепер ітерує
+`ctx.remaining_accounts`: `Position` із `Closed && !commitment_written` → дія `write_commitment`;
+`DisclosureQueue` із due-записами → дії `write_disclosure` (через `due_reveals`, спільний бюджет
+`MAX_ACTIONS_PER_COMMIT` на обидва види). **Стек-фікс:** `#[inline(never)] fn
+process_position_candidate`/`process_disclosure_queue_candidate` — бокс'ування полів `Accounts`-структури
+(як у `trade.rs`) тут **не допомогло** (переповнення було у самій функції `commit_aggregate`, не в
+Anchor-згенерованому `try_accounts`); винесення великих локальних змінних (`Position` до 400 B,
+`DisclosureQueue` до 1300 B) в окремі фрейми — допомогло.
+
+Fix round 1 (ревʼю: нуль покриття шляху `DisclosureQueue`/`due_reveals`) додав
+`tests/litesvm/tests/commit_actions.rs` (4 тести: due-запис вискакує; ще-не-due лишається байт-у-байт;
+частковий pop зберігає порядок; повторний коміт на вже записаній позиції — no-op). LiteSVM
+**46 → 55** (з урахуванням Task 4's `mark_committed`-тестів, що приземлились паралельно — див. нижче).
+Знахідка (рулінг 7): `TooManyActions` спрацьовує лише на `Position`-шляху; `DisclosureQueue`-шлях сам
+кепить бюджет дій через параметр `room`, без помилки. Повний звіт — `task-3-report.md`.
+
+## Task 4: `mark_committed`
+
+Комміти `1c8390e` (рефактор — єдині білдери `write_commitment`/`write_disclosure` з параметром
+`escrow_auth`, згортає Task 2's дубльовані `*_isolated_escrow`-хелпери) + `1f6bd90` (фіча).
+`MarkCommitted`: `crank: Signer` (== `config.crank`), `position`/`dq` за seeds. Порядок (рулінг 7):
+валідація (`Closed`→`NotClosed`, `commitment_written`→`CommitmentNotWritten`) → push у кільце
+`DisclosureQueue` (`QueueFull` інакше) → `Position` скидається в `Empty`. 5 нових тестів: перенесення й
+звільнення позиції, гейт `commitment_written`, лише crank, друга позиція тим самим гаманцем, повна
+черга. LiteSVM **51/55** (реалізатора перервав rate-limit до звіту; контролер прогнав гаунтлет на
+HEAD `1f6bd90` — 49 unit, autofixer/fmt/clippy чисто, `tsc` ×3 чисто). Повний звіт — `task-4-report.md`.
+
+## Task 5: `BalancesRoot` — init/delegate (admin) + `set_balances_root` (crank)
+
+Комміт `6a1a145`. **Рулінг 5, обовʼязкова проба:** спершу реалізовано брифовим Borsh-варіантом
+(`#[account] #[derive(InitSpace)]`, `Account<'info, BalancesRoot>`) — `anchor build` одразу назвав дві
+функції в stack-offset виводі (`InitBalancesRoot::try_accounts` +912 B, dispatch-хендлер +672 B), і
+LiteSVM-проба (4 тести з `tests/litesvm/tests/root.rs`) **зафолилась**: `ProgramFailedToComplete`,
+"Access violation in stack frame 3". Обидва тригери рулінгу 5 незалежно спрацювали → конверсія в
+`#[account(zero_copy)] #[repr(C)]` була обовʼязковою, не опційною.
+
+Фінальний лейаут (без padding holes для `bytemuck::Pod`): `root_slot:u64 | leaves:[[u8;32];64] |
+version:u8 | filled:u8 | bump:u8 | _pad:[u8;5]` = 2064 B (`BalancesRoot::SIZE = 2072` з дискримінатором).
+Доступ через `AccountLoader`, не `Account`. `bytemuck = "=1.25.2"` додано прямою залежністю
+(`dexxer_core/Cargo.toml`) — потрібен macro-згенерованому `unsafe impl Pod/Zeroable` резолвитись за
+іменем у власному крейті. `init_balances_root`/`delegate_balances_root` — той самий `AdminConfig`-патерн,
+що `init_fee_escrow`/`delegate_fee_escrow`. `set_balances_root(begin, finalize, padding_seed)`: кожен
+`remaining_accounts`-запис звіряється на власність програми, дискримінатор (`try_deserialize` фейлиться
+на не-`UserAccount`) і PDA-деривацію — три незалежні способи відхилити підроблений/чужий акаунт.
+
+TDD: RED — 4/4 зафолились на Borsh-варіанті ("Access violation in stack frame 3"); GREEN — 4/4 PASS на
+zero_copy. Гаунтлет: `anchor build` чисто (жоден `dexxer_core`-стек-офсет), `cargo test -p dexxer_core`
+49/49 (без нових — логіка вже покрита Task 0's тестами), LiteSVM **55 → 59** (+4, `root.rs`),
+`program_autofixer` чисто на 5 змінених файлах, `tsc` ×3 чисто (IDL: 3 нові інструкції +
+`balances_root`/`delegate_balances_root`). `delegate_balances_root` НЕ виконується на LiteSVM (немає
+делегейшн-програми — той самий стан, що й `delegate_fee_escrow`/`delegate_market`/`delegate_pool`).
+Повний звіт — `task-5-report.md`.
+
+## Task 6: `undelegate_user`
+
+Комміт `b57a9d7` + fix round 1 `1241a2c`. `UndelegateUser`: `owner` (mut signer), `user_account`/
+`position`/`dq` (`has_one = owner`), три permission-PDA (повний seeds-констрейнт, як `SetSession`),
+`ephemeral_vault`/`permission_program`, `Withdraw`'s fee-vault акаунти. `close_permission_if_present`
+(`#[inline(never)]`) дзеркалить `set_session`'s `UpdateEphemeralPermissionCpi`-цикл, але
+`CloseEphemeralPermissionCpi`. `undelegate_user`: гейти `HasOpenPosition`/`QueueNotEmpty`/`BalanceNotZero`
+→ скраб `UserAccount`/`DisclosureQueue` → закриття трьох permission → `commit_and_undelegate` (лише коли
+`magic_program.executable` — LiteSVM пропускає CPI, як і `withdraw`/`commit_aggregate`).
+
+Fix round 1 (ревʼю, Important ×2): (1) `last_withdraw_slot` не скрабався — додано, RED/GREEN
+підтверджено окремим тестом через реальний `withdraw()`; (2) відсутній тест на `Closed`-але-ще-не-
+`mark_committed` позицію — додано `undelegate_rejected_with_closed_unmarked_position`. LiteSVM
+**59 → 63 → 64** (гейти ×3 + скраб-асерти, потім +1 фікс-раунд). Повний звіт — `task-6-report.md`.
+
+## Task 7: Crank-цикли розкриття/root на 5-хв коміті `Pool`; bootstrap `BalancesRoot`/action-escrow
+
+Комміт `03823ca` + fix round 1 `fd52c70`. Golden vectors (рулінг 6) спершу в Rust
+(`commitment_hash_golden_vector`, `leaf_and_pad_golden_vectors`), потім у TS
+(`tests/er/lib/program.ts`'s `commitmentHash`/`leaf`/`pad` через `@noble/hashes/sha3`) —
+`npm run selftest:hashes` асертує той самий hex. `tests/er/lib/admin.ts`: `initAndDelegateBalancesRoot`,
+`topUpActionEscrow` (виявлено: `createTopUpEscrowInstruction` — 4-аргументна на встановленій версії
+SDK, не 3, як у брифі — `payer` окремо від `escrowAuthority`). Новий `scripts/crank-fallback/disclosure.ts`:
+`runRootCycle`/`runDisclosureCycle`; кандидат-евристика — до 4 `Position` спершу (кожна коштує рівно
+одну дію), потім щонайбільше один `DisclosureQueue` якщо лишилось місце (програма сама кепить його
+внесок через `room`).
+
+Fix round 1 (Critical): `commit_aggregate` викликався лише за наявності кандидатів — ламало
+фіксований-інтервал коміт `Pool`+`BalancesRoot` у тихий цикл. Виправлено — виклик щоцикл безумовно,
+`remaining_accounts` просто порожній. Разом Important-фікс — застарілий `03-commit-cycle.ts` не мав
+акаунта `balances_root`, доданий. Гаунтлет: `cargo test -p dexxer_core` **49 → 51** (два golden-vector
+тести); `tsc` ×3 чисто; `selftest:hashes` 3/3; LiteSVM без змін (жодна нова LiteSVM-логіка). Повний
+звіт — `task-7-report.md`.
+
 ## Task 8: Редеплой + devnet-скрипти 06/07/08 (M-B, M-E)
 
 Повний звіт: `.superpowers/sdd/2026-09-22-week3-disclosure-root-exit/task-8-report.md`. Нижче —
@@ -601,6 +732,11 @@ app/src/idl/dexxer_core.json` — байт-у-байт ідентичні. Ус�
 opened`, `disclosure landed`, `hash verified on-chain`. **Жодного retry-циклу — колізія nonce з
 раунду 1 більше не відтворюється** (8b підтверджено на реальному прогоні, не лише за задумом коду).
 
+**Реальні акаунти цього раунду (Task 11, контролерська друга ревʼю-нотатка, 22.09.2026):**
+`Commitment` `2iznrHqkFnsyCr8XkKpt6tbpM4QBNxf3Mt1fEdnv6Wnc` (58 B); `Disclosure` — 140 B,
+pubkey не зафіксовано у звіті (не знайдено в `task-8-report.md`'s фіксі раунду 2 ні в жодному
+іншому task-8-звіті — не вгадується).
+
 **M-E round 2 (`07-balances-root.ts`) — PASS.** Legacy-скіп лишено як inline-варіант у самому
 `07-balances-root.ts` (decode + PDA-звірка), НЕ імпорт `runRootCycle` з
 `scripts/crank-fallback/disclosure.ts` (та сама причина, що в раунді 1 — уникнути, щоб `tests/er`'s
@@ -611,9 +747,14 @@ crank-скрипт — за довжиною байтів через `coder.acco
 Цикл 1: `filled=5`, `root_slot=330306271`, відомий трейдер (той самий, що в M-B round 2) знайдений на
 індексі 1. Цикл 2: `root_slot=330307170`, **64/64 листків змінились**. **12× `commit_aggregate`**:
 escrow ER-баланс `198247040 → 195847040` лампортів, **рівно −200 000 щоразу, 12/12** — **вдвічі
-дорожче за раунд 1** (там було −100 000/коміт); не досліджено, чому саме вдвічі (можливі кандидати:
-інший нонс-діапазон ескроу після стількох комітів сьогодні, чи залежність вартості від кількості
-листків/розміру `BalancesRoot`-payload — не розрізнено цим вимірюванням, як і в раунді 1).
+дорожче за раунд 1** (там було −100 000/коміт). **Пояснено (Task 11, контролерська друга ревʼю-нотатка,
+22.09.2026):** правило тижня 2 (`week2-results.md` M3a/`fees-and-commit-economics.md`) — **100 000
+лампортів за кожен закомічений акаунт, щойно nonce-комітів того конкретного акаунта досягнув ≥25**.
+Раунд 1 стартував зі свіжого `BalancesRoot` (нижче порогу 25) → того циклу платив лише `Pool`
+(100k/коміт). До раунду 2 й `Pool`, і `BalancesRoot` уже перетнули поріг 25 (весь денний прогін тестів
+на тому самому `Config`) → платять **обидва** акаунти щокоміт (100k + 100k = 200k/коміт), звідси
+рівно подвоєння. Арифметика збігається: `12 × 200 000 = 2 400 000` лампортів = виміряна дельта
+ескроу `198 247 040 → 195 847 040` (різниця 2 400 000, точний збіг).
 
 **M-A round 2 (`08-undelegate.ts`) — PASS. `undelegate_user` приземлився.** Закриття лишкової
 позиції #2 з 06 (nonce hash-сідований, збігся з першої спроби, **ER**
@@ -894,3 +1035,124 @@ dexxer_core -- -D warnings`, `anchor build` (жодного stack-offset поп�
 `app/src/lib/{pdas,program}.ts`, `app/src/features/history/HistoryScreen.tsx`,
 `app/src/idl/dexxer_core.json`; `docs/superpowers/specs/2026-09-18-dexxer-mvp-design.md` (§2.1, текст
 seed).
+
+## Task 9: Мобілка — History-таб, Receipt-секція, `live.ts`, повторний Open
+
+Комміт `68f3a31`. **Код-only пас** — живого прогону на емуляторі ця задача не робила (заплановано
+після редеплою Task 8; контролер ще не провів — див. «відкрите для тижня 4» нижче). `useLiveAccount`
+винесено з `PositionScreen.tsx` у новий `app/src/lib/live.ts`. Декодери дописані в `app/src/lib/program.ts`:
+`decodeDisclosureQueue`, `decodeDisclosure`, `decodeBalancesRoot` (ручний `repr(C)`/bytemuck-офсет,
+Anchor'ів Borsh-кодер не вміє zero_copy), `readUserAccountExitSalt`, `leafHex`/`assertLeafGolden`
+(golden vector, `__DEV__`-перевірка при завантаженні модуля). Усі офсети (`ClosedRecord`,
+`DisclosureQueue`, `Disclosure`, `BalancesRoot`) перевірені побайтово проти реального коду Rust — **знайдено
+й виправлено**: чернетковий порядок полів `ClosedRecord` у плані (де `salt` йшов останнім) не збігався
+з реальним кодом (`salt` йде перед `nonce`/`reveal_after_slot`/`commitment_written`) — код переміг,
+план виправлено в §4.1 вище.
+
+`HistoryScreen` читає `DisclosureQueue` наживо (session TEE-зʼєднання) для ще нерозкритих записів;
+розкриті — точковим запитом `Disclosure` за хешем (після Task 8b). `ReceiptSection` (Account-таб,
+під `AccountUiTokenAccounts` — не окремий файл під `app/app/(tabs)/account/*`, як припускав брифовий
+глоб: реальний контент цього табу живе в `app/components/account/account-feature.tsx`, задокументовано
+як свідоме відхилення) рахує `leafHex(owner, free_margin, exit_salt, root.rootSlot)` і звіряє проти
+всіх 64 листків `BalancesRoot`. Гейт повторного Open уже коректний без змін —
+`TradeScreen.tsx`'s `hasOpenPosition = position?.state === 'Open'` природно відкривається знову після
+`mark_committed` повертає `Position → Empty`.
+
+Гаунтлет: `npx tsc --noEmit` чисто, `npx expo lint` — 0 problems. Golden-check (`leafHex` проти Rust-
+і TS-еталону) підтверджено окремим `node -e`-скриптом поза RN-рантаймом. Повний звіт з таблицями
+офсетів — `task-9-report.md`.
+
+**Не зроблено в цій задачі (не забуто, свідомо відкладено):** живий прогін на емуляторі + скріншоти
+для `docs/superpowers/plans/assets/` — **скріншоти — після живого прогону (контролер)**.
+
+## Task 10: CI (GitHub Actions)
+
+Комміт `176c6ef`. `.github/workflows/ci.yml`: два джоби — `program` (Rust: `cargo fmt --check`,
+`cargo clippy -D warnings`, `anchor build`, `cargo test -p dexxer_core -p mock_oracle`,
+`cargo +nightly-2026-09-18 test -p dexxer_litesvm`, `program_autofixer` не в CI — MCP-інструмент,
+локальний гейт) і `typescript` (`tsc --noEmit` ×3 + `npm run selftest:hashes` + `expo lint`). Версії
+звірені проти репозиторію напряму: Rust `1.89.0` (не `"1.89"` з брифу — точний збіг із
+`rust-toolchain.toml`), Solana `3.1.9`, Anchor `1.0.2` (обидва — `Anchor.toml`'s `[toolchain]`), Node
+`24.18.0`. Кешування: `actions/cache@v4` на `~/.cache/solana` + `~/.avm`/`~/.cargo/bin/{avm,anchor}`,
+`Swatinem/rust-cache@v2`; `concurrency`-група скасовує застарілі прогони. `anchor build` без
+попередньо задеплоєних `keys/programs/*` — програма сама генерує keypair у `target/deploy/`, звірка
+з `declare_id!` відбувається лише на `anchor deploy`, не на `build`.
+
+Локально перевірено все, що можна без запуску самого CI: `cargo fmt --check` чисто, `tsc` ×3 чисто,
+`selftest:hashes` 3/3, `expo lint` чисто, YAML парситься (`ruby -ryaml`). **Не перевірено й чесно
+позначено як ризик:** реальний час `anchor build`/`avm install` на холодному GitHub-раннері,
+`clippy`/`cargo test`/LiteSVM — не прогнані в межах цієї задачі (паралельні задачі активно редагували
+`programs/**`), надійність кешу для трьох `package-lock.json` під одним `setup-node`-кроком. **Перший
+реальний прогін CI станеться на PR — не верифіковано в цьому раунді, контролер перевіряє на PR.**
+Повний звіт — `task-10-report.md`.
+
+## Тиждень 3 — LiteSVM траєкторія (39 → 65)
+
+| Крок | Задача | LiteSVM | Коментар |
+|---|---|---|---|
+| старт (`53ae985`) | — | 39 | week 2 фінал |
+| `1351b75` | Task 0 | 39 | без нових LiteSVM-тестів (лише unit 46→49) |
+| `2360638` | Task 2 | 41 | +2, escrow-signer негативні тести |
+| `26c605d` | Task 2 fix round 1 | 43 | +2, пре-фандований PDA доводить `InvalidActionSigner` |
+| `2085288` | Task 3 | 46 | +3, `commit_aggregate` дії |
+| `1f6bd90` | Task 4 | 51 | +5, `mark_committed` |
+| `5e4ee42` | Task 3 fix round 1 | 55 | +4, `commit_actions.rs` (due_reveals-покриття) |
+| `6a1a145` | Task 5 | 59 | +4, `root.rs` (zero_copy проба+GREEN) |
+| `b57a9d7` | Task 6 | 63 | +4, `undelegate_user` гейти+скраб |
+| `1241a2c` | Task 6 fix round 1 | 64 | +1, `last_withdraw_slot`-скраб + Closed-unmarked гейт |
+| `9eb22e8` | Task 8b | 65 | +1, колізія nonce між трейдерами |
+| `c756c04` | Task 8c | 65 | 0 нетто (LiteSVM не бачить справжнього M-A CPI — Magic Program не задеплоєна) |
+
+Фінал — **65 тестів** (CLAUDE.md). Unit (`cargo test -p dexxer_core`): 46 → **51** (49 після Task 0
++ 2 golden vectors, Task 7).
+
+## Тиждень 3 — консолідована таблиця вартості комітів (M-E)
+
+| Раунд | Що коміталось | Lamports/коміт | Пояснення |
+|---|---|---|---|
+| Task 8, раунд 1 | `Pool` (свіжий, nonce < 25) + `BalancesRoot` (нижче порогу 25) | 100 000 | лише `Pool` уже перетнув nonce-поріг 25 на тому ескроу |
+| Task 8, раунд 2 | `Pool` + `BalancesRoot` (обидва nonce ≥ 25) | 200 000 | обидва акаунти платять по 100k — `12 × 200 000 = 2 400 000` = виміряна дельта ескроу `198 247 040 → 195 847 040`, точний збіг |
+
+Правило (`fees-and-commit-economics.md`, week2-results M3a): **100 000 лампортів за кожен закомічений
+акаунт, щойно акаунтів власний commit-nonce досягнув 25**; nonce < 25 — безкоштовно (виміряно тижнем 2).
+
+## Рулінги тижня 3 (зведення)
+
+| # | Про що | Рішення |
+|---|---|---|
+| 1 | `Context`-лайфтайми для `remaining_accounts` | однолайфтаймова форма `crank_tick`, не 4-лайфтаймовий чернетковий текст плану |
+| 2 | Гроші (payer-баланс на старті Task 0) | 4.29 SOL, не 4.59 — план скоригований наживо |
+| 3 | Порядок задач | 0 → 1 → 2 … як заплановано |
+| 4 | `pending_commitment`-умова | `state == Closed` еквівалентно брифовому подвійному запереченню |
+| 5 | `BalancesRoot`-лейаут | Borsh пробиває SBF-стек → `zero_copy`/`repr(C)`, обовʼязкова проба перед рішенням |
+| 6 | Golden vectors | один Rust-юніт-тест + TS `selftest:hashes`, той самий hex в обох мовах |
+| 7 | Nonce reuse | write-once `Commitment`/`Disclosure` — навмисно; `TooManyActions` лише на `Position`-шляху |
+| 8 | `fee_payer` як єдиний signer `commit_aggregate` | **PASS** на приватному `Position` (не member) — TEE-permission гейтить читання (RPC), не tx-інклюзію не-членом; нове спостереження → ризик #23 |
+| 9 | Колізія nonce `Commitment`/`Disclosure` | сідувати хешем commitment-у, не per-user nonce |
+| 10 | `ExternalAccountDataModified` на `undelegate_user` | Anchor'ів автоматичний `exit()` переписує скрабнутий акаунт після зміни власника → явний `exit()` до CPI |
+
+## Тиждень 3 — відкрите для тижня 4
+
+- **Task 9 живий прогін на емуляторі + скріншоти для `docs/superpowers/plans/assets/`** — код готовий
+  (Approved review), живий цикл Open→Close→History→Receipt на `local_phone`/fakewallet ще не проведено.
+- **Перший реальний прогін CI (`.github/workflows/ci.yml`) на PR** — локально все, що можна, перевірено;
+  холодний GitHub-раннер (час `anchor build`/`avm install`, кеш для 3 `package-lock.json`) — не виміряно.
+- **Питання #23 до MagicBlock** — чи не-member програма може скопіювати байти приватного акаунта в
+  публічний у тій самій tx, де `fee_payer` (не member) успішно включив приватний `Position` у
+  `commit_aggregate`'s `remaining_accounts` і транзакція виконалась.
+- **`i64::MAX`-переплановування на реальному продакшн-розкладі devnet** — виміряно PASS лише на
+  окремому спайку (Task 1 M-D); реальний `dexxer_core`'s `schedule_crank` ще не перезапущений з цим
+  значенням. Персистентність через рестарт валідатора лишається невиміряною.
+- **Очищення legacy `UserAccount`** — 8 із 13 devnet-акаунтів (weeks 1–2, старий layout) досі сторонені
+  крank-фільтром; програмної міграції немає, визнано прийнятним тестовим сміттям.
+- **`decodeOrSkip` (crank) — catch-all, не специфічний до `RangeError`** — ловить будь-який виняток
+  декодування, ширше за суворо потрібне (Task 8b's власна нотатка).
+- **Мертвий `readAllDisclosures`-експорт в app** — лишився невикористаним після переходу History на
+  точковий запит за хешем (Task 8b).
+- **`ReceiptSection`'s постійний стан "Loading…"**, коли `UserAccount` відсутній — не оброблено (Task 9's
+  власна нотатка).
+- **Ризик #24 (Pool/MarketRisk не permissioned в ER)** — §7.1 нового ризику: живі лічильники `Pool`/
+  `MarketRisk` читаються будь-ким з ER RPC-доступом кожен блок, обходячи 5-хв batch-мітигацію L1;
+  дизайн-рішення (розділити на приватний робочий акаунт + публічний знімок) — тиждень 4.
+- **ER/base-мітки сигнатур** — зроблено (Task 8 fix round 1: кожна сигнатура в §Task 8 позначена ER
+  або base).
