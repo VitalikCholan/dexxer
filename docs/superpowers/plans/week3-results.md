@@ -357,3 +357,139 @@ self-reschedule-CPI не використовувати (підтверджен�
 до канонічного). `export PATH=...` → `cd tests/er && npx tsc --noEmit` — чисто (0 помилок), включно
 з новим `devnet/w3-measure.ts`. `mcp__solana-mcp-server__program_autofixer` на всіх трьох
 `lib.rs`-файлах (канонічний стан, framework `anchor`): **0 issues, 0 suggestions на кожному**.
+
+## Task 8: Редеплой + devnet-скрипти 06/07/08 (M-B, M-E)
+
+Повний звіт: `.superpowers/sdd/2026-09-22-week3-disclosure-root-exit/task-8-report.md`. Нижче —
+виміряний підсумок. `dexxer_core` редеплоєно на devnet (program id незмінний,
+`G2okX5Bae4CxfK8vzso1Ecc96QUv7E3P4YvxaZnaYXoV`), три нові devnet-скрипти
+(`tests/er/devnet/06-commitment-reveal.ts`, `07-balances-root.ts`, `08-undelegate.ts`). Жодних змін
+у Rust — рулінг 8 вирішився без них, M-C не перевимірювався на реальній формі дії (з бюджету
+задачі, дозволено брифом).
+
+### Редеплой
+
+Preflight: новий бінарник **1 040 080 B** (точно за оцінкою брифу), extend на **101 640 B**
+(рента 0.51698144 SOL) + буфер деплою (рента 5.28527264 SOL) = 5.80225408 SOL; payer мав
+5.950356913 SOL — запас ≈0.098 SOL, продовжено.
+
+`solana program extend … 101640` — успіх, payer 5.950356913 → 5.434020713 SOL. Перша спроба
+`anchor deploy --provider.cluster devnet` **впала на `429 Too Many Requests`** —
+`--provider.cluster devnet` резолвиться на дефолтний `api.devnet.solana.com`, не на
+`rpc.magicblock.app/devnet` (в `Anchor.toml` нема кастомного URL для `devnet`); лишила завислий
+буфер `Amq9zwWWjETqXS5K42ax7xj6jSMXWPkrnug1Mv6pykxr` (5.2844446 SOL) — закрито
+(`solana program close … --bypass-warning`), повернуто, payer → 5.433905713 SOL. Друга спроба —
+fallback-шлях із брифу: `solana program deploy … --url https://rpc.magicblock.app/devnet --use-rpc`
+— **успіх з першої спроби**, sig
+`66DEy5nb9TTEoSKnGhXxDBhz79SYVuvkt3VE9mdA3U6AAuLvVZpq6ukY19jiZcAQ1FSQCnqdFeK4pM8WEe43D9nU`, payer →
+5.428750713 SOL. Жодних завислих буферів після. **Чиста вартість редеплою: 0.521606200 SOL**
+(0.516336 extend + ~0.0053 net deploy). `devnet-bootstrap.ts` (ідемпотентно) створив і делегував
+`BalancesRoot` уперше цієї гілки (`init_balances_root`
+`2ZaZ136g6r7Esh2Eq8AXKAL8UDC7dcVXVcTTTxML5WszhmfQ3sE9zwTSE4aaUP4mqoJmiLudNNUHynPVet1wknQk`,
+`delegate_balances_root`
+`44Syeax6Tne27zNDdVrxtUTj69yPXJ3MB4XpLhNqbaxu61e6ibS6xaFAqrPVtNkAQtyYTfXeaYp24fGhoxtkTYwJ`).
+
+### Рішення після рулінгу 8
+
+Виміряно на throwaway-трейдері (окремий, не 06-скрипту) реальним `commit_aggregate` з
+`remaining_accounts=[Closed Position]`: **(i)** підписаний лише `fee_payer` (не permission-член
+позиції — члени `[owner, session, crank]`) — **PASS**, sig
+`3yNb9tg2qxzkTbLwNpcf6jV9HKipzEapQsRHU5htpkVV1Cp2LLjzKz14R93BmBiWE3uMaq5cDATjPhErUUUShz1M`,
+підтверджено незалежно (перечитано `Position.closed.commitmentWritten==true`, `Commitment` PDA
+реально існує на base, 58 байт). **(ii)** та сама tx з `crank` як зайвим підписантом транзакції
+(не інструкції) — **REJECTED**, `unknown signer` (структурна відмова Solana, не TEE-фільтр
+приватності). **Жоден із двох сценаріїв брифу не спрацював** — (i) вже проходить, тож ні
+`extraSigners`, ні новий `set_fee_payer`-admin-ix не знадобились. **Жодних змін у Rust.**
+Інтерпретація: TEE-фільтр приватності (week 2, leak-test) гейтить читання через RPC, не власне
+виконання інструкції програмою — членство в permission це контроль видимості для читання, не
+авторизація виконання.
+
+### Знахідка: колізія nonce на глобальних PDA `Commitment`/`Disclosure`
+
+`Commitment`/`Disclosure` PDA — `[SEED, nonce]` **без власника** в сідах, а `nonce` —
+**по-юзерський** лічильник (`UserAccount.nonce`), що стартує з 0 і стає 1 на першому close **будь-
+якого** трейдера. Ruling-8-трейдер зайняв `Commitment[1]` першим; 06-скрипту свіжий трейдер теж
+почав з nonce=1 — `write_commitment` мовчки не зміг `init` (акаунт уже зайнятий), проте
+`mark_committed` не перевіряє коректність L1-хешу (лише ER-side прапорець `commitment_written`,
+виставлений оптимістично) — позиція звільнилась нормально з "зіпсованим" записом у черзі. Знахідка
+зловлена саме асертом хешу в 06 (не проігнорована). Це наявна архітектурна прогалина тижнів 2-6
+(nonce мав би бути глобально-унікальним або прив'язаним до owner) — **поза скоупом Task 8**;
+обійдено клієнтським retry-циклом (комітити, перевіряти збіг хешу, якщо колізія — все одно
+`mark_committed` + дренаж через `commit_aggregate(dq)` після настання reveal-слоту, потім
+повторити зі свіжим nonce). Задокументовано, не пропатчено в Rust.
+
+### Знахідка: застарілий layout `UserAccount` ламає повний скан `set_balances_root`
+
+На девнеті 12 `UserAccount` через `getProgramAccounts`; **8 із них — застарілого layout** (110/118
+байт до `exit_salt`/`last_withdraw_slot`, тижні 1-2, той самий program id, без міграції). Перший
+прогін 07 впав на `InvalidLeafAccount` (0x6035) на весь батч — Rust-десеріалізація коротшого
+акаунта не падає чисто, дає сміттєвий `owner`, PDA не збігається. `07` тепер клієнтськи
+пре-фільтрує (декодує + звіряє PDA перед включенням у батч, spec risk #19 дозволяє крanky пропускати
+юзера) — 8 із 12 пропущено з логом. Реальна міграція — поза скоупом Task 8 (`init_if_needed`
+заборонено, міграційної інструкції нема).
+
+### M-B: `06-commitment-reveal.ts` — PASS
+
+Трейдер `FzNNLyJTRzzXXofdQJDxLsKJkaaUcKEZswaXBdqdU5eN` (run `1790053950057`). Перша спроба
+close (nonce=1) колізувала (описано вище) — дренована. Друга спроба (nonce=2) — **PASS**: commit
+sig `1a6kE9Cu7q7TzUciMepcFgkcSSPySvHk8VXu72kX3ok2i4nAgobzvpzuiiPFWrQQamCRN4GRYtJ57CKXXSQy2Vu`, хеш
+збігся, `mark_committed` звільнив позицію (`DisclosureQueue.len==1`), друга позиція відкрита й
+закрита (`2QMRQMUSzXy69Yw1WCNC6NcSxHHixL94se6TfUKT9jFb5iYGmbXK9mmbh5ShGtjxj718WzPZBEB9abWPGKEPZsVg` /
+`4XK4i1xfTyoDaRRPnxbYY3V7Q6aUAtAenRNkMRhoo7y8Lukv4kdhU7St1GdVZCE4SPiubmu4zvJteg4CgCqiqohw`), reveal
+через `commit_aggregate(dq)`
+(`pEcCaaVZ7CyU9HdJsS685a5RARVCtNrongwx2UMMk1vQkqnrJLhRzU7j2idP2raxGcRHWyMsWY1JCYCxEk6RE3P`) дав
+`Disclosure[2]` з усіма полями == `ClosedRecord`, `owner==default`, хеш перевірено. Таймінги: ER→base
+для `Commitment` — **1.1 с**; для `Disclosure` — **3.0 с**. Усі п'ять PASS-рядків брифу підтверджено.
+M-C не перевимірювався на реальній формі (дорого); спостережено 1 дію на бандл (write_commitment) і
+1 дію (write_disclosure) — ніколи разом у цій задачі; `MAX_ACTIONS_PER_COMMIT` лишається **4**.
+
+### M-E: `07-balances-root.ts` — PASS
+
+Два цикли поспіль: цикл 1 — `filled=4` (з 4 акаунтів сучасного layout), `leaf(owner, free_margin,
+exit_salt, root_slot)` знайдено для відомого трейдера (06) на індексі 3, поза паддінгом жодного
+збігу. Цикл 2 (одразу після) — **64/64 листків змінились**. **12× `commit_aggregate` (Pool +
+BalancesRoot разом)**: escrow ER-баланс `200169040 → 198969040` лампортів, **рівно −100 000 щоразу,
+12/12** — це вже перша реальна вимір **платного** тіру (тиждень 2 бачив лише безкоштовний, nonce
+<25; ескроу сьогодні давно перетнув поріг 25 через усе тестування задачі). 100 000
+лампортів/коміт збігається з `fees-and-commit-economics.md`; чи це за коміт-транзакцію чи за
+акаунт — не розрізнено цим вимірюванням (обидва коміти завжди несли Pool+BalancesRoot разом).
+
+### M-A: `08-undelegate.ts` — НЕ ДОЛЕТІВ (зафіксовано чесно, без сліпого патчу)
+
+Закриття другої позиції з 06 (nonce=3, свіжий, хеш збігся), дренаж черги, `withdraw(all=999587254)`
+— усе PASS. Передумови `undelegate_user` підтверджено: `Position.state==Empty`,
+`DisclosureQueue.len==0`, `free_margin==locked_margin==0`. Сам `undelegate_user` **падав двічі
+поспіль з однаковою помилкою**: `{"InstructionError":[0,"ExternalAccountDataModified"]}` (sig 1
+`3SsSoNncVmLtZcttwTodkt8yexdxTUFnT4ELSGV4dAaCcFbUs4khumFuT7WGf95e8mtJHiJjWH5jsFLauirHjY6X`, sig 2 —
+ідемпотентний рестарт скрипту, той самий результат —
+`44RWU8R8v8TsNJ1cH43HxUngNomhVS4KwxpXx8HY3E3nR8cktfH4AFwZiwgBpKS6rmVbBwkh4AxwqPMwGWDd6CKZ`). Base
+підтверджено після обох: `UserAccount`/`Position`/`DisclosureQueue` усі **лишились** власності
+`DELeGGvXpWV2fqJUhqcF5ZSYMS4JTLjteaAMARRSaeSh` (Delegation Program), не `dexxer_core`. На відміну
+від спайкового M-A (тиждень 3, Task 1 — один акаунт, PASS з першої спроби), `undelegate_user`
+робить **три** `CloseEphemeralPermissionCpi` (user_account/position/dq) і лише потім **один**
+`commit_and_undelegate` над усіма трьома разом — комбінація, яку LiteSVM взагалі не може виконати
+(Magic Program там не задеплоєний) і яку спайк перевіряв лише на одному акаунті. **Це перше реальне
+виконання трьохакаунтної комбінації на будь-якій мережі.** Гіпотеза (не підтверджена читанням
+вихідного коду Delegation/Permission Program) зафіксована в `task-8-report.md`; **не пропатчено
+наосліп** — рекомендовано окрему задачу з розслідування.
+
+### Гаунтлет і баланси
+
+`npx tsc --noEmit` чисто в `tests/er`, `scripts`, `app`. Rust не змінювався — autofixer/LiteSVM/
+`cargo test`/fmt/clippy/IDL поза скоупом цієї задачі. Фінальні баланси: `payer` 5.228740713 SOL,
+`devnet-admin` 0.35488156 SOL, `devnet-fee-payer` 0.25 SOL, `devnet-crank` 0.1 SOL, трейдер 06/08
+(`FzNNLyJTRzzXXofdQJDxLsKJkaaUcKEZswaXBdqdU5eN`) 0.027072888 SOL. Витрачено payer'ом за задачу
+**≈0.7216 SOL** (5.950356913 → 5.228740713): редеплой 0.521606200 SOL + ~0.2 SOL допоміжних
+топ-апів `devnet-admin` (двічі +0.1 SOL, бо ruling-8-пробник і повторні прогони 06/07 з'їли поріг
+`requireFunded` 0.3 SOL).
+
+### Файли
+
+- Create: `tests/er/devnet/06-commitment-reveal.ts`, `07-balances-root.ts`, `08-undelegate.ts`.
+- Modify: `tests/er/package.json` (`devnet:disclosure|root|undelegate`),
+  `tests/er/devnet/03-commit-cycle.ts` (застарілий doc-коментар "лише Pool комітиться" →
+  "Pool і BalancesRoot"), цей файл (§Task 8).
+- Жодних змін у `programs/` — M-C не перевимірювався на реальній формі, рулінг 8 не зажадав Rust-шляху.
+
+Повний звіт (кожна команда, вивід, self-review, занепокоєння) —
+`.superpowers/sdd/2026-09-22-week3-disclosure-root-exit/task-8-report.md`.

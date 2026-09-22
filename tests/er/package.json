@@ -12,6 +12,9 @@
     "devnet:withdraw": "DEXXER_NET=devnet tsx devnet/04-withdraw.ts",
     "devnet:liquidation": "DEXXER_NET=devnet tsx devnet/05-crank-liquidation.ts",
     "devnet:w3measure": "DEXXER_NET=devnet tsx devnet/w3-measure.ts",
+    "devnet:disclosure": "DEXXER_NET=devnet tsx devnet/06-commitment-reveal.ts",
+    "devnet:root": "DEXXER_NET=devnet tsx devnet/07-balances-root.ts",
+    "devnet:undelegate": "DEXXER_NET=devnet tsx devnet/08-undelegate.ts",
     "selftest:hashes": "tsx lib/hashes.selftest.ts"
   },
   "dependencies": {
