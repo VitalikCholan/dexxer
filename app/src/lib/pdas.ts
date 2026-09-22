@@ -24,6 +24,12 @@ const DQ_SEED = Buffer.from('dq')
 const FAUCET_SEED = Buffer.from('faucet')
 const MINT_AUTH_SEED = Buffer.from('mint_auth')
 const FEE_ESCROW_SEED = Buffer.from('fee_escrow')
+// Week 3 (Task 9): seeds for the 13F/BalancesRoot pipeline, matching
+// `programs/dexxer_core/src/state/mod.rs` and `tests/er/lib/program.ts`'s
+// `pdas` verbatim.
+const COMMIT_SEED = Buffer.from('commit')
+const DISCLOSURE_SEED = Buffer.from('disclosure')
+const BALANCES_ROOT_SEED = Buffer.from('balances_root')
 export const SOL_SYMBOL = Buffer.from([83, 79, 76, 0, 0, 0, 0, 0]) // b"SOL\0\0\0\0\0"
 
 // mock_oracle / Pricing Oracle feed seeds, matching tests/er/lib/program.ts
@@ -36,6 +42,13 @@ export const LAZER_FEED_ID = '6'
 
 function pda(seeds: (Buffer | Uint8Array)[], programId: PublicKey): PublicKey {
   return PublicKey.findProgramAddressSync(seeds, programId)[0]
+}
+
+/** `u64::to_le_bytes()` equivalent for a PDA seed (mirrors `tests/er/lib/program.ts`'s `u64leSeed`). */
+function u64leSeed(n: bigint | number): Buffer {
+  const b = Buffer.alloc(8)
+  b.writeBigUInt64LE(BigInt(n))
+  return b
 }
 
 export const pdas = {
@@ -57,6 +70,11 @@ export const pdas = {
   /** Oracle feed PDA, derived under `oracleProgram` (`Config.oracle_program` — the real devnet Pricing Oracle, not `dexxer_core`). */
   feedUnder: (oracleProgram: PublicKey, lazerFeedId: string = LAZER_FEED_ID) =>
     pda([FEED_SEED, LAZER_SEED, Buffer.from(lazerFeedId)], oracleProgram),
+  // Week 3 (Task 9): 13F/BalancesRoot pipeline PDAs — History reads
+  // `Disclosure`, Receipt reads `BalancesRoot`.
+  commitment: (nonce: bigint | number) => pda([COMMIT_SEED, u64leSeed(nonce)], DEXXER_CORE_PROGRAM_ID),
+  disclosure: (nonce: bigint | number) => pda([DISCLOSURE_SEED, u64leSeed(nonce)], DEXXER_CORE_PROGRAM_ID),
+  balancesRoot: () => pda([BALANCES_ROOT_SEED], DEXXER_CORE_PROGRAM_ID),
 }
 
 /** `#[delegate]`-generated buffer/record/metadata triple for a PDA owned by `dexxer_core`. */
