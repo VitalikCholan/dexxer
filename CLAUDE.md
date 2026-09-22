@@ -13,7 +13,7 @@
 - Ціни — Pyth Lazer через MagicBlock Pricing Oracle, mark = EMA над index, ліквідація за mark
 - Розкриття — commit-then-reveal через Magic Actions; затримка параметр (демо хвилини, продукт 30 днів)
 - Devnet-first: `devnet-tee-as.magicblock.app`, власний `dUSDC` faucet-мінт, пул фондує протокол
-- Бекенду нема. Crank — у ER (scheduler), fallback-скрипт зовні
+- Бекенду, що бачить приватні дані, нема і не буде. Crank — у ER (scheduler), fallback-скрипт зовні — єдиний привілейований сервіс (permission-член), стану не зберігає. **Сервери читають лише публічні акаунти L1/ER і оракул** (рішення 22.09.2026): stateless-індексер для цін/графіків, `Pool`/`BalancesRoot`-снапшотів, L1 `Disclosure`-ленти, push — допустимий; жоден сервіс, крім crank-а, не тримає owner/session-токенів; приватний стан читає лише клієнт через owner-TEE (`accountSubscribe` замість polling — тиждень 4)
 
 ## Документи
 - docs/superpowers/specs/2026-09-18-dexxer-mvp-design.md — **джерело правди** для MVP (скоуп, акаунти, математика, програма, клієнт, тести, ризики, календар)
