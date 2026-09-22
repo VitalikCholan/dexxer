@@ -3,7 +3,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "crank": "tsx crank-fallback/index.ts",
+    "crank": "npm --prefix ../services/relayer run start",
     "week1": "tsx demo/week1-cli.ts"
   },
   "dependencies": {

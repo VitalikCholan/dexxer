@@ -1,9 +1,13 @@
-// scripts/crank-fallback/disclosure.ts
+// services/relayer/src/disclosure.ts
 //
-// Week 3 (Task 7): the two cycles that ride on top of the crank-fallback
-// tick loop (index.ts) every `DISCLOSURE_EVERY_TICKS` — root BEFORE
-// disclosure, so a `commit_aggregate` call always carries a freshly computed
-// `BalancesRoot` (plan Task 7 Interfaces).
+// Moved from scripts/crank-fallback/disclosure.ts (Task 4, week 4) — no
+// logic changes, only the relative import paths below (one directory
+// deeper: services/relayer/src/ vs scripts/crank-fallback/).
+//
+// Week 3 (Task 7): the two cycles that ride on top of the crank tick loop
+// (crank.ts) every `DISCLOSURE_EVERY_TICKS` — root BEFORE disclosure, so a
+// `commit_aggregate` call always carries a freshly computed `BalancesRoot`
+// (plan Task 7 Interfaces).
 //
 // `runRootCycle`: rebuilds the public `BalancesRoot` from the real
 // `UserAccount` bytes, `ROOT_BATCH` (16) accounts per `set_balances_root`
@@ -50,7 +54,7 @@ import { PublicKey } from "@solana/web3.js";
 import type { Connection, Keypair } from "@solana/web3.js";
 import type { Program } from "@coral-xyz/anchor";
 import { MAGIC_CONTEXT_ID, MAGIC_PROGRAM_ID } from "@magicblock-labs/ephemeral-rollups-sdk";
-import { sendAndConfirmIx } from "../../tests/er/lib/env.js";
+import { sendAndConfirmIx } from "../../../tests/er/lib/env.js";
 import {
   DQ_DISC,
   MAX_ACTIONS_PER_COMMIT,
@@ -64,7 +68,7 @@ import {
   reasonIndex,
   sideIndex,
   type DisclosureArgsBytes,
-} from "../../tests/er/lib/program.js";
+} from "../../../tests/er/lib/program.js";
 
 /**
  * Rebuilds the `commitmentHash` args from a decoded (camelCase) `Position.closed`

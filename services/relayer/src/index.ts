@@ -1,0 +1,120 @@
+// services/relayer/src/index.ts
+//
+// Entrypoint: reads config from env, starts the health endpoint, the crank
+// loop (Task 4), and — in later tasks — the indexer (Task 5) and sponsor
+// (Task 6). Graceful SIGTERM/SIGINT: stop accepting new health requests,
+// tell the crank loop to finish its in-flight tick and stop.
+//
+// --- DEXXER_NET=devnet env-forcing, and why this file has almost no static
+// imports ---
+//
+// `tests/er/lib/env.ts` resolves its `NET`/`BASE`/`ER`/`ER_WS` exports from
+// `process.env` (falling back to a per-profile default) once, at module
+// top-level, the first time ANYTHING imports it — and ES modules only ever
+// evaluate a given specifier once (the result is cached for the life of the
+// process). So `BASE_RPC`/`ER_RPC`/etc must already be in `process.env`
+// *before* env.ts is first imported by anything, anywhere in this process's
+// module graph, or `NET`/`BASE`/`ER` lock in to the wrong (local) profile
+// permanently.
+//
+// A static `import` declaration is hoisted above the rest of its module's
+// top-level code regardless of where it's textually written, so plain
+// top-level statements in THIS file (like the env-forcing block below)
+// cannot run before a static import elsewhere in the graph does. That's why
+// `keys.ts` and `crank.ts` — both of which transitively import env.ts — are
+// loaded with dynamic `await import(...)` below, after the env-forcing
+// block runs as an ordinary (non-hoisted) statement. `db.ts` and
+// `health.ts` don't touch env.ts, so they stay plain static imports.
+// (Same pattern scripts/crank-fallback/index.ts used before this move.)
+
+import express from "express";
+import { Connection } from "@solana/web3.js";
+import { createPool, getMeta, migrate, setMeta } from "./db.js";
+import { healthRouter } from "./health.js";
+import type { RelayerConfig, RelayerState } from "./crank.js";
+
+if ((process.env.DEXXER_NET ?? "local") === "devnet") {
+  process.env.BASE_RPC ??= "https://rpc.magicblock.app/devnet";
+  process.env.ER_RPC ??= "https://devnet-tee.magicblock.app";
+  process.env.ER_WS ??= "wss://devnet-tee.magicblock.app";
+  process.env.PUBLIC_RPC ??= "https://rpc.magicblock.app/devnet";
+  process.env.ROUTER_RPC ??= "https://devnet-router.magicblock.app/";
+  process.env.ER_VALIDATOR ??= "MTEWGuqxUpYZGFJQcp8tLN7x5v9BSeoFHYWQQ3n3xzo";
+}
+
+const { keypairFromEnv } = await import("./keys.js");
+const { startCrank, requestStop } = await import("./crank.js");
+const { NET, BASE, ER, ER_WS } = await import("../../../tests/er/lib/env.js");
+
+const cfg: RelayerConfig = {
+  net: NET,
+  baseRpc: BASE,
+  erRpc: ER,
+  erWs: ER_WS,
+  crank: keypairFromEnv("CRANK_KEY_B58", NET === "devnet" ? "devnet-crank" : "admin"),
+  // `commit_aggregate`'s `payer` must equal `Config.fee_payer` exactly —
+  // locally that's `admin` (see tests/er/lib/admin.ts's `init_config`
+  // call), on devnet the dedicated `devnet-fee-payer` identity.
+  feePayer: keypairFromEnv("FEE_PAYER_KEY_B58", NET === "devnet" ? "devnet-fee-payer" : "admin"),
+  port: Number(process.env.PORT ?? 8080),
+  indexerEnabled: process.env.INDEXER_ENABLED === "true",
+  sponsorEnabled: process.env.SPONSOR_ENABLED === "true",
+  databaseUrl: process.env.DATABASE_URL,
+};
+
+const state: RelayerState = { lastTickAt: null, lastCommitAt: null, tick: 0, errors: [] };
+
+const pool = createPool(cfg.databaseUrl);
+await migrate(pool);
+if (pool) {
+  try {
+    const lastTickAt = await getMeta(pool, "lastTickAt");
+    const lastCommitAt = await getMeta(pool, "lastCommitAt");
+    if (lastTickAt) state.lastTickAt = Number(lastTickAt);
+    if (lastCommitAt) state.lastCommitAt = Number(lastCommitAt);
+    console.log("index: restored persisted state", { lastTickAt: state.lastTickAt, lastCommitAt: state.lastCommitAt });
+  } catch (e) {
+    console.error("index: failed to load persisted state from db", String(e));
+  }
+  // Best-effort periodic persistence — not on crank.ts's hot path (a
+  // Postgres round-trip inside the 1s tick loop would eat into its
+  // cadence), never awaited by the tick loop itself.
+  setInterval(() => {
+    const writes: Promise<void>[] = [];
+    if (state.lastTickAt !== null) writes.push(setMeta(pool, "lastTickAt", String(state.lastTickAt)));
+    if (state.lastCommitAt !== null) writes.push(setMeta(pool, "lastCommitAt", String(state.lastCommitAt)));
+    void Promise.all(writes).catch((e) => console.error("index: persistState failed", String(e)));
+  }, 5000).unref();
+}
+
+const app = express();
+app.use(
+  healthRouter({
+    state,
+    baseConn: new Connection(cfg.baseRpc, "confirmed"),
+    crankPubkey: cfg.crank.publicKey,
+    feePayerPubkey: cfg.feePayer.publicKey,
+    db: pool,
+  }),
+);
+
+const server = app.listen(cfg.port, () => {
+  console.log(`relayer: listening on :${cfg.port} net=${cfg.net}`);
+});
+
+startCrank(cfg, state).catch((e) => {
+  console.error("relayer: crank loop crashed", e);
+  state.errors.push(String(e instanceof Error ? e.message : e));
+});
+
+let shuttingDown = false;
+function shutdown(signal: string): void {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  console.log(`relayer: ${signal} received, shutting down`);
+  requestStop();
+  server.close(() => process.exit(0));
+  setTimeout(() => process.exit(0), 5000).unref(); // don't let a wedged in-flight tick block shutdown forever
+}
+process.on("SIGTERM", () => shutdown("SIGTERM"));
+process.on("SIGINT", () => shutdown("SIGINT"));

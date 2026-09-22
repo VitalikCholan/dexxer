@@ -81,6 +81,7 @@ jobs:
             tests/er/package-lock.json
             scripts/package-lock.json
             app/package-lock.json
+            services/relayer/package-lock.json
 
       - name: tests/er
         run: |
@@ -101,3 +102,10 @@ jobs:
           npm ci
           npx tsc --noEmit
           npm run lint:check
+
+      - name: services/relayer
+        run: |
+          cd services/relayer
+          npm ci
+          npx tsc --noEmit
+          npm test

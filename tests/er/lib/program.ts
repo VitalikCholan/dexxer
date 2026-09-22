@@ -26,16 +26,39 @@ import {
   permissionPdaFromAccount,
 } from "@magicblock-labs/ephemeral-rollups-sdk";
 
-const IDL_DIR = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "target", "idl");
+// Task 4 (week 4, services/relayer): overridable so the relayer's Docker
+// image — built from a fresh git checkout, where `target/idl/` (gitignored,
+// `anchor build` output) does not exist — can point this at the one IDL
+// asset actually committed to git, `app/src/idl/dexxer_core.json` (kept in
+// sync with `target/idl/dexxer_core.json` by CI's `cmp` step). Default is
+// unchanged for every existing caller (tests/er, scripts, app scripts run
+// from a full local checkout with `target/idl/` present).
+const IDL_DIR = process.env.DEXXER_IDL_DIR ?? resolve(dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "target", "idl");
 
 function loadIdl(name: string): Idl {
   return JSON.parse(readFileSync(resolve(IDL_DIR, `${name}.json`), "utf8"));
 }
 
+/**
+ * `mock_oracle.json` is NOT committed to git (target/idl/ is fully
+ * gitignored) and is local/LiteSVM-only — the relayer's minimal
+ * `DEXXER_IDL_DIR` (see above) never has it, since the relayer runs
+ * exclusively against `DEXXER_NET=devnet`'s real Pricing Oracle and never
+ * calls `mockOracleProgram()`/`pdas.feed()`. Tolerate its absence here
+ * instead of crashing this module's import for every caller.
+ */
+function loadIdlOptional(name: string): Idl | null {
+  try {
+    return loadIdl(name);
+  } catch {
+    return null;
+  }
+}
+
 export const DEXXER_CORE_IDL = loadIdl("dexxer_core");
-export const MOCK_ORACLE_IDL = loadIdl("mock_oracle");
+export const MOCK_ORACLE_IDL = loadIdlOptional("mock_oracle");
 export const DEXXER_CORE_PROGRAM_ID = new PublicKey((DEXXER_CORE_IDL as { address: string }).address);
-export const MOCK_ORACLE_PROGRAM_ID = new PublicKey((MOCK_ORACLE_IDL as { address: string }).address);
+export const MOCK_ORACLE_PROGRAM_ID = MOCK_ORACLE_IDL ? new PublicKey((MOCK_ORACLE_IDL as { address: string }).address) : PublicKey.default;
 
 // Task 14 (crank-fallback): base58 `getProgramAccounts` memcmp filter value
 // for the 8-byte Anchor discriminator of the `Position` account, computed
@@ -64,6 +87,7 @@ export function dexxerCoreProgram(conn: Connection, wallet: Keypair): Program {
 }
 
 export function mockOracleProgram(conn: Connection, wallet: Keypair): Program {
+  if (!MOCK_ORACLE_IDL) throw new Error("mock_oracle.json not found in IDL_DIR (local/LiteSVM-dev only — see loadIdlOptional above)");
   return new Program(MOCK_ORACLE_IDL, anchorProvider(conn, wallet));
 }
 
