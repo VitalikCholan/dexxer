@@ -1,7 +1,7 @@
 // tests/er/lib/hashes.selftest.ts
 //
 // Week 3 (Task 7) golden-vector self-test: asserts the TS keccak256 helpers
-// in `program.ts` (`commitmentHash`, `leaf`, `pad`) produce byte-for-byte the
+// in `hashes.ts` (`commitmentHash`, `leaf`, `pad`) produce byte-for-byte the
 // same hex as the Rust unit tests `commitment_hash_golden_vector`
 // (programs/dexxer_core/src/state/disclosure.rs) and
 // `leaf_and_pad_golden_vectors` (programs/dexxer_core/src/state/balances_root.rs)
@@ -10,7 +10,7 @@
 // exits non-zero) on any mismatch. Run: `npm run selftest:hashes`.
 
 import { PublicKey } from "@solana/web3.js";
-import { commitmentHash, leaf, pad } from "./program.js";
+import { commitmentHash, leaf, pad } from "./hashes.js";
 
 function hex(bytes: Uint8Array): string {
   return Buffer.from(bytes).toString("hex");

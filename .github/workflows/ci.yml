@@ -57,7 +57,9 @@ jobs:
 
       - run: cargo clippy -p dexxer_core -p mock_oracle -- -D warnings
 
-      - run: anchor build
+      # Fresh runner has no keys/programs keypair; anchor generates a random one and
+      # would fail the declare_id! check — build against the source id instead.
+      - run: anchor build --ignore-keys
       - name: IDL copy in app matches build
         run: cmp target/idl/dexxer_core.json app/src/idl/dexxer_core.json
 
