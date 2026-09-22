@@ -669,6 +669,107 @@ pub fn init_permissions(ctx: Context<InitPermissions>) -> Result<()> {
     Ok(())
 }
 
+// Week-4 Task 2 (risk #24): `MarketRisk`/`PoolLive` are delegated to the ER
+// but were never made permissioned — anyone with an ER connection can read
+// them. Same Create/Update CPI pattern as `InitPermissions` above, but for
+// the two market-scoped private aggregates instead of the three per-user
+// PDAs, and with `build_admin_members` (crank OWNER_FLAGS, admin
+// VIEWER_FLAGS — neither account has a single trader-owner). NOTE: this file
+// is already large; kept here per the week-4 plan's placement (right after
+// `InitPermissions`) rather than a new file.
+#[derive(Accounts)]
+pub struct InitMarketPermissions<'info> {
+    pub admin: Signer<'info>,
+    #[account(seeds = [CONFIG_SEED], bump = config.bump, has_one = admin @ DexxerError::Unauthorized)]
+    pub config: Box<Account<'info, Config>>,
+    #[account(seeds = [MARKET_SEED, &market.symbol], bump = market.bump)]
+    pub market: Box<Account<'info, Market>>,
+    #[account(mut, seeds = [RISK_SEED, market.key().as_ref()], bump = market_risk.bump, has_one = market)]
+    pub market_risk: Box<Account<'info, MarketRisk>>,
+    // Self-referential seed (mirrors `CommitAggregate`/`Trade`'s `pool_live`
+    // field): this context carries no separate `Pool` account to read the
+    // mint from.
+    #[account(mut, seeds = [POOL_LIVE_SEED, pool_live.mint.as_ref()], bump = pool_live.bump)]
+    pub pool_live: Box<Account<'info, PoolLive>>,
+    /// CHECK: permission PDA of `market_risk`, under the permission program
+    #[account(mut, seeds = [PERMISSION_SEED, market_risk.key().as_ref()], bump, seeds::program = PERMISSION_PROGRAM_ID)]
+    pub risk_permission: UncheckedAccount<'info>,
+    /// CHECK: permission PDA of `pool_live`
+    #[account(mut, seeds = [PERMISSION_SEED, pool_live.key().as_ref()], bump, seeds::program = PERMISSION_PROGRAM_ID)]
+    pub pool_live_permission: UncheckedAccount<'info>,
+    /// CHECK:
+    #[account(address = PERMISSION_PROGRAM_ID)]
+    pub permission_program: UncheckedAccount<'info>,
+    /// CHECK:
+    #[account(mut, address = EPHEMERAL_VAULT_ID)]
+    pub ephemeral_vault: UncheckedAccount<'info>,
+    /// CHECK:
+    #[account(address = MAGIC_PROGRAM_ID)]
+    pub magic_program: UncheckedAccount<'info>,
+}
+pub fn init_market_permissions(ctx: Context<InitMarketPermissions>) -> Result<()> {
+    // LiteSVM and the L1 base layer have no permission program deployed — a
+    // no-op here keeps the admin bootstrap call idempotent locally and on
+    // devnet regardless of whether it has run before (same executable-gate
+    // style as `commit.rs`'s `magic_program.executable` guard).
+    if !ctx.accounts.permission_program.to_account_info().executable {
+        return Ok(());
+    }
+    let members = build_admin_members(ctx.accounts.config.crank, ctx.accounts.config.admin);
+    let m = ctx.accounts.market.key();
+    let mint = ctx.accounts.pool_live.mint;
+    let rb = [ctx.accounts.market_risk.bump];
+    let lb = [ctx.accounts.pool_live.bump];
+    let pairs: [(AccountInfo, AccountInfo, Vec<&[u8]>); 2] = [
+        (
+            ctx.accounts.market_risk.to_account_info(),
+            ctx.accounts.risk_permission.to_account_info(),
+            vec![RISK_SEED, m.as_ref(), &rb],
+        ),
+        (
+            ctx.accounts.pool_live.to_account_info(),
+            ctx.accounts.pool_live_permission.to_account_info(),
+            vec![POOL_LIVE_SEED, mint.as_ref(), &lb],
+        ),
+    ];
+    for (acc, perm, seeds) in pairs.iter() {
+        let args = EphemeralMembersArgs {
+            is_private: true,
+            members: members.clone(),
+        };
+        // Same "owned by the permission program already?" signal as
+        // `InitPermissions` above (a freshly created `EphemeralPermission`
+        // has 0 lamports, so ownership — not `lamports() > 0` — is what
+        // detects "already exists").
+        if perm.owner == &PERMISSION_PROGRAM_ID {
+            UpdateEphemeralPermissionCpi {
+                payer: acc.clone(),
+                permissioned_account: acc.clone(),
+                permission: perm.clone(),
+                vault: ctx.accounts.ephemeral_vault.to_account_info(),
+                magic_program: ctx.accounts.magic_program.to_account_info(),
+                permission_program: ctx.accounts.permission_program.to_account_info(),
+                authority: acc.clone(),
+                authority_is_signer: false, // PDA signs via the seeds below
+                args,
+            }
+            .invoke_signed(&[seeds.as_slice()])?;
+        } else {
+            CreateEphemeralPermissionCpi {
+                payer: acc.clone(),
+                permissioned_account: acc.clone(),
+                permission: perm.clone(),
+                vault: ctx.accounts.ephemeral_vault.to_account_info(),
+                magic_program: ctx.accounts.magic_program.to_account_info(),
+                permission_program: ctx.accounts.permission_program.to_account_info(),
+                args,
+            }
+            .invoke_signed(&[seeds.as_slice()])?;
+        }
+    }
+    Ok(())
+}
+
 // Week-3 Task 6 (spec §2.4.3): full exit. Same permission-account shape as
 // `SetSession`/`InitPermissions` (the three per-user PDAs + shared vault +
 // permission program) plus `Withdraw`'s magic-fee-vault accounts, since this

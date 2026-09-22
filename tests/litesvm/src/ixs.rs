@@ -135,6 +135,29 @@ pub fn init_balances_root(admin: &Pubkey) -> Instruction {
         data: ix::InitBalancesRoot {}.data(),
     }
 }
+/// `init_market_permissions` (admin, ER): make `MarketRisk` and `PoolLive`
+/// permissioned `[crank, admin]` in one call (week-4 Task 2, risk #24). Same
+/// permission/vault/magic accounts as `init_permissions`; no-op on LiteSVM
+/// since no permission program is deployed here (`permission_program`
+/// resolves to an empty, non-executable PDA).
+pub fn init_market_permissions(admin: &Pubkey, wd: &World) -> Instruction {
+    Instruction {
+        program_id: prog(),
+        accounts: vec![
+            s(admin),
+            r(&wd.config),
+            r(&wd.market),
+            w(&wd.risk),
+            w(&wd.pool_live),
+            w(&pdas::permission(&wd.risk)),
+            w(&pdas::permission(&wd.pool_live)),
+            r(&pdas::permission_program()),
+            w(&pdas::ephemeral_vault()),
+            r(&pdas::magic_program()),
+        ],
+        data: ix::InitMarketPermissions {}.data(),
+    }
+}
 pub fn set_params(
     admin: &Pubkey,
     config: &Pubkey,

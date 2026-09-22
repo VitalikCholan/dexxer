@@ -128,3 +128,39 @@ fn commit_aggregate_snapshots_rounded_values() {
     );
     assert!(pool.last_commit_slot > 0);
 }
+
+// week-4 Task 2 (risk #24): `init_market_permissions` is admin-gated via
+// `Config.has_one = admin`, same as every other `AdminConfig`-pattern ix.
+#[test]
+fn init_market_permissions_admin_only() {
+    let mut h = Harness::new();
+    let w = World::bootstrap(&mut h);
+    let stranger = Keypair::new();
+    h.fund(&stranger.pubkey(), 1_000_000_000);
+    let r = h.send(
+        &[ixs::init_market_permissions(&stranger.pubkey(), &w)],
+        &[&stranger],
+    );
+    assert_custom_error(&r, 6000 + DexxerError::Unauthorized as u32);
+}
+
+// week-4 Task 2: LiteSVM has no permission program deployed, so the whole
+// Create/Update-permission CPI loop must be skipped (same executable-gate
+// style as `commit_aggregate`'s `magic_program` check) — the admin bootstrap
+// call succeeds as a no-op, and calling it twice is equally fine (idempotent
+// bootstrap against a redeployed/reset local or devnet-tee environment).
+#[test]
+fn init_market_permissions_skips_cpi_when_permission_program_absent() {
+    let mut h = Harness::new();
+    let w = World::bootstrap(&mut h);
+    h.send(
+        &[ixs::init_market_permissions(&w.admin.pubkey(), &w)],
+        &[&w.admin],
+    )
+    .unwrap();
+    h.send(
+        &[ixs::init_market_permissions(&w.admin.pubkey(), &w)],
+        &[&w.admin],
+    )
+    .unwrap();
+}

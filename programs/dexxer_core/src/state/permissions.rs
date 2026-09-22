@@ -45,6 +45,24 @@ pub fn build_members(owner: Pubkey, session: Pubkey, crank: Pubkey) -> Vec<Membe
     m
 }
 
+/// Week-4 Task 2 (risk #24): membership for the two market-scoped private
+/// aggregates (`MarketRisk`, `PoolLive`) — neither has a single trader-owner,
+/// so the crank gets full authority flags (it is the only ER writer for
+/// both) and the admin gets viewer-only flags (bootstrap/ops visibility, no
+/// ability to reassign membership).
+pub fn build_admin_members(crank: Pubkey, admin: Pubkey) -> Vec<Member> {
+    vec![
+        Member {
+            flags: OWNER_FLAGS,
+            pubkey: compat_pubkey(crank),
+        },
+        Member {
+            flags: VIEWER_FLAGS,
+            pubkey: compat_pubkey(admin),
+        },
+    ]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -81,5 +99,19 @@ mod tests {
         assert_eq!(crank_member.pubkey, compat_pubkey(pk(3)));
         assert_eq!(crank_member.flags, VIEWER_FLAGS);
         assert_eq!(crank_member.flags & AUTHORITY_FLAG, 0);
+    }
+
+    // Week-4 Task 2 (risk #24): `MarketRisk`/`PoolLive` have no single owner,
+    // so membership is crank (full authority, only ER writer) + admin
+    // (viewer, bootstrap/ops visibility).
+    #[test]
+    fn build_admin_members_is_crank_owner_admin_viewer() {
+        let members = build_admin_members(pk(1), pk(2));
+        assert_eq!(members.len(), 2);
+        assert_eq!(members[0].pubkey, compat_pubkey(pk(1)));
+        assert_eq!(members[0].flags, OWNER_FLAGS);
+        assert_eq!(members[1].pubkey, compat_pubkey(pk(2)));
+        assert_eq!(members[1].flags, VIEWER_FLAGS);
+        assert_eq!(members[1].flags & AUTHORITY_FLAG, 0);
     }
 }

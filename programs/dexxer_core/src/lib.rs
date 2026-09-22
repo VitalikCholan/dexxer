@@ -167,6 +167,9 @@ pub mod dexxer_core {
     pub fn init_permissions(ctx: Context<InitPermissions>) -> Result<()> {
         user::init_permissions(ctx)
     }
+    pub fn init_market_permissions(ctx: Context<InitMarketPermissions>) -> Result<()> {
+        user::init_market_permissions(ctx)
+    }
     pub fn undelegate_user(ctx: Context<UndelegateUser>) -> Result<()> {
         user::undelegate_user(ctx)
     }
