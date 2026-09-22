@@ -26,6 +26,7 @@
 - docs/superpowers/plans/2026-09-20-week2-privacy-devnet.md — план тижня 2 (приватність, devnet-tee, мобільний скелет)
 - docs/superpowers/plans/week2-results.md — виміряні результати тижня 2 (M1–M4, devnet-деплой, crank fix-раунди, мобільний скелет)
 - docs/superpowers/plans/2026-09-22-week3-disclosure-root-exit.md — план тижня 3 (13F на коміті `Pool`, `BalancesRoot`, `undelegate_user`, History/Receipt, CI; дизайн — spec §2.4)
+- docs/superpowers/plans/2026-09-22-week4-mvp-polish.md — план тижня 4 (`PoolLive`+знімок #24, relayer на Railway, онбординг в один клік, UI за Claude Design, подача; дизайн — spec §2.5)
 - docs/superpowers/plans/week3-results.md — виміряні результати тижня 3 (Tasks 0–10, M-A…M-E, рулінги 1–10, LiteSVM-траєкторія 39→65, вартість комітів, відкрите для тижня 4)
 
 ## Правила
