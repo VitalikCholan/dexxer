@@ -183,6 +183,7 @@ pub fn seed_pool(admin: &Pubkey, wd: &World, amount: u64) -> Instruction {
             rs(admin),
             r(&wd.config),
             w(&wd.pool),
+            w(&wd.pool_live),
             w(&ata(admin, &wd.mint)),
             w(&wd.pool_ata),
             r(&TOKEN),

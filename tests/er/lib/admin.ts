@@ -198,6 +198,9 @@ async function seedAndDelegatePool(
         admin: admin.publicKey,
         config,
         pool,
+        // Controller ruling (week-4 Task 1 fix round 1): seed_pool now writes
+        // both Pool and PoolLive, so this call needs pool_live too.
+        poolLive: pdas.poolLive(mint),
         adminAta: adminAta.address,
         vaultAta: poolAta,
         tokenProgram: TOKEN_PROGRAM_ID,

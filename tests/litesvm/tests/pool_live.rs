@@ -21,8 +21,12 @@ fn world_with_price(h: &mut Harness) -> World {
     w
 }
 
+// Controller ruling (week-4 Task 1 fix round 1): seed_pool now writes both
+// Pool and PoolLive, so after a full bootstrap (init_pool_live copies zeros,
+// then seed_pool adds SEED_AMOUNT to both) the two accounts must match
+// field-for-field, not just on the two fields seed_pool touches.
 #[test]
-fn init_pool_live_copies_seeded_pool() {
+fn init_pool_live_copies_pool() {
     let mut h = Harness::new();
     let w = World::bootstrap(&mut h);
     let pool: Pool = h.account(&w.pool);
@@ -30,7 +34,12 @@ fn init_pool_live_copies_seeded_pool() {
     assert_eq!(live.mint, pool.mint);
     assert_eq!(live.capital_total, pool.capital_total);
     assert_eq!(live.protocol_liquidity, pool.protocol_liquidity);
+    assert_eq!(live.locked_total, pool.locked_total);
+    assert_eq!(live.fees_accrued, pool.fees_accrued);
+    assert_eq!(live.insurance, pool.insurance);
+    assert_eq!(live.bad_debt_total, pool.bad_debt_total);
     assert_eq!(live.capital_total, SEED_AMOUNT);
+    assert_eq!(pool.capital_total, SEED_AMOUNT);
 }
 
 #[test]

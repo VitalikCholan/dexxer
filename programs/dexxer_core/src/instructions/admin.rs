@@ -239,24 +239,20 @@ pub struct SeedPool<'info> {
     pub config: Account<'info, Config>,
     #[account(mut, seeds = [POOL_SEED, pool.mint.as_ref()], bump = pool.bump, has_one = vault_ata)]
     pub pool: Account<'info, Pool>,
+    // Controller ruling (week-4 Task 1 fix round 1, supersedes the original
+    // Pool-only decision): a post-devnet-migration `seed_pool` top-up (plausible
+    // during week-4 demos, when trader PnL has drained liquidity) must raise
+    // both records, or `PoolLive.capital_total == vault` breaks immediately.
+    // `Pool` here is the L1-visible seed record; `PoolLive` is the live ledger.
+    #[account(mut, seeds = [POOL_LIVE_SEED, pool_live.mint.as_ref()], bump = pool_live.bump,
+        constraint = pool_live.mint == pool.mint @ DexxerError::PoolLiveMismatch)]
+    pub pool_live: Account<'info, PoolLive>,
     #[account(mut, token::mint = pool.mint, token::authority = admin)]
     pub admin_ata: Account<'info, TokenAccount>,
     #[account(mut)]
     pub vault_ata: Account<'info, TokenAccount>,
     pub token_program: Program<'info, Token>,
 }
-// week-4 Task 1 deviation (decided locally, recorded in task-1-report.md):
-// the brief's snippet has `SeedPool` write both `Pool` and `PoolLive`. Left
-// as `Pool`-only instead — `seed_pool` runs on L1 *before* `init_pool_live`
-// in the established bootstrap order (World::bootstrap / tests/er's
-// `admin.ts`: init_pool -> seed_pool -> init_pool_live -> delegate_*), and
-// `init_pool_live` already copies its starting counters from `Pool` at that
-// later point (see `instructions/pool_live.rs::init_pool_live`). Requiring
-// `pool_live` here would force it to exist before `seed_pool` ever runs,
-// which breaks that ordering (and Task 0's `bootstrap_without_pool_live`
-// fixture, whose whole point is a `Pool` that has been seeded without a
-// `PoolLive` yet). `Pool` is one of this task's three explicitly-allowed
-// writers (init_pool, seed_pool, commit_aggregate) precisely for this reason.
 pub fn seed_pool(ctx: Context<SeedPool>, amount: u64) -> Result<()> {
     require!(amount > 0, DexxerError::AmountZero);
     transfer_signed_by_owner(
@@ -272,6 +268,15 @@ pub fn seed_pool(ctx: Context<SeedPool>, amount: u64) -> Result<()> {
         .checked_add(amount)
         .ok_or(DexxerError::MathOverflow)?;
     p.protocol_liquidity = p
+        .protocol_liquidity
+        .checked_add(amount)
+        .ok_or(DexxerError::MathOverflow)?;
+    let live = &mut ctx.accounts.pool_live;
+    live.capital_total = live
+        .capital_total
+        .checked_add(amount)
+        .ok_or(DexxerError::MathOverflow)?;
+    live.protocol_liquidity = live
         .protocol_liquidity
         .checked_add(amount)
         .ok_or(DexxerError::MathOverflow)?;

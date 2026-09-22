@@ -36,9 +36,12 @@ impl World {
         Self::bootstrap_inner(h, true)
     }
 
-    /// Same as `bootstrap`, but stops short of `init_pool_live` — used by the
-    /// admin-only negative test, which needs the PDA to not yet exist so the
-    /// `has_one = admin` check (not "account already in use") is what fires.
+    /// Same as `bootstrap`, but stops short of `init_pool_live` (and, since
+    /// `seed_pool` now requires `pool_live` to exist — controller ruling,
+    /// week-4 Task 1 fix round 1 — also short of `seed_pool`) — used by the
+    /// admin-only negative test, which needs the `PoolLive` PDA to not yet
+    /// exist so the `has_one = admin` check (not "account already in use")
+    /// is what fires.
     pub fn bootstrap_without_pool_live(h: &mut Harness) -> World {
         Self::bootstrap_inner(h, false)
     }
@@ -83,6 +86,13 @@ impl World {
         .unwrap();
         h.send(&[ixs::init_pool(&admin.pubkey(), &mint)], &[&admin])
             .unwrap();
+        // Controller ruling (week-4 Task 1 fix round 1): init_pool_live right
+        // after init_pool (copies zeros) — seed_pool later needs the PDA to
+        // already exist, since it now writes both Pool and PoolLive.
+        if with_pool_live {
+            h.send(&[ixs::init_pool_live(&admin.pubkey(), &mint)], &[&admin])
+                .unwrap();
+        }
         h.send(&[ixs::init_fee_escrow(&admin.pubkey())], &[&admin])
             .unwrap();
         h.send(&[ixs::init_balances_root(&admin.pubkey())], &[&admin])
@@ -128,14 +138,12 @@ impl World {
             )
             .unwrap();
         }
-        h.send(
-            &[ixs::seed_pool(&w.admin.pubkey(), &w, SEED_AMOUNT)],
-            &[&w.admin],
-        )
-        .unwrap();
+        // seed_pool now writes both Pool and PoolLive (controller ruling), so it
+        // requires PoolLive to already exist — gated on the same flag as
+        // init_pool_live above (bootstrap_without_pool_live skips both).
         if with_pool_live {
             h.send(
-                &[ixs::init_pool_live(&w.admin.pubkey(), &w.mint)],
+                &[ixs::seed_pool(&w.admin.pubkey(), &w, SEED_AMOUNT)],
                 &[&w.admin],
             )
             .unwrap();
