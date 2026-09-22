@@ -371,35 +371,44 @@ self-reschedule-CPI не використовувати (підтверджен�
 
 Preflight: новий бінарник **1 040 080 B** (точно за оцінкою брифу), extend на **101 640 B**
 (рента 0.51698144 SOL) + буфер деплою (рента 5.28527264 SOL) = 5.80225408 SOL; payer мав
-5.950356913 SOL — запас ≈0.098 SOL, продовжено.
+5.950356913 SOL — запас ≈0.098 SOL, продовжено. Усі підписи нижче — **base** (деплой/апгрейд
+програми — завжди L1, ER тут не задіяний).
 
-`solana program extend … 101640` — успіх, payer 5.950356913 → 5.434020713 SOL. Перша спроба
-`anchor deploy --provider.cluster devnet` **впала на `429 Too Many Requests`** —
+| крок | підпис (base) | байти / SOL | payer до → після |
+|---|---|---|---|
+| `solana program extend … 101640` | `37drNM3uj42Fh2u3pPYqzWcxdYS6RDJSutixvoaX8vpMNLtpb8AHMB2syemfb6tQW9wA1WRoPqm7QiFeRcRoX7yt` | +101 640 B (рента 0.516336200 SOL) | 5.950356913 → 5.434020713 |
+| `anchor deploy --provider.cluster devnet` (спроба 1) | — (429 Too Many Requests, підпис не породжено) | буфер `Amq9zwWWjETqXS5K42ax7xj6jSMXWPkrnug1Mv6pykxr` завис (5.2844446 SOL) | 5.434020713 → 0.149466113 (тимчасово) |
+| `solana program close Amq9zw… --bypass-warning` | (закрито окремо, підпис не зберігався — рефанд підтверджено балансом) | повернуто 5.2844446 SOL | 0.149466113 → 5.433905713 |
+| `solana program deploy … --url https://rpc.magicblock.app/devnet --use-rpc` (fallback, спроба 2) | `66DEy5nb9TTEoSKnGhXxDBhz79SYVuvkt3VE9mdA3U6AAuLvVZpq6ukY19jiZcAQ1FSQCnqdFeK4pM8WEe43D9nU` | upgrade + внутрішній буфер закрито атомарно в тій самій tx | 5.433905713 → 5.428750713 |
+
 `--provider.cluster devnet` резолвиться на дефолтний `api.devnet.solana.com`, не на
-`rpc.magicblock.app/devnet` (в `Anchor.toml` нема кастомного URL для `devnet`); лишила завислий
-буфер `Amq9zwWWjETqXS5K42ax7xj6jSMXWPkrnug1Mv6pykxr` (5.2844446 SOL) — закрито
-(`solana program close … --bypass-warning`), повернуто, payer → 5.433905713 SOL. Друга спроба —
-fallback-шлях із брифу: `solana program deploy … --url https://rpc.magicblock.app/devnet --use-rpc`
-— **успіх з першої спроби**, sig
-`66DEy5nb9TTEoSKnGhXxDBhz79SYVuvkt3VE9mdA3U6AAuLvVZpq6ukY19jiZcAQ1FSQCnqdFeK4pM8WEe43D9nU`, payer →
-5.428750713 SOL. Жодних завислих буферів після. **Чиста вартість редеплою: 0.521606200 SOL**
-(0.516336 extend + ~0.0053 net deploy). `devnet-bootstrap.ts` (ідемпотентно) створив і делегував
-`BalancesRoot` уперше цієї гілки (`init_balances_root`
-`2ZaZ136g6r7Esh2Eq8AXKAL8UDC7dcVXVcTTTxML5WszhmfQ3sE9zwTSE4aaUP4mqoJmiLudNNUHynPVet1wknQk`,
-`delegate_balances_root`
-`44Syeax6Tne27zNDdVrxtUTj69yPXJ3MB4XpLhNqbaxu61e6ibS6xaFAqrPVtNkAQtyYTfXeaYp24fGhoxtkTYwJ`).
+`rpc.magicblock.app/devnet` (в `Anchor.toml` нема кастомного URL для `devnet`) — звідси 429 на
+спробі 1. Жодних завислих буферів після спроби 2 (`solana program show --buffers
+--buffer-authority <payer> -u devnet` — порожньо). `solana program show` після:
+`Data Length: 1048272 bytes`, `Balance: 5.3261006 SOL`. **Чиста вартість редеплою: 0.521606200
+SOL** (0.516336200 extend + 0.005155000 net upgrade). `devnet-bootstrap.ts` (ідемпотентно, **base**)
+створив і делегував `BalancesRoot` уперше цієї гілки:
+
+| крок | підпис (base) |
+|---|---|
+| `init_balances_root` | `2ZaZ136g6r7Esh2Eq8AXKAL8UDC7dcVXVcTTTxML5WszhmfQ3sE9zwTSE4aaUP4mqoJmiLudNNUHynPVet1wknQk` |
+| `delegate_balances_root` | `44Syeax6Tne27zNDdVrxtUTj69yPXJ3MB4XpLhNqbaxu61e6ibS6xaFAqrPVtNkAQtyYTfXeaYp24fGhoxtkTYwJ` |
+| action-escrow top-up | `2sXgAmdidyWZ4Zy9t58q37UmPDYf1kEpYr6mDGWtr4GeABJsnQBqbTHbZmBydKECEunYWLJhNxpqsjgRLWvLaq1A` |
 
 ### Рішення після рулінгу 8
 
 Виміряно на throwaway-трейдері (окремий, не 06-скрипту) реальним `commit_aggregate` з
 `remaining_accounts=[Closed Position]`: **(i)** підписаний лише `fee_payer` (не permission-член
-позиції — члени `[owner, session, crank]`) — **PASS**, sig
-`3yNb9tg2qxzkTbLwNpcf6jV9HKipzEapQsRHU5htpkVV1Cp2LLjzKz14R93BmBiWE3uMaq5cDATjPhErUUUShz1M`,
-підтверджено незалежно (перечитано `Position.closed.commitmentWritten==true`, `Commitment` PDA
-реально існує на base, 58 байт). **(ii)** та сама tx з `crank` як зайвим підписантом транзакції
-(не інструкції) — **REJECTED**, `unknown signer` (структурна відмова Solana, не TEE-фільтр
-приватності). **Жоден із двох сценаріїв брифу не спрацював** — (i) вже проходить, тож ні
-`extraSigners`, ні новий `set_fee_payer`-admin-ix не знадобились. **Жодних змін у Rust.**
+позиції — члени `[owner, session, crank]`) — **PASS**, sig **ER** (devnet-tee)
+`3yNb9tg2qxzkTbLwNpcf6jV9HKipzEapQsRHU5htpkVV1Cp2LLjzKz14R93BmBiWE3uMaq5cDATjPhErUUUShz1M` —
+`solana confirm` на **base** повертає `Not found` за задумом (ця tx ER-локальна, ніколи не йде на
+L1 сама по собі; на L1 видно лише її наслідок — `write_commitment`-дію, окремим акаунтом
+`Commitment`). Підтверджено незалежно (перечитано `Position.closed.commitmentWritten==true`,
+`Commitment` PDA реально існує на **base**, 58 байт). **(ii)** та сама tx з `crank` як зайвим
+підписантом транзакції (не інструкції) — **REJECTED**, `unknown signer` (структурна відмова
+web3.js/Solana при локальному підписанні — жодного підпису взагалі не породжено, ні ER ні base;
+не TEE-фільтр приватності). **Жоден із двох сценаріїв брифу не спрацював** — (i) вже проходить,
+тож ні `extraSigners`, ні новий `set_fee_payer`-admin-ix не знадобились. **Жодних змін у Rust.**
 Інтерпретація: TEE-фільтр приватності (week 2, leak-test) гейтить читання через RPC, не власне
 виконання інструкції програмою — членство в permission це контроль видимості для читання, не
 авторизація виконання.
@@ -418,6 +427,8 @@ fallback-шлях із брифу: `solana program deploy … --url https://rpc.
 `mark_committed` + дренаж через `commit_aggregate(dq)` після настання reveal-слоту, потім
 повторити зі свіжим nonce). Задокументовано, не пропатчено в Rust.
 
+**Виправлено у §Task 8b (рулінг 9).**
+
 ### Знахідка: застарілий layout `UserAccount` ламає повний скан `set_balances_root`
 
 На девнеті 12 `UserAccount` через `getProgramAccounts`; **8 із них — застарілого layout** (110/118
@@ -430,65 +441,135 @@ fallback-шлях із брифу: `solana program deploy … --url https://rpc.
 
 ### M-B: `06-commitment-reveal.ts` — PASS
 
-Трейдер `FzNNLyJTRzzXXofdQJDxLsKJkaaUcKEZswaXBdqdU5eN` (run `1790053950057`). Перша спроба
-close (nonce=1) колізувала (описано вище) — дренована. Друга спроба (nonce=2) — **PASS**: commit
-sig `1a6kE9Cu7q7TzUciMepcFgkcSSPySvHk8VXu72kX3ok2i4nAgobzvpzuiiPFWrQQamCRN4GRYtJ57CKXXSQy2Vu`, хеш
-збігся, `mark_committed` звільнив позицію (`DisclosureQueue.len==1`), друга позиція відкрита й
-закрита (`2QMRQMUSzXy69Yw1WCNC6NcSxHHixL94se6TfUKT9jFb5iYGmbXK9mmbh5ShGtjxj718WzPZBEB9abWPGKEPZsVg` /
-`4XK4i1xfTyoDaRRPnxbYY3V7Q6aUAtAenRNkMRhoo7y8Lukv4kdhU7St1GdVZCE4SPiubmu4zvJteg4CgCqiqohw`), reveal
-через `commit_aggregate(dq)`
-(`pEcCaaVZ7CyU9HdJsS685a5RARVCtNrongwx2UMMk1vQkqnrJLhRzU7j2idP2raxGcRHWyMsWY1JCYCxEk6RE3P`) дав
-`Disclosure[2]` з усіма полями == `ClosedRecord`, `owner==default`, хеш перевірено. Таймінги: ER→base
-для `Commitment` — **1.1 с**; для `Disclosure` — **3.0 с**. Усі п'ять PASS-рядків брифу підтверджено.
-M-C не перевимірювався на реальній формі (дорого); спостережено 1 дію на бандл (write_commitment) і
-1 дію (write_disclosure) — ніколи разом у цій задачі; `MAX_ACTIONS_PER_COMMIT` лишається **4**.
+Трейдер `FzNNLyJTRzzXXofdQJDxLsKJkaaUcKEZswaXBdqdU5eN` (run `1790053950057`), position
+`8XDTRckepCSXRUXdjnBJ8n2xxnqVWrxW9PvaPdJ7hsGt`, dq `BggTKA29JuNVdCExrBvPADfqFAmUeQdN8zVp6xXGCg9y`.
+Онбординг (кроки 1-5) — **base** (звичайні L1-транзакції власником, ще до делегації); усе торгове/
+committer-дії (кроки 6+) — **ER** (devnet-tee, TEE-автентифіковане з'єднання). `solana confirm` на
+base для будь-якого ER-підпису нижче повертає `Not found` за задумом (та сама властивість, що й у
+рулінгу 8 вище) — на base видно лише похідні публічні акаунти (`Commitment`/`Disclosure`), не самі
+ER-транзакції.
+
+| крок | шар | підпис | таймінг (ER-sig → base-видимість) |
+|---|---|---|---|
+| fund trader 0.05 SOL | base | `4hogQJCyNyk7ef42HKzuYnDW2gqfPRhX1CcrSFzYuqi6RFwvavJHwPcsXDhuuTRNK8NWDtJEEKR3zHSU7xWBMMRa` | — |
+| faucet_init | base | `26UXvvEk7J5rdFLBPCMcnhvMJhQdeGzdKHfcmtsF9Nn33vhTwpvjMppASQLkwgAzoxHu2WRcgJbGVFXcBeqCkqf2` | — |
+| init_user (exit_salt) | base | `27M2gAYSZU9G7QFwnYoXRVZb75FRrnDEc4d5658di8BmYQfRR9JomLe3A3aMDxmoSAjNWDQYB8HTSnDAGuFHV2Uh` | — |
+| delegateSpl | base | `57c7AyUNeeeCkrqXFLigV9S3Y47p9rniCFdW8Fbxb5gd2LGjr2DV3jZ48fpzyM4miycRJ2aA1HLtueQEivsSVFzx` | — |
+| delegate_user | base | `4N2QtegaL42Jjn3pM9dCzXxW2JqKE88CyHWBdbYSpuTrkkUa12n4ET9yVTSS5DGXD2cD9uewYx3Ryj2vj2GW9Lxq` | — |
+| credit_deposit | **ER** | `4yuBLvZxG1eHKs21nW5ojufYdoaGkDjSS5MG2VW33nu75dBFyvRfehRca3DSxdnBEB74EnfPtA855bvn8DYhzDmX` | — |
+| init_permissions (members=[owner,crank]) | **ER** | `MsTAobmRx33HowFMqAroUwDh5BmNktpxetSQxFChKW9bPi17v7asR2aK6gwjdqecCTuAwz4EtqvdbK8evZKp37d` | — |
+| open #1, спроба 1 (nonce 1) | **ER** | `5czdjhkjz7DUPvC2L22KDuJzjTump7VruSqozQ2JF7CFpr1zPoetn7kA7nkUzLNJEGprcDMo2pUJ6W92XeVNLF5b` | — |
+| close #1, спроба 1 (nonce 1) | **ER** | `64BeSLcV5cBvK2DfopsKRjwyTddxVBsBpg8vqKKDDZUN7ao3N2MQpoxbU6hKdXExrD6UQ29uo82bqvJwp4LRjR7Y` | — |
+| commit_aggregate(position, nonce 1) | **ER** | `2e6LMNHfSXH2jL1XL2rtFNujajxBDAoY23ieUe2s2VRpzvGhXQkXNwZUyo42ChajTTPfpSPKuE2ycbAuXnyigJk1` | 1.2 с (Commitment[1] на base — **колізія**, чужий хеш) |
+| mark_committed (nonce 1) | **ER** | не зафіксовано окремо в логу (лише стан-асерт `Position.state==Empty` після) | — |
+| drain dq (nonce 1, bogus) | **ER** | `5dWLMCdYVd3WhWvfm24NrVbBgm2hbYyZPSZuHYLDygXQ4d2SgPru2mtUewdbrWLKEs43N16GeFCWpQNRWS21Y75N` | — |
+| open #1, спроба 2 (nonce 2) | **ER** | `41p9yfJvtw1q8e6uAjkKHKEsCAJkrGvpLNXSm5jmxh4mUcRdcSmaegv1ZVHbPRYuposdtcuVBNNLuXH5LeszKfi9` | — |
+| close #1, спроба 2 (nonce 2) | **ER** | `CgDB1a1U78vuuuGu1U2WaGLvtvBR9DBbhkKDMT6UTQ1YLcbvoXRZpRyAz8LtK1Xrgk8PxN3xyHGRnGbai9prjts` | — |
+| commit_aggregate(position, nonce 2) | **ER** | `1a6kE9Cu7q7TzUciMepcFgkcSSPySvHk8VXu72kX3ok2i4nAgobzvpzuiiPFWrQQamCRN4GRYtJ57CKXXSQy2Vu` | **1.1 с** (Commitment[2] на base — хеш збігся) |
+| mark_committed (nonce 2) | **ER** | `19S3DiSnHytYTukm4BTbk1HABCmxaNzYq7bQjnkvLBbogpbzjC6d3CeEWzyuHcAc7PxBTJdzynYoJXWzhi7F6H3` | — |
+| open #2 (друга позиція) | **ER** | `2QMRQMUSzXy69Yw1WCNC6NcSxHHixL94se6TfUKT9jFb5iYGmbXK9mmbh5ShGtjxj718WzPZBEB9abWPGKEPZsVg` | — |
+| close #2 | **ER** | `4XK4i1xfTyoDaRRPnxbYY3V7Q6aUAtAenRNkMRhoo7y8Lukv4kdhU7St1GdVZCE4SPiubmu4zvJteg4CgCqiqohw` | ніколи не комітилась (поза скоупом M-B) |
+| commit_aggregate(dq, reveal nonce 2) | **ER** | `pEcCaaVZ7CyU9HdJsS685a5RARVCtNrongwx2UMMk1vQkqnrJLhRzU7j2idP2raxGcRHWyMsWY1JCYCxEk6RE3P` | **3.0 с** (Disclosure[2] на base) |
+
+`Disclosure[2]` — усі поля == `ClosedRecord`, `owner==default`, хеш перевірено (перерахований
+`commitmentHash` з полів `Disclosure` + збереженого `salt` == `Commitment[2].hash`). Усі п'ять
+PASS-рядків брифу підтверджено: `M-B commitment landed`, `hash matches`, `second position opened`,
+`disclosure landed`, `hash verified on-chain`. M-C не перевимірювався на реальній формі (дорого);
+спостережено 1 дію на бандл (write_commitment) і 1 дію (write_disclosure) — ніколи разом у цій
+задачі; `MAX_ACTIONS_PER_COMMIT` лишається **4**.
 
 ### M-E: `07-balances-root.ts` — PASS
 
-Два цикли поспіль: цикл 1 — `filled=4` (з 4 акаунтів сучасного layout), `leaf(owner, free_margin,
-exit_salt, root_slot)` знайдено для відомого трейдера (06) на індексі 3, поза паддінгом жодного
-збігу. Цикл 2 (одразу після) — **64/64 листків змінились**. **12× `commit_aggregate` (Pool +
-BalancesRoot разом)**: escrow ER-баланс `200169040 → 198969040` лампортів, **рівно −100 000 щоразу,
-12/12** — це вже перша реальна вимір **платного** тіру (тиждень 2 бачив лише безкоштовний, nonce
-<25; ескроу сьогодні давно перетнув поріг 25 через усе тестування задачі). 100 000
-лампортів/коміт збігається з `fees-and-commit-economics.md`; чи це за коміт-транзакцію чи за
-акаунт — не розрізнено цим вимірюванням (обидва коміти завжди несли Pool+BalancesRoot разом).
+`UserAccount`-скан (crank-токен, **ER**): 12 знайдено, 8 застарілого layout пропущено (див.
+знахідку вище), 4 сучасного включено в батч. Обидва `set_balances_root`-батчі та обидва
+`commit_aggregate`-коміти нижче — **ER**; `root_slot`/`filled`/листки читані з **base** (`decodeBalancesRoot`
+на сирих байтах, `zero_copy`-акаунт).
+
+| цикл | `set_balances_root` sig (ER) | `commit_aggregate` sig (ER) | `root_slot` (base) | `filled` | листків змінилось vs попередній цикл | FeeEscrow ER-баланс |
+|---|---|---|---|---|---|---|
+| #1 | `KXN3LuuZCCKpUat9DSwSDdhnp8VM76o89ogGDSEXm7iShJy6MhLASr6Hb61fjgpoSK1DYnDG633amdjrMnQf7Ae` | `3CTWukQARwU1Q1SRcZ89ug4Fv1BBPQ6DBXpZbh1bcstmRfyK4KoPqUQJJcZ71wUuwrKU3oL9CS1RbKdS87ppDPSJ` | 330038204 | 4 (≤4 реальних трейдерів, ≤64) | — (перший цикл) | не вимірювався окремо (див. 12× нижче) |
+| #2 | `2mUAKrKTuxafYYH75x4NHweiWAmmaiSpYTZkXc72rkz2PNfDgkJF17q8cT9KZjGffiV8fW4uXStQNc3iZGpQURNR` | `5fgULfNE9x7MpNkmnuyeMLLJa3yGxdSnGQsSwbm4mit6yNNzFeApDERCTN9rqWV4FA7NuLr4xZK95wpEdoibMPeq` | 330039052 | 4 | **64/64** | — |
+
+Відомий трейдер (з 06) `FzNNLyJTRzzXXofdQJDxLsKJkaaUcKEZswaXBdqdU5eN`: `free_margin=999587254`,
+`leaf(owner, free_margin, exit_salt, root_slot)` знайдено на індексі 3 (< `filled=4`, у реальному
+діапазоні); жоден паддінг-слот (індекс ≥ `filled`) не збігається з цим листком.
+
+**12× `commit_aggregate` (Pool + BalancesRoot разом), увесь цикл ER**, `FeeEscrow` ER-баланс:
+
+| # | sig (ER) | escrow до → після (лампорти) | дельта |
+|---|---|---|---|
+| 1 | `HPMVnUdwZcZDWsi8aD6TcM3ZHJx7hMhCpBig1w3ec1GNdXueKF7X4G5QpSxFWUhzXrNyvhxJpuUZnooZf1zUcye` | 200169040 → 200069040 | −100000 |
+| 2 | `25SmWnAtwUhwvvt7iPA2mc3nh7tZ5Kv7HQCTditCxK3Q1MSmh79BPkVh9UpSSTRk4EpyW6VFucKh5x55xxdhy1cL` | 200069040 → 199969040 | −100000 |
+| 3 | `2Z22yvX1xJwFLwnGuKqbBzWGAinP37oEtSsjWR9cwu2MubjDbHqa48f1Mqt5dKDQCawiAMato7mAbMQBF8WcCFFX` | 199969040 → 199869040 | −100000 |
+| 4 | `66Wb7YAqfjvkwwjaPmxEfPvb7rpuHe8WMMqBHvTFmqBzMLU2z7f2bN5aRXY8G5q7AS7w2HgChrxhNNqdk5Jsu3Bb` | 199869040 → 199769040 | −100000 |
+| 5 | `2n8aS77ttRBmoxZ5Jm6A2ZaQqvg9mtu7sE492JibxmXdK9VE28LcoZW58QUsWD7gfydAxWtFPyNanDPHfUu3eGbB` | 199769040 → 199669040 | −100000 |
+| 6 | `2s7CFHQYqknJ2hhVtNzEpwPC4hFsPJisVNrLhYSbbB4qHNgrY9vS2fGdzXqDJVfh72EYXjFqimRREvMJ8DjQx6CE` | 199669040 → 199569040 | −100000 |
+| 7 | `5MzZta872G1YbiJ9Jp697u1UqPbLJ65cfLAbrUDb68w4fv37yDYK4npi6ikSTPkQxj5Ax3xWmjMWcfrYuMwDfifr` | 199569040 → 199469040 | −100000 |
+| 8 | `5dsVDZfu1sgnzdqZaDedz281xvSRMzfyJ1JHJW4MbaG6SmkZwiEHwiV1LW6HtaVwZeVn2samcCTMpAyopb6mVBwf` | 199469040 → 199369040 | −100000 |
+| 9 | `3w1qrWJTNtzKMYP7Scj7jFjesfbY3bHEZ3rBfuiunhKm8BM9iKkJJSe3htQdmtiqzHjM1g2BSNoRF5K2RmPnxf3E` | 199369040 → 199269040 | −100000 |
+| 10 | `5ZoKjqcA7GCJAhD5NYruk5SCg85PGSVDDCpGfcRyoAzxnM2WZp1AfHbCYofVp3UvHzqojYeGJAfHufPxuZ1mjTvC` | 199269040 → 199169040 | −100000 |
+| 11 | `56wA6k9m8MBmfyx2wxGDBjkKPoj6YwBDVMWNt7euqKiP7qkPQZqukrLqosnVPKJdU7616kJp3u6PtTECfDHz9ubn` | 199169040 → 199069040 | −100000 |
+| 12 | `5YUCQa81QjCw6uDhUmDNKCov84ae4AL4c4x7nHkS1mffBuLTr7t2mhe9CpmtVqEj6w11DBKxpFohu8fDSMQjjxYu` | 199069040 → 198969040 | −100000 |
+
+**12/12 успішно, рівно −100 000 лампортів щоразу** — перша реальна вимір **платного** тіру
+(тиждень 2 бачив лише безкоштовний, nonce <25; ескроу сьогодні давно перетнув поріг 25 через усе
+тестування задачі). 100 000 лампортів/коміт збігається з `fees-and-commit-economics.md`; чи це за
+коміт-транзакцію чи за акаунт — не розрізнено цим вимірюванням (обидва коміти завжди несли
+Pool+BalancesRoot разом).
 
 ### M-A: `08-undelegate.ts` — НЕ ДОЛЕТІВ (зафіксовано чесно, без сліпого патчу)
 
-Закриття другої позиції з 06 (nonce=3, свіжий, хеш збігся), дренаж черги, `withdraw(all=999587254)`
-— усе PASS. Передумови `undelegate_user` підтверджено: `Position.state==Empty`,
-`DisclosureQueue.len==0`, `free_margin==locked_margin==0`. Сам `undelegate_user` **падав двічі
-поспіль з однаковою помилкою**: `{"InstructionError":[0,"ExternalAccountDataModified"]}` (sig 1
+Закриття другої позиції з 06 (nonce=3, свіжий, хеш збігся; **ER**), дренаж черги (**ER**),
+`withdraw(all=999587254)` (**ER**) — усе PASS. Передумови `undelegate_user` підтверджено:
+`Position.state==Empty`, `DisclosureQueue.len==0`, `free_margin==locked_margin==0`. Сам
+`undelegate_user` (owner-TEE, **ER**) **падав двічі поспіль з однаковою помилкою**:
+`{"InstructionError":[0,"ExternalAccountDataModified"]}` — sig 1 **ER** (devnet-tee)
 `3SsSoNncVmLtZcttwTodkt8yexdxTUFnT4ELSGV4dAaCcFbUs4khumFuT7WGf95e8mtJHiJjWH5jsFLauirHjY6X`, sig 2 —
-ідемпотентний рестарт скрипту, той самий результат —
-`44RWU8R8v8TsNJ1cH43HxUngNomhVS4KwxpXx8HY3E3nR8cktfH4AFwZiwgBpKS6rmVbBwkh4AxwqPMwGWDd6CKZ`). Base
-підтверджено після обох: `UserAccount`/`Position`/`DisclosureQueue` усі **лишились** власності
-`DELeGGvXpWV2fqJUhqcF5ZSYMS4JTLjteaAMARRSaeSh` (Delegation Program), не `dexxer_core`. На відміну
-від спайкового M-A (тиждень 3, Task 1 — один акаунт, PASS з першої спроби), `undelegate_user`
-робить **три** `CloseEphemeralPermissionCpi` (user_account/position/dq) і лише потім **один**
-`commit_and_undelegate` над усіма трьома разом — комбінація, яку LiteSVM взагалі не може виконати
-(Magic Program там не задеплоєний) і яку спайк перевіряв лише на одному акаунті. **Це перше реальне
-виконання трьохакаунтної комбінації на будь-якій мережі.** Гіпотеза (не підтверджена читанням
-вихідного коду Delegation/Permission Program) зафіксована в `task-8-report.md`; **не пропатчено
-наосліп** — рекомендовано окрему задачу з розслідування.
+ідемпотентний рестарт скрипту, той самий результат, sig **ER**
+`44RWU8R8v8TsNJ1cH43HxUngNomhVS4KwxpXx8HY3E3nR8cktfH4AFwZiwgBpKS6rmVbBwkh4AxwqPMwGWDd6CKZ`.
+`solana confirm` на **base** для обох сигнатур повертає `Not found` за задумом (ці ER-транзакції
+ніколи не намагались дійти до L1 — сам CPI `commit_and_undelegate` усередині них і впав). Base
+підтверджено окремим прямим читанням після обох спроб: `UserAccount`/`Position`/`DisclosureQueue`
+усі **лишились** власності `DELeGGvXpWV2fqJUhqcF5ZSYMS4JTLjteaAMARRSaeSh` (Delegation Program), не
+`dexxer_core`. На відміну від спайкового M-A (тиждень 3, Task 1 — один акаунт, PASS з першої
+спроби), `undelegate_user` робить **три** `CloseEphemeralPermissionCpi` (user_account/position/dq)
+і лише потім **один** `commit_and_undelegate` над усіма трьома разом — комбінація, яку LiteSVM
+взагалі не може виконати (Magic Program там не задеплоєний) і яку спайк перевіряв лише на одному
+акаунті. **Це перше реальне виконання трьохакаунтної комбінації на будь-якій мережі.** Гіпотеза (не
+підтверджена читанням вихідного коду Delegation/Permission Program на момент цього прогону)
+зафіксована в `task-8-report.md`; **не пропатчено наосліп** — рекомендовано окрему задачу з
+розслідування.
+
+**Корінь і фікс: див. §Task 8c (рулінг 10); повторний прогін після редеплою — нижче/наступний
+раунд.**
 
 ### Гаунтлет і баланси
 
 `npx tsc --noEmit` чисто в `tests/er`, `scripts`, `app`. Rust не змінювався — autofixer/LiteSVM/
-`cargo test`/fmt/clippy/IDL поза скоупом цієї задачі. Фінальні баланси: `payer` 5.228740713 SOL,
-`devnet-admin` 0.35488156 SOL, `devnet-fee-payer` 0.25 SOL, `devnet-crank` 0.1 SOL, трейдер 06/08
-(`FzNNLyJTRzzXXofdQJDxLsKJkaaUcKEZswaXBdqdU5eN`) 0.027072888 SOL. Витрачено payer'ом за задачу
-**≈0.7216 SOL** (5.950356913 → 5.228740713): редеплой 0.521606200 SOL + ~0.2 SOL допоміжних
-топ-апів `devnet-admin` (двічі +0.1 SOL, бо ruling-8-пробник і повторні прогони 06/07 з'їли поріг
-`requireFunded` 0.3 SOL).
+`cargo test`/fmt/clippy/IDL поза скоупом цієї задачі.
+
+| ідентичність | до задачі (SOL) | після задачі (SOL) | дельта |
+|---|---|---|---|
+| `payer` (spikes/keys/payer.json) | 5.950356913 | 5.228740713 | **−0.721616200** |
+| `devnet-admin` | 0.46889156 | 0.35488156 | −0.114010 (top-up'и з payer компенсували більше) |
+| `devnet-fee-payer` | 0.25 | 0.25 | 0 (сам fee-payer лише авторизує ER-tx; комісії йдуть з `FeeEscrow`, не з його власного base-балансу) |
+| `devnet-crank` | 0.1 | 0.1 | 0 (та сама причина — crank підписує лише ER-tx) |
+| трейдер `FzNNLyJTRzzXXofdQJDxLsKJkaaUcKEZswaXBdqdU5eN` (06/08) | 0 (свіжий, ще не існував) | 0.027072888 | +0.027072888 (з 0.05 фандингу, решта — ER/base комісії) |
+
+Витрачено payer'ом за задачу **≈0.7216 SOL** (5.950356913 → 5.228740713): редеплой 0.521606200
+SOL + два top-up'и `devnet-admin` по +0.1 SOL (
+`gSWTvg3hbaCVTgRSj7NXDKGeFybocPX72mtM5BHTSuewPAAG36kzSFVNeS7JCQUA8tC7varQ83751HJxuQcQvT6`,
+`2JEn1BNMgmVz644kEsPCSDhrVMCsF14CSr9Q7MW4oibZZYR5ffwdZy4NLWar6kyGo8mu1V8zuHUcHUGgjx8vngmW`, обидва
+**base**) — необхідні, бо ruling-8-пробник і повторні прогони 06/07 з'їли поріг `requireFunded`
+0.3 SOL на `devnet-admin`.
 
 ### Файли
 
 - Create: `tests/er/devnet/06-commitment-reveal.ts`, `07-balances-root.ts`, `08-undelegate.ts`.
 - Modify: `tests/er/package.json` (`devnet:disclosure|root|undelegate`),
   `tests/er/devnet/03-commit-cycle.ts` (застарілий doc-коментар "лише Pool комітиться" →
-  "Pool і BalancesRoot"), цей файл (§Task 8).
+  "Pool і BalancesRoot"), `tests/er/devnet/07-balances-root.ts` (fix round 1: doc-коментар
+  "7 of 12" → "8 of 12", звірено з реальним логом прогону), цей файл (§Task 8).
 - Жодних змін у `programs/` — M-C не перевимірювався на реальній формі, рулінг 8 не зажадав Rust-шляху.
 
 Повний звіт (кожна команда, вивід, self-review, занепокоєння) —

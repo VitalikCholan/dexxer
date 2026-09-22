@@ -108,7 +108,7 @@ async function main() {
     // exercises exactly that allowance rather than patching the program:
     // `init_if_needed` is banned (CLAUDE.md) and there is no migration ix, so
     // fixing this for real is an account-versioning task outside Task 8's
-    // scope (redeploy + scripts). 7 of 12 accounts were legacy on this run.
+    // scope (redeploy + scripts). 8 of 12 accounts were legacy on this run.
     const filtered: (typeof userAccs)[number][] = [];
     for (const u of userAccs) {
       try {
