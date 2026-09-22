@@ -27,6 +27,17 @@ import type { RelayerState } from "./crank.js";
 export const STALE_MS = 60_000;
 const BALANCE_CACHE_MS = 60_000;
 
+/** Task 5 (indexer) snapshot — zeroed/null when the indexer is disabled or hasn't produced anything yet. */
+export interface IndexerSnapshot {
+  ticks: number;
+  lastTickTs: number | null;
+  lastPoolSlot: number | null;
+  disclosures: number;
+  wsClients: number;
+}
+
+const EMPTY_INDEXER_SNAPSHOT: IndexerSnapshot = { ticks: 0, lastTickTs: null, lastPoolSlot: null, disclosures: 0, wsClients: 0 };
+
 export interface HealthPayload {
   ok: boolean;
   lastTickAt: number | null;
@@ -37,6 +48,7 @@ export interface HealthPayload {
   /** Task 7 wires the scheduler up; always false until then. */
   schedulerActive: boolean;
   db: "ok" | "error";
+  indexer: IndexerSnapshot;
 }
 
 /** Pure: no I/O, so this is what test/health.test.ts exercises directly. */
@@ -46,6 +58,7 @@ export function buildHealthPayload(
   crankSol: number | null,
   feePayerSol: number | null,
   dbStatus: "ok" | "error",
+  indexer?: IndexerSnapshot,
 ): HealthPayload {
   const stale = state.lastTickAt === null || now - state.lastTickAt > STALE_MS;
   return {
@@ -57,6 +70,7 @@ export function buildHealthPayload(
     feePayerSol,
     schedulerActive: false,
     db: dbStatus,
+    indexer: indexer ?? EMPTY_INDEXER_SNAPSHOT,
   };
 }
 
@@ -66,6 +80,8 @@ export interface HealthDeps {
   crankPubkey: PublicKey;
   feePayerPubkey: PublicKey;
   db: DbPool | null;
+  /** Task 5: getter (not a value) so `/healthz` always reads the indexer's live counters rather than a snapshot captured at router-construction time. */
+  getIndexerSnapshot?: () => IndexerSnapshot;
 }
 
 interface BalanceCache {
@@ -105,7 +121,7 @@ export function healthRouter(deps: HealthDeps): Router {
       dbStatus = "error"; // no DATABASE_URL configured (local dev without Postgres — see db.ts)
     }
 
-    const payload = buildHealthPayload(deps.state, now, cache.crankSol, cache.feePayerSol, dbStatus);
+    const payload = buildHealthPayload(deps.state, now, cache.crankSol, cache.feePayerSol, dbStatus, deps.getIndexerSnapshot?.());
     res.status(payload.ok ? 200 : 503).json(payload);
   });
 

@@ -36,6 +36,8 @@ import { createPool, getMeta, migrate, setMeta } from "./db.js";
 import { healthRouter } from "./health.js";
 import { shutdown } from "./shutdown.js";
 import type { RelayerConfig, RelayerState } from "./crank.js";
+import { attachWs, indexerRouter } from "./indexer/http.js";
+import type { IndexerStats } from "./indexer/accounts.js";
 
 if ((process.env.DEXXER_NET ?? "local") === "devnet") {
   process.env.BASE_RPC ??= "https://rpc.magicblock.app/devnet";
@@ -92,6 +94,29 @@ if (pool) {
 }
 
 const app = express();
+
+const server = app.listen(cfg.port, () => {
+  console.log(`relayer: listening on :${cfg.port} net=${cfg.net}`);
+});
+
+// Task 5: public-data indexer (oracle candles, Pool/BalancesRoot snapshots,
+// Disclosure feed) — needs Postgres (`pool`) and `INDEXER_ENABLED=true`.
+// Reads ONLY public accounts (see indexer/accounts.ts's header comment) —
+// never `cfg.crank`/`cfg.feePayer`.
+const indexerStats: IndexerStats = { ticks: 0, lastTickTs: null, lastPoolSlot: null, disclosures: 0 };
+let wsHub: ReturnType<typeof attachWs> | null = null;
+let stopIndexer: (() => void) | null = null;
+if (cfg.indexerEnabled && !pool) {
+  console.warn("indexer: INDEXER_ENABLED=true but no DATABASE_URL — indexer disabled (needs Postgres)");
+} else if (cfg.indexerEnabled && pool) {
+  wsHub = attachWs(server);
+  app.use(indexerRouter(pool));
+  const { startIndexer } = await import("./indexer/accounts.js");
+  const hub = wsHub;
+  stopIndexer = startIndexer({ pool, stats: indexerStats, broadcast: (msg) => hub.broadcast(msg) });
+  console.log("indexer: started (oracle candles, Pool/BalancesRoot snapshots, Disclosure feed, /ws)");
+}
+
 app.use(
   healthRouter({
     state,
@@ -99,12 +124,9 @@ app.use(
     crankPubkey: cfg.crank.publicKey,
     feePayerPubkey: cfg.feePayer.publicKey,
     db: pool,
+    getIndexerSnapshot: () => ({ ...indexerStats, wsClients: wsHub?.clientCount() ?? 0 }),
   }),
 );
-
-const server = app.listen(cfg.port, () => {
-  console.log(`relayer: listening on :${cfg.port} net=${cfg.net}`);
-});
 
 // Kept as a reference (not just `.catch()`ed and discarded): `shutdown()`
 // below awaits this to know the loop has actually stopped. `.catch()` here
@@ -120,6 +142,8 @@ let shuttingDown = false;
 function handleSignal(signal: string): void {
   if (shuttingDown) return;
   shuttingDown = true;
+  stopIndexer?.();
+  wsHub?.close();
   void shutdown(signal, {
     requestStop,
     crankDone,

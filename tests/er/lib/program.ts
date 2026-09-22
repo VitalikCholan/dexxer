@@ -71,6 +71,10 @@ export const POSITION_DISC = bs58.encode(new BorshAccountsCoder(DEXXER_CORE_IDL)
 // `UserAccount`.
 export const DQ_DISC = bs58.encode(new BorshAccountsCoder(DEXXER_CORE_IDL).accountDiscriminator("DisclosureQueue"));
 export const USER_DISC = bs58.encode(new BorshAccountsCoder(DEXXER_CORE_IDL).accountDiscriminator("UserAccount"));
+// Task 5 (services/relayer indexer): same idea, for the public `Disclosure`
+// account gPA discovery filter (`getProgramAccounts`/`onProgramAccountChange`
+// memcmp on offset 0).
+export const DISCLOSURE_DISC = bs58.encode(new BorshAccountsCoder(DEXXER_CORE_IDL).accountDiscriminator("Disclosure"));
 
 export function anchorProvider(conn: Connection, wallet: Keypair): AnchorProvider {
   return new AnchorProvider(conn, new Wallet(wallet), { commitment: "confirmed", skipPreflight: true });

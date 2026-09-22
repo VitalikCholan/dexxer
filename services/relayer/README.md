@@ -19,7 +19,68 @@ permission member of (privacy rule, see repo `CLAUDE.md`).
 - `src/health.ts` — `GET /healthz`, Railway's healthcheck target.
 - `src/db.ts` — Postgres pool + startup SQL migrations
   (`migrations/*.sql`).
+- `src/indexer/` (Task 5) — public-data indexer: oracle price candles,
+  `Pool`/`BalancesRoot` snapshots, the `Disclosure` feed, REST + WS. See
+  "Indexer" below.
 - `src/index.ts` — wires the above together, graceful `SIGTERM`.
+
+## Indexer (Task 5)
+
+`INDEXER_ENABLED=true` (needs `DATABASE_URL`) starts a second subsystem,
+independent of the crank loop, that reads ONLY public data — never
+`cfg.crank`/`cfg.feePayer` — and mirrors it into Postgres for REST/WS
+clients (the mobile app, a dashboard, anything that wants prices/pool
+health/disclosures without running its own RPC subscriptions):
+
+- `src/indexer/prices.ts` — `decodeFeed(data)`, a byte-for-byte TS port of
+  `programs/dexxer_core/src/oracle.rs::parse_price_update` (same offsets,
+  golden-vector-tested against that file's own Rust unit tests in
+  `test/feed.test.ts`). The oracle account is read on the **TEE RPC with NO
+  auth token** (`wss://devnet-tee.magicblock.app`, unauthenticated) — the
+  feed account is public even though it lives behind the TEE endpoint; base
+  RPC only holds a stale committed copy.
+- `src/indexer/candles.ts` — pure OHLC bucketing (`pushTick`/
+  `aggregateCandles`), no DB — see `test/candles.test.ts`.
+- `src/indexer/accounts.ts` — subscriptions with poll-fallback/reconnect for
+  the oracle feed, `Pool`, `BalancesRoot` (all base-RPC `onAccountChange`
+  where applicable), plus `Disclosure` discovery (`getProgramAccounts`
+  memcmp every 30s + `onProgramAccountChange`).
+- `src/indexer/store.ts` — Postgres read/write helpers for the four tables
+  in `migrations/001_indexer.sql` (`ticks`, `pool_snapshots`, `disclosures`,
+  `roots`).
+- `src/indexer/http.ts` — the REST router (mounted on the same Express
+  `app`) and `attachWs` (a `ws` server on the same HTTP server, path `/ws`).
+
+### REST API
+
+All endpoints return JSON. Base URL: the relayer's own domain.
+
+| Method & path | Query params | Returns |
+| --- | --- | --- |
+| `GET /prices` | `tf` (`1m`\|`5m`\|`15m`, default `1m`), `limit` (default 300, max 1000) | `{ tf, candles: [{ t, o, h, l, c }] }` — `t` unix ms, `o/h/l/c` are plain numbers (SOL/USD price, 1e6 scale) |
+| `GET /mark` | — | `{ price, slot, ts }` — `price` is a **string** (see Numbers below), or all-`null` if no tick has landed yet |
+| `GET /pool/history` | `limit` (default 100, max 1000) | array of Pool snapshot rows, oldest→newest |
+| `GET /pool/latest` | — | one Pool snapshot row, or `null` |
+| `GET /disclosures` | `limit` (default 100, max 1000) | array of closed-trade disclosure rows, newest `closed_slot` first |
+| `GET /root/latest` | — | `{ root_slot, filled, leavesHex }`, or `null` |
+| `GET /healthz` | — | (Task 4) health payload, now also carrying `indexer: { ticks, lastTickTs, lastPoolSlot, disclosures, wsClients }` |
+| `GET /ws` (WebSocket, not REST) | — | pushes `{type:"mark",price,ts}` (throttled to ≤1/s), `{type:"pool",...}` on a new Pool snapshot, `{type:"disclosure",...}` on a newly discovered Disclosure |
+
+A Pool snapshot row: `{ slot, ts, capital_total, protocol_liquidity, locked_total, fees_accrued, insurance, bad_debt_total }`.
+A disclosure row: `{ pubkey, side, size, entry, exit, pnl, fees, reason, opened_slot, closed_slot, nonce, ts }`.
+`ts` on a disclosure row is **ingestion time**, not `closed_slot`'s block
+time — an extra `getBlockTime` per discovered account wasn't judged worth
+the RPC cost for what is a rolling public archive, not a precise ledger.
+
+### Numbers
+
+Postgres `bigint` columns come back from `pg` as JS **strings** (no custom
+type parser is installed) — `capital_total`/`protocol_liquidity`/`size`/
+`entry`/`exit`/`pnl`/`fees`/`nonce`/etc could exceed `Number.MAX_SAFE_INTEGER`
+(2^53) as volume grows, so `store.ts`/`http.ts` never coerce them and they
+reach REST/WS clients as JSON **strings**. Candle `o/h/l/c` (SOL/USD price
+in 1e6 scale) and every `slot`/`ts`/`limit`/`nonce`-adjacent small integer
+stay plain JSON **numbers** — nowhere near 2^53.
 
 ## Env vars
 
@@ -31,7 +92,8 @@ permission member of (privacy rule, see repo `CLAUDE.md`).
 | `PORT` | no (default `8080`) | HTTP port |
 | `DATABASE_URL` | prod | Postgres connection string (Railway reference variable to the Postgres plugin); unset = no persistence, `/healthz`'s `db` reports `"error"` |
 | `CRANK_INTERVAL_MS` | no (default `1000`) | tick cadence |
-| `INDEXER_ENABLED` / `SPONSOR_ENABLED` | no (default `false`) | reserved for Tasks 5/6 |
+| `INDEXER_ENABLED` | no (default `false`) | Task 5: starts the public-data indexer (see above) — needs `DATABASE_URL`, disabled with a warning if it's unset |
+| `SPONSOR_ENABLED` | no (default `false`) | reserved for Task 6 |
 
 Never commit key values. Encode a local keyfile for Railway with:
 
@@ -48,6 +110,19 @@ DEXXER_NET=devnet npm start   # crank + fee-payer keys auto-loaded/created under
 curl localhost:8080/healthz
 ```
 
+To also exercise the indexer locally, set `INDEXER_ENABLED=true` and point
+`DATABASE_URL` at a reachable Postgres (the Railway Postgres plugin's
+*public* proxy URL for a laptop — `railway variables --service Postgres`
+after `railway link`, never a value to paste into files/reports):
+
+```sh
+DEXXER_NET=devnet INDEXER_ENABLED=true DATABASE_URL=postgresql://... npm start
+curl "localhost:8080/prices?tf=1m&limit=10"
+curl localhost:8080/mark
+curl localhost:8080/pool/latest
+curl "localhost:8080/disclosures?limit=5"
+```
+
 Without `DATABASE_URL` set, `db.ts` logs a warning and runs without
 Postgres — the crank loop is unaffected; only `/healthz`'s `lastTickAt`/
 `lastCommitAt` persistence across restarts and its `db` field are skipped.
@@ -55,7 +130,8 @@ Postgres — the crank loop is unaffected; only `/healthz`'s `lastTickAt`/
 ## Tests
 
 ```sh
-npm test        # node:test — keypairFromEnv b58 round-trip, health-payload staleness logic
+npm test        # node:test — keypairFromEnv b58 round-trip, health-payload staleness logic,
+                 # candles.ts bucketing (pure), prices.ts::decodeFeed (golden vectors vs oracle.rs)
 npx tsc --noEmit
 ```
 
