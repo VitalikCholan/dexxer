@@ -129,7 +129,7 @@ async function main() {
     const ix = await feePayerCore.methods
       .commitAggregate()
       .accounts({
-        config: pdas.config(), payer: feePayer.publicKey, pool: boot.pool, balancesRoot: boot.balancesRoot,
+        config: pdas.config(), payer: feePayer.publicKey, pool: boot.pool, poolLive: boot.poolLive, balancesRoot: boot.balancesRoot,
         feeEscrow: boot.feeEscrow, magicFeeVault: cfg.magicFeeVault, magicContext: MAGIC_CONTEXT_ID, magicProgram: MAGIC_PROGRAM_ID,
       })
       .remainingAccounts(remainingKey ? [{ pubkey: remainingKey, isWritable: true, isSigner: false }] : [])
@@ -193,7 +193,7 @@ async function main() {
     const withdrawIx = await coreOwnerEr.methods
       .withdraw(new BN(freeMarginBefore.toString()))
       .accounts({
-        owner: owner.publicKey, userAccount, pool: boot.pool, ownerAta: userAta, vaultAta: boot.poolAta, tokenProgram: TOKEN_PROGRAM_ID,
+        owner: owner.publicKey, userAccount, pool: boot.pool, poolLive: boot.poolLive, ownerAta: userAta, vaultAta: boot.poolAta, tokenProgram: TOKEN_PROGRAM_ID,
         config: pdas.config(), feeEscrow: boot.feeEscrow, magicFeeVault: cfg.magicFeeVault, magicContext: MAGIC_CONTEXT_ID, magicProgram: MAGIC_PROGRAM_ID,
       })
       .instruction();

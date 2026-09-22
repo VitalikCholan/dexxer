@@ -351,7 +351,7 @@ pub fn crank_tick(crank: &Pubkey, wd: &World, candidates: &[&Trader]) -> Instruc
         r(&wd.config),
         w(&wd.market),
         w(&wd.risk),
-        w(&wd.pool),
+        w(&wd.pool_live),
         r(&wd.feed),
     ];
     for t in candidates {
@@ -370,7 +370,8 @@ pub fn credit_deposit(signer: &Pubkey, t: &Trader, wd: &World, amount: u64) -> I
         accounts: vec![
             rs(signer),
             w(&t.user),
-            w(&wd.pool),
+            r(&wd.pool),
+            w(&wd.pool_live),
             w(&ata(signer, &wd.mint)),
             w(&wd.pool_ata),
             r(&TOKEN),
@@ -387,7 +388,8 @@ pub fn withdraw(signer: &Pubkey, t: &Trader, wd: &World, amount: u64) -> Instruc
         accounts: vec![
             rs(signer),
             w(&t.user),
-            w(&wd.pool),
+            r(&wd.pool),
+            w(&wd.pool_live),
             w(&ata(signer, &wd.mint)),
             w(&wd.pool_ata),
             r(&TOKEN),
@@ -408,6 +410,7 @@ pub fn commit_aggregate(payer: &Pubkey, wd: &World, extra: &[AccountMeta]) -> In
         r(&wd.config),
         rs(payer),
         w(&wd.pool),
+        r(&wd.pool_live),
         w(&wd.balances_root),
         w(&wd.fee_escrow),
         w(&wd.magic_fee_vault),

@@ -26,7 +26,7 @@ fn withdraw_moves_tokens_and_debits_free_margin() {
         1_000_000_000 - amount
     );
     assert_eq!(
-        h.account::<Pool>(&w.pool).capital_total,
+        h.account::<PoolLive>(&w.pool_live).capital_total,
         SEED_AMOUNT + 1_000_000_000 - amount
     );
     assert_eq!(token_balance(&h.svm, &w.pool_ata), vault_before - amount);

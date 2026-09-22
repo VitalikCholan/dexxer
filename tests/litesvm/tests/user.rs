@@ -62,7 +62,7 @@ fn credit_deposit_moves_tokens_and_credits_free_margin() {
     let t = w.new_trader(&mut h, 1_000_000_000); // 1000 dUSDC
     assert_eq!(h.account::<UserAccount>(&t.user).free_margin, 1_000_000_000);
     assert_eq!(
-        h.account::<Pool>(&w.pool).capital_total,
+        h.account::<PoolLive>(&w.pool_live).capital_total,
         SEED_AMOUNT + 1_000_000_000
     );
     assert_eq!(

@@ -90,6 +90,8 @@ export interface Bootstrapped {
   marketRisk: PublicKey;
   pool: PublicKey;
   poolAta: PublicKey;
+  /** Private live pool counters (week 4, Task 1) — see `pdas.poolLive`. Derived here for every trade/money-ix caller; on-chain creation/delegation (`init_pool_live`/`delegate_pool_live`) is not yet wired into this bootstrap (tracked follow-up, task-1-report.md). */
+  poolLive: PublicKey;
   feed: PublicKey;
   /** `commit_aggregate`'s delegated CPI-payer PDA (Task 5 fix round 1 — see admin.rs `FeeEscrow`). */
   feeEscrow: PublicKey;
@@ -567,7 +569,7 @@ export async function bootstrap(): Promise<Bootstrapped> {
   // --- init + delegate the fee-escrow PDA (Task 5 fix round 1) ---
   const feeEscrow = await initAndDelegateFeeEscrow(core, admin, config, sigs);
 
-  return { admin, mint, market, marketRisk, pool, poolAta, feed, feeEscrow, sigs };
+  return { admin, mint, market, marketRisk, pool, poolAta, poolLive: pdas.poolLive(mint), feed, feeEscrow, sigs };
 }
 
 export async function bootstrapDevnet(): Promise<BootstrappedDevnet> {
@@ -730,5 +732,5 @@ export async function bootstrapDevnet(): Promise<BootstrappedDevnet> {
   const balancesRoot = await initAndDelegateBalancesRoot(core, admin, config, sigs);
   const actionEscrow = await topUpActionEscrow(admin, feePayer, sigs);
 
-  return { admin, mint, market, marketRisk, pool, poolAta, feed, feeEscrow, sigs, feePayer, balancesRoot, actionEscrow };
+  return { admin, mint, market, marketRisk, pool, poolAta, poolLive: pdas.poolLive(mint), feed, feeEscrow, sigs, feePayer, balancesRoot, actionEscrow };
 }

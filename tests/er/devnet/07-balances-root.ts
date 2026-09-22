@@ -150,7 +150,7 @@ async function main() {
     const ix = await feePayerCore.methods
       .commitAggregate()
       .accounts({
-        config: pdas.config(), payer: feePayer.publicKey, pool: boot.pool, balancesRoot: boot.balancesRoot,
+        config: pdas.config(), payer: feePayer.publicKey, pool: boot.pool, poolLive: boot.poolLive, balancesRoot: boot.balancesRoot,
         feeEscrow: boot.feeEscrow, magicFeeVault: cfg.magicFeeVault, magicContext: MAGIC_CONTEXT_ID, magicProgram: MAGIC_PROGRAM_ID,
       })
       .remainingAccounts([])

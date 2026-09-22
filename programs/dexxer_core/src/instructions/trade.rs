@@ -18,8 +18,13 @@ pub struct Trade<'info> {
     pub market: Account<'info, Market>,
     #[account(mut, seeds = [RISK_SEED, market.key().as_ref()], bump = market_risk.bump, has_one = market)]
     pub market_risk: Account<'info, MarketRisk>,
-    #[account(mut, seeds = [POOL_SEED, pool.mint.as_ref()], bump = pool.bump)]
-    pub pool: Account<'info, Pool>,
+    // Live pool counters (week-4 Task 1): every trading instruction writes here,
+    // never the public `Pool` (only `commit_aggregate` writes that, as a
+    // step-rounded snapshot). Self-referential seed (mirrors `CommitAggregate`'s
+    // `pool_live` field) since `Trade` carries no separate `Pool` account to read
+    // the mint from.
+    #[account(mut, seeds = [POOL_LIVE_SEED, pool_live.mint.as_ref()], bump = pool_live.bump)]
+    pub pool_live: Account<'info, PoolLive>,
     // Boxed: week-3 Task 0 grew `UserAccount` by `exit_salt: [u8; 32]`, which
     // tipped this context's account-validation stack frame 8 bytes past the
     // SBF limit (same failure mode `Position` below already worked around) —
@@ -74,7 +79,7 @@ pub fn open_position(
     let chk = risk::check_open(
         &a.market,
         &a.market_risk,
-        &a.pool,
+        &a.pool_live,
         side,
         size,
         margin,
@@ -96,7 +101,7 @@ pub fn open_position(
         .locked_margin
         .checked_add(margin)
         .ok_or(DexxerError::MathOverflow)?;
-    let pool = &mut a.pool;
+    let pool = &mut a.pool_live;
     pool.locked_total = pool
         .locked_total
         .checked_add(margin)
@@ -163,8 +168,8 @@ pub fn add_margin(mut ctx: Context<Trade>, amount: u64) -> Result<()> {
         .locked_margin
         .checked_add(amount)
         .ok_or(DexxerError::MathOverflow)?;
-    a.pool.locked_total = a
-        .pool
+    a.pool_live.locked_total = a
+        .pool_live
         .locked_total
         .checked_add(amount)
         .ok_or(DexxerError::MathOverflow)?;
@@ -197,7 +202,7 @@ pub fn close_position(mut ctx: Context<Trade>, limit_price: u64) -> Result<()> {
     finalize_close(
         market_key,
         &mut a.market_risk,
-        &mut a.pool,
+        &mut a.pool_live,
         &mut a.user_account,
         &mut a.position,
         px.price,
@@ -275,7 +280,13 @@ pub fn increase_position(
         }
     }
     let chk = risk::check_open(
-        &a.market, &risk_view, &a.pool, side, new_size, new_margin, new_entry,
+        &a.market,
+        &risk_view,
+        &a.pool_live,
+        side,
+        new_size,
+        new_margin,
+        new_entry,
     )?;
     let delta_notional = math::notional(add_size, px.price)?;
     let fee = math::fee(delta_notional, a.market.open_fee_bps as u32)?;
@@ -295,7 +306,7 @@ pub fn increase_position(
         .locked_margin
         .checked_add(add_margin)
         .ok_or(DexxerError::MathOverflow)?;
-    let pool = &mut a.pool;
+    let pool = &mut a.pool_live;
     pool.locked_total = pool
         .locked_total
         .checked_add(add_margin)
@@ -358,7 +369,7 @@ pub fn decrease_position(mut ctx: Context<Trade>, close_size: u64, limit_price: 
         finalize_close(
             market_key,
             &mut a.market_risk,
-            &mut a.pool,
+            &mut a.pool_live,
             &mut a.user_account,
             &mut a.position,
             px.price,
@@ -396,7 +407,7 @@ pub fn decrease_position(mut ctx: Context<Trade>, close_size: u64, limit_price: 
         a.market.close_fee_bps as u32,
     )?;
     let s = risk::settle(released, pnl, fee)?;
-    risk::settle_into_pool(&mut a.pool, released, &s, false)?;
+    risk::settle_into_pool(&mut a.pool_live, released, &s, false)?;
     let u = &mut a.user_account;
     u.free_margin = u
         .free_margin
@@ -456,7 +467,7 @@ pub fn decrease_position(mut ctx: Context<Trade>, close_size: u64, limit_price: 
 pub fn finalize_close(
     market_key: Pubkey,
     risk_acc: &mut MarketRisk,
-    pool: &mut Pool,
+    pool: &mut PoolLive,
     user: &mut UserAccount,
     pos: &mut Position,
     exit: u64,

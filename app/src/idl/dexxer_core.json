@@ -71,7 +71,7 @@
           }
         },
         {
-          "name": "pool",
+          "name": "pool_live",
           "writable": true,
           "pda": {
             "seeds": [
@@ -81,13 +81,18 @@
                   112,
                   111,
                   111,
-                  108
+                  108,
+                  95,
+                  108,
+                  105,
+                  118,
+                  101
                 ]
               },
               {
                 "kind": "account",
-                "path": "pool.mint",
-                "account": "Pool"
+                "path": "pool_live.mint",
+                "account": "PoolLive"
               }
             ]
           }
@@ -274,7 +279,7 @@
           }
         },
         {
-          "name": "pool",
+          "name": "pool_live",
           "writable": true,
           "pda": {
             "seeds": [
@@ -284,13 +289,18 @@
                   112,
                   111,
                   111,
-                  108
+                  108,
+                  95,
+                  108,
+                  105,
+                  118,
+                  101
                 ]
               },
               {
                 "kind": "account",
-                "path": "pool.mint",
-                "account": "Pool"
+                "path": "pool_live.mint",
+                "account": "PoolLive"
               }
             ]
           }
@@ -411,6 +421,32 @@
                 "kind": "account",
                 "path": "pool.mint",
                 "account": "Pool"
+              }
+            ]
+          }
+        },
+        {
+          "name": "pool_live",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  111,
+                  111,
+                  108,
+                  95,
+                  108,
+                  105,
+                  118,
+                  101
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "pool_live.mint",
+                "account": "PoolLive"
               }
             ]
           }
@@ -602,7 +638,7 @@
           }
         },
         {
-          "name": "pool",
+          "name": "pool_live",
           "writable": true,
           "pda": {
             "seeds": [
@@ -612,13 +648,18 @@
                   112,
                   111,
                   111,
-                  108
+                  108,
+                  95,
+                  108,
+                  105,
+                  118,
+                  101
                 ]
               },
               {
                 "kind": "account",
-                "path": "pool.mint",
-                "account": "Pool"
+                "path": "pool_live.mint",
+                "account": "PoolLive"
               }
             ]
           }
@@ -672,7 +713,6 @@
         },
         {
           "name": "pool",
-          "writable": true,
           "pda": {
             "seeds": [
               {
@@ -682,6 +722,33 @@
                   111,
                   111,
                   108
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "pool.mint",
+                "account": "Pool"
+              }
+            ]
+          }
+        },
+        {
+          "name": "pool_live",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  111,
+                  111,
+                  108,
+                  95,
+                  108,
+                  105,
+                  118,
+                  101
                 ]
               },
               {
@@ -780,7 +847,7 @@
           }
         },
         {
-          "name": "pool",
+          "name": "pool_live",
           "writable": true,
           "pda": {
             "seeds": [
@@ -790,13 +857,18 @@
                   112,
                   111,
                   111,
-                  108
+                  108,
+                  95,
+                  108,
+                  105,
+                  118,
+                  101
                 ]
               },
               {
                 "kind": "account",
-                "path": "pool.mint",
-                "account": "Pool"
+                "path": "pool_live.mint",
+                "account": "PoolLive"
               }
             ]
           }
@@ -3028,7 +3100,7 @@
           }
         },
         {
-          "name": "pool",
+          "name": "pool_live",
           "writable": true,
           "pda": {
             "seeds": [
@@ -3038,13 +3110,18 @@
                   112,
                   111,
                   111,
-                  108
+                  108,
+                  95,
+                  108,
+                  105,
+                  118,
+                  101
                 ]
               },
               {
                 "kind": "account",
-                "path": "pool.mint",
-                "account": "Pool"
+                "path": "pool_live.mint",
+                "account": "PoolLive"
               }
             ]
           }
@@ -4379,7 +4456,7 @@
           }
         },
         {
-          "name": "pool",
+          "name": "pool_live",
           "writable": true,
           "pda": {
             "seeds": [
@@ -4389,13 +4466,18 @@
                   112,
                   111,
                   111,
-                  108
+                  108,
+                  95,
+                  108,
+                  105,
+                  118,
+                  101
                 ]
               },
               {
                 "kind": "account",
-                "path": "pool.mint",
-                "account": "Pool"
+                "path": "pool_live.mint",
+                "account": "PoolLive"
               }
             ]
           }
@@ -4694,7 +4776,7 @@
           }
         },
         {
-          "name": "pool",
+          "name": "pool_live",
           "writable": true,
           "pda": {
             "seeds": [
@@ -4704,13 +4786,18 @@
                   112,
                   111,
                   111,
-                  108
+                  108,
+                  95,
+                  108,
+                  105,
+                  118,
+                  101
                 ]
               },
               {
                 "kind": "account",
-                "path": "pool.mint",
-                "account": "Pool"
+                "path": "pool_live.mint",
+                "account": "PoolLive"
               }
             ]
           }
@@ -5792,7 +5879,6 @@
         },
         {
           "name": "pool",
-          "writable": true,
           "pda": {
             "seeds": [
               {
@@ -5802,6 +5888,33 @@
                   111,
                   111,
                   108
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "pool.mint",
+                "account": "Pool"
+              }
+            ]
+          }
+        },
+        {
+          "name": "pool_live",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  111,
+                  111,
+                  108,
+                  95,
+                  108,
+                  105,
+                  118,
+                  101
                 ]
               },
               {

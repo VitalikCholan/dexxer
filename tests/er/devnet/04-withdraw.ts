@@ -76,6 +76,7 @@ async function main() {
   const owner = loadOrCreateKey(run.traderName);
   const mint = new PublicKey(run.mint);
   const pool = new PublicKey(run.pool);
+  const poolLive = pdas.poolLive(mint);
   const poolAta = new PublicKey(run.poolAta);
   const userAccount = new PublicKey(run.userAccount);
   const userAta = new PublicKey(run.userAta);
@@ -98,6 +99,7 @@ async function main() {
       owner: owner.publicKey,
       userAccount,
       pool,
+      poolLive,
       ownerAta: userAta,
       vaultAta: poolAta,
       tokenProgram: TOKEN_PROGRAM_ID,

@@ -158,6 +158,8 @@ interface Ctx {
   market: PublicKeyT;
   marketRisk: PublicKeyT;
   pool: PublicKeyT;
+  /** Private live pool counters (week 4, Task 1) — `crank_tick`/`commit_aggregate` both need this now. */
+  poolLive: PublicKeyT;
   /** Week 3 (Task 7): `runRootCycle`/`runDisclosureCycle` — see disclosure.ts. */
   balancesRoot: PublicKeyT;
   feeEscrow: PublicKeyT;
@@ -228,7 +230,7 @@ async function tick(ctx: Ctx, n: number): Promise<void> {
     ]);
     const ix = await prog.methods
       .crankTick()
-      .accounts({ crank: crank.publicKey, config: pdas.config(), market: ctx.market, marketRisk: ctx.marketRisk, pool: ctx.pool, feed })
+      .accounts({ crank: crank.publicKey, config: pdas.config(), market: ctx.market, marketRisk: ctx.marketRisk, poolLive: ctx.poolLive, feed })
       .remainingAccounts(remaining)
       .instruction();
 
@@ -260,6 +262,7 @@ async function main(): Promise<void> {
   const market = pdas.market();
   const marketRisk = pdas.marketRisk(market);
   const pool = pdas.pool(config.dusdcMint as PublicKeyT);
+  const poolLive = pdas.poolLive(config.dusdcMint as PublicKeyT);
   const balancesRoot = pdas.balancesRoot();
   const feeEscrow = pdas.feeEscrow();
   console.log("crank-fallback starting", {
@@ -278,7 +281,7 @@ async function main(): Promise<void> {
     const t0 = Date.now();
     n += 1;
     try {
-      await tick({ market, marketRisk, pool, balancesRoot, feeEscrow }, n);
+      await tick({ market, marketRisk, pool, poolLive, balancesRoot, feeEscrow }, n);
     } catch (e) {
       console.error("tick failed", String(e));
       if (looksLikeAuthOrTimeout(e)) {
@@ -295,7 +298,7 @@ async function main(): Promise<void> {
     // try/catch — see file header point (Task 7) and disclosure.ts's own
     // per-action try/catch — so neither ever kills this 1s tick loop.
     if (n % DISCLOSURE_EVERY_TICKS === 0) {
-      const cycleCtx = { baseConn, conn, prog, crank, feePayerConn, feePayerProg, feePayer, pool, balancesRoot, feeEscrow };
+      const cycleCtx = { baseConn, conn, prog, crank, feePayerConn, feePayerProg, feePayer, pool, poolLive, balancesRoot, feeEscrow };
       try {
         await runRootCycle(cycleCtx);
       } catch (e) {

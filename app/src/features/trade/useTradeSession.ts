@@ -76,7 +76,7 @@ export function useTradeSession(): TradeSession {
           config: configPda,
           market: marketPda,
           marketRisk: pdas.marketRisk(marketPda),
-          pool: pdas.pool(mint),
+          poolLive: pdas.poolLive(mint),
           userAccount: pdas.userAccount(owner!),
           position: pdas.position(owner!, marketPda),
           feed: pdas.feedUnder(oracleProgram),

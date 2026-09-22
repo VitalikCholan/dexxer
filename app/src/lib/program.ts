@@ -220,7 +220,8 @@ export interface TradeAccounts {
   config: PublicKey
   market: PublicKey
   marketRisk: PublicKey
-  pool: PublicKey
+  /** Private live pool counters (week 4, Task 1) — `Trade` writes here, never the public `pool` snapshot. */
+  poolLive: PublicKey
   userAccount: PublicKey
   position: PublicKey
   feed: PublicKey

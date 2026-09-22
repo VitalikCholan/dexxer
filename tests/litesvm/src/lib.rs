@@ -122,7 +122,10 @@ pub fn assert_invariant(h: &Harness, w: &setup::World, traders: &[&setup::Trader
 /// Same as `assert_invariant`, but every assertion message is prefixed with `ctx`
 /// (e.g. `"step {step}: "`) so a randomized-sequence failure names the failing step.
 pub fn assert_invariant_ctx(h: &Harness, w: &setup::World, traders: &[&setup::Trader], ctx: &str) {
-    let pool: dexxer_core::state::Pool = h.account(&w.pool);
+    // week-4 Task 1: trading writes PoolLive now, not the public Pool (only
+    // commit_aggregate publishes a rounded Pool snapshot) — the invariant must
+    // read the live counters to see per-action state.
+    let pool: dexxer_core::state::PoolLive = h.account(&w.pool_live);
     let mut sum = pool.protocol_liquidity + pool.fees_accrued + pool.insurance;
     let mut locked_sum: u64 = 0;
     for t in traders {

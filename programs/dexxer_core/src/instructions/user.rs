@@ -351,8 +351,14 @@ pub struct CreditDeposit<'info> {
     pub owner: Signer<'info>,
     #[account(mut, seeds = [USER_SEED, owner.key().as_ref()], bump = user_account.bump, has_one = owner @ DexxerError::Unauthorized)]
     pub user_account: Account<'info, UserAccount>,
-    #[account(mut, seeds = [POOL_SEED, pool.mint.as_ref()], bump = pool.bump, has_one = vault_ata)]
+    // NOT `mut` (week-4 Task 1): `Pool` is only written by `init_pool`/`seed_pool`/
+    // `commit_aggregate` now — kept here read-only, purely for `vault_ata`'s
+    // `has_one` check and `mint`.
+    #[account(seeds = [POOL_SEED, pool.mint.as_ref()], bump = pool.bump, has_one = vault_ata)]
     pub pool: Account<'info, Pool>,
+    // Live pool counters — the actual write target for this deposit.
+    #[account(mut, seeds = [POOL_LIVE_SEED, pool.mint.as_ref()], bump = pool_live.bump)]
+    pub pool_live: Account<'info, PoolLive>,
     #[account(mut, token::mint = pool.mint, token::authority = owner)]
     pub owner_ata: Account<'info, TokenAccount>,
     #[account(mut)]
@@ -373,7 +379,7 @@ pub fn credit_deposit(ctx: Context<CreditDeposit>, amount: u64) -> Result<()> {
         .free_margin
         .checked_add(amount)
         .ok_or(DexxerError::MathOverflow)?;
-    let p = &mut ctx.accounts.pool;
+    let p = &mut ctx.accounts.pool_live;
     p.capital_total = p
         .capital_total
         .checked_add(amount)
@@ -417,8 +423,15 @@ pub struct Withdraw<'info> {
     pub owner: Signer<'info>,
     #[account(mut, seeds = [USER_SEED, owner.key().as_ref()], bump = user_account.bump, has_one = owner @ DexxerError::Unauthorized)]
     pub user_account: Account<'info, UserAccount>,
-    #[account(mut, seeds = [POOL_SEED, pool.mint.as_ref()], bump = pool.bump, has_one = vault_ata)]
+    // NOT `mut` (week-4 Task 1, same reasoning as `CreditDeposit.pool`): only the
+    // vault-authority signing seeds and `has_one = vault_ata`/`mint` are read here.
+    #[account(seeds = [POOL_SEED, pool.mint.as_ref()], bump = pool.bump, has_one = vault_ata)]
     pub pool: Account<'info, Pool>,
+    // Boxed (same reason as `config` below): this context is already at the SBF
+    // stack-frame limit — adding `pool_live` unboxed overflowed it by 8 bytes
+    // (`anchor build` autofixer finding, week-4 Task 1).
+    #[account(mut, seeds = [POOL_LIVE_SEED, pool.mint.as_ref()], bump = pool_live.bump)]
+    pub pool_live: Box<Account<'info, PoolLive>>,
     #[account(mut, token::mint = pool.mint, token::authority = owner)]
     pub owner_ata: Account<'info, TokenAccount>,
     #[account(mut)]
@@ -453,13 +466,13 @@ pub fn withdraw(ctx: Context<Withdraw>, amount: u64) -> Result<()> {
         .checked_sub(amount)
         .ok_or(DexxerError::MathOverflow)?;
     u.last_withdraw_slot = clock.slot;
-    let p = &mut ctx.accounts.pool;
-    p.capital_total = p
+    let live = &mut ctx.accounts.pool_live;
+    live.capital_total = live
         .capital_total
         .checked_sub(amount)
         .ok_or(DexxerError::MathOverflow)?;
-    let mint = p.mint;
-    let pool_bump = p.bump;
+    let mint = ctx.accounts.pool.mint;
+    let pool_bump = ctx.accounts.pool.bump;
     transfer_signed_by_pool(
         &ctx.accounts.token_program,
         &ctx.accounts.vault_ata,

@@ -224,7 +224,7 @@ impl Trader {
             AccountMeta::new_readonly(w.config, false),
             AccountMeta::new(w.market, false),
             AccountMeta::new(w.risk, false),
-            AccountMeta::new(w.pool, false),
+            AccountMeta::new(w.pool_live, false),
             AccountMeta::new(self.user, false),
             AccountMeta::new(self.position, false),
             AccountMeta::new_readonly(w.feed, false),

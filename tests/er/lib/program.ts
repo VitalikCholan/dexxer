@@ -84,6 +84,8 @@ const DQ_SEED = Buffer.from("dq");
 const FAUCET_SEED = Buffer.from("faucet");
 const MINT_AUTH_SEED = Buffer.from("mint_auth");
 const FEE_ESCROW_SEED = Buffer.from("fee_escrow");
+// Week 4 (Task 1): private live pool counters — see programs/dexxer_core/src/state/pool_live.rs.
+const POOL_LIVE_SEED = Buffer.from("pool_live");
 // Week 3 (Task 7): programs/dexxer_core/src/state/mod.rs seeds/consts.
 const COMMIT_SEED = Buffer.from("commit");
 const DISCLOSURE_SEED = Buffer.from("disclosure");
@@ -122,6 +124,8 @@ export const pdas = {
   market: () => pda([MARKET_SEED, SOL_SYMBOL], DEXXER_CORE_PROGRAM_ID),
   marketRisk: (market: PublicKey) => pda([RISK_SEED, market.toBuffer()], DEXXER_CORE_PROGRAM_ID),
   pool: (mint: PublicKey) => pda([POOL_SEED, mint.toBuffer()], DEXXER_CORE_PROGRAM_ID),
+  /** Private live pool counters (week 4, Task 1) — every trading/money instruction writes here; `pool` above is a step-rounded snapshot written only by `commit_aggregate`. */
+  poolLive: (mint: PublicKey) => pda([POOL_LIVE_SEED, mint.toBuffer()], DEXXER_CORE_PROGRAM_ID),
   poolAta: (mint: PublicKey) => {
     const pool = pdas.pool(mint);
     return pda(

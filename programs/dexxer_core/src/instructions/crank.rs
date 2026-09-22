@@ -22,8 +22,10 @@ pub struct CrankTick<'info> {
     pub market: Account<'info, Market>,
     #[account(mut, seeds = [RISK_SEED, market.key().as_ref()], bump = market_risk.bump, has_one = market)]
     pub market_risk: Account<'info, MarketRisk>,
-    #[account(mut, seeds = [POOL_SEED, pool.mint.as_ref()], bump = pool.bump)]
-    pub pool: Account<'info, Pool>,
+    // Live pool counters (week-4 Task 1): liquidation via `finalize_close` writes
+    // here, never the public `Pool` snapshot. Self-referential seed, same as `Trade`.
+    #[account(mut, seeds = [POOL_LIVE_SEED, pool_live.mint.as_ref()], bump = pool_live.bump)]
+    pub pool_live: Account<'info, PoolLive>,
     /// CHECK: validated in oracle::read_price
     pub feed: UncheckedAccount<'info>,
 }
@@ -140,7 +142,7 @@ pub fn crank_tick<'info>(mut ctx: Context<'info, CrankTick<'info>>) -> Result<()
                 finalize_close(
                     market_key,
                     &mut a.market_risk,
-                    &mut a.pool,
+                    &mut a.pool_live,
                     &mut user,
                     &mut pos,
                     mark,
@@ -190,8 +192,10 @@ pub struct ScheduleCrank<'info> {
     pub market: Box<Account<'info, Market>>,
     #[account(mut, seeds = [RISK_SEED, market.key().as_ref()], bump = market_risk.bump, has_one = market)]
     pub market_risk: Box<Account<'info, MarketRisk>>,
-    #[account(mut, seeds = [POOL_SEED, pool.mint.as_ref()], bump = pool.bump)]
-    pub pool: Box<Account<'info, Pool>>,
+    // Same swap as `CrankTick.pool_live` above — the scheduled inner `crank_tick`
+    // call now reads/writes `PoolLive`, not `Pool`.
+    #[account(mut, seeds = [POOL_LIVE_SEED, pool_live.mint.as_ref()], bump = pool_live.bump)]
+    pub pool_live: Box<Account<'info, PoolLive>>,
     /// CHECK: validated in oracle::read_price when the scheduled crank_tick executes
     pub feed: UncheckedAccount<'info>,
     /// CHECK: the scheduled task's crank signer, validated in the function body
@@ -270,7 +274,7 @@ pub fn schedule_crank<'info>(
         ctx.accounts.config.key(),
         ctx.accounts.market.key(),
         ctx.accounts.market_risk.key(),
-        ctx.accounts.pool.key(),
+        ctx.accounts.pool_live.key(),
         ctx.accounts.feed.key(),
     ];
     for (ai, key) in rem.iter().zip(expected.iter()) {
@@ -286,7 +290,7 @@ pub fn schedule_crank<'info>(
             AccountMeta::new_readonly(ctx.accounts.config.key(), false),
             AccountMeta::new(ctx.accounts.market.key(), false),
             AccountMeta::new(ctx.accounts.market_risk.key(), false),
-            AccountMeta::new(ctx.accounts.pool.key(), false),
+            AccountMeta::new(ctx.accounts.pool_live.key(), false),
             AccountMeta::new_readonly(ctx.accounts.feed.key(), false),
         ],
         data: anchor_lang::InstructionData::data(&crate::instruction::CrankTick {}),

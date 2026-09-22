@@ -148,7 +148,7 @@ fn liquidation_after_two_ticks_below_mmr() {
     let u: UserAccount = h.account(&t.user);
     assert_eq!(u.free_margin, 1_000_000_000 - M150 - 900_000 + 55_800_000);
     assert_eq!(u.locked_margin, 0);
-    let pool: Pool = h.account(&w.pool);
+    let pool: PoolLive = h.account(&w.pool_live);
     assert_eq!(pool.insurance, 14_200_000);
     assert_eq!(pool.locked_total, 0);
     assert_invariant(&h, &w, &[&t]);
@@ -209,7 +209,7 @@ fn bad_debt_is_counted_not_paid() {
         )
         .unwrap();
     }
-    let pool: Pool = h.account(&w.pool);
+    let pool: PoolLive = h.account(&w.pool_live);
     assert_eq!(pool.bad_debt_total, 150_000_000);
     assert_eq!(pool.insurance, 0);
     assert_eq!(

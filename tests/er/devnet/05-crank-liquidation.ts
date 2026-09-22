@@ -226,7 +226,7 @@ async function main() {
   const coreSessionEr = dexxerCoreProgram(sessionConn, session);
   const openIx = await coreSessionEr.methods
     .openPosition({ long: {} }, new BN(sizeLamports.toString()), new BN(marginUsd.toString()), new BN(U64_MAX.toString()))
-    .accounts({ signer: session.publicKey, config, market, marketRisk, pool: boot.pool, userAccount, position, feed: boot.feed })
+    .accounts({ signer: session.publicKey, config, market, marketRisk, poolLive: boot.poolLive, userAccount, position, feed: boot.feed })
     .instruction();
   const openSig = await sendAndConfirmIx(sessionConn, session, openIx);
   console.log("open_position (session-signed)", openSig);

@@ -105,6 +105,8 @@ export interface DisclosureCtx {
   feePayerProg: Program;
   feePayer: Keypair;
   pool: PublicKey;
+  /** Private live pool counters (week 4, Task 1) — read-only in `commit_aggregate`, must match `pool.mint`. */
+  poolLive: PublicKey;
   balancesRoot: PublicKey;
   feeEscrow: PublicKey;
 }
@@ -253,6 +255,7 @@ export async function runDisclosureCycle(ctx: DisclosureCtx): Promise<void> {
         config: pdas.config(),
         payer: ctx.feePayer.publicKey,
         pool: ctx.pool,
+        poolLive: ctx.poolLive,
         balancesRoot: ctx.balancesRoot,
         feeEscrow: ctx.feeEscrow,
         magicFeeVault: config.magicFeeVault,
@@ -279,6 +282,7 @@ export async function runDisclosureCycle(ctx: DisclosureCtx): Promise<void> {
             config: pdas.config(),
             payer: ctx.feePayer.publicKey,
             pool: ctx.pool,
+            poolLive: ctx.poolLive,
             balancesRoot: ctx.balancesRoot,
             feeEscrow: ctx.feeEscrow,
             magicFeeVault: config.magicFeeVault,

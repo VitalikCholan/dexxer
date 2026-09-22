@@ -114,7 +114,8 @@ async function main(): Promise<void> {
   const core = dexxerCoreProgram(conn, admin);
 
   const configBefore = await accountNs(core).config.fetch(config);
-  const pool = pdas.pool(configBefore.dusdcMint);
+  // week-4 Task 1: ScheduleCrank/CrankTick now read/write PoolLive, not Pool.
+  const poolLive = pdas.poolLive(configBefore.dusdcMint);
   const marketAcc = await accountNs(core).market.fetch(market);
   const feed = marketAcc.feed;
 
@@ -126,7 +127,7 @@ async function main(): Promise<void> {
   console.log("config", config.toBase58());
   const crankSigner = configBefore.schedulerSigner as { toBase58: () => string };
   console.log("Config.scheduler_signer (== crank account below)", crankSigner.toBase58());
-  console.log("market", market.toBase58(), "market_risk", marketRisk.toBase58(), "pool", pool.toBase58(), "feed", feed.toBase58());
+  console.log("market", market.toBase58(), "market_risk", marketRisk.toBase58(), "pool_live", poolLive.toBase58(), "feed", feed.toBase58());
 
   if (crankSigner.toBase58() !== expectedCrankSigner.toBase58()) {
     console.error(
@@ -145,7 +146,7 @@ async function main(): Promise<void> {
       config,
       market,
       marketRisk,
-      pool,
+      poolLive,
       feed,
       crank: expectedCrankSigner,
       taskContext,
@@ -157,7 +158,7 @@ async function main(): Promise<void> {
       { pubkey: config, isWritable: false, isSigner: false },
       { pubkey: market, isWritable: true, isSigner: false },
       { pubkey: marketRisk, isWritable: true, isSigner: false },
-      { pubkey: pool, isWritable: true, isSigner: false },
+      { pubkey: poolLive, isWritable: true, isSigner: false },
       { pubkey: feed, isWritable: false, isSigner: false },
     ])
     .instruction();

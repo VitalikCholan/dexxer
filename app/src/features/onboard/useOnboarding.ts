@@ -173,6 +173,8 @@ interface OnboardCtx {
   faucetPda: PublicKey
   mintAuth: PublicKey
   pool: PublicKey
+  /** Private live pool counters (week 4, Task 1) — `credit_deposit` writes here. */
+  poolLive: PublicKey
   poolAta: PublicKey
   ownerAta: PublicKey
   session: Keypair
@@ -203,6 +205,7 @@ async function runFlow(
     faucetPda,
     mintAuth,
     pool,
+    poolLive,
     poolAta,
     ownerAta,
     session,
@@ -316,7 +319,7 @@ async function runFlow(
   if (freeMargin === 0n) {
     const ix = await coreEr.methods
       .creditDeposit(new BN(DEPOSIT.toString()))
-      .accounts({ owner, userAccount, pool, ownerAta, vaultAta: poolAta, tokenProgram: TOKEN_PROGRAM_ID })
+      .accounts({ owner, userAccount, pool, poolLive, ownerAta, vaultAta: poolAta, tokenProgram: TOKEN_PROGRAM_ID })
       .instruction()
     appendLog(`credit_deposit ${await sendErOwner(ownerTee, owner, [ix], mwa.signTransactions)}`)
   } else {
@@ -488,6 +491,7 @@ export function useOnboarding(): UseOnboarding {
       const faucetPda = pdas.faucet(owner)
       const mintAuth = pdas.mintAuth()
       const pool = pdas.pool(mint)
+      const poolLive = pdas.poolLive(mint)
       const poolAta = pdas.poolAta(mint)
       const ownerAta = getAssociatedTokenAddressSync(mint, owner)
       const session = await getOrCreateSessionKeypair(owner)
@@ -505,6 +509,7 @@ export function useOnboarding(): UseOnboarding {
         faucetPda,
         mintAuth,
         pool,
+        poolLive,
         poolAta,
         ownerAta,
         session,

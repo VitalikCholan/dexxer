@@ -264,7 +264,7 @@ async function main() {
       config,
       market,
       marketRisk,
-      pool: boot.pool,
+      poolLive: boot.poolLive,
       userAccount,
       position,
       feed: boot.feed,
