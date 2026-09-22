@@ -4,9 +4,9 @@
 
 **Goal:** Закрити ризик #24 (`PoolLive` + `Pool`-знімок), винести crank/індексер на Railway, зробити онбординг одним підтвердженням гаманця, реалізувати UI за макетами Claude Design і підготувати подачу (README, відео, пітч, `v0.4-mvp`).
 
-**Architecture:** Живі лічильники пулу переїжджають у permissioned `PoolLive` (ніколи не комітиться); публічний `Pool` стає огрубленим знімком, який пише лише `commit_aggregate` раз на 5 хв. Єдиний привілейований сервіс `services/relayer` (crank + індексер публічних даних + `/sponsor`) працює на Railway; MagicBlock scheduler з `iterations = i64::MAX` — резерв для ліквідацій. Клієнт підписує онбординг однією пачкою `signTransactions`, читає приватний стан через `accountSubscribe` owner-TEE, UI — токени з `docs/design/tokens.json`.
+**Architecture:** Живі лічильники пулу переїжджають у permissioned `PoolLive` (ніколи не комітиться); публічний `Pool` стає огрубленим знімком, який пише лише `commit_aggregate` раз на 5 хв. Єдиний привілейований сервіс `services/relayer` (crank + індексер публічних даних + `/sponsor`; Express + `ws` + PostgreSQL на Railway — рішення 22.09) працює на Railway; MagicBlock scheduler з `iterations = i64::MAX` — резерв для ліквідацій. Клієнт підписує онбординг однією пачкою `signTransactions`, читає приватний стан через `accountSubscribe` owner-TEE, UI — токени з `docs/design/tokens.json`.
 
-**Tech Stack:** Anchor 1.0.2 / Solana 3.1.9 / Rust 1.89 / `ephemeral-rollups-sdk` 0.16.2; LiteSVM (`cargo +nightly-2026-09-18 test -p dexxer_litesvm`); Node 24.18 + `tsx`; Railway (Dockerfile, volume, variables); Expo 57 / RN 0.86 / `@solana/web3.js` v1 / `@wallet-ui/react-native-web3js` (MWA) / `react-native-svg` / `expo-secure-store`.
+**Tech Stack:** Anchor 1.0.2 / Solana 3.1.9 / Rust 1.89 / `ephemeral-rollups-sdk` 0.16.2; LiteSVM (`cargo +nightly-2026-09-18 test -p dexxer_litesvm`); Node 24.18 + `tsx`; Railway (Dockerfile, Postgres plugin, variables); Expo 57 / RN 0.86 / `@solana/web3.js` v1 / `@wallet-ui/react-native-web3js` (MWA) / `react-native-svg` / `expo-secure-store`.
 
 **Spec:** `docs/superpowers/specs/2026-09-18-dexxer-mvp-design.md` §2.5 (дизайн тижня 4), §2.1 (акаунти), §3.6 (інваріант), §5.5 (UI), §7.1 #22–#26. Дизайн-джерела: `docs/design/Dexxer App.dc.html`, `docs/design/tokens.json`, `docs/design/claude-design-prompt.md` (інспірейшн; адаптувати під логіку).
 
@@ -382,7 +382,7 @@ pub fn build_admin_members(crank: Pubkey, admin: Pubkey) -> Vec<Member> {
 - Modify: `scripts/package.json` (`"crank": "npm --prefix ../services/relayer run start"`), `tests/er/lib/env.ts` (+`loadKeyFromEnvOrFile(name, envVar)`), `.github/workflows/ci.yml` (typescript job +`services/relayer`: `npm ci && npx tsc --noEmit && npm test`)
 
 **Interfaces:**
-- Produces: `RelayerConfig { net, baseRpc, erRpc, erWs, crank: Keypair, feePayer: Keypair, port, indexerEnabled, sponsorEnabled, dbPath }` з env: `DEXXER_NET=devnet`, `CRANK_KEY_B58`, `FEE_PAYER_KEY_B58` (bs58 secret), `PORT=8080`, `RELAYER_DB=/data/relayer.sqlite`; `GET /healthz → { ok, lastTickAt, lastCommitAt, tick, crankSol, feePayerSol, schedulerActive }` (503 якщо `now - lastTickAt > 60_000`).
+- Produces: `RelayerConfig { net, baseRpc, erRpc, erWs, crank: Keypair, feePayer: Keypair, port, indexerEnabled, sponsorEnabled, databaseUrl }` з env: `DEXXER_NET=devnet`, `CRANK_KEY_B58`, `FEE_PAYER_KEY_B58` (bs58 secret), `PORT=8080`, `DATABASE_URL` (Railway Postgres); `GET /healthz → { ok, lastTickAt, lastCommitAt, tick, crankSol, feePayerSol, schedulerActive }` (503 якщо `now - lastTickAt > 60_000`).
 
 - [ ] **Step 1:** `keys.ts`:
 ```ts
@@ -393,15 +393,15 @@ export function keypairFromEnv(name: string, fileFallback: string): Keypair {
 }
 ```
 - [ ] **Step 2:** `crank.ts` = тіло `tick()`/`main()` з `scripts/crank-fallback/index.ts` без `process.exit`; експортує `startCrank(cfg, state): Promise<void>` і мутує `state: RelayerState { lastTickAt, lastCommitAt, tick, errors }`. `disclosure.ts` — без змін крім імпортів.
-- [ ] **Step 3:** `health.ts` — `node:http` сервер: `/healthz` як вище (баланси через `getBalance` кешовано раз на 60 с). `index.ts` — читає конфіг, стартує health, crank, (Task 5) індексер, (Task 6) sponsor; graceful `SIGTERM`.
-- [ ] **Step 4:** `Dockerfile` (`node:24-alpine`, `npm ci --omit=dev`, `CMD ["node","--import","tsx","src/index.ts"]` або збірка `tsc` у `dist/`), `railway.json` (`healthcheckPath: "/healthz"`, `restartPolicyType: "ON_FAILURE"`), volume `/data`.
+- [ ] **Step 3:** `health.ts` — Express-роутер (`express` 5, один `app` у `index.ts`; `ws` для WS у Task 5): `/healthz` як вище (баланси через `getBalance` кешовано раз на 60 с). `index.ts` — читає конфіг, стартує health, crank, (Task 5) індексер, (Task 6) sponsor; graceful `SIGTERM`.
+- [ ] **Step 4:** `Dockerfile` (`node:24-alpine`, `npm ci --omit=dev`, `CMD ["node","--import","tsx","src/index.ts"]` або збірка `tsc` у `dist/`), `railway.json` (`healthcheckPath: "/healthz"`, `restartPolicyType: "ON_FAILURE"`); Railway Postgres plugin → `DATABASE_URL` reference variable; `src/db.ts` (`pg` Pool + `migrate()` що застосовує `migrations/*.sql` при старті).
 - [ ] **Step 5:** Тест: `npm test` (node:test) на `keypairFromEnv` (b58 round-trip) і health-JSON (503 при старому тіку). Локально: `DEXXER_NET=devnet npm start` → `/healthz` 200 → зупинити.
-- [ ] **Step 6:** Railway: `railway init`/через MCP `create_project` + `create_service` з source репо (root `services/relayer`), variables (`CRANK_KEY_B58`, `FEE_PAYER_KEY_B58` — з `tests/er/.keys/*.json` через `bs58.encode`, **ніколи не в репо**), volume `/data`, deploy; `generate_domain`; `curl https://<domain>/healthz` → 200; лог показує `tick n=…`. Записати домен у `docs/deployments.md`.
+- [ ] **Step 6:** Railway: `railway init`/через MCP `create_project` + `create_service` з source репо (root `services/relayer`), variables (`CRANK_KEY_B58`, `FEE_PAYER_KEY_B58` — з `tests/er/.keys/*.json` через `bs58.encode`, **ніколи не в репо**), Postgres plugin (`DATABASE_URL`), deploy; `generate_domain`; `curl https://<domain>/healthz` → 200; лог показує `tick n=…`. Записати домен у `docs/deployments.md`.
 - [ ] Коміт `feat(relayer): crank service on Railway — env keys, /healthz, Dockerfile`.
 
 ---
 
-### Task 5: Індексер публічних даних (ціни, знімки, розкриття) — SQLite + REST/WS
+### Task 5: Індексер публічних даних (ціни, знімки, розкриття) — PostgreSQL + REST/WS
 
 **Files:**
 - Create: `services/relayer/src/indexer/{prices.ts,accounts.ts,store.ts,http.ts,candles.ts}`, `services/relayer/test/candles.test.ts`
@@ -411,7 +411,7 @@ export function keypairFromEnv(name: string, fileFallback: string): Keypair {
 - Produces: REST `GET /prices?tf=1m|5m|15m&limit=300 → { tf, candles: [{t, o, h, l, c}] }` (t — unix ms, ціни в `1e6`), `GET /mark → { price, slot, ts }`, `GET /pool/history?limit=100 → [{slot, ts, capital_total, protocol_liquidity, locked_total, fees_accrued, insurance, bad_debt_total}]`, `GET /pool/latest`, `GET /disclosures?limit=100 → [{pubkey, side, size, entry, exit, pnl, fees, reason, opened_slot, closed_slot, nonce, ts}]`, `GET /root/latest → { root_slot, filled, leavesHex[] }`; WS `wss://…/ws` з повідомленнями `{type:"mark",price,ts}`, `{type:"pool",…}`, `{type:"disclosure",…}`. Джерела: оракул-акаунт `ORACLE`-feed (публічний, читається з ER-RPC без токена або з base — перевірити де читабельний; fallback — `Market.mark` з ER-RPC crank-токеном **не використовувати**: це приватний шлях; брати оракул), L1 `accountSubscribe(pdas.pool)`, `accountSubscribe(pdas.balancesRoot)`, gPA `Disclosure` (memcmp disc) раз на 30 с + `programSubscribe`.
 - `candles.ts`: `pushTick(series, ts, price)` → агрегація у бакети `tf`; чистий модуль, unit-тести: один тік → o=h=l=c; два тіки в бакеті; межа бакета; порожні бакети не створюються.
 
-- [ ] Steps: RED тести `candles.test.ts` → реалізація → `store.ts` (better-sqlite3; таблиці `ticks`, `pool_snapshots`, `disclosures`, `roots`) → `accounts.ts` підписки → `http.ts` (той самий `node:http` + `ws` пакет) → smoke `curl /prices?tf=1m` після 2 хв роботи повертає ≥1 свічку → деплой на Railway → коміт `feat(relayer): public-data indexer — oracle candles, Pool/BalancesRoot snapshots, Disclosure feed (REST/WS)`.
+- [ ] Steps: RED тести `candles.test.ts` → реалізація → `store.ts` (`pg`; таблиці `ticks`, `pool_snapshots`, `disclosures`, `roots`, міграція `migrations/001_indexer.sql`) → `accounts.ts` підписки → `http.ts` (Express-роутер на тому самому `app` + `ws` пакет) → smoke `curl /prices?tf=1m` після 2 хв роботи повертає ≥1 свічку → деплой на Railway → коміт `feat(relayer): public-data indexer — oracle candles, Pool/BalancesRoot snapshots, Disclosure feed (REST/WS)`.
 
 ---
 
@@ -422,7 +422,7 @@ export function keypairFromEnv(name: string, fileFallback: string): Keypair {
 - Modify: `app/src/features/onboard/useOnboarding.ts`, `app/src/lib/solana.ts` (+`RELAYER_URL`)
 
 **Interfaces:**
-- `POST /sponsor` body `{ tx: base64 }` → `{ tx: base64 }` (та сама tx з підписом `fee_payer`) або `400 { error }`. Правила: `tx.feePayer == feePayer.publicKey`; кожна інструкція — `programId ∈ {dexxer_core, eSPL, system(тільки createAccount від feePayer заборонено), token/ATA}` і дискримінатор ∈ whitelist `{init_user, init_position, init_dq, delegate_user, delegate_position, delegate_dq, faucet_init}` + eSPL `delegateSpl`; `owner`-акаунт у кожній ix — підписант tx (перевірка `tx.signatures` містить owner і його підпис валідний після власного підпису); rate-limit: 1 успішний спонсор на owner за 60 хв (SQLite таблиця `sponsors`), денний бюджет `SPONSOR_DAILY_SOL=0.5`.
+- `POST /sponsor` body `{ tx: base64 }` → `{ tx: base64 }` (та сама tx з підписом `fee_payer`) або `400 { error }`. Правила: `tx.feePayer == feePayer.publicKey`; кожна інструкція — `programId ∈ {dexxer_core, eSPL, system(тільки createAccount від feePayer заборонено), token/ATA}` і дискримінатор ∈ whitelist `{init_user, init_position, init_dq, delegate_user, delegate_position, delegate_dq, faucet_init}` + eSPL `delegateSpl`; `owner`-акаунт у кожній ix — підписант tx (перевірка `tx.signatures` містить owner і його підпис валідний після власного підпису); rate-limit: 1 успішний спонсор на owner за 60 хв (Postgres таблиця `sponsors`, міграція `002_sponsors.sql`), денний бюджет `SPONSOR_DAILY_SOL=0.5`.
 - App: `useOnboarding` збирає `[txL1a, txL1b, txEr]`; `txL1a/b.feePayer = FEE_PAYER_PUBKEY` (з `Config.fee_payer`), blockhash з base; ER tx — `feePayer = owner`, blockhash з TEE. `signTransactions([txL1a, txL1b, txEr])` (масив — **один** екран гаманця; `@wallet-ui/react-native-web3js` `signTransactions` приймає масив — перевірити тип, якщо лише одну — використати низькорівневий `transact` з `@solana-mobile/mobile-wallet-adapter-protocol-web3js` `signTransactions(txs)`), далі `POST /sponsor` для L1-tx, `sendRawTransaction` послідовно з `confirm`, потім ER tx. Ідемпотентність: перед збором — `getAccountInfo` `user/position/dq`, owner delegation status, permission-PDA owner → пропускати готові кроки. Депозит (`faucet_mint`+`credit_deposit`) — окремий екран Deposit (Task 10), не в пачці.
 
 - [ ] Steps: RED `sponsor.test.ts` (відкидає чужий programId; відкидає tx без підпису owner; приймає whitelist; rate-limit) → реалізація → app: `sponsor.ts` (`sponsorTx(tx): Promise<Transaction>`), `useOnboarding` новий flow `runBatchedOnboarding()` зі станами `Collecting → Signing → Submitting(i/3) → Done | Failed(step)` → перевірка на емуляторі: fakewallet + **Phantom APK** (встановити `adb install`), обидва підписують пачку одним екраном; свіжий гаманець без SOL проходить онбординг → скріншоти `week4-onboarding-*.png` → коміт `feat(app,relayer): one-tap onboarding — batched signTransactions with sponsored rent via /sponsor`.
