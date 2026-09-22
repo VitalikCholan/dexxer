@@ -76,6 +76,7 @@ export interface RelayerState {
 export interface RelayerConfig {
   net: Net;
   baseRpc: string;
+  /** Not read by startCrank directly — teeConn()/baseConn (tests/er/lib/env.ts, imported below) already resolve the ER endpoint from the same process.env forcing index.ts does before import. Kept on the config shape for future consumers (Task 5 indexer). */
   erRpc: string;
   erWs: string;
   crank: Keypair;

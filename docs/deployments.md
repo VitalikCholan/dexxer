@@ -38,7 +38,7 @@ program id) і ролі ключів.
 | `PORT` | `8080` | — |
 | `RAILWAY_DOCKERFILE_PATH` | `services/relayer/Dockerfile` | — |
 
-Both keys encoded locally via `bs58.encode(Uint8Array.from(JSON.parse(readFileSync(...))))`
+Обидва ключі закодовано локально через `bs58.encode(Uint8Array.from(JSON.parse(readFileSync(...))))`
 і встановлені через Railway API — значення ніколи не потрапляли в git чи в
 цей файл.
 

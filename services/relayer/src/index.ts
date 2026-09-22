@@ -2,8 +2,11 @@
 //
 // Entrypoint: reads config from env, starts the health endpoint, the crank
 // loop (Task 4), and — in later tasks — the indexer (Task 5) and sponsor
-// (Task 6). Graceful SIGTERM/SIGINT: stop accepting new health requests,
-// tell the crank loop to finish its in-flight tick and stop.
+// (Task 6). Graceful SIGTERM/SIGINT (see shutdown.ts): tell the crank loop
+// to finish its in-flight tick/cycle and stop, WAIT for that to actually
+// happen (bounded by a hard-kill timeout), only then close the HTTP server
+// and exit — a Railway redeploy's SIGTERM must not kill the loop mid
+// `sendRawTransaction`/`confirm` or mid `runRootCycle`/`runDisclosureCycle`.
 //
 // --- DEXXER_NET=devnet env-forcing, and why this file has almost no static
 // imports ---
@@ -31,6 +34,7 @@ import express from "express";
 import { Connection } from "@solana/web3.js";
 import { createPool, getMeta, migrate, setMeta } from "./db.js";
 import { healthRouter } from "./health.js";
+import { shutdown } from "./shutdown.js";
 import type { RelayerConfig, RelayerState } from "./crank.js";
 
 if ((process.env.DEXXER_NET ?? "local") === "devnet") {
@@ -102,19 +106,26 @@ const server = app.listen(cfg.port, () => {
   console.log(`relayer: listening on :${cfg.port} net=${cfg.net}`);
 });
 
-startCrank(cfg, state).catch((e) => {
+// Kept as a reference (not just `.catch()`ed and discarded): `shutdown()`
+// below awaits this to know the loop has actually stopped. `.catch()` here
+// makes `crankDone` itself never reject — a crash still logs/records into
+// `state.errors` exactly as before, it just also resolves so shutdown never
+// hangs on a promise that rejected instead of resolving.
+const crankDone: Promise<void> = startCrank(cfg, state).catch((e) => {
   console.error("relayer: crank loop crashed", e);
   state.errors.push(String(e instanceof Error ? e.message : e));
 });
 
 let shuttingDown = false;
-function shutdown(signal: string): void {
+function handleSignal(signal: string): void {
   if (shuttingDown) return;
   shuttingDown = true;
-  console.log(`relayer: ${signal} received, shutting down`);
-  requestStop();
-  server.close(() => process.exit(0));
-  setTimeout(() => process.exit(0), 5000).unref(); // don't let a wedged in-flight tick block shutdown forever
+  void shutdown(signal, {
+    requestStop,
+    crankDone,
+    closeServer: () => server.close(),
+    exit: (code) => process.exit(code),
+  });
 }
-process.on("SIGTERM", () => shutdown("SIGTERM"));
-process.on("SIGINT", () => shutdown("SIGINT"));
+process.on("SIGTERM", () => handleSignal("SIGTERM"));
+process.on("SIGINT", () => handleSignal("SIGINT"));
