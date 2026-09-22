@@ -25,10 +25,14 @@ impl PoolLive {
     /// Copy into the public snapshot with step rounding: assets down, liabilities up.
     pub fn snapshot_into(&self, pool: &mut Pool, slot: u64) -> Result<()> {
         require!(pool.mint == self.mint, DexxerError::PoolLiveMismatch);
-        pool.capital_total = floor_step(self.capital_total, SNAPSHOT_STEP);
-        pool.protocol_liquidity = floor_step(self.protocol_liquidity, SNAPSHOT_STEP);
-        pool.insurance = floor_step(self.insurance, SNAPSHOT_STEP);
-        pool.fees_accrued = floor_step(self.fees_accrued, SNAPSHOT_STEP);
+        pool.capital_total =
+            floor_step(self.capital_total, SNAPSHOT_STEP).map_err(|_| DexxerError::MathOverflow)?;
+        pool.protocol_liquidity = floor_step(self.protocol_liquidity, SNAPSHOT_STEP)
+            .map_err(|_| DexxerError::MathOverflow)?;
+        pool.insurance =
+            floor_step(self.insurance, SNAPSHOT_STEP).map_err(|_| DexxerError::MathOverflow)?;
+        pool.fees_accrued =
+            floor_step(self.fees_accrued, SNAPSHOT_STEP).map_err(|_| DexxerError::MathOverflow)?;
         pool.locked_total =
             ceil_step(self.locked_total, SNAPSHOT_STEP).map_err(|_| DexxerError::MathOverflow)?;
         pool.bad_debt_total =

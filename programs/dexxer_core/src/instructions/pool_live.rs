@@ -1,5 +1,6 @@
 use crate::{errors::DexxerError, state::*};
 use anchor_lang::prelude::*;
+use anchor_spl::token::Mint;
 use ephemeral_rollups_sdk::anchor::delegate;
 use ephemeral_rollups_sdk::cpi::DelegateConfig;
 
@@ -40,7 +41,7 @@ pub struct DelegatePoolLive<'info> {
     pub admin: Signer<'info>,
     #[account(seeds = [CONFIG_SEED], bump = config.bump, has_one = admin @ DexxerError::Unauthorized)]
     pub config: Account<'info, Config>,
-    pub dusdc_mint: Account<'info, anchor_spl::token::Mint>,
+    pub dusdc_mint: Account<'info, Mint>,
     /// CHECK: delegated PDA
     #[account(mut, del, seeds = [POOL_LIVE_SEED, dusdc_mint.key().as_ref()], bump)]
     pub pool_live: UncheckedAccount<'info>,
