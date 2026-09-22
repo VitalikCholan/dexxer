@@ -533,9 +533,12 @@ async function initMarketPermissions(
   const sig = await sendAndConfirmIx(conn, admin, ix);
   sigs.initMarketPermissions = sig;
   console.log("init_market_permissions", sig);
-  // The instruction itself tolerates a per-account CPI failure (see the
-  // Rust-side doc comment) — verify what actually landed rather than
-  // assuming success.
+  // Fix round 1: the instruction now propagates every CPI error with `?`
+  // (matching `init_permissions`) instead of tolerating a per-account
+  // failure, so a landed `sig` already means both CPIs succeeded on-chain.
+  // This post-call ownership check is the caller's own positive
+  // confirmation of that (not a defense against silent tolerance) — it's
+  // what `bootstrapDevnet()` throws on if either flag comes back false.
   const [riskPermInfoAfter, poolLivePermInfoAfter] = await Promise.all([
     conn.getAccountInfo(riskPermission, "confirmed"),
     conn.getAccountInfo(poolLivePermission, "confirmed"),
@@ -940,9 +943,19 @@ export async function bootstrapDevnet(): Promise<BootstrappedDevnet> {
   // Fix round 1: top up both PDAs' ER rent surplus first (see
   // `fundMarketPermissions`'s doc comment), then `init_market_permissions`
   // must succeed — no tolerance here, bootstrap must not silently leave
-  // risk #24 open.
+  // risk #24 open. Fix round 2: the tx landing is not sufficient proof —
+  // `initMarketPermissions`'s own post-call ownership check can come back
+  // false for one account even when the transaction itself didn't throw
+  // (e.g. a partially-applied state some future Rust change might allow),
+  // so check its returned flags here too rather than only relying on the
+  // instruction to throw.
   await fundMarketPermissions(admin, marketRisk, poolLive, sigs);
-  await initMarketPermissions(admin, config, market, marketRisk, poolLive, sigs);
+  const marketPerm = await initMarketPermissions(admin, config, market, marketRisk, poolLive, sigs);
+  if (!marketPerm.riskPermissioned || !marketPerm.poolLivePermissioned) {
+    throw new Error(
+      `init_market_permissions: landed but did not permission everything — marketRisk permissioned=${marketPerm.riskPermissioned}, poolLive permissioned=${marketPerm.poolLivePermissioned}`,
+    );
+  }
 
   return { admin, mint, market, marketRisk, pool, poolAta, poolLive, feed, feeEscrow, sigs, feePayer, balancesRoot, actionEscrow };
 }

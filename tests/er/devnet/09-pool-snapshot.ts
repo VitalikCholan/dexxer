@@ -10,7 +10,9 @@
 // (b) `PoolLive` read via the crank TEE connection — `locked_total`
 //     increased by the opened position's margin.
 // (c) `PoolLive` read via a fresh, unrelated ("stranger") TEE connection —
-//     access error or null (the TEE read-filter denies non-members) — PASS
+//     access error or null (the TEE read-filter denies non-members) AND
+//     the permission PDA is confirmed owned by the permission program
+//     (positive proof, not just "the stranger read failed") — PASS
 //     "M-F private live aggregate".
 // (d) `commit_aggregate` (fee_payer-signed, matching 03/06/08) publishes a
 //     step-rounded snapshot into the base-layer `Pool`: poll base for
@@ -18,14 +20,12 @@
 //     `locked_total % 100_000_000 == 0 && locked_total >= live.locked_total
 //     && capital_total <= live.capital_total` — PASS "M-F rounded snapshot".
 // (e) `MarketRisk` read via the same stranger connection — access
-//     error/null (permissioned by `init_market_permissions`, Task 2/3).
+//     error/null, same permission-PDA-owner confirmation as (c)
+//     (permissioned by `init_market_permissions`, Task 2/3).
 //
 // Run: `npm run devnet:snapshot` (from tests/er). Requires
 // `devnet-bootstrap.ts` to have run (PoolLive init/delegate +
 // init_market_permissions — Task 3 migration).
-
-import { dirname } from "path";
-import { fileURLToPath } from "url";
 
 if ((process.env.DEXXER_NET ?? "local") === "devnet") {
   process.env.BASE_RPC ??= "https://rpc.magicblock.app/devnet";
@@ -40,7 +40,7 @@ import { readFileSync } from "fs";
 import { resolve } from "path";
 
 const { Keypair, SystemProgram, Transaction, sendAndConfirmTransaction, LAMPORTS_PER_SOL } = await import("@solana/web3.js");
-const { MAGIC_CONTEXT_ID, MAGIC_PROGRAM_ID } = await import("@magicblock-labs/ephemeral-rollups-sdk");
+const { MAGIC_CONTEXT_ID, MAGIC_PROGRAM_ID, PERMISSION_PROGRAM_ID, permissionPdaFromAccount } = await import("@magicblock-labs/ephemeral-rollups-sdk");
 const envMod = await import("../lib/env.js");
 const { NET, baseConn, loadOrCreateKey, sendAndConfirmIx, teeConn, sleep } = envMod;
 const assert: (cond: unknown, msg: string) => asserts cond = envMod.assert;
@@ -52,9 +52,6 @@ if (NET !== "devnet") {
   console.error(`FAIL: DEXXER_NET must be "devnet" (got "${NET}"). Run: DEXXER_NET=devnet npm run devnet:snapshot`);
   process.exit(1);
 }
-
-const HERE = dirname(fileURLToPath(import.meta.url));
-void HERE;
 
 const DEPOSIT = 1_000_000_000n; // 1,000 dUSDC
 const OPEN_SIZE_SOL = 1.0;
@@ -74,11 +71,12 @@ async function pollBaseCommitSlot(core: ReturnType<typeof dexxerCoreProgram>, po
   throw new Error(`timeout (${timeoutMs}ms) waiting for base-layer Pool.last_commit_slot to advance past ${prevSlot}`);
 }
 
-/** Returns `null` on either a thrown fetch error or a genuinely-absent account — both count as "the TEE denied/filtered this read" for a non-member connection. */
+/** Returns `null` on either a thrown fetch error or a genuinely-absent account — both count as "the TEE denied/filtered this read" for a non-member connection. Logs the caught error's name/message so a PASS is explainable (not just "something threw"). */
 async function tryFetchPoolLive(core: ReturnType<typeof dexxerCoreProgram>, poolLive: InstanceType<typeof import("@solana/web3.js").PublicKey>): Promise<unknown | null> {
   try {
     return await accountNs(core).poolLive.fetch(poolLive);
-  } catch {
+  } catch (e) {
+    console.log(`tryFetchPoolLive: caught ${e instanceof Error ? `${e.name}: ${e.message}` : String(e)}`);
     return null;
   }
 }
@@ -86,9 +84,24 @@ async function tryFetchPoolLive(core: ReturnType<typeof dexxerCoreProgram>, pool
 async function tryFetchMarketRisk(core: ReturnType<typeof dexxerCoreProgram>, marketRisk: InstanceType<typeof import("@solana/web3.js").PublicKey>): Promise<unknown | null> {
   try {
     return await accountNs(core).marketRisk.fetch(marketRisk);
-  } catch {
+  } catch (e) {
+    console.log(`tryFetchMarketRisk: caught ${e instanceof Error ? `${e.name}: ${e.message}` : String(e)}`);
     return null;
   }
+}
+
+/** Fetches the `EphemeralPermission` PDA for `account` via `conn` and reports whether it's owned by the permission program — the caller's positive confirmation that a permission genuinely exists (not just "the stranger read failed for some reason"). */
+async function permissionPdaOwnedByProgram(
+  conn: Awaited<ReturnType<typeof teeConn>>,
+  label: string,
+  account: InstanceType<typeof import("@solana/web3.js").PublicKey>,
+): Promise<boolean> {
+  const permission = permissionPdaFromAccount(account);
+  const info = await conn.getAccountInfo(permission, "confirmed");
+  const owner = info?.owner.toBase58() ?? "null";
+  const owned = info !== null && info.owner.equals(PERMISSION_PROGRAM_ID);
+  console.log(`permission PDA ${permission.toBase58()} (${label}) owner=${owner}`);
+  return owned;
 }
 
 /**
@@ -184,17 +197,21 @@ async function main() {
   const lockedAfter = BigInt(poolLiveAfter.lockedTotal.toString());
   const marginLamports = BigInt(Math.round(OPEN_MARGIN_USD * 1_000_000));
   console.log(`locked_total: ${lockedBefore} -> ${lockedAfter} (delta ${lockedAfter - lockedBefore}, expected margin=${marginLamports})`);
-  assert(lockedAfter >= lockedBefore + marginLamports, "(b) PoolLive.locked_total increased by >= margin");
+  assert(lockedAfter === lockedBefore + marginLamports, "(b) PoolLive.locked_total increased by exactly the margin");
 
-  // === (c) PoolLive via stranger connection — denied/null ===
+  // === (c) PoolLive via stranger connection — denied/null, AND the
+  // permission PDA is genuinely owned by the permission program (positive
+  // confirmation — a stranger read failing for an unrelated reason must
+  // not count as PASS) ===
   console.log("\n=== (c) PoolLive via stranger TEE connection ===");
   const stranger = Keypair.generate();
   console.log("stranger:", stranger.publicKey.toBase58());
   const strangerConn = await teeConn(stranger);
   const strangerCore = dexxerCoreProgram(strangerConn, stranger);
   const strangerPoolLive = await tryFetchPoolLive(strangerCore, boot.poolLive);
-  const cPass = strangerPoolLive === null;
-  console.log(cPass ? "stranger PoolLive read: denied/null (as expected)" : `stranger PoolLive read: UNEXPECTEDLY SUCCEEDED: ${JSON.stringify(strangerPoolLive)}`);
+  const poolLivePermissioned = await permissionPdaOwnedByProgram(crankConn, "poolLive", boot.poolLive);
+  const cPass = strangerPoolLive === null && poolLivePermissioned;
+  console.log(strangerPoolLive === null ? "stranger PoolLive read: denied/null (as expected)" : `stranger PoolLive read: UNEXPECTEDLY SUCCEEDED: ${JSON.stringify(strangerPoolLive)}`);
   console.log(cPass ? "PASS M-F private live aggregate" : "FAIL M-F private live aggregate");
 
   // === (d) commit_aggregate -> poll base Pool -> assert rounded snapshot ===
@@ -242,11 +259,13 @@ async function main() {
   console.log(dPass ? "PASS M-F rounded snapshot" : "FAIL M-F rounded snapshot");
   assert(dPass, "(d) rounded snapshot invariants hold");
 
-  // === (e) MarketRisk via stranger connection — denied/null ===
+  // === (e) MarketRisk via stranger connection — denied/null, AND the
+  // permission PDA is genuinely owned by the permission program ===
   console.log("\n=== (e) MarketRisk via stranger TEE connection ===");
   const strangerMarketRisk = await tryFetchMarketRisk(strangerCore, marketRisk);
-  const ePass = strangerMarketRisk === null;
-  console.log(ePass ? "stranger MarketRisk read: denied/null (as expected)" : `stranger MarketRisk read: UNEXPECTEDLY SUCCEEDED: ${JSON.stringify(strangerMarketRisk)}`);
+  const marketRiskPermissioned = await permissionPdaOwnedByProgram(crankConn, "marketRisk", marketRisk);
+  const ePass = strangerMarketRisk === null && marketRiskPermissioned;
+  console.log(strangerMarketRisk === null ? "stranger MarketRisk read: denied/null (as expected)" : `stranger MarketRisk read: UNEXPECTEDLY SUCCEEDED: ${JSON.stringify(strangerMarketRisk)}`);
   console.log(ePass ? "PASS M-F MarketRisk private" : "FAIL M-F MarketRisk private (informational — MarketRisk permissioning is Task 2/3 scope, not a hard M-F requirement)");
 
   // === cleanup: close the position ===
