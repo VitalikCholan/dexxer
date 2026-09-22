@@ -24,6 +24,7 @@
 // faucet+seed_pool+delegate_pool block is identical between the two
 // profiles, so it is factored into `seedAndDelegatePool` below and shared.
 
+import { randomBytes } from "crypto";
 import { BN, type Program } from "@coral-xyz/anchor";
 import {
   Keypair,
@@ -40,6 +41,7 @@ import {
   delegateSpl,
   escrowPdaFromEscrowAuthority,
   EPHEMERAL_VAULT_ID,
+  lamportsDelegatedTransferIx,
   MAGIC_PROGRAM_ID,
   PERMISSION_PROGRAM_ID,
   permissionPdaFromAccount,
@@ -424,35 +426,69 @@ async function initAndDelegatePoolLive(
   return poolLive;
 }
 
+/** Rent for a ~200-byte `EphemeralPermission` account is ≈1.5–2.5M lamports on this ER; 5M gives headroom. */
+const MIN_PERMISSION_SURPLUS = 5_000_000;
+
+/**
+ * Week 4 (Task 3 fix round 1): `init_market_permissions` needs
+ * `market_risk`/`pool_live` to self-fund their new `EphemeralPermission`
+ * account's rent (matching `InitPermissions`'s pattern), but on this
+ * devnet neither PDA carries any lamport surplus above its own
+ * rent-exempt minimum, so that self-funding CPI fails with
+ * `InsufficientFundsForRent` (fully investigated in fix round 0 — see
+ * `instructions/user.rs`'s `InitMarketPermissions` doc comment for the
+ * ruled-out in-transaction mechanisms). The sanctioned fix: top up each
+ * PDA on the base layer via the eSPL sponsored delegated-lamports
+ * transfer (`lamportsDelegatedTransferIx`, already used by
+ * `scripts/admin/fund-fee-payer.ts` for `FeeEscrow`) — it requires the
+ * destination to already be delegated, which both `market_risk` (week 1)
+ * and `pool_live` (`initAndDelegatePoolLive`, just above) are by the time
+ * this runs. Idempotent: skips a PDA whose ER balance already meets
+ * `MIN_PERMISSION_SURPLUS`.
+ */
+async function fundMarketPermissions(admin: Keypair, marketRisk: PublicKey, poolLive: PublicKey, sigs: Record<string, string>): Promise<void> {
+  const conn = await teeConn(admin);
+  const targets: [string, PublicKey][] = [
+    ["marketRisk", marketRisk],
+    ["poolLive", poolLive],
+  ];
+  for (const [label, dest] of targets) {
+    const before = await conn.getBalance(dest, "confirmed");
+    if (before >= MIN_PERMISSION_SURPLUS) {
+      console.log(`fund_market_permissions: ${label} already has surplus (${before} lamports), skipped`);
+      continue;
+    }
+    const salt = randomBytes(32);
+    const ix = lamportsDelegatedTransferIx(admin.publicKey, dest, BigInt(MIN_PERMISSION_SURPLUS), salt);
+    const sig = await sendAndConfirmTransaction(baseConn, new Transaction().add(ix), [admin], { commitment: "confirmed" });
+    sigs[`fundMarketPermissions.${label}`] = sig;
+    console.log(`lamportsDelegatedTransferIx(${label})`, sig, "amount", MIN_PERMISSION_SURPLUS, "salt", Buffer.from(salt).toString("hex"));
+
+    const deadline = Date.now() + 60_000;
+    let after = before;
+    while (Date.now() < deadline) {
+      after = await conn.getBalance(dest, "confirmed");
+      if (after >= MIN_PERMISSION_SURPLUS) break;
+      await new Promise((r) => setTimeout(r, 2_000));
+    }
+    console.log(`fund_market_permissions: ${label} ER balance ${before} -> ${after} lamports`);
+    if (after < MIN_PERMISSION_SURPLUS) {
+      throw new Error(`fund_market_permissions: ${label} ER balance still ${after} < ${MIN_PERMISSION_SURPLUS} lamports after 60s (sig ${sig})`);
+    }
+  }
+}
+
 /**
  * Week 4 (Task 3, migration step 10, devnet only): make `MarketRisk` and
  * `PoolLive` permissioned `[crank(owner), admin(viewer)]` in one ER call —
  * `init_market_permissions` (Task 2), closing risk #24 (public-in-ER
  * market/pool aggregates — see CLAUDE.md's Architecture note). Signed by
  * `admin` (per the program's `has_one = admin` check) via its own owner-TEE
- * token — matches the original brief.
- *
- * CONCERN, not resolved (devnet migration run, week 4 Task 3): six
- * different on-chain funding mechanisms were tried, in order, to cover
- * `market_risk`/`pool_live`'s missing rent for their new
- * `EphemeralPermission` accounts (neither has any rent surplus — `market_risk`
- * predates `PoolLive`, created week 1; a devnet-migrated `pool_live` sits at
- * exactly its own rent-exempt minimum) — full trail in
- * `instructions/user.rs`'s `InitMarketPermissions` doc comment. Every one
- * was rejected by this ER validator for a different reason
- * (`InvalidWritableAccount`, `InvalidAccountForFee` ×3, `InvalidArgument`,
- * `UnbalancedInstruction`), and no other delegated account on this devnet
- * (`Pool`/`Market`/`BalancesRoot`/`FeeEscrow` itself) carries any lamport
- * surplus to lend either. `init_market_permissions` therefore now runs
- * exactly as `InitPermissions` does (plain self-funding, no top-up), and
- * the program tolerates the resulting `InsufficientFundsForRent` per
- * account (logs, does not abort) rather than failing this whole bootstrap
- * step. On THIS devnet state, this call is expected to complete "OK" while
- * actually permissioning neither account — `MarketRisk`/`PoolLive` remain
- * publicly readable in the ER until a working funding mechanism is found
- * (open item for week 5). Verify the actual outcome (via `riskPermission`/
- * `poolLivePermission` ownership) rather than assuming success from this
- * function returning.
+ * token — matches the original brief. Caller must run
+ * `fundMarketPermissions` first (see above) so the self-funding CPI inside
+ * this instruction has rent to spend; the instruction itself no longer
+ * tolerates a per-account CPI failure (fix round 1 — see
+ * `instructions/user.rs`), so a real failure here throws.
  */
 async function initMarketPermissions(
   admin: Keypair,
@@ -901,22 +937,12 @@ export async function bootstrapDevnet(): Promise<BootstrappedDevnet> {
   // a no-op there — capital_total already nonzero — so there's no ordering
   // hazard with the already-completed seed_pool call earlier in this fn). ---
   const poolLive = await initAndDelegatePoolLive(core, admin, config, pool, mint, sigs);
-  // `init_market_permissions` can genuinely fail transaction-wide with
-  // `InsufficientFundsForRent` on this devnet state (see the function's own
-  // doc comment — six funding mechanisms tried, none accepted by this ER)
-  // — that is a `TransactionError`, not a catchable program `Result`, so no
-  // amount of in-program tolerance changes it: the whole tx reverts before
-  // either account's permission is touched. Caught here so the rest of
-  // bootstrap still completes; callers that need to know whether
-  // `MarketRisk`/`PoolLive` actually ended up permissioned should re-check
-  // via `permissionPdaFromAccount` themselves (as `09-pool-snapshot.ts` does).
-  try {
-    await initMarketPermissions(admin, config, market, marketRisk, poolLive, sigs);
-  } catch (e) {
-    console.log(
-      `init_market_permissions: FAILED (tolerated, known devnet limitation — see admin.ts doc comment): ${e instanceof Error ? e.message : String(e)}`,
-    );
-  }
+  // Fix round 1: top up both PDAs' ER rent surplus first (see
+  // `fundMarketPermissions`'s doc comment), then `init_market_permissions`
+  // must succeed — no tolerance here, bootstrap must not silently leave
+  // risk #24 open.
+  await fundMarketPermissions(admin, marketRisk, poolLive, sigs);
+  await initMarketPermissions(admin, config, market, marketRisk, poolLive, sigs);
 
   return { admin, mint, market, marketRisk, pool, poolAta, poolLive, feed, feeEscrow, sigs, feePayer, balancesRoot, actionEscrow };
 }

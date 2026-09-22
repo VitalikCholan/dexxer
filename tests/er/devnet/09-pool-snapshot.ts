@@ -99,9 +99,13 @@ async function tryFetchMarketRisk(core: ReturnType<typeof dexxerCoreProgram>, ma
  * `onboardTrader`'s `getOrCreateAssociatedTokenAccount` call, traced to a
  * genuinely-zero balance right after a "confirmed" airdrop). Pre-funding
  * from the well-funded deploy payer (`spikes/keys/payer.json`, devnet-only
- * SOL with no real value) sidesteps the faucet entirely: `onboardTrader`'s
- * own `bal < 2_500_000_000` check then sees enough balance and skips its
- * airdrop branch.
+ * SOL with no real value) sidesteps the faucet failure mode: even if
+ * `onboardTrader`'s own `bal < 2_500_000_000` check still fires and its
+ * airdrop silently delivers 0 lamports (as observed), the prefunded
+ * balance is already there and unaffected. Fix round 1: lowered from 3 SOL
+ * to 0.3 SOL — the prior run's actual spend across the whole M-F flow
+ * (onboard + open + commit + close) was ~0.023 SOL, so 0.3 SOL is ample
+ * headroom without parking multiple unswept SOL on a throwaway key.
  */
 async function prefundFromPayer(recipient: InstanceType<typeof import("@solana/web3.js").PublicKey>, lamports: number): Promise<string> {
   const payerPath = resolve(process.cwd(), "..", "..", "spikes", "keys", "payer.json");
@@ -129,9 +133,9 @@ async function main() {
   const runId = Date.now();
   const traderName = `devnet-snapshot-${runId}`;
   const traderKp = loadOrCreateKey(traderName);
-  const prefundSig = await prefundFromPayer(traderKp.publicKey, 3 * LAMPORTS_PER_SOL);
+  const prefundSig = await prefundFromPayer(traderKp.publicKey, Math.round(0.3 * LAMPORTS_PER_SOL));
   sigs.prefundTrader = prefundSig;
-  console.log("prefund trader (devnet payer -> trader, 3 SOL):", prefundSig);
+  console.log("prefund trader (devnet payer -> trader, 0.3 SOL):", prefundSig);
   console.log("\n=== onboardTrader:", traderName, "===");
   const trader = await onboardTrader(boot, traderName, DEPOSIT);
   Object.assign(sigs, Object.fromEntries(Object.entries(trader.sigs).map(([k, v]) => [`onboard.${k}`, v])));

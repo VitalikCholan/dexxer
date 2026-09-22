@@ -10,22 +10,14 @@ pub struct InitPoolLive<'info> {
     pub admin: Signer<'info>,
     #[account(seeds = [CONFIG_SEED], bump = config.bump, has_one = admin @ DexxerError::Unauthorized)]
     pub config: Account<'info, Config>,
-    /// CHECK: Public pool — read once to seed the live counters (devnet
-    /// migration: values accumulated in weeks 1-3). `UncheckedAccount`, not
-    /// `Account<'info, Pool>`: on a devnet migration, `Pool` has already
-    /// been delegated (owned by the Delegation Program on L1, not
-    /// `dexxer_core`) by the time this instruction runs, so a typed
-    /// `Account<>`'s owner check would reject it with
-    /// `AccountOwnedByWrongProgram` (found week 4, Task 3 migration run).
-    /// The account's raw DATA still mirrors the last on-chain commit
-    /// regardless of its current owner, so `init_pool_live`'s body
-    /// deserializes it manually (`Pool::try_deserialize`, discriminator-
-    /// checked, owner-unchecked) instead — validated below by comparing the
-    /// decoded `mint` against `config.dusdc_mint`. Seed derives from
-    /// `config.dusdc_mint` (not a self-referential `pool.mint`, since
-    /// `pool` is no longer a typed account to read a field from before its
-    /// own seed is checked) — matches `DelegatePoolLive`'s
-    /// externally-sourced-mint seed pattern.
+    /// CHECK: Public pool, read once to seed the live counters. A devnet
+    /// migration has `Pool` already delegated (owned by the Delegation
+    /// Program) by the time this runs, so a typed `Account<'info, Pool>`'s
+    /// owner check would reject it with `AccountOwnedByWrongProgram` (week
+    /// 4, Task 3). Deserialized manually instead (`Pool::try_deserialize`,
+    /// discriminator-checked, owner-unchecked; `mint` validated below), and
+    /// seeded from `config.dusdc_mint` rather than a self-referential
+    /// `pool.mint` (matches `DelegatePoolLive`'s seed pattern).
     #[account(seeds = [POOL_SEED, config.dusdc_mint.as_ref()], bump)]
     pub pool: UncheckedAccount<'info>,
     #[account(init, payer = admin, space = 8 + PoolLive::INIT_SPACE,

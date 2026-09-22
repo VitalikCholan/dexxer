@@ -679,55 +679,12 @@ pub fn init_permissions(ctx: Context<InitPermissions>) -> Result<()> {
 // `InitPermissions`) rather than a new file.
 #[derive(Accounts)]
 pub struct InitMarketPermissions<'info> {
-    // Fix round 1 (devnet migration run, week 4 Task 3), CLOSED WITHOUT A
-    // FIX: `market_risk`/`pool_live` self-fund their own new
-    // `EphemeralPermission` account's rent (matching `InitPermissions`
-    // below) — but they have no rent surplus to do so (`market_risk`
-    // predates `PoolLive`, created week 1; a devnet-migrated `pool_live`
-    // sits at exactly its own rent-exempt minimum), so the CPI fails
-    // on-chain with `InsufficientFundsForRent`. Six funding mechanisms were
-    // tried across this devnet migration run, ALL ruled out by a real
-    // measurement — none is currently active in this file:
-    // 1. `admin` pays directly as a `mut` CPI payer into
-    //    `CreateEphemeralPermissionCpi`/`UpdateEphemeralPermissionCpi` (a
-    //    CPI into the PERMISSION PROGRAM) — `InvalidWritableAccount`.
-    // 2. A separate `fee_payer` account matching the outer tx's fee payer,
-    //    with `admin` as an extra signer — `InvalidAccountForFee`.
-    // 3. A caller-side plain `SystemProgram.transfer` topping up
-    //    `market_risk`/`pool_live` before this instruction runs —
-    //    `InvalidAccountForFee` again: this ER validator refuses any raw,
-    //    client-submitted `SystemProgram`-only instruction outright, even
-    //    bundled with a proven-working `commit_aggregate` call.
-    // 4. `admin` marked `mut`, CPI-ing a plain `system_program::transfer`
-    //    from INSIDE this instruction — still `InvalidAccountForFee`: the
-    //    transaction's own designated fee payer can never be `mut` at the
-    //    instruction level on this ER, no matter what it funds.
-    // 5. The same transfer sourced from the delegated `fee_escrow` PDA
-    //    (seed-signed CPI, no real wallet involved) — `InvalidArgument`:
-    //    `fee_escrow` is owned by `dexxer_core` on the ER (delegated, not
-    //    System-Program-owned), and only the System Program may CPI-debit
-    //    an account it owns.
-    // 6. A DIRECT lamport move (`try_borrow_mut_lamports`) from
-    //    `fee_escrow` to `pool_live` (no CPI at all — the textbook-correct
-    //    way for a program to move lamports between two PDAs it owns) —
-    //    STILL failed, with `UnbalancedInstruction` ("sum of account
-    //    balances before and after instruction do not match"), both as a
-    //    2-account loop and isolated to a single debit/credit pair. No
-    //    other delegated account on this devnet carries any rent surplus
-    //    either (`Pool`/`Market`/`BalancesRoot` all measured at exactly
-    //    their own rent-exempt minimum), so there was no alternative
-    //    funding source left to try within this task's budget.
-    // Root cause not pinned down (likely an ER-specific constraint on
-    // direct lamport manipulation of delegated accounts, undocumented as of
-    // week 4). Reverted to the plain self-funding shape below — on THIS
-    // devnet state it is expected to fail with `InsufficientFundsForRent`
-    // for both `market_risk` and `pool_live`; `init_market_permissions`
-    // tolerates that (logs, does not abort — see the loop below) so the
-    // rest of admin bootstrap still completes. Flagged as an open risk for
-    // week 5: either (a) MagicBlock clarifies the real funding mechanism,
-    // or (b) a redeployed `PoolLive` created with L1 prefund slack (mirror
-    // `init_user`'s `extra` transfer, done BEFORE delegation) closes this
-    // for future migrations — moot for accounts already delegated today.
+    // The permissioned account self-funds its permission rent (as
+    // `InitPermissions`); on an already-delegated PDA with no rent surplus
+    // this fails `InsufficientFundsForRent`. Caller must top it up first via
+    // the eSPL delegated-lamports transfer (`lamportsDelegatedTransferIx`,
+    // see `admin.ts`'s `fundMarketPermissions`); in-tx funding from the fee
+    // payer/raw SystemProgram/lamport moves is rejected by the ER (week 4, Task 3).
     pub admin: Signer<'info>,
     #[account(seeds = [CONFIG_SEED], bump = config.bump, has_one = admin @ DexxerError::Unauthorized)]
     pub config: Box<Account<'info, Config>>,
@@ -791,14 +748,11 @@ pub fn init_market_permissions(ctx: Context<InitMarketPermissions>) -> Result<()
         // `InitPermissions` above (a freshly created `EphemeralPermission`
         // has 0 lamports, so ownership — not `lamports() > 0` — is what
         // detects "already exists"). `payer: acc.clone()`, self-funded
-        // (matches `InitPermissions`) — see `InitMarketPermissions`'s doc
-        // comment: on THIS devnet state this is expected to fail with
-        // `InsufficientFundsForRent` for both accounts (no funding
-        // mechanism was found that this ER accepts), so the failure is
-        // tolerated (logged, not propagated) rather than aborting the
-        // whole instruction — callers relying on this permission actually
-        // existing must verify it separately (see `admin.ts`).
-        let result = if perm.owner == &PERMISSION_PROGRAM_ID {
+        // (matches `InitPermissions`) — the caller must ensure both
+        // accounts carry rent surplus before calling this instruction (see
+        // `InitMarketPermissions`'s doc comment and `admin.ts`'s
+        // `fundMarketPermissions`).
+        if perm.owner == &PERMISSION_PROGRAM_ID {
             UpdateEphemeralPermissionCpi {
                 payer: acc.clone(),
                 permissioned_account: acc.clone(),
@@ -810,7 +764,7 @@ pub fn init_market_permissions(ctx: Context<InitMarketPermissions>) -> Result<()
                 authority_is_signer: false, // PDA signs via the seeds below
                 args,
             }
-            .invoke_signed(&[seeds.as_slice()])
+            .invoke_signed(&[seeds.as_slice()])?;
         } else {
             CreateEphemeralPermissionCpi {
                 payer: acc.clone(),
@@ -821,14 +775,7 @@ pub fn init_market_permissions(ctx: Context<InitMarketPermissions>) -> Result<()
                 permission_program: ctx.accounts.permission_program.to_account_info(),
                 args,
             }
-            .invoke_signed(&[seeds.as_slice()])
-        };
-        if let Err(e) = result {
-            msg!(
-                "init_market_permissions: tolerated CPI failure for {}: {:?}",
-                acc.key(),
-                e
-            );
+            .invoke_signed(&[seeds.as_slice()])?;
         }
     }
     Ok(())
