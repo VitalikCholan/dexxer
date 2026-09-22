@@ -144,7 +144,7 @@ pub fn init_market_permissions(admin: &Pubkey, wd: &World) -> Instruction {
     Instruction {
         program_id: prog(),
         accounts: vec![
-            s(admin),
+            rs(admin),
             r(&wd.config),
             r(&wd.market),
             w(&wd.risk),

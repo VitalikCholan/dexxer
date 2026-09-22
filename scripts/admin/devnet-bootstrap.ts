@@ -64,6 +64,7 @@ bootstrapDevnet()
       marketRisk: b.marketRisk.toBase58(),
       pool: b.pool.toBase58(),
       poolAta: b.poolAta.toBase58(),
+      poolLive: b.poolLive.toBase58(),
       feed: b.feed.toBase58(),
       feeEscrow: b.feeEscrow.toBase58(),
       balancesRoot: b.balancesRoot.toBase58(),

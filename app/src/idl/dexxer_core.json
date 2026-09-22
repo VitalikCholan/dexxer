@@ -4332,7 +4332,21 @@
         {
           "name": "pool",
           "docs": [
-            "Public pool — read once to seed the live counters (devnet migration: values accumulated in weeks 1–3)."
+            "migration: values accumulated in weeks 1-3). `UncheckedAccount`, not",
+            "`Account<'info, Pool>`: on a devnet migration, `Pool` has already",
+            "been delegated (owned by the Delegation Program on L1, not",
+            "`dexxer_core`) by the time this instruction runs, so a typed",
+            "`Account<>`'s owner check would reject it with",
+            "`AccountOwnedByWrongProgram` (found week 4, Task 3 migration run).",
+            "The account's raw DATA still mirrors the last on-chain commit",
+            "regardless of its current owner, so `init_pool_live`'s body",
+            "deserializes it manually (`Pool::try_deserialize`, discriminator-",
+            "checked, owner-unchecked) instead — validated below by comparing the",
+            "decoded `mint` against `config.dusdc_mint`. Seed derives from",
+            "`config.dusdc_mint` (not a self-referential `pool.mint`, since",
+            "`pool` is no longer a typed account to read a field from before its",
+            "own seed is checked) — matches `DelegatePoolLive`'s",
+            "externally-sourced-mint seed pattern."
           ],
           "pda": {
             "seeds": [
@@ -4347,8 +4361,8 @@
               },
               {
                 "kind": "account",
-                "path": "pool.mint",
-                "account": "Pool"
+                "path": "config.dusdc_mint",
+                "account": "Config"
               }
             ]
           }
@@ -4374,8 +4388,8 @@
               },
               {
                 "kind": "account",
-                "path": "pool.mint",
-                "account": "Pool"
+                "path": "config.dusdc_mint",
+                "account": "Config"
               }
             ]
           }
