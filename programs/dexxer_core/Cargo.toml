@@ -28,6 +28,13 @@ magicblock-magic-program-api = "=0.10.1"
 # Version already resolved transitively (via ephemeral-rollups-sdk's solana-program
 # dependency), so this adds no new entry to the dependency graph.
 solana-keccak-hasher = "=3.1.0"
+# `#[account(zero_copy)]` (state/balances_root.rs, week-3 task 5, controller
+# ruling 5) expands to `unsafe impl bytemuck::Pod/Zeroable` referencing the
+# `bytemuck` crate by name — anchor-lang re-exports it internally but the
+# macro output still needs it resolvable as a direct dependency here. Pinned
+# to the version already resolved transitively (via anchor-lang), so this
+# adds no new entry to the dependency graph.
+bytemuck = "=1.25.2"
 # pinned: anchor-lang 1.0.2 requires ^1.0.2 and 1.2.0 macros break mint:: codegen
 anchor-syn = "=1.0.2"
 anchor-derive-accounts = "=1.0.2"

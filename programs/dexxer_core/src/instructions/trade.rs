@@ -20,8 +20,12 @@ pub struct Trade<'info> {
     pub market_risk: Account<'info, MarketRisk>,
     #[account(mut, seeds = [POOL_SEED, pool.mint.as_ref()], bump = pool.bump)]
     pub pool: Account<'info, Pool>,
+    // Boxed: week-3 Task 0 grew `UserAccount` by `exit_salt: [u8; 32]`, which
+    // tipped this context's account-validation stack frame 8 bytes past the
+    // SBF limit (same failure mode `Position` below already worked around) —
+    // moves `UserAccount`'s deserialize buffer off the stack onto the heap.
     #[account(mut, seeds = [USER_SEED, user_account.owner.as_ref()], bump = user_account.bump)]
-    pub user_account: Account<'info, UserAccount>,
+    pub user_account: Box<Account<'info, UserAccount>>,
     // Boxed: with all the other accounts in this context inline, Position
     // pushes the account-validation stack frame past the SBF limit (same
     // failure mode as InitUser's Position/DisclosureQueue in instructions/user.rs).

@@ -35,6 +35,18 @@ pub fn faucet(owner: &Pubkey) -> Pubkey {
 pub fn fee_escrow() -> Pubkey {
     pda(&[FEE_ESCROW_SEED])
 }
+pub fn balances_root() -> Pubkey {
+    pda(&[BALANCES_ROOT_SEED])
+}
+/// Hash-seeded (week-3 controller ruling 9): `nonce` is per-user, so two
+/// traders' first closes both land on nonce 1 and would collide on the same
+/// PDA if seeded by nonce. `hash` is `commitment_hash(&args, &salt)`.
+pub fn commitment(hash: &[u8; 32]) -> Pubkey {
+    pda(&[COMMIT_SEED, hash])
+}
+pub fn disclosure(hash: &[u8; 32]) -> Pubkey {
+    pda(&[DISCLOSURE_SEED, hash])
+}
 pub fn feed(oracle_program: &Pubkey) -> Pubkey {
     Pubkey::find_program_address(&[b"price_feed", b"pyth-lazer", b"6"], oracle_program).0
 }
@@ -61,6 +73,16 @@ pub fn permission(account: &Pubkey) -> Pubkey {
     let compat_account = ephemeral_rollups_sdk::compat::Pubkey::new_from_array(account.to_bytes());
     let (pda, _) = ephemeral_rollups_sdk::access_control::structs::EphemeralPermission::find_pda(
         &compat_account,
+    );
+    compat_pk(pda)
+}
+/// The Magic Program's action escrow balance PDA for `escrow_auth`, index `ACTION_ESCROW_INDEX`
+/// (spikes/06-magic-action, `#[action]`-gated instructions).
+pub fn action_escrow(escrow_auth: &Pubkey) -> Pubkey {
+    let compat_auth = ephemeral_rollups_sdk::compat::Pubkey::new_from_array(escrow_auth.to_bytes());
+    let pda = ephemeral_rollups_sdk::pda::ephemeral_balance_pda_from_payer(
+        &compat_auth,
+        ACTION_ESCROW_INDEX,
     );
     compat_pk(pda)
 }

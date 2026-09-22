@@ -244,6 +244,43 @@ pub mod private_counter {
         .build_and_invoke()?;
         Ok(())
     }
+
+    /// Week-3 M-A: close the ephemeral permission (the counter becomes public
+    /// again on the ER, same as `close_permission`) and, in the same atomic ER
+    /// transaction, commit-and-undelegate. Owner-signed. Tests whether the TEE
+    /// lets a just-unprivatized delegated account's bytes reach L1 this way —
+    /// the sequence `undelegate_user` (spec §2.4.3) wants to use. If this
+    /// instruction fails, `undelegate` above is the fallback variant (commit
+    /// and undelegate without closing the permission first); a Solana
+    /// transaction is all-or-nothing, so a failed `exit` never leaves the
+    /// permission half-closed.
+    pub fn exit(ctx: Context<ExitCounter>) -> Result<()> {
+        let signers = [
+            COUNTER_SEED,
+            ctx.accounts.counter.authority.as_ref(),
+            &[ctx.bumps.counter],
+        ];
+        CloseEphemeralPermissionCpi {
+            payer: ctx.accounts.counter.to_account_info(),
+            permissioned_account: ctx.accounts.counter.to_account_info(),
+            permission: ctx.accounts.permission.to_account_info(),
+            vault: ctx.accounts.ephemeral_vault.to_account_info(),
+            magic_program: ctx.accounts.magic_program.to_account_info(),
+            permission_program: ctx.accounts.permission_program.to_account_info(),
+            authority: ctx.accounts.counter.to_account_info(),
+            authority_is_signer: false,
+        }
+        .invoke_signed(&[&signers])?;
+
+        MagicIntentBundleBuilder::new(
+            ctx.accounts.payer.to_account_info(),
+            ctx.accounts.magic_context.to_account_info(),
+            ctx.accounts.magic_program.to_account_info(),
+        )
+        .commit_and_undelegate(&[ctx.accounts.counter.to_account_info()])
+        .build_and_invoke()?;
+        Ok(())
+    }
 }
 
 #[derive(Accounts)]
@@ -343,6 +380,32 @@ pub struct UndelegateCounter<'info> {
     pub payer: Signer<'info>,
     #[account(mut, seeds = [COUNTER_SEED, counter.authority.as_ref()], bump)]
     pub counter: Account<'info, Counter>,
+}
+
+/// `close_permission` + `undelegate` combined in one ER transaction. `payer`
+/// is a plain wallet (mirrors `UndelegateCounter` above) — a program PDA
+/// cannot be an outer-transaction signer.
+#[commit]
+#[derive(Accounts)]
+pub struct ExitCounter<'info> {
+    #[account(mut)]
+    pub payer: Signer<'info>,
+    #[account(mut, seeds = [COUNTER_SEED, counter.authority.as_ref()], bump)]
+    pub counter: Account<'info, Counter>,
+    /// CHECK: verified by permission program; seeds match the on-chain layout
+    #[account(
+        mut,
+        seeds = [PERMISSION_SEED, counter.key().as_ref()],
+        bump,
+        seeds::program = PERMISSION_PROGRAM_ID,
+    )]
+    pub permission: UncheckedAccount<'info>,
+    /// CHECK: Permission Program
+    #[account(address = PERMISSION_PROGRAM_ID)]
+    pub permission_program: UncheckedAccount<'info>,
+    /// CHECK: verified by magic program
+    #[account(mut, address = EPHEMERAL_VAULT_ID)]
+    pub ephemeral_vault: UncheckedAccount<'info>,
 }
 
 #[account]

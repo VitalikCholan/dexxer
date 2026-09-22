@@ -9,6 +9,7 @@ import { AnchorProvider, BorshAccountsCoder, Program, Wallet } from "@coral-xyz/
 import { Connection, Keypair, PublicKey } from "@solana/web3.js";
 import { ASSOCIATED_TOKEN_PROGRAM_ID, TOKEN_PROGRAM_ID } from "@solana/spl-token";
 import bs58 from "bs58";
+
 import { readFileSync } from "fs";
 import { dirname, resolve } from "path";
 import { fileURLToPath } from "url";
@@ -41,6 +42,12 @@ export const MOCK_ORACLE_PROGRAM_ID = new PublicKey((MOCK_ORACLE_IDL as { addres
 // from the same IDL used to build `dexxerCoreProgram` above (not hardcoded,
 // so it stays correct if the account layout ever changes).
 export const POSITION_DISC = bs58.encode(new BorshAccountsCoder(DEXXER_CORE_IDL).accountDiscriminator("Position"));
+
+// Task 7 (crank-fallback disclosure/root cycles): same idea as `POSITION_DISC`
+// above, for `getProgramAccounts` memcmp filters over `DisclosureQueue` and
+// `UserAccount`.
+export const DQ_DISC = bs58.encode(new BorshAccountsCoder(DEXXER_CORE_IDL).accountDiscriminator("DisclosureQueue"));
+export const USER_DISC = bs58.encode(new BorshAccountsCoder(DEXXER_CORE_IDL).accountDiscriminator("UserAccount"));
 
 export function anchorProvider(conn: Connection, wallet: Keypair): AnchorProvider {
   return new AnchorProvider(conn, new Wallet(wallet), { commitment: "confirmed", skipPreflight: true });
@@ -77,6 +84,15 @@ const DQ_SEED = Buffer.from("dq");
 const FAUCET_SEED = Buffer.from("faucet");
 const MINT_AUTH_SEED = Buffer.from("mint_auth");
 const FEE_ESCROW_SEED = Buffer.from("fee_escrow");
+// Week 3 (Task 7): programs/dexxer_core/src/state/mod.rs seeds/consts.
+const COMMIT_SEED = Buffer.from("commit");
+const DISCLOSURE_SEED = Buffer.from("disclosure");
+const BALANCES_ROOT_SEED = Buffer.from("balances_root");
+export const ROOT_LEAVES = 64;
+export const ROOT_BATCH = 16;
+export const MAX_ACTIONS_PER_COMMIT = 4;
+/** `ephemeral_rollups_sdk::pda::ephemeral_balance_pda_from_payer`'s default action-escrow index (state/mod.rs `ACTION_ESCROW_INDEX`). */
+export const ACTION_ESCROW_INDEX = 255;
 export const SOL_SYMBOL = Buffer.from([83, 79, 76, 0, 0, 0, 0, 0]); // b"SOL\0\0\0\0\0"
 
 // mock_oracle seeds, matching programs/mock_oracle/src/lib.rs
@@ -85,6 +101,18 @@ const LAZER_SEED = Buffer.from("pyth-lazer");
 
 function pda(seeds: (Buffer | Uint8Array)[], programId: PublicKey): PublicKey {
   return PublicKey.findProgramAddressSync(seeds, programId)[0];
+}
+
+/** Accepts either a 32-byte `Uint8Array`/`Buffer` or a hex string (with or without `0x`). */
+function hashSeed(hash: Uint8Array | string): Buffer {
+  if (typeof hash === "string") {
+    const hex = hash.startsWith("0x") ? hash.slice(2) : hash;
+    const b = Buffer.from(hex, "hex");
+    if (b.length !== 32) throw new Error(`commitment hash must be 32 bytes, got ${b.length}`);
+    return b;
+  }
+  if (hash.length !== 32) throw new Error(`commitment hash must be 32 bytes, got ${hash.length}`);
+  return Buffer.from(hash);
 }
 
 export const pdas = {
@@ -109,6 +137,13 @@ export const pdas = {
   feed: (lazerFeedId: string) => pda([FEED_SEED, LAZER_SEED, Buffer.from(lazerFeedId)], MOCK_ORACLE_PROGRAM_ID),
   /** Same feed PDA derivation as `feed`, but under an arbitrary oracle program (Task 0: the real devnet Pricing Oracle, not `mock_oracle`). */
   feedUnder: (oracleProgram: PublicKey, lazerFeedId: string) => pda([FEED_SEED, LAZER_SEED, Buffer.from(lazerFeedId)], oracleProgram),
+  // Week 3 (Task 7/8b): PDAs for the 13F/BalancesRoot pipeline, matching
+  // programs/dexxer_core/src/state/mod.rs seeds verbatim. Hash-seeded, not
+  // nonce-seeded (ruling 9, Task 8b) — `nonce` is per-user and collides
+  // across traders; `hash` is `commitmentHash(args, salt)`, 32 bytes or hex.
+  commitment: (hash: Uint8Array | string) => pda([COMMIT_SEED, hashSeed(hash)], DEXXER_CORE_PROGRAM_ID),
+  disclosure: (hash: Uint8Array | string) => pda([DISCLOSURE_SEED, hashSeed(hash)], DEXXER_CORE_PROGRAM_ID),
+  balancesRoot: () => pda([BALANCES_ROOT_SEED], DEXXER_CORE_PROGRAM_ID),
 };
 
 /** `#[delegate]`-generated buffer/record/metadata triple for a PDA owned by `ownerProgramId`. */
@@ -133,3 +168,54 @@ export const espl = {
 
 export const permissionPda = permissionPdaFromAccount;
 export { DELEGATION_PROGRAM_ID, EPHEMERAL_SPL_TOKEN_PROGRAM_ID };
+
+// --- Week 3 (Task 7): keccak256 hash helpers, byte-for-byte matching
+// `commitment_hash`/`leaf`/`pad` in programs/dexxer_core/src/state/{disclosure,balances_root}.rs
+// (Global Constraints §"Канонічні байти commitment-у"/"Лист root-у"). Golden
+// vectors for both live in `tests/er/lib/hashes.selftest.ts`
+// (`npm run selftest:hashes`), asserted against the Rust unit tests
+// `commitment_hash_golden_vector` / `leaf_and_pad_golden_vectors`.
+
+// Hash canon lives in ./hashes.ts (IDL-free) — re-exported here for callers.
+export {
+  commitmentHash,
+  leaf,
+  pad,
+  sideIndex,
+  reasonIndex,
+  u64le,
+  i64le,
+  type DisclosureArgsBytes,
+} from "./hashes.js";
+
+/**
+ * `BalancesRoot` is `#[account(zero_copy)]` with `bytemuck` serialization
+ * (task-5 controller ruling 5 — see `state/balances_root.rs` doc comment), a
+ * layout Anchor's Borsh `BorshAccountsCoder` does not decode. Manual `repr(C)`
+ * offset decode instead: `disc(8) | root_slot:u64le(8) | leaves:[[u8;32];64]
+ * (2048) | version:u8(1) | filled:u8(1) | bump:u8(1) | _pad[5]`.
+ */
+export interface DecodedBalancesRoot {
+  rootSlot: bigint;
+  leaves: Uint8Array[];
+  version: number;
+  filled: number;
+  bump: number;
+}
+
+export function decodeBalancesRoot(data: Buffer): DecodedBalancesRoot {
+  let o = 8; // discriminator
+  const rootSlot = data.readBigUInt64LE(o);
+  o += 8;
+  const leaves: Uint8Array[] = [];
+  for (let i = 0; i < ROOT_LEAVES; i++) {
+    leaves.push(Uint8Array.from(data.subarray(o, o + 32)));
+    o += 32;
+  }
+  const version = data.readUInt8(o);
+  o += 1;
+  const filled = data.readUInt8(o);
+  o += 1;
+  const bump = data.readUInt8(o);
+  return { rootSlot, leaves, version, filled, bump };
+}

@@ -78,6 +78,24 @@ pub enum DexxerError {
     FaucetLimit,
     #[msg("withdraw is on cooldown for this account")]
     WithdrawCooldown,
+    #[msg("commitment not yet written for this closed position")]
+    CommitmentNotWritten,
+    #[msg("reveal slot not reached")]
+    RevealTooEarly,
+    #[msg("disclosure queue not empty")]
+    QueueNotEmpty,
+    #[msg("balances root has no free leaf slot")]
+    RootFull,
+    #[msg("invalid leaf account")]
+    InvalidLeafAccount,
+    #[msg("position is not closed")]
+    NotClosed,
+    #[msg("disclosure does not match commitment hash")]
+    BadDisclosureHash,
+    #[msg("account balance must be zero to exit")]
+    BalanceNotZero,
+    #[msg("too many actions in one commit bundle")]
+    TooManyActions,
 }
 
 impl From<MathError> for anchor_lang::error::Error {

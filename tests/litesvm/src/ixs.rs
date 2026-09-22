@@ -6,7 +6,7 @@ use crate::{
 use anchor_lang::InstructionData;
 use dexxer_core::{
     instruction as ix,
-    state::{MarketParams, Side},
+    state::{commitment_hash, DisclosureArgs, MarketParams, Side},
 };
 use solana_instruction::{AccountMeta, Instruction};
 use solana_pubkey::Pubkey;
@@ -109,6 +109,18 @@ pub fn init_fee_escrow(admin: &Pubkey) -> Instruction {
         data: ix::InitFeeEscrow {}.data(),
     }
 }
+pub fn init_balances_root(admin: &Pubkey) -> Instruction {
+    Instruction {
+        program_id: prog(),
+        accounts: vec![
+            s(admin),
+            r(&pdas::config()),
+            w(&pdas::balances_root()),
+            r(&SYSTEM),
+        ],
+        data: ix::InitBalancesRoot {}.data(),
+    }
+}
 pub fn set_params(
     admin: &Pubkey,
     config: &Pubkey,
@@ -195,7 +207,7 @@ pub fn faucet_mint(owner: &Pubkey, wd: &World, amount: u64) -> Instruction {
         data: ix::FaucetMint { amount }.data(),
     }
 }
-pub fn init_user(owner: &Pubkey, wd: &World) -> Instruction {
+pub fn init_user(owner: &Pubkey, wd: &World, exit_salt: [u8; 32]) -> Instruction {
     Instruction {
         program_id: prog(),
         accounts: vec![
@@ -207,7 +219,7 @@ pub fn init_user(owner: &Pubkey, wd: &World) -> Instruction {
             w(&pdas::dq(owner)),
             r(&SYSTEM),
         ],
-        data: ix::InitUser {}.data(),
+        data: ix::InitUser { exit_salt }.data(),
     }
 }
 pub fn set_session(
@@ -372,5 +384,186 @@ pub fn withdraw(signer: &Pubkey, t: &Trader, wd: &World, amount: u64) -> Instruc
             r(&pdas::magic_program()),
         ],
         data: ix::Withdraw { amount }.data(),
+    }
+}
+/// `payer` must equal `Config.fee_payer` (`w.fee_payer` in tests). `extra` is any
+/// mix of `Position`/`DisclosureQueue` accounts appended after the fixed accounts —
+/// `commit_aggregate` reads them from `remaining_accounts`.
+pub fn commit_aggregate(payer: &Pubkey, wd: &World, extra: &[AccountMeta]) -> Instruction {
+    let mut accounts = vec![
+        r(&wd.config),
+        rs(payer),
+        w(&wd.pool),
+        w(&wd.balances_root),
+        w(&wd.fee_escrow),
+        w(&wd.magic_fee_vault),
+        w(&pdas::magic_context()),
+        r(&pdas::magic_program()),
+    ];
+    accounts.extend_from_slice(extra);
+    Instruction {
+        program_id: prog(),
+        accounts,
+        data: ix::CommitAggregate {}.data(),
+    }
+}
+/// Shared account layout for a direct (non-Magic-Action) call to `write_commitment`:
+/// `escrow_auth_meta` carries the caller-vs-real-fee-payer distinction (signer or
+/// not), `escrow_auth_key` derives the `escrow` action-balance PDA that must sign
+/// and never can.
+fn write_commitment_direct_accounts(
+    escrow_auth_meta: AccountMeta,
+    escrow_auth_key: &Pubkey,
+    wd: &World,
+    hash: &[u8; 32],
+) -> Vec<AccountMeta> {
+    vec![
+        w(&pdas::commitment(hash)),
+        r(&wd.config),
+        r(&SYSTEM),
+        r(&prog()),
+        escrow_auth_meta,
+        w(&pdas::action_escrow(escrow_auth_key)),
+    ]
+}
+/// Direct call to `write_commitment` by a plain wallet impersonating the action path:
+/// `caller` signs as `escrow_auth` (a wallet can legitimately sign for itself), and
+/// `escrow` is its derived action-escrow PDA — but **not** as a signer, since no wallet
+/// holds the private key for a PDA. This must be rejected by the `#[action]`
+/// escrow-signer / `source_program` checks.
+pub fn write_commitment_direct(
+    caller: &Pubkey,
+    wd: &World,
+    nonce: u64,
+    hash: [u8; 32],
+) -> Instruction {
+    Instruction {
+        program_id: prog(),
+        accounts: write_commitment_direct_accounts(rs(caller), caller, wd, &hash),
+        data: ix::WriteCommitment { nonce, hash }.data(),
+    }
+}
+/// Same shape as `write_commitment_direct`, but `escrow_auth` is the *real*
+/// `Config.fee_payer` (public knowledge — no signature required by the program's
+/// own constraint, which only checks the pubkey value) rather than the caller,
+/// and is never marked as a transaction signer. Isolates the one remaining gate a
+/// plain wallet cannot pass: `escrow` itself, which must be a signer at
+/// `ephemeral_balance_pda_from_payer(escrow_auth, ACTION_ESCROW_INDEX)` — a PDA no
+/// wallet holds the private key for.
+pub fn write_commitment_direct_with_escrow_auth(
+    escrow_auth: &Pubkey,
+    wd: &World,
+    nonce: u64,
+    hash: [u8; 32],
+) -> Instruction {
+    Instruction {
+        program_id: prog(),
+        accounts: write_commitment_direct_accounts(r(escrow_auth), escrow_auth, wd, &hash),
+        data: ix::WriteCommitment { nonce, hash }.data(),
+    }
+}
+/// Same split as `write_commitment_direct_accounts`, for `write_disclosure`.
+/// `hash` is `commitment_hash(args, salt)` — both PDAs are seeded by it (ruling 9).
+fn write_disclosure_direct_accounts(
+    escrow_auth_meta: AccountMeta,
+    escrow_auth_key: &Pubkey,
+    wd: &World,
+    hash: &[u8; 32],
+) -> Vec<AccountMeta> {
+    vec![
+        w(&pdas::disclosure(hash)),
+        r(&pdas::commitment(hash)),
+        r(&wd.config),
+        r(&SYSTEM),
+        r(&prog()),
+        escrow_auth_meta,
+        w(&pdas::action_escrow(escrow_auth_key)),
+    ]
+}
+/// Direct call to `write_disclosure` — same attack shape as `write_commitment_direct`.
+pub fn write_disclosure_direct(
+    caller: &Pubkey,
+    wd: &World,
+    args: DisclosureArgs,
+    salt: [u8; 32],
+) -> Instruction {
+    let hash = commitment_hash(&args, &salt);
+    Instruction {
+        program_id: prog(),
+        accounts: write_disclosure_direct_accounts(rs(caller), caller, wd, &hash),
+        data: ix::WriteDisclosure { args, salt }.data(),
+    }
+}
+/// Same shape as `write_disclosure_direct`, `escrow_auth`-parameterised like
+/// `write_commitment_direct_with_escrow_auth`.
+pub fn write_disclosure_direct_with_escrow_auth(
+    escrow_auth: &Pubkey,
+    wd: &World,
+    args: DisclosureArgs,
+    salt: [u8; 32],
+) -> Instruction {
+    let hash = commitment_hash(&args, &salt);
+    Instruction {
+        program_id: prog(),
+        accounts: write_disclosure_direct_accounts(r(escrow_auth), escrow_auth, wd, &hash),
+        data: ix::WriteDisclosure { args, salt }.data(),
+    }
+}
+/// `set_balances_root` (ER, crank): `extra` is the batch of `UserAccount`
+/// pubkeys (readonly, `remaining_accounts`) whose leaves this call computes.
+pub fn set_balances_root(
+    crank: &Pubkey,
+    wd: &World,
+    begin: bool,
+    finalize: bool,
+    padding_seed: [u8; 32],
+    extra: &[AccountMeta],
+) -> Instruction {
+    let mut accounts = vec![rs(crank), r(&wd.config), w(&wd.balances_root)];
+    accounts.extend_from_slice(extra);
+    Instruction {
+        program_id: prog(),
+        accounts,
+        data: ix::SetBalancesRoot {
+            begin,
+            finalize,
+            padding_seed,
+        }
+        .data(),
+    }
+}
+/// `undelegate_user` (owner, ER): scrub -> close permission x3 -> commit_and_undelegate.
+/// Same permission/vault/magic accounts as `set_session`, plus `fee_escrow`/
+/// `magic_fee_vault`/`magic_context`/`magic_program` (as in `withdraw`).
+pub fn undelegate_user(signer: &Pubkey, t: &Trader, wd: &World) -> Instruction {
+    Instruction {
+        program_id: prog(),
+        accounts: vec![
+            s(signer),
+            r(&wd.config),
+            w(&t.user),
+            w(&t.position),
+            w(&t.dq),
+            w(&pdas::permission(&t.user)),
+            w(&pdas::permission(&t.position)),
+            w(&pdas::permission(&t.dq)),
+            w(&pdas::ephemeral_vault()),
+            r(&pdas::permission_program()),
+            w(&wd.fee_escrow),
+            w(&wd.magic_fee_vault),
+            w(&pdas::magic_context()),
+            r(&pdas::magic_program()),
+        ],
+        data: ix::UndelegateUser {}.data(),
+    }
+}
+/// `mark_committed` (ER, crank): retires a `Closed && commitment_written` position's
+/// `ClosedRecord` into the owner's `DisclosureQueue` and frees the `Position` back
+/// to `Empty`. `MarkCommitted { crank, config, position, dq }` — no instruction args.
+pub fn mark_committed(crank: &Pubkey, t: &Trader, wd: &World) -> Instruction {
+    Instruction {
+        program_id: prog(),
+        accounts: vec![rs(crank), r(&wd.config), w(&t.position), w(&t.dq)],
+        data: ix::MarkCommitted {}.data(),
     }
 }

@@ -18,7 +18,7 @@
 // provider's `Wallet.signTransaction`, so a read-only shim is enough; it
 // throws if anything ever does try to sign through it, as a guardrail
 // against accidentally bypassing MWA/session signing.
-import { AnchorProvider, BN, Program, type Idl } from '@coral-xyz/anchor'
+import { AnchorProvider, BN, BorshAccountsCoder, Program, type Idl } from '@coral-xyz/anchor'
 import {
   Connection,
   Keypair,
@@ -27,6 +27,7 @@ import {
   type TransactionInstruction,
   type VersionedTransaction,
 } from '@solana/web3.js'
+import { keccak_256 } from '@noble/hashes/sha3'
 import idlJson from '../idl/dexxer_core.json'
 
 export const DEXXER_CORE_IDL = idlJson as unknown as Idl
@@ -352,4 +353,411 @@ export function describeTxError(e: unknown): string {
     return `${DEXXER_ERROR_MESSAGES[code]} (${code})`
   }
   return msg
+}
+
+// --- Task 9: History/Receipt decoders (DisclosureQueue, Disclosure,
+// BalancesRoot), UserAccount.exit_salt, and the keccak leaf hash ---
+//
+// Same manual fixed-offset approach as the block above (Anchor's Borsh
+// decoder is broken on-device for `Program.account.<name>.fetch()` — see
+// file header), offsets verified against current Rust source, 22-Sep-2026
+// (CLAUDE.md: verify, don't guess):
+//   `programs/dexxer_core/src/state/user.rs`       — UserAccount
+//   `programs/dexxer_core/src/state/disclosure.rs` — DisclosureQueue, Disclosure
+//   `programs/dexxer_core/src/state/position.rs`   — ClosedRecord (embedded in DisclosureQueue)
+//   `programs/dexxer_core/src/state/balances_root.rs` — BalancesRoot (zero_copy, repr(C))
+// and cross-checked against `tests/er/lib/program.ts`'s `decodeBalancesRoot`/
+// `leaf`/`pad`/`commitmentHash` (the reference TS implementation this file's
+// `leafHex` and offsets mirror byte-for-byte) and `hashes.selftest.ts` (the
+// golden vectors `assertLeafGolden` below re-asserts).
+
+/**
+ * `UserAccount.exit_salt` offset: disc(8) + version(1) + owner(32) +
+ * session_key(32) + session_expiry(8) + actions_left(4) + free_margin(8) +
+ * locked_margin(8) + nonce(8) + last_withdraw_slot(8) = 117.
+ */
+const USER_ACCOUNT_EXIT_SALT_OFFSET =
+  USER_ACCOUNT_FREE_MARGIN_OFFSET + 8 /* free_margin */ + 8 /* locked_margin */ + 8 /* nonce */ + 8 /* last_withdraw_slot */
+
+export function readUserAccountExitSalt(data: Buffer): Uint8Array {
+  return Uint8Array.from(data.subarray(USER_ACCOUNT_EXIT_SALT_OFFSET, USER_ACCOUNT_EXIT_SALT_OFFSET + 32))
+}
+
+/**
+ * `ClosedRecord` Borsh field order (`state/position.rs`) — NOT the order the
+ * week-3 plan text guessed (that guess put `salt` last; the actual struct
+ * puts `salt` before `nonce`/`reveal_after_slot`/`commitment_written` — Rust
+ * source wins per CLAUDE.md):
+ *   market:32, side:1, size:8, entry:8, exit:8, pnl:8(i64), fees:8,
+ *   reason:1, opened_slot:8, closed_slot:8, salt:32, nonce:8,
+ *   reveal_after_slot:8, commitment_written:1  =  139 bytes total.
+ */
+const CLOSED_RECORD_SIZE = 139
+const CR_MARKET_OFF = 0
+const CR_SIDE_OFF = 32
+const CR_SIZE_OFF = 33
+const CR_ENTRY_OFF = 41
+const CR_EXIT_OFF = 49
+const CR_PNL_OFF = 57
+const CR_FEES_OFF = 65
+const CR_REASON_OFF = 73
+const CR_OPENED_SLOT_OFF = 74
+const CR_CLOSED_SLOT_OFF = 82
+const CR_SALT_OFF = 90
+const CR_NONCE_OFF = 122
+const CR_REVEAL_AFTER_SLOT_OFF = 130
+const CR_COMMITMENT_WRITTEN_OFF = 138
+
+const CLOSE_REASONS = ['User', 'Liquidated'] as const
+export type CloseReasonName = (typeof CLOSE_REASONS)[number]
+
+export interface DecodedClosedRecord {
+  market: PublicKey
+  side: SideName
+  size: bigint
+  entry: bigint
+  exit: bigint
+  pnl: bigint
+  fees: bigint
+  reason: CloseReasonName
+  openedSlot: bigint
+  closedSlot: bigint
+  salt: Uint8Array
+  nonce: bigint
+  revealAfterSlot: bigint
+  commitmentWritten: boolean
+}
+
+function decodeClosedRecord(data: Buffer, base: number): DecodedClosedRecord {
+  return {
+    market: new PublicKey(data.subarray(base + CR_MARKET_OFF, base + CR_MARKET_OFF + 32)),
+    side: SIDES[data.readUInt8(base + CR_SIDE_OFF)],
+    size: data.readBigUInt64LE(base + CR_SIZE_OFF),
+    entry: data.readBigUInt64LE(base + CR_ENTRY_OFF),
+    exit: data.readBigUInt64LE(base + CR_EXIT_OFF),
+    pnl: data.readBigInt64LE(base + CR_PNL_OFF),
+    fees: data.readBigUInt64LE(base + CR_FEES_OFF),
+    reason: CLOSE_REASONS[data.readUInt8(base + CR_REASON_OFF)],
+    openedSlot: data.readBigUInt64LE(base + CR_OPENED_SLOT_OFF),
+    closedSlot: data.readBigUInt64LE(base + CR_CLOSED_SLOT_OFF),
+    salt: Uint8Array.from(data.subarray(base + CR_SALT_OFF, base + CR_SALT_OFF + 32)),
+    nonce: data.readBigUInt64LE(base + CR_NONCE_OFF),
+    revealAfterSlot: data.readBigUInt64LE(base + CR_REVEAL_AFTER_SLOT_OFF),
+    commitmentWritten: data.readUInt8(base + CR_COMMITMENT_WRITTEN_OFF) !== 0,
+  }
+}
+
+/** `DisclosureQueue.records` ring capacity (`state/disclosure.rs::DQ_CAPACITY`). */
+export const DQ_CAPACITY = 8
+
+/** `DisclosureQueue.head` offset: disc(8) + version(1) + owner(32). */
+const DQ_HEAD_OFFSET = DISCRIMINATOR_LEN + 1 + 32
+/** `DisclosureQueue.len` offset: ...+ head(1). */
+const DQ_LEN_OFFSET = DQ_HEAD_OFFSET + 1
+/** `DisclosureQueue.records` offset: ...+ len(1). */
+const DQ_RECORDS_OFFSET = DQ_LEN_OFFSET + 1
+
+export interface DecodedDisclosureQueue {
+  head: number
+  len: number
+  /** Live records only, in ring order (`records[(head + i) % DQ_CAPACITY]` for `i < len`) — not the raw fixed array. */
+  records: DecodedClosedRecord[]
+}
+
+export function decodeDisclosureQueue(data: Buffer): DecodedDisclosureQueue {
+  const head = data.readUInt8(DQ_HEAD_OFFSET)
+  const len = data.readUInt8(DQ_LEN_OFFSET)
+  const records: DecodedClosedRecord[] = []
+  for (let i = 0; i < len; i++) {
+    const idx = (head + i) % DQ_CAPACITY
+    records.push(decodeClosedRecord(data, DQ_RECORDS_OFFSET + idx * CLOSED_RECORD_SIZE))
+  }
+  return { head, len, records }
+}
+
+/** Read+decode `DisclosureQueue` off `conn` (owner-TEE, per Task 9 brief). `null` if the account doesn't exist. */
+export async function readDisclosureQueue(conn: Connection, dq: PublicKey): Promise<DecodedDisclosureQueue | null> {
+  const info = await conn.getAccountInfo(dq, 'confirmed')
+  if (!info) return null
+  return decodeDisclosureQueue(info.data)
+}
+
+/**
+ * `Disclosure` (L1, Borsh `#[account]`) field order (`state/disclosure.rs`):
+ * version:1, owner:32 (always `Pubkey::default()` by design — spec §2.3
+ * discloses the trade, not the trader), market:32, side:1, size:8, entry:8,
+ * exit:8, pnl:8(i64), fees:8, reason:1, opened_slot:8, closed_slot:8,
+ * nonce:8, bump:1. Note: unlike `ClosedRecord`, the on-chain `Disclosure`
+ * carries no `salt`/`reveal_after_slot`/`commitment_written` — those are
+ * mutable queue bookkeeping or write_disclosure-argument-only fields.
+ */
+const DISCLOSURE_MARKET_OFFSET = DISCRIMINATOR_LEN + 1 + 32
+const DISCLOSURE_SIDE_OFFSET = DISCLOSURE_MARKET_OFFSET + 32
+const DISCLOSURE_SIZE_OFFSET = DISCLOSURE_SIDE_OFFSET + 1
+const DISCLOSURE_ENTRY_OFFSET = DISCLOSURE_SIZE_OFFSET + 8
+const DISCLOSURE_EXIT_OFFSET = DISCLOSURE_ENTRY_OFFSET + 8
+const DISCLOSURE_PNL_OFFSET = DISCLOSURE_EXIT_OFFSET + 8
+const DISCLOSURE_FEES_OFFSET = DISCLOSURE_PNL_OFFSET + 8
+const DISCLOSURE_REASON_OFFSET = DISCLOSURE_FEES_OFFSET + 8
+const DISCLOSURE_OPENED_SLOT_OFFSET = DISCLOSURE_REASON_OFFSET + 1
+const DISCLOSURE_CLOSED_SLOT_OFFSET = DISCLOSURE_OPENED_SLOT_OFFSET + 8
+const DISCLOSURE_NONCE_OFFSET = DISCLOSURE_CLOSED_SLOT_OFFSET + 8
+
+export interface DecodedDisclosure {
+  market: PublicKey
+  side: SideName
+  size: bigint
+  entry: bigint
+  exit: bigint
+  pnl: bigint
+  fees: bigint
+  reason: CloseReasonName
+  openedSlot: bigint
+  closedSlot: bigint
+  nonce: bigint
+}
+
+export function decodeDisclosure(data: Buffer): DecodedDisclosure {
+  return {
+    market: new PublicKey(data.subarray(DISCLOSURE_MARKET_OFFSET, DISCLOSURE_MARKET_OFFSET + 32)),
+    side: SIDES[data.readUInt8(DISCLOSURE_SIDE_OFFSET)],
+    size: data.readBigUInt64LE(DISCLOSURE_SIZE_OFFSET),
+    entry: data.readBigUInt64LE(DISCLOSURE_ENTRY_OFFSET),
+    exit: data.readBigUInt64LE(DISCLOSURE_EXIT_OFFSET),
+    pnl: data.readBigInt64LE(DISCLOSURE_PNL_OFFSET),
+    fees: data.readBigUInt64LE(DISCLOSURE_FEES_OFFSET),
+    reason: CLOSE_REASONS[data.readUInt8(DISCLOSURE_REASON_OFFSET)],
+    openedSlot: data.readBigUInt64LE(DISCLOSURE_OPENED_SLOT_OFFSET),
+    closedSlot: data.readBigUInt64LE(DISCLOSURE_CLOSED_SLOT_OFFSET),
+    nonce: data.readBigUInt64LE(DISCLOSURE_NONCE_OFFSET),
+  }
+}
+
+/**
+ * Base58-encoded 8-byte Anchor account discriminator for `Disclosure`,
+ * computed from the app's own IDL (not hardcoded) — used as a
+ * `getProgramAccounts` memcmp filter (offset 0) to find every `Disclosure`
+ * on L1. `Disclosure.owner` is always `Pubkey::default()` by design (see
+ * above), so results still need filtering by nonce — see
+ * `HistoryScreen.tsx`.
+ */
+export const DISCLOSURE_DISC = new BorshAccountsCoder(DEXXER_CORE_IDL).accountDiscriminator('Disclosure').toString('base64')
+
+/** Read every `Disclosure` account on `conn` (base layer) matching the discriminator filter — unfiltered by nonce, see `DISCLOSURE_DISC`. */
+export async function readAllDisclosures(conn: Connection): Promise<{ pubkey: PublicKey; disclosure: DecodedDisclosure }[]> {
+  const accounts = await conn.getProgramAccounts(DEXXER_CORE_PROGRAM_ID, {
+    commitment: 'confirmed',
+    filters: [{ memcmp: { offset: 0, bytes: DISCLOSURE_DISC, encoding: 'base64' } }],
+  })
+  return accounts.map(({ pubkey, account }) => ({ pubkey, disclosure: decodeDisclosure(account.data) }))
+}
+
+/**
+ * `BalancesRoot` is `#[account(zero_copy)] #[repr(C)]` (controller ruling,
+ * week 3 task 5 — a by-value Borsh decode blew the SBF stack frame), NOT
+ * Borsh field order. Layout: `disc[8] | root_slot:u64le(8) |
+ * leaves:[[u8;32];64](2048) | version:u8(1) | filled:u8(1) | bump:u8(1) |
+ * _pad[5]` = 2072 bytes total — mirrors `tests/er/lib/program.ts`'s
+ * `decodeBalancesRoot` exactly.
+ */
+export const ROOT_LEAVES = 64
+
+export interface DecodedBalancesRoot {
+  rootSlot: bigint
+  leaves: Uint8Array[]
+  version: number
+  filled: number
+  bump: number
+}
+
+export function decodeBalancesRoot(data: Buffer): DecodedBalancesRoot {
+  let o = DISCRIMINATOR_LEN
+  const rootSlot = data.readBigUInt64LE(o)
+  o += 8
+  const leaves: Uint8Array[] = []
+  for (let i = 0; i < ROOT_LEAVES; i++) {
+    leaves.push(Uint8Array.from(data.subarray(o, o + 32)))
+    o += 32
+  }
+  const version = data.readUInt8(o)
+  o += 1
+  const filled = data.readUInt8(o)
+  o += 1
+  const bump = data.readUInt8(o)
+  return { rootSlot, leaves, version, filled, bump }
+}
+
+/** Read+decode `BalancesRoot` off `conn` (base layer; pass `pdas.balancesRoot()`). `null` if the account doesn't exist yet. */
+export async function readBalancesRoot(conn: Connection, balancesRoot: PublicKey): Promise<DecodedBalancesRoot | null> {
+  const info = await conn.getAccountInfo(balancesRoot, 'confirmed')
+  if (!info) return null
+  return decodeBalancesRoot(info.data)
+}
+
+/**
+ * `u64::to_le_bytes()` as a plain `Uint8Array` — NOT `Buffer` (see
+ * `leafHex` below for why): the app's pinned `@types/node` is old enough
+ * that `Buffer`'s inherited `Uint8Array` shape doesn't satisfy TS's newer
+ * `Uint8Array<ArrayBufferLike>` iterator methods, so anything feeding
+ * `@noble/hashes` has to stay a plain `Uint8Array` end-to-end rather than
+ * relying on `Buffer.concat`/`Buffer.alloc`.
+ */
+function u64leBytes(v: bigint): Uint8Array {
+  const out = new Uint8Array(8)
+  new DataView(out.buffer).setBigUint64(0, v, true)
+  return out
+}
+
+/** `i64::to_le_bytes()` as a plain `Uint8Array` (see `u64leBytes`'s doc comment — `pnl` is signed). */
+function i64leBytes(v: bigint): Uint8Array {
+  const out = new Uint8Array(8)
+  new DataView(out.buffer).setBigInt64(0, v, true)
+  return out
+}
+
+function concatBytes(...parts: Uint8Array[]): Uint8Array {
+  const out = new Uint8Array(parts.reduce((n, p) => n + p.length, 0))
+  let o = 0
+  for (const p of parts) {
+    out.set(p, o)
+    o += p.length
+  }
+  return out
+}
+
+/**
+ * `leaf(owner, free_margin, exit_salt, root_slot) = keccak256(owner(32) ‖
+ * free_margin:u64le(8) ‖ exit_salt(32) ‖ root_slot:u64le(8))` —
+ * `programs/dexxer_core/src/state/balances_root.rs::leaf` /
+ * `tests/er/lib/program.ts::leaf`, returned as lowercase hex (this file's
+ * name for it, per the Task-9 brief interface) rather than raw bytes.
+ * Built from plain `Uint8Array`s (`owner.toBytes()`, not `.toBuffer()`) —
+ * see `u64leBytes`'s doc comment.
+ */
+export function leafHex(owner: PublicKey, freeMargin: bigint, exitSalt: Uint8Array, rootSlot: bigint): string {
+  const input = concatBytes(owner.toBytes(), u64leBytes(freeMargin), exitSalt, u64leBytes(rootSlot))
+  const bytes = keccak_256(input)
+  return Buffer.from(bytes).toString('hex')
+}
+
+/**
+ * Golden-vector self-check (Task 9): asserts `leafHex` above produces the
+ * exact same hex as the Rust `leaf_and_pad_golden_vectors` unit test
+ * (`programs/dexxer_core/src/state/balances_root.rs`) and the TS reference
+ * (`tests/er/lib/hashes.selftest.ts`) for the same fixed inputs — so a
+ * layout/byte-order mistake here would be caught immediately rather than
+ * silently producing wrong Receipt verdicts. Not a test-runner test (none is
+ * wired up for this app package, mirroring `tests/er`'s standalone
+ * `hashes.selftest.ts`) — call once, e.g. from `__DEV__` startup logging.
+ * Throws on mismatch.
+ */
+export function assertLeafGolden(): void {
+  const owner = new PublicKey(new Uint8Array(32).fill(3))
+  const exitSalt = new Uint8Array(32).fill(4)
+  const got = leafHex(owner, 42n, exitSalt, 99n)
+  const expected = '79107674f9ef863f98a85fdbc056ddf1121f71870dffb8628f206b6c82f31572'
+  if (got !== expected) {
+    throw new Error(`assertLeafGolden: leafHex mismatch — got ${got}, expected ${expected}`)
+  }
+}
+
+/**
+ * Mirrors `DisclosureArgs`/`state::disclosure::commitment_hash` field-for-field
+ * (`programs/dexxer_core/src/state/disclosure.rs`, `tests/er/lib/program.ts`'s
+ * `DisclosureArgsBytes`). Task 8b: History matches an L1 `Disclosure` to this
+ * device's own closed trade by this hash, not by `nonce` — `nonce` is
+ * `UserAccount.nonce`, a per-user counter, so two different traders' revealed
+ * `Disclosure.nonce` values can collide (ruling 9's whole point). `side`/
+ * `reason` take the decoded name (`SideName`/`CloseReasonName`) rather than a
+ * raw index, since that is what `DecodedClosedRecord` already carries.
+ */
+export interface CommitmentArgs {
+  market: PublicKey
+  side: SideName
+  size: bigint
+  entry: bigint
+  exit: bigint
+  pnl: bigint
+  fees: bigint
+  reason: CloseReasonName
+  openedSlot: bigint
+  closedSlot: bigint
+  nonce: bigint
+  revealAfterSlot: bigint
+}
+
+/**
+ * `commitment_hash(a, salt) = keccak256(market(32) ‖ side:u8(1) ‖ size:u64le(8)
+ * ‖ entry:u64le(8) ‖ exit:u64le(8) ‖ pnl:i64le(8) ‖ fees:u64le(8) ‖
+ * reason:u8(1) ‖ opened_slot:u64le(8) ‖ closed_slot:u64le(8) ‖ nonce:u64le(8)
+ * ‖ reveal_after_slot:u64le(8) ‖ salt(32))` — byte-for-byte
+ * `programs/dexxer_core/src/state/disclosure.rs::commitment_hash` /
+ * `tests/er/lib/program.ts::commitmentHash`. Returns raw bytes (32); a caller
+ * needing a PDA seed or a persisted key converts with
+ * `Buffer.from(...).toString('hex')` (see `pdas.commitment`/`pdas.disclosure`,
+ * which also accept the hex form directly).
+ */
+export function commitmentHash(a: CommitmentArgs, salt: Uint8Array): Uint8Array {
+  const input = concatBytes(
+    a.market.toBytes(),
+    Uint8Array.of(SIDES.indexOf(a.side)),
+    u64leBytes(a.size),
+    u64leBytes(a.entry),
+    u64leBytes(a.exit),
+    i64leBytes(a.pnl),
+    u64leBytes(a.fees),
+    Uint8Array.of(CLOSE_REASONS.indexOf(a.reason)),
+    u64leBytes(a.openedSlot),
+    u64leBytes(a.closedSlot),
+    u64leBytes(a.nonce),
+    u64leBytes(a.revealAfterSlot),
+    salt,
+  )
+  return keccak_256(input)
+}
+
+/**
+ * Golden-vector self-check (Task 8b), same pattern as `assertLeafGolden`:
+ * asserts `commitmentHash` above produces the exact same hex as the Rust
+ * `commitment_hash_golden_vector` unit test
+ * (`programs/dexxer_core/src/state/disclosure.rs`) and the TS reference
+ * (`tests/er/lib/hashes.selftest.ts`) for the same fixed inputs. Throws on
+ * mismatch.
+ */
+export function assertCommitmentGolden(): void {
+  const args: CommitmentArgs = {
+    market: new PublicKey(new Uint8Array(32).fill(1)),
+    side: 'Long',
+    size: 1_000_000n,
+    entry: 150_000_000n,
+    exit: 151_000_000n,
+    pnl: -5n,
+    fees: 7n,
+    reason: 'User',
+    openedSlot: 10n,
+    closedSlot: 20n,
+    nonce: 3n,
+    revealAfterSlot: 25n,
+  }
+  const salt = new Uint8Array(32).fill(2)
+  const got = Buffer.from(commitmentHash(args, salt)).toString('hex')
+  const expected = '26e982cc691717451020afc4cb1146e7489b0953c9b26b3ad589f19741c4103f'
+  if (got !== expected) {
+    throw new Error(`assertCommitmentGolden: hash mismatch — got ${got}, expected ${expected}`)
+  }
+}
+
+if (__DEV__) {
+  try {
+    assertLeafGolden()
+    console.log('[dexxer] assertLeafGolden: keccak leaf hash OK (golden vector matched)')
+  } catch (e) {
+    console.error('[dexxer] assertLeafGolden FAILED', e)
+  }
+  try {
+    assertCommitmentGolden()
+    console.log('[dexxer] assertCommitmentGolden: keccak commitment hash OK (golden vector matched)')
+  } catch (e) {
+    console.error('[dexxer] assertCommitmentGolden FAILED', e)
+  }
 }

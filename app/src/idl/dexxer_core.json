@@ -416,6 +416,32 @@
           }
         },
         {
+          "name": "balances_root",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  98,
+                  97,
+                  108,
+                  97,
+                  110,
+                  99,
+                  101,
+                  115,
+                  95,
+                  114,
+                  111,
+                  111,
+                  116
+                ]
+              }
+            ]
+          }
+        },
+        {
           "name": "fee_escrow",
           "writable": true,
           "pda": {
@@ -841,6 +867,217 @@
           "type": "u64"
         }
       ]
+    },
+    {
+      "name": "delegate_balances_root",
+      "discriminator": [
+        25,
+        190,
+        92,
+        225,
+        247,
+        184,
+        139,
+        38
+      ],
+      "accounts": [
+        {
+          "name": "admin",
+          "writable": true,
+          "signer": true,
+          "relations": [
+            "config"
+          ]
+        },
+        {
+          "name": "config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "buffer_balances_root",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  98,
+                  117,
+                  102,
+                  102,
+                  101,
+                  114
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "balances_root"
+              }
+            ],
+            "program": {
+              "kind": "const",
+              "value": [
+                223,
+                85,
+                190,
+                214,
+                89,
+                228,
+                134,
+                229,
+                234,
+                112,
+                104,
+                71,
+                32,
+                40,
+                234,
+                129,
+                244,
+                98,
+                123,
+                132,
+                56,
+                50,
+                114,
+                160,
+                100,
+                93,
+                67,
+                94,
+                154,
+                81,
+                107,
+                72
+              ]
+            }
+          }
+        },
+        {
+          "name": "delegation_record_balances_root",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  100,
+                  101,
+                  108,
+                  101,
+                  103,
+                  97,
+                  116,
+                  105,
+                  111,
+                  110
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "balances_root"
+              }
+            ],
+            "program": {
+              "kind": "account",
+              "path": "delegation_program"
+            }
+          }
+        },
+        {
+          "name": "delegation_metadata_balances_root",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  100,
+                  101,
+                  108,
+                  101,
+                  103,
+                  97,
+                  116,
+                  105,
+                  111,
+                  110,
+                  45,
+                  109,
+                  101,
+                  116,
+                  97,
+                  100,
+                  97,
+                  116,
+                  97
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "balances_root"
+              }
+            ],
+            "program": {
+              "kind": "account",
+              "path": "delegation_program"
+            }
+          }
+        },
+        {
+          "name": "balances_root",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  98,
+                  97,
+                  108,
+                  97,
+                  110,
+                  99,
+                  101,
+                  115,
+                  95,
+                  114,
+                  111,
+                  111,
+                  116
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "owner_program",
+          "address": "G2okX5Bae4CxfK8vzso1Ecc96QUv7E3P4YvxaZnaYXoV"
+        },
+        {
+          "name": "delegation_program",
+          "address": "DELeGGvXpWV2fqJUhqcF5ZSYMS4JTLjteaAMARRSaeSh"
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": []
     },
     {
       "name": "delegate_fee_escrow",
@@ -2670,6 +2907,78 @@
       ]
     },
     {
+      "name": "init_balances_root",
+      "discriminator": [
+        77,
+        5,
+        130,
+        183,
+        77,
+        66,
+        127,
+        10
+      ],
+      "accounts": [
+        {
+          "name": "admin",
+          "writable": true,
+          "signer": true,
+          "relations": [
+            "config"
+          ]
+        },
+        {
+          "name": "config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "balances_root",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  98,
+                  97,
+                  108,
+                  97,
+                  110,
+                  99,
+                  101,
+                  115,
+                  95,
+                  114,
+                  111,
+                  111,
+                  116
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": []
+    },
+    {
       "name": "init_config",
       "discriminator": [
         23,
@@ -3593,6 +3902,105 @@
           "address": "11111111111111111111111111111111"
         }
       ],
+      "args": [
+        {
+          "name": "exit_salt",
+          "type": {
+            "array": [
+              "u8",
+              32
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "mark_committed",
+      "discriminator": [
+        61,
+        151,
+        200,
+        74,
+        77,
+        244,
+        69,
+        231
+      ],
+      "accounts": [
+        {
+          "name": "crank",
+          "signer": true
+        },
+        {
+          "name": "config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "position",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  111,
+                  115,
+                  105,
+                  116,
+                  105,
+                  111,
+                  110
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "position.owner",
+                "account": "Position"
+              },
+              {
+                "kind": "account",
+                "path": "position.market",
+                "account": "Position"
+              }
+            ]
+          }
+        },
+        {
+          "name": "dq",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  100,
+                  113
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "position.owner",
+                "account": "Position"
+              }
+            ]
+          }
+        }
+      ],
       "args": []
     },
     {
@@ -4116,6 +4524,88 @@
       ]
     },
     {
+      "name": "set_balances_root",
+      "discriminator": [
+        254,
+        85,
+        220,
+        199,
+        147,
+        10,
+        177,
+        81
+      ],
+      "accounts": [
+        {
+          "name": "crank",
+          "signer": true
+        },
+        {
+          "name": "config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "balances_root",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  98,
+                  97,
+                  108,
+                  97,
+                  110,
+                  99,
+                  101,
+                  115,
+                  95,
+                  114,
+                  111,
+                  111,
+                  116
+                ]
+              }
+            ]
+          }
+        }
+      ],
+      "args": [
+        {
+          "name": "begin",
+          "type": "bool"
+        },
+        {
+          "name": "finalize",
+          "type": "bool"
+        },
+        {
+          "name": "padding_seed",
+          "type": {
+            "array": [
+              "u8",
+              32
+            ]
+          }
+        }
+      ]
+    },
+    {
       "name": "set_params",
       "discriminator": [
         27,
@@ -4553,6 +5043,360 @@
       ]
     },
     {
+      "name": "undelegate_user",
+      "discriminator": [
+        116,
+        139,
+        246,
+        224,
+        235,
+        172,
+        97,
+        25
+      ],
+      "accounts": [
+        {
+          "name": "owner",
+          "writable": true,
+          "signer": true,
+          "relations": [
+            "user_account",
+            "position",
+            "dq"
+          ]
+        },
+        {
+          "name": "config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "user_account",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  117,
+                  115,
+                  101,
+                  114
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "owner"
+              }
+            ]
+          }
+        },
+        {
+          "name": "position",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  111,
+                  115,
+                  105,
+                  116,
+                  105,
+                  111,
+                  110
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "owner"
+              },
+              {
+                "kind": "account",
+                "path": "position.market",
+                "account": "Position"
+              }
+            ]
+          }
+        },
+        {
+          "name": "dq",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  100,
+                  113
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "owner"
+              }
+            ]
+          }
+        },
+        {
+          "name": "user_permission",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  101,
+                  114,
+                  109,
+                  105,
+                  115,
+                  115,
+                  105,
+                  111,
+                  110,
+                  58
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "user_account"
+              }
+            ],
+            "program": {
+              "kind": "const",
+              "value": [
+                136,
+                161,
+                10,
+                196,
+                33,
+                152,
+                1,
+                214,
+                246,
+                106,
+                29,
+                60,
+                6,
+                152,
+                192,
+                102,
+                169,
+                175,
+                212,
+                217,
+                180,
+                252,
+                231,
+                71,
+                151,
+                141,
+                209,
+                5,
+                168,
+                212,
+                103,
+                82
+              ]
+            }
+          }
+        },
+        {
+          "name": "position_permission",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  101,
+                  114,
+                  109,
+                  105,
+                  115,
+                  115,
+                  105,
+                  111,
+                  110,
+                  58
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "position"
+              }
+            ],
+            "program": {
+              "kind": "const",
+              "value": [
+                136,
+                161,
+                10,
+                196,
+                33,
+                152,
+                1,
+                214,
+                246,
+                106,
+                29,
+                60,
+                6,
+                152,
+                192,
+                102,
+                169,
+                175,
+                212,
+                217,
+                180,
+                252,
+                231,
+                71,
+                151,
+                141,
+                209,
+                5,
+                168,
+                212,
+                103,
+                82
+              ]
+            }
+          }
+        },
+        {
+          "name": "dq_permission",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  101,
+                  114,
+                  109,
+                  105,
+                  115,
+                  115,
+                  105,
+                  111,
+                  110,
+                  58
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "dq"
+              }
+            ],
+            "program": {
+              "kind": "const",
+              "value": [
+                136,
+                161,
+                10,
+                196,
+                33,
+                152,
+                1,
+                214,
+                246,
+                106,
+                29,
+                60,
+                6,
+                152,
+                192,
+                102,
+                169,
+                175,
+                212,
+                217,
+                180,
+                252,
+                231,
+                71,
+                151,
+                141,
+                209,
+                5,
+                168,
+                212,
+                103,
+                82
+              ]
+            }
+          }
+        },
+        {
+          "name": "ephemeral_vault",
+          "writable": true,
+          "address": "MagicVau1t999999999999999999999999999999999"
+        },
+        {
+          "name": "permission_program",
+          "address": "ACLseoPoyC3cBqoUtkbjZ4aDrkurZW86v19pXz2XQnp1"
+        },
+        {
+          "name": "fee_escrow",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  102,
+                  101,
+                  101,
+                  95,
+                  101,
+                  115,
+                  99,
+                  114,
+                  111,
+                  119
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "magic_fee_vault",
+          "writable": true
+        },
+        {
+          "name": "magic_context",
+          "writable": true,
+          "address": "MagicContext1111111111111111111111111111111"
+        },
+        {
+          "name": "magic_program",
+          "address": "Magic11111111111111111111111111111111111111"
+        }
+      ],
+      "args": []
+    },
+    {
       "name": "unpause",
       "discriminator": [
         169,
@@ -4733,9 +5577,200 @@
           "type": "u64"
         }
       ]
+    },
+    {
+      "name": "write_commitment",
+      "discriminator": [
+        159,
+        54,
+        242,
+        213,
+        46,
+        162,
+        174,
+        75
+      ],
+      "accounts": [
+        {
+          "name": "commitment",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  109,
+                  109,
+                  105,
+                  116
+                ]
+              },
+              {
+                "kind": "arg",
+                "path": "hash"
+              }
+            ]
+          }
+        },
+        {
+          "name": "config",
+          "docs": [
+            "Plain (never delegated) L1 account — readable here to pin `escrow_auth` to `Config.fee_payer`."
+          ],
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        },
+        {
+          "name": "source_program",
+          "address": "G2okX5Bae4CxfK8vzso1Ecc96QUv7E3P4YvxaZnaYXoV"
+        },
+        {
+          "name": "escrow_auth"
+        },
+        {
+          "name": "escrow",
+          "writable": true,
+          "signer": true
+        }
+      ],
+      "args": [
+        {
+          "name": "nonce",
+          "type": "u64"
+        },
+        {
+          "name": "hash",
+          "type": {
+            "array": [
+              "u8",
+              32
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "write_disclosure",
+      "discriminator": [
+        92,
+        193,
+        58,
+        180,
+        102,
+        99,
+        18,
+        114
+      ],
+      "accounts": [
+        {
+          "name": "disclosure",
+          "writable": true
+        },
+        {
+          "name": "commitment"
+        },
+        {
+          "name": "config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        },
+        {
+          "name": "source_program",
+          "address": "G2okX5Bae4CxfK8vzso1Ecc96QUv7E3P4YvxaZnaYXoV"
+        },
+        {
+          "name": "escrow_auth"
+        },
+        {
+          "name": "escrow",
+          "writable": true,
+          "signer": true
+        }
+      ],
+      "args": [
+        {
+          "name": "args",
+          "type": {
+            "defined": {
+              "name": "DisclosureArgs"
+            }
+          }
+        },
+        {
+          "name": "salt",
+          "type": {
+            "array": [
+              "u8",
+              32
+            ]
+          }
+        }
+      ]
     }
   ],
   "accounts": [
+    {
+      "name": "BalancesRoot",
+      "discriminator": [
+        166,
+        110,
+        154,
+        136,
+        248,
+        196,
+        81,
+        170
+      ]
+    },
+    {
+      "name": "Commitment",
+      "discriminator": [
+        61,
+        112,
+        129,
+        128,
+        24,
+        147,
+        77,
+        87
+      ]
+    },
     {
       "name": "Config",
       "discriminator": [
@@ -4747,6 +5782,19 @@
         250,
         204,
         130
+      ]
+    },
+    {
+      "name": "Disclosure",
+      "discriminator": [
+        29,
+        165,
+        1,
+        230,
+        237,
+        219,
+        131,
+        139
       ]
     },
     {
@@ -5009,9 +6057,130 @@
       "code": 6030,
       "name": "WithdrawCooldown",
       "msg": "withdraw is on cooldown for this account"
+    },
+    {
+      "code": 6031,
+      "name": "CommitmentNotWritten",
+      "msg": "commitment not yet written for this closed position"
+    },
+    {
+      "code": 6032,
+      "name": "RevealTooEarly",
+      "msg": "reveal slot not reached"
+    },
+    {
+      "code": 6033,
+      "name": "QueueNotEmpty",
+      "msg": "disclosure queue not empty"
+    },
+    {
+      "code": 6034,
+      "name": "RootFull",
+      "msg": "balances root has no free leaf slot"
+    },
+    {
+      "code": 6035,
+      "name": "InvalidLeafAccount",
+      "msg": "invalid leaf account"
+    },
+    {
+      "code": 6036,
+      "name": "NotClosed",
+      "msg": "position is not closed"
+    },
+    {
+      "code": 6037,
+      "name": "BadDisclosureHash",
+      "msg": "disclosure does not match commitment hash"
+    },
+    {
+      "code": 6038,
+      "name": "BalanceNotZero",
+      "msg": "account balance must be zero to exit"
+    },
+    {
+      "code": 6039,
+      "name": "TooManyActions",
+      "msg": "too many actions in one commit bundle"
     }
   ],
   "types": [
+    {
+      "name": "BalancesRoot",
+      "docs": [
+        "Public, delegated, committed with `Pool` every 5 min (spec §2.4.2).",
+        "Carries only keccak leaves — never a balance or owner in the clear.",
+        "",
+        "`zero_copy` (controller ruling 5, week 3 task 5): a by-value Borsh",
+        "`Account<BalancesRoot>` — 2 KiB dominated by `leaves: [[u8; 32]; 64]` —",
+        "blew the SBF 4096-byte stack frame in both `InitBalancesRoot::try_accounts`",
+        "(912 B over) and the `init_balances_root` global dispatch handler (672 B",
+        "over), confirmed by a LiteSVM probe (`tests/litesvm/tests/root.rs`) that",
+        "faulted with \"Access violation in stack frame 3\" before this conversion —",
+        "`Box` at the call site cannot fix a by-value deserialize, only the",
+        "zero-copy accessor (`AccountLoader::load*`, no stack copy) does. Field",
+        "order below is `repr(C)`-significant and chosen so `bytemuck::Pod` needs no",
+        "padding holes: `root_slot` (8-byte aligned) first, then the leaf array",
+        "(1-byte aligned, any size), then the three `u8` scalars, then an explicit",
+        "5-byte pad to round the struct to a multiple of 8. No consumer of the old",
+        "Borsh layout exists yet (Task 7 TS only hashes leaves; Task 9 decoders are",
+        "unwritten) — Task 9's brief must be updated to this `repr(C)` layout."
+      ],
+      "serialization": "bytemuck",
+      "repr": {
+        "kind": "c"
+      },
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "root_slot",
+            "docs": [
+              "Slot the current leaf set was computed for; every leaf is bound to it."
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "leaves",
+            "type": {
+              "array": [
+                {
+                  "array": [
+                    "u8",
+                    32
+                  ]
+                },
+                64
+              ]
+            }
+          },
+          {
+            "name": "version",
+            "type": "u8"
+          },
+          {
+            "name": "filled",
+            "docs": [
+              "Real (non-padding) leaves written so far in the current cycle."
+            ],
+            "type": "u8"
+          },
+          {
+            "name": "bump",
+            "type": "u8"
+          },
+          {
+            "name": "_pad",
+            "type": {
+              "array": [
+                "u8",
+                5
+              ]
+            }
+          }
+        ]
+      }
+    },
     {
       "name": "CloseReason",
       "type": {
@@ -5099,6 +6268,43 @@
           {
             "name": "commitment_written",
             "type": "bool"
+          }
+        ]
+      }
+    },
+    {
+      "name": "Commitment",
+      "docs": [
+        "L1 `[b\"commit\", hash]` (seeded by the commitment hash, not the per-user nonce — week-3 ruling 9)",
+        "— written by the `write_commitment` Magic Action on the Pool commit."
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "version",
+            "type": "u8"
+          },
+          {
+            "name": "hash",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "slot",
+            "type": "u64"
+          },
+          {
+            "name": "nonce",
+            "type": "u64"
+          },
+          {
+            "name": "bump",
+            "type": "u8"
           }
         ]
       }
@@ -5196,6 +6402,147 @@
           {
             "name": "bump",
             "type": "u8"
+          }
+        ]
+      }
+    },
+    {
+      "name": "Disclosure",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "version",
+            "type": "u8"
+          },
+          {
+            "name": "owner",
+            "type": "pubkey"
+          },
+          {
+            "name": "market",
+            "type": "pubkey"
+          },
+          {
+            "name": "side",
+            "type": {
+              "defined": {
+                "name": "Side"
+              }
+            }
+          },
+          {
+            "name": "size",
+            "type": "u64"
+          },
+          {
+            "name": "entry",
+            "type": "u64"
+          },
+          {
+            "name": "exit",
+            "type": "u64"
+          },
+          {
+            "name": "pnl",
+            "type": "i64"
+          },
+          {
+            "name": "fees",
+            "type": "u64"
+          },
+          {
+            "name": "reason",
+            "type": {
+              "defined": {
+                "name": "CloseReason"
+              }
+            }
+          },
+          {
+            "name": "opened_slot",
+            "type": "u64"
+          },
+          {
+            "name": "closed_slot",
+            "type": "u64"
+          },
+          {
+            "name": "nonce",
+            "type": "u64"
+          },
+          {
+            "name": "bump",
+            "type": "u8"
+          }
+        ]
+      }
+    },
+    {
+      "name": "DisclosureArgs",
+      "docs": [
+        "Public fields of a closed trade — the `write_disclosure` instruction argument",
+        "and the on-chain `Disclosure` body. Deliberately excludes `salt` (argument on",
+        "its own) and `commitment_written` (mutable bookkeeping) — see `commitment_hash`."
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "market",
+            "type": "pubkey"
+          },
+          {
+            "name": "side",
+            "type": {
+              "defined": {
+                "name": "Side"
+              }
+            }
+          },
+          {
+            "name": "size",
+            "type": "u64"
+          },
+          {
+            "name": "entry",
+            "type": "u64"
+          },
+          {
+            "name": "exit",
+            "type": "u64"
+          },
+          {
+            "name": "pnl",
+            "type": "i64"
+          },
+          {
+            "name": "fees",
+            "type": "u64"
+          },
+          {
+            "name": "reason",
+            "type": {
+              "defined": {
+                "name": "CloseReason"
+              }
+            }
+          },
+          {
+            "name": "opened_slot",
+            "type": "u64"
+          },
+          {
+            "name": "closed_slot",
+            "type": "u64"
+          },
+          {
+            "name": "nonce",
+            "type": "u64"
+          },
+          {
+            "name": "reveal_after_slot",
+            "type": "u64"
           }
         ]
       }
@@ -5694,6 +7041,21 @@
           {
             "name": "last_withdraw_slot",
             "type": "u64"
+          },
+          {
+            "name": "exit_salt",
+            "docs": [
+              "Week 3 (spec §2.4.2): per-user secret that salts this account's leaf in",
+              "the public `BalancesRoot`. Supplied by the client at `init_user`; lives",
+              "only in this private account, so nobody can brute-force `free_margin`",
+              "from the published leaf hash."
+            ],
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
           },
           {
             "name": "bump",

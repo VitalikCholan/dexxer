@@ -1,3 +1,4 @@
+pub mod balances_root;
 pub mod config;
 pub mod disclosure;
 pub mod faucet;
@@ -8,6 +9,7 @@ pub mod permissions;
 pub mod pool;
 pub mod position;
 pub mod user;
+pub use balances_root::*;
 pub use config::*;
 pub use disclosure::*;
 pub use faucet::*;
@@ -29,6 +31,19 @@ pub const DQ_SEED: &[u8] = b"dq";
 pub const FAUCET_SEED: &[u8] = b"faucet";
 pub const MINT_AUTH_SEED: &[u8] = b"mint_auth";
 pub const FEE_ESCROW_SEED: &[u8] = b"fee_escrow";
+pub const COMMIT_SEED: &[u8] = b"commit";
+pub const DISCLOSURE_SEED: &[u8] = b"disclosure";
+pub const BALANCES_ROOT_SEED: &[u8] = b"balances_root";
+/// Fixed leaf count — hides the real user count (spec §2.4.2). Merkle upgrade when N > 64.
+pub const ROOT_LEAVES: usize = 64;
+/// UserAccounts per `set_balances_root` call (tx size / CU budget).
+pub const ROOT_BATCH: usize = 16;
+/// Post-commit actions per `commit_aggregate` bundle. Kept at 4 on purpose: M-C measured the
+/// bridge cap at 28 PASS / 29 FAIL on a fresh account with a 5-account spike action (week 3,
+/// Task 1); the real write_commitment/write_disclosure shape is heavier and was not re-probed.
+pub const MAX_ACTIONS_PER_COMMIT: usize = 4;
+/// `ActionArgs::new` default escrow index (magic-actions.md).
+pub const ACTION_ESCROW_INDEX: u8 = 255;
 pub const SOL_SYMBOL: [u8; 8] = *b"SOL\0\0\0\0\0";
 pub const PERMISSION_MEMBERS: usize = 3; // owner, session, crank
 pub const MAX_CANDIDATES: usize = 16;

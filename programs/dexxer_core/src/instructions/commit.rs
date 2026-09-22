@@ -1,8 +1,14 @@
-use crate::{errors::DexxerError, state::*};
+use crate::{
+    errors::DexxerError,
+    instructions::disclosure::{due_reveals, pending_commitment},
+    state::*,
+};
 use anchor_lang::prelude::*;
+use anchor_lang::{Discriminator, InstructionData};
 use ephemeral_rollups_sdk::{
     consts::{MAGIC_CONTEXT_ID, MAGIC_PROGRAM_ID},
-    ephem::{FoldableIntentBuilder, MagicIntentBundleBuilder},
+    ephem::{CallHandler, FoldableIntentBuilder, MagicIntentBundleBuilder},
+    ActionArgs, ShortAccountMeta,
 };
 
 // spec §8 Q2 / week-2 controller ruling task-4 #5: batch-commit the public
@@ -29,12 +35,21 @@ use ephemeral_rollups_sdk::{
 // is skipped rather than failing.
 #[derive(Accounts)]
 pub struct CommitAggregate<'info> {
+    // Boxed (as `trade.rs` does for its larger accounts): `commit_aggregate`'s
+    // remaining_accounts loop already carries several `Position`/`DisclosureQueue`
+    // locals plus a `Vec<CallHandler>`, and `Config` alone is the biggest account
+    // read here — keeping it on the heap is what keeps the function's stack
+    // frame under the SBF 4096-byte limit (autofixer/build flagged the overflow
+    // before this box).
     #[account(seeds = [CONFIG_SEED], bump = config.bump)]
-    pub config: Account<'info, Config>,
+    pub config: Box<Account<'info, Config>>,
     #[account(constraint = payer.key() == config.fee_payer @ DexxerError::Unauthorized)]
     pub payer: Signer<'info>,
     #[account(mut, seeds = [POOL_SEED, pool.mint.as_ref()], bump = pool.bump)]
-    pub pool: Account<'info, Pool>,
+    pub pool: Box<Account<'info, Pool>>,
+    // `zero_copy` (controller ruling 5) — AccountLoader, not Account/Box.
+    #[account(mut, seeds = [BALANCES_ROOT_SEED], bump = balances_root.load()?.bump)]
+    pub balances_root: AccountLoader<'info, BalancesRoot>,
     #[account(mut, seeds = [FEE_ESCROW_SEED], bump = fee_escrow.bump)]
     pub fee_escrow: Account<'info, FeeEscrow>,
     /// CHECK: validator-scoped Magic Program fee vault; constrained to Config.magic_fee_vault
@@ -49,24 +64,181 @@ pub struct CommitAggregate<'info> {
     #[account(address = MAGIC_PROGRAM_ID)]
     pub magic_program: UncheckedAccount<'info>,
 }
-pub fn commit_aggregate(ctx: Context<CommitAggregate>) -> Result<()> {
+// anchor-lang 1.0.2's single-lifetime `Context<'info, T>` (see `crank_tick`'s
+// comment above `CrankTick`) — `remaining_accounts` is a mix of `Position` and
+// `DisclosureQueue` accounts (owner- and seeds-checked below), each producing
+// zero or more post-commit actions: a `Position` with a not-yet-written
+// `Closed` record emits `write_commitment`; a `DisclosureQueue` with due
+// records (`reveal_after_slot <= slot`) emits `write_disclosure` per record.
+// Both mutations (flip `commitment_written`, pop the queue) happen in the same
+// ER tx that schedules the action, so a failed/replayed bundle can never
+// re-emit the same action (nonce reuse hard-fails `write_commitment`'s L1
+// `init` — week-3 controller ruling 7).
+// Split out of `commit_aggregate` (and marked `#[inline(never)]`) so its local
+// `Position` (up to 400 B, `state/mod.rs`'s `print_sizes_for_spec_q3` bound)
+// lives in its own call frame rather than `commit_aggregate`'s — the two
+// candidate kinds are never live at once, but the SBF backend does not reuse
+// stack slots across sibling branches in the same function, and their combined
+// locals pushed `commit_aggregate` itself over the 4096-byte limit (build
+// warning, fixed by this split).
+#[inline(never)]
+fn process_position_candidate<'info>(
+    ai: &AccountInfo<'info>,
+    config_key: Pubkey,
+    payer: &AccountInfo<'info>,
+    system_program: Pubkey,
+    actions: &mut Vec<CallHandler<'info>>,
+) -> Result<()> {
+    let mut pos = Position::try_deserialize(&mut &ai.try_borrow_data()?[..])?;
+    let (exp, _) = Pubkey::find_program_address(
+        &[POSITION_SEED, pos.owner.as_ref(), pos.market.as_ref()],
+        &crate::ID,
+    );
+    require!(ai.key() == exp, DexxerError::InvalidCandidate);
+    if let Some((nonce, hash)) = pending_commitment(&pos) {
+        require!(
+            actions.len() < MAX_ACTIONS_PER_COMMIT,
+            DexxerError::TooManyActions
+        );
+        // Hash-seeded (ruling 9): `nonce` is per-user, `hash` is globally unique.
+        let (commitment, _) = Pubkey::find_program_address(&[COMMIT_SEED, &hash], &crate::ID);
+        let data = crate::instruction::WriteCommitment { nonce, hash }.data();
+        actions.push(CallHandler {
+            destination_program: crate::ID,
+            accounts: vec![
+                ShortAccountMeta {
+                    pubkey: commitment.to_bytes().into(),
+                    is_writable: true,
+                },
+                ShortAccountMeta {
+                    pubkey: config_key.to_bytes().into(),
+                    is_writable: false,
+                },
+                ShortAccountMeta {
+                    pubkey: system_program.to_bytes().into(),
+                    is_writable: false,
+                },
+            ],
+            args: ActionArgs::new(data),
+            escrow_authority: payer.clone(),
+            compute_units: 100_000,
+        });
+        if let Some(rec) = pos.closed.as_mut() {
+            rec.commitment_written = true;
+        }
+        pos.try_serialize(&mut &mut ai.try_borrow_mut_data()?[..])?;
+    }
+    Ok(())
+}
+
+/// Same split as `process_position_candidate`, for `DisclosureQueue` (up to
+/// 1300 B — the larger of the two candidate kinds, per the same size bound).
+#[inline(never)]
+fn process_disclosure_queue_candidate<'info>(
+    ai: &AccountInfo<'info>,
+    slot: u64,
+    config_key: Pubkey,
+    payer: &AccountInfo<'info>,
+    system_program: Pubkey,
+    actions: &mut Vec<CallHandler<'info>>,
+) -> Result<()> {
+    let mut dq = DisclosureQueue::try_deserialize(&mut &ai.try_borrow_data()?[..])?;
+    let (exp, _) = Pubkey::find_program_address(&[DQ_SEED, dq.owner.as_ref()], &crate::ID);
+    require!(ai.key() == exp, DexxerError::InvalidCandidate);
+    let room = MAX_ACTIONS_PER_COMMIT.saturating_sub(actions.len());
+    for (args, salt) in due_reveals(&mut dq, slot, room)? {
+        // Hash-seeded (ruling 9), same hash as WriteDisclosure recomputes from (args, salt).
+        let hash = commitment_hash(&args, &salt);
+        let (disclosure, _) = Pubkey::find_program_address(&[DISCLOSURE_SEED, &hash], &crate::ID);
+        let (commitment, _) = Pubkey::find_program_address(&[COMMIT_SEED, &hash], &crate::ID);
+        let data = crate::instruction::WriteDisclosure { args, salt }.data();
+        actions.push(CallHandler {
+            destination_program: crate::ID,
+            accounts: vec![
+                ShortAccountMeta {
+                    pubkey: disclosure.to_bytes().into(),
+                    is_writable: true,
+                },
+                ShortAccountMeta {
+                    pubkey: commitment.to_bytes().into(),
+                    is_writable: false,
+                },
+                ShortAccountMeta {
+                    pubkey: config_key.to_bytes().into(),
+                    is_writable: false,
+                },
+                ShortAccountMeta {
+                    pubkey: system_program.to_bytes().into(),
+                    is_writable: false,
+                },
+            ],
+            args: ActionArgs::new(data),
+            escrow_authority: payer.clone(),
+            compute_units: 120_000,
+        });
+    }
+    dq.try_serialize(&mut &mut ai.try_borrow_mut_data()?[..])?;
+    Ok(())
+}
+
+pub fn commit_aggregate<'info>(ctx: Context<'info, CommitAggregate<'info>>) -> Result<()> {
     let clock = Clock::get()?;
     // Set before the commit CPI so the committed bytes carry this slot.
     ctx.accounts.pool.last_commit_slot = clock.slot;
+
+    let mut actions: Vec<CallHandler> = Vec::new();
+    let system_program = anchor_lang::system_program::ID;
+    let config_key = ctx.accounts.config.key();
+    let payer_ai = ctx.accounts.payer.to_account_info();
+    for ai in ctx.remaining_accounts.iter() {
+        require!(
+            ai.owner == &crate::ID && ai.is_writable,
+            DexxerError::InvalidCandidate
+        );
+        let disc: [u8; 8] = {
+            let data = ai.try_borrow_data()?;
+            data[..8]
+                .try_into()
+                .map_err(|_| DexxerError::InvalidCandidate)?
+        };
+        if disc == Position::DISCRIMINATOR {
+            process_position_candidate(ai, config_key, &payer_ai, system_program, &mut actions)?;
+        } else if disc == DisclosureQueue::DISCRIMINATOR {
+            process_disclosure_queue_candidate(
+                ai,
+                clock.slot,
+                config_key,
+                &payer_ai,
+                system_program,
+                &mut actions,
+            )?;
+        } else {
+            return err!(DexxerError::InvalidCandidate);
+        }
+    }
+
     // Only in a real ER does a Magic program actually live at this address;
     // on LiteSVM (and any environment without the ER runtime) it is absent,
     // so skip the commit CPI rather than fail.
     if ctx.accounts.magic_program.to_account_info().executable {
         let bump = ctx.accounts.fee_escrow.bump;
         let seeds: &[&[u8]] = &[FEE_ESCROW_SEED, &[bump]];
-        MagicIntentBundleBuilder::new(
+        let builder = MagicIntentBundleBuilder::new(
             ctx.accounts.fee_escrow.to_account_info(),
             ctx.accounts.magic_context.to_account_info(),
             ctx.accounts.magic_program.to_account_info(),
         )
         .magic_fee_vault(ctx.accounts.magic_fee_vault.to_account_info())
-        .commit(&[ctx.accounts.pool.to_account_info()])
-        .build_and_invoke_signed(&[seeds])?;
+        .commit(&[
+            ctx.accounts.pool.to_account_info(),
+            ctx.accounts.balances_root.to_account_info(),
+        ]);
+        let builder = if actions.is_empty() {
+            builder
+        } else {
+            builder.add_post_commit_actions(actions)
+        };
+        builder.build_and_invoke_signed(&[seeds])?;
     }
     Ok(())
 }

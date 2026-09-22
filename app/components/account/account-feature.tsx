@@ -12,6 +12,7 @@ import { useGetBalanceInvalidate } from '@/components/account/use-get-balance'
 import { PublicKey } from '@solana/web3.js'
 import { useGetTokenAccountsInvalidate } from '@/components/account/use-get-token-accounts'
 import { WalletUiButtonConnect } from '@/components/solana/wallet-ui-button-connect'
+import { ReceiptSection } from '@/src/features/receipt/ReceiptSection'
 
 export function AccountFeature() {
   const { account } = useMobileWallet()
@@ -41,6 +42,7 @@ export function AccountFeature() {
           <AppView style={{ marginTop: 16, alignItems: 'center' }}>
             <AccountUiTokenAccounts address={account.address} />
           </AppView>
+          <ReceiptSection />
         </ScrollView>
       ) : (
         <AppView style={{ flexDirection: 'column', justifyContent: 'flex-end' }}>

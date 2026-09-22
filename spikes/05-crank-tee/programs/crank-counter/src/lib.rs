@@ -6,11 +6,11 @@ use ephemeral_rollups_sdk::ephem::MagicIntentBundleBuilder;
 use anchor_lang::solana_program::instruction::{AccountMeta, Instruction};
 use ephemeral_rollups_sdk::crank::{ScheduleCrankCpi, ScheduleTaskArgs};
 
-declare_id!("EEkgWoy8krpaxtP8msJeN4rJux2KX68MCHjasosD8CGE");
+declare_id!("AsXtStXjZxwUd6UNVqJ9kQYJ9cYFdZbh2SeSWaZdX8bi");
 
 pub const COUNTER_SEED: &[u8] = b"counter";
 
-#[derive(AnchorSerialize, AnchorDeserialize)]
+#[derive(AnchorSerialize, AnchorDeserialize, Clone)]
 pub struct ScheduleIncrementArgs {
     pub task_id: i64,
     pub execution_interval_millis: i64,
@@ -100,6 +100,85 @@ pub mod anchor_counter {
         .build_and_invoke()?;
         Ok(())
     }
+
+    /// Week-3 M-D(4): schedules `tick_and_reschedule` (instead of the plain,
+    /// signer-free `increment`) as the crank task.
+    pub fn schedule_tick_and_reschedule<'info>(
+        ctx: Context<'info, ScheduleTickAndReschedule<'info>>,
+        args: ScheduleIncrementArgs,
+    ) -> Result<()> {
+        let tick_ix = Instruction {
+            program_id: crate::ID,
+            accounts: vec![
+                AccountMeta::new_readonly(ctx.accounts.magic_program.key(), false),
+                AccountMeta::new(ctx.accounts.payer.key(), true),
+                AccountMeta::new(ctx.accounts.counter.key(), false),
+            ],
+            data: anchor_lang::InstructionData::data(&crate::instruction::TickAndReschedule { args: args.clone() }),
+        };
+
+        ScheduleCrankCpi {
+            payer: &ctx.accounts.payer,
+            magic_program: &&ctx.accounts.magic_program,
+            instruction_accounts: &[
+                ctx.accounts.payer.to_account_info(),
+                ctx.accounts.counter.to_account_info(),
+            ],
+            args: ScheduleTaskArgs {
+                task_id: args.task_id,
+                execution_interval_millis: args.execution_interval_millis,
+                iterations: args.iterations,
+                instructions: vec![tick_ix],
+            },
+        }
+        .invoke()?;
+
+        Ok(())
+    }
+
+    /// Week-3 M-D(4): the scheduled task itself. Increments the counter (so a
+    /// tick landing at all is independently observable via `counter.count`),
+    /// then attempts to CPI `ScheduleCrankCpi` again — a self-reschedule — with
+    /// `payer` as the CPI's `payer`. `payer` is declared `Signer<'info>`, so
+    /// Anchor requires a live signature for it; whether the crank executor's
+    /// top-level scheduled invocation actually carries one (as opposed to only
+    /// the original, directly-signed `schedule_tick_and_reschedule` call) is
+    /// exactly what this measures — the vendored `increment` instruction is
+    /// deliberately signer-free for the same reason (see its doc comment: a
+    /// privileged scheduled instruction must authenticate some other way,
+    /// because "scheduled instructions run top-level and do not inherit a
+    /// Hydra PDA signature").
+    pub fn tick_and_reschedule<'info>(
+        ctx: Context<'info, TickAndReschedule<'info>>,
+        args: ScheduleIncrementArgs,
+    ) -> Result<()> {
+        let counter = &mut ctx.accounts.counter;
+        counter.count += 1;
+
+        let increment_ix = Instruction {
+            program_id: crate::ID,
+            accounts: vec![AccountMeta::new(ctx.accounts.counter.key(), false)],
+            data: anchor_lang::InstructionData::data(&crate::instruction::Increment {}),
+        };
+
+        ScheduleCrankCpi {
+            payer: &ctx.accounts.payer,
+            magic_program: &&ctx.accounts.magic_program,
+            instruction_accounts: &[
+                ctx.accounts.payer.to_account_info(),
+                ctx.accounts.counter.to_account_info(),
+            ],
+            args: ScheduleTaskArgs {
+                task_id: args.task_id.wrapping_add(1),
+                execution_interval_millis: args.execution_interval_millis,
+                iterations: 1,
+                instructions: vec![increment_ix],
+            },
+        }
+        .invoke()?;
+
+        Ok(())
+    }
 }
 
 #[derive(Accounts)]
@@ -155,4 +234,28 @@ pub struct ScheduleIncrement<'info> {
     pub counter: UncheckedAccount<'info>,
     /// CHECK: used for CPI
     pub program: UncheckedAccount<'info>,
+}
+
+/// Week-3 M-D(4): registers `tick_and_reschedule` as the scheduled task.
+#[derive(Accounts)]
+pub struct ScheduleTickAndReschedule<'info> {
+    /// CHECK: used for CPI
+    pub magic_program: UncheckedAccount<'info>,
+    #[account(mut)]
+    pub payer: Signer<'info>,
+    /// CHECK: Passed to CPI, same pattern as `ScheduleIncrement`
+    #[account(mut, seeds = [COUNTER_SEED], bump)]
+    pub counter: UncheckedAccount<'info>,
+}
+
+/// Week-3 M-D(4): the scheduled task's own accounts. `payer` is `Signer<'info>`
+/// on purpose — see `tick_and_reschedule`'s doc comment for why.
+#[derive(Accounts)]
+pub struct TickAndReschedule<'info> {
+    /// CHECK: used for CPI
+    pub magic_program: UncheckedAccount<'info>,
+    #[account(mut)]
+    pub payer: Signer<'info>,
+    #[account(mut, seeds = [COUNTER_SEED], bump)]
+    pub counter: Account<'info, Counter>,
 }

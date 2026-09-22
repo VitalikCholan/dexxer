@@ -9,8 +9,8 @@
 // measurement M3 could not pin, and the first attempt at this script
 // couldn't either (the fee-vault path never activated — see task-5-report.md
 // "fix round 1"). This settles decision (c). Asserts `Position`/`UserAccount`
-// on base layer are unchanged throughout (only `Pool` is ever committed by
-// this instruction).
+// on base layer are unchanged throughout (`commit_aggregate` commits `Pool`
+// and `BalancesRoot` — week 3, Task 5/6 — never a raw private account).
 //
 // Task 5 fix round 1 (controller ruling): `commit_aggregate`'s CPI intent
 // payer is now the dedicated, delegated `FeeEscrow` PDA (not `Config.fee_payer`
@@ -116,6 +116,10 @@ async function main() {
           config,
           payer: feePayer.publicKey,
           pool: boot.pool,
+          // Task 5 added `balances_root` to `CommitAggregate` (commit.rs) —
+          // required by the IDL since then; this script predates that change
+          // (task-7 fix round 1, week 3).
+          balancesRoot: pdas.balancesRoot(),
           feeEscrow: boot.feeEscrow,
           magicFeeVault: MAGIC_FEE_VAULT,
           magicContext: MAGIC_CONTEXT_ID,

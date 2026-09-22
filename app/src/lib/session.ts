@@ -32,6 +32,30 @@ function storageKey(owner: PublicKey): string {
   return `dexxer.session.${owner.toBase58()}`
 }
 
+function exitSaltStorageKey(owner: PublicKey): string {
+  return `dexxer.exitsalt.${owner.toBase58()}`
+}
+
+/**
+ * Load the owner's `init_user` exit salt from secure storage, generating and
+ * persisting one on first use (week 3, spec §2.4.2). This is a bridge value
+ * only — it exists so a re-tap of onboarding after a partial failure reuses
+ * the same salt it already sent on chain (idempotent onboarding) rather than
+ * generating a new one and mismatching `UserAccount.exit_salt`. The Task-9
+ * receipt screen reads the salt back from `UserAccount` via the TEE, not
+ * from this store.
+ */
+export async function getOrCreateExitSalt(owner: PublicKey): Promise<Uint8Array> {
+  const key = exitSaltStorageKey(owner)
+  const existing = await SecureStore.getItemAsync(key)
+  if (existing) {
+    return Uint8Array.from(JSON.parse(existing) as number[])
+  }
+  const salt = crypto.getRandomValues(new Uint8Array(32))
+  await SecureStore.setItemAsync(key, JSON.stringify(Array.from(salt)))
+  return salt
+}
+
 /** Load the owner's session `Keypair` from secure storage, generating and persisting one on first use. */
 export async function getOrCreateSessionKeypair(owner: PublicKey): Promise<Keypair> {
   const key = storageKey(owner)

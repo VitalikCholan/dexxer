@@ -41,6 +41,7 @@
 // `baseConn`, the real `solana-test-validator`) don't hit this and keep
 // using `.rpc()`.
 
+import { randomBytes } from "crypto";
 import { BN } from "@coral-xyz/anchor";
 import { Keypair, PublicKey, SystemProgram, Transaction, sendAndConfirmTransaction } from "@solana/web3.js";
 import { getAssociatedTokenAddressSync, getOrCreateAssociatedTokenAccount, TOKEN_PROGRAM_ID } from "@solana/spl-token";
@@ -64,6 +65,8 @@ export interface Trader {
   position: PublicKey;
   disclosureQueue: PublicKey;
   userAta: PublicKey;
+  /** Per-user secret passed to `init_user`, salting this account's leaf in the public `BalancesRoot` (week 3). Needed by the 07 balances-root script. */
+  exitSalt: Uint8Array;
   /** Signatures from onboardTrader's steps, keyed by step name; only steps that actually ran (weren't skipped as already-done) are present. */
   sigs: Record<string, string>;
   /** Compute units of onboardTrader's own credit_deposit call, or `null` if that step was skipped (already funded). */
@@ -203,10 +206,19 @@ export async function onboardTrader(
     console.log(`faucet_init (${name}): faucet exists, skipped (assuming already funded)`);
   }
 
+  // Week 3: per-user secret salting this account's leaf in the public
+  // `BalancesRoot` (state/balances_root.rs's `leaf`). Generated fresh every
+  // onboardTrader call — on the already-onboarded (skip) branch this value
+  // won't match what's on chain, but that's fine here: this field only
+  // bridges init_user -> the first on-chain read within the same run
+  // (mirrors app/src/features/onboard/useOnboarding.ts's comment); anything
+  // reading it after a restart (the Task-9 receipt screen) reads
+  // `UserAccount.exit_salt` from chain instead, never this in-memory copy.
+  const exitSalt = new Uint8Array(randomBytes(32));
   const userAccountInfoPre = await baseConn.getAccountInfo(userAccount, "confirmed");
   if (!userAccountInfoPre) {
     const sig = await core.methods
-      .initUser()
+      .initUser(Array.from(exitSalt))
       .accounts({ owner: kp.publicKey, config, market, userAccount, position, disclosureQueue, systemProgram: SystemProgram.programId })
       .rpc();
     sigs.initUser = sig;
@@ -267,7 +279,7 @@ export async function onboardTrader(
   const ownerTee = await teeConn(kp);
   await waitAccountExists(ownerTee, userAta, `${name} eATA (as userAta on ER)`);
 
-  const trader: Trader = { name, kp, userAccount, position, disclosureQueue, userAta, sigs, creditDepositCU: null };
+  const trader: Trader = { name, kp, userAccount, position, disclosureQueue, userAta, exitSalt, sigs, creditDepositCU: null };
 
   const coreEr = dexxerCoreProgram(ownerTee, kp);
   const userAccountState = await accountNs(coreEr).userAccount.fetch(userAccount);

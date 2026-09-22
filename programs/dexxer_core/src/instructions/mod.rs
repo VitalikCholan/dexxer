@@ -1,10 +1,14 @@
 pub mod admin;
 pub mod commit;
 pub mod crank;
+pub mod disclosure;
+pub mod root;
 pub mod trade;
 pub mod user;
 pub use admin::*;
 pub use commit::*;
 pub use crank::*;
+pub use disclosure::*;
+pub use root::*;
 pub use trade::*;
 pub use user::*;

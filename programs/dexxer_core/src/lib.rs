@@ -14,7 +14,7 @@ pub mod risk;
 pub mod state;
 pub mod token;
 use instructions::*;
-use state::{MarketParams, Side};
+use state::{DisclosureArgs, MarketParams, Side};
 declare_id!("G2okX5Bae4CxfK8vzso1Ecc96QUv7E3P4YvxaZnaYXoV");
 
 #[ephemeral]
@@ -83,8 +83,8 @@ pub mod dexxer_core {
     pub fn faucet_mint(ctx: Context<FaucetMint>, amount: u64) -> Result<()> {
         user::faucet_mint(ctx, amount)
     }
-    pub fn init_user(ctx: Context<InitUser>) -> Result<()> {
-        user::init_user(ctx)
+    pub fn init_user(ctx: Context<InitUser>, exit_salt: [u8; 32]) -> Result<()> {
+        user::init_user(ctx, exit_salt)
     }
     pub fn set_session(
         ctx: Context<SetSession>,
@@ -143,7 +143,7 @@ pub mod dexxer_core {
     ) -> Result<()> {
         crank::cancel_crank(ctx, task_id)
     }
-    pub fn commit_aggregate(ctx: Context<CommitAggregate>) -> Result<()> {
+    pub fn commit_aggregate<'info>(ctx: Context<'info, CommitAggregate<'info>>) -> Result<()> {
         commit::commit_aggregate(ctx)
     }
     pub fn commit_market(ctx: Context<CommitMarket>) -> Result<()> {
@@ -160,5 +160,39 @@ pub mod dexxer_core {
     }
     pub fn init_permissions(ctx: Context<InitPermissions>) -> Result<()> {
         user::init_permissions(ctx)
+    }
+    pub fn undelegate_user(ctx: Context<UndelegateUser>) -> Result<()> {
+        user::undelegate_user(ctx)
+    }
+    pub fn write_commitment(
+        ctx: Context<WriteCommitment>,
+        nonce: u64,
+        hash: [u8; 32],
+    ) -> Result<()> {
+        disclosure::write_commitment(ctx, nonce, hash)
+    }
+    pub fn write_disclosure(
+        ctx: Context<WriteDisclosure>,
+        args: DisclosureArgs,
+        salt: [u8; 32],
+    ) -> Result<()> {
+        disclosure::write_disclosure(ctx, args, salt)
+    }
+    pub fn mark_committed(ctx: Context<MarkCommitted>) -> Result<()> {
+        disclosure::mark_committed(ctx)
+    }
+    pub fn init_balances_root(ctx: Context<InitBalancesRoot>) -> Result<()> {
+        root::init_balances_root(ctx)
+    }
+    pub fn delegate_balances_root(ctx: Context<DelegateBalancesRoot>) -> Result<()> {
+        root::delegate_balances_root(ctx)
+    }
+    pub fn set_balances_root<'info>(
+        ctx: Context<'info, SetBalancesRoot<'info>>,
+        begin: bool,
+        finalize: bool,
+        padding_seed: [u8; 32],
+    ) -> Result<()> {
+        root::set_balances_root(ctx, begin, finalize, padding_seed)
     }
 }
