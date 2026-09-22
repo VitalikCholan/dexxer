@@ -265,6 +265,34 @@ export async function runDisclosureCycle(ctx: DisclosureCtx): Promise<void> {
     console.log(`commit_aggregate: sig=${sig} actions=${totalActions}`);
   } catch (e) {
     console.error("commit_aggregate failed:", String(e));
+    // Final-review finding I-3 (week 3): one poison candidate (undecodable,
+    // over budget, or rejected by the program's owner/discriminator checks)
+    // must not block the fixed-interval Pool+BalancesRoot commit. Retry once
+    // with no remaining accounts so the commit itself still lands this cycle;
+    // the candidates are simply re-evaluated next cycle.
+    if (candidates.length > 0) {
+      try {
+        const config = await accountNs(ctx.feePayerProg).config.fetch(pdas.config());
+        const bare = await ctx.feePayerProg.methods
+          .commitAggregate()
+          .accounts({
+            config: pdas.config(),
+            payer: ctx.feePayer.publicKey,
+            pool: ctx.pool,
+            balancesRoot: ctx.balancesRoot,
+            feeEscrow: ctx.feeEscrow,
+            magicFeeVault: config.magicFeeVault,
+            magicContext: MAGIC_CONTEXT_ID,
+            magicProgram: MAGIC_PROGRAM_ID,
+          })
+          .remainingAccounts([])
+          .instruction();
+        const sig = await sendAndConfirmIx(ctx.feePayerConn, ctx.feePayer, bare);
+        console.log(`commit_aggregate: retry without candidates sig=${sig} actions=0`);
+      } catch (e2) {
+        console.error("commit_aggregate retry (no candidates) failed:", String(e2));
+      }
+    }
   }
 
   // --- (2) mark_committed: crank observes the L1 Commitment PDA (the ER

@@ -58,6 +58,8 @@ jobs:
       - run: cargo clippy -p dexxer_core -p mock_oracle -- -D warnings
 
       - run: anchor build
+      - name: IDL copy in app matches build
+        run: cmp target/idl/dexxer_core.json app/src/idl/dexxer_core.json
 
       - run: cargo test -p dexxer_core -p mock_oracle
 

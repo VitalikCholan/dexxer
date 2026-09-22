@@ -1154,5 +1154,15 @@ Anchor'ів Borsh-кодер не вміє zero_copy), `readUserAccountExitSalt`
 - **Ризик #24 (Pool/MarketRisk не permissioned в ER)** — §7.1 нового ризику: живі лічильники `Pool`/
   `MarketRisk` читаються будь-ким з ER RPC-доступом кожен блок, обходячи 5-хв batch-мітигацію L1;
   дизайн-рішення (розділити на приватний робочий акаунт + публічний знімок) — тиждень 4.
+- **Ризик #25 (фінальне ревʼю гілки, I-1) — передбачувана сіль commitment-у**: `ClosedRecord.salt =
+  keccak(owner ‖ nonce ‖ closed_slot)`, усі входи відновлювані зовні → `Commitment.hash` можна перебрати
+  проти публічних mark-цін до `reveal_after_slot`. Тиждень 4: TEE-рандом або клієнтська per-close сіль.
+- **Ризик #26 (рулінг 7 + фінальне ревʼю, I-2) — незворотний дроп Magic Action**: невдалий bundle знімає всі
+  actions; `commitment_written` без L1-`Commitment` застигає `Position` у `Closed`, а pop-при-емісії губить
+  `Disclosure` назавжди. Прийняте обмеження MVP; тиждень 4 — re-emit-інструкція / pop після підтвердження.
+- **Crank: retry `commit_aggregate` без кандидатів** (I-3) — зроблено після фінального ревʼю
+  (`scripts/crank-fallback/disclosure.ts`): якщо виклик із `remaining_accounts` падає, той самий цикл
+  повторює його з порожнім списком, щоб фіксований коміт `Pool`+`BalancesRoot` не залежав від одного
+  «отруйного» акаунта. Не перевірено на devnet (лише `tsc`).
 - **ER/base-мітки сигнатур** — зроблено (Task 8 fix round 1: кожна сигнатура в §Task 8 позначена ER
   або base).

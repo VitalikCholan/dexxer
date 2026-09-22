@@ -38,7 +38,9 @@ pub const BALANCES_ROOT_SEED: &[u8] = b"balances_root";
 pub const ROOT_LEAVES: usize = 64;
 /// UserAccounts per `set_balances_root` call (tx size / CU budget).
 pub const ROOT_BATCH: usize = 16;
-/// Post-commit actions per `commit_aggregate` bundle; provisional until M-C measures the real cap.
+/// Post-commit actions per `commit_aggregate` bundle. Kept at 4 on purpose: M-C measured the
+/// bridge cap at 28 PASS / 29 FAIL on a fresh account with a 5-account spike action (week 3,
+/// Task 1); the real write_commitment/write_disclosure shape is heavier and was not re-probed.
 pub const MAX_ACTIONS_PER_COMMIT: usize = 4;
 /// `ActionArgs::new` default escrow index (magic-actions.md).
 pub const ACTION_ESCROW_INDEX: u8 = 255;
