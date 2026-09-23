@@ -346,3 +346,195 @@ in-path cancel-и в `close_position`/`decrease_position`/`undelegate_user` ли
 5. **Апгрейд дорожчий за суму витрат:** кожен наступний деплой вимагає ~6.2 SOL **вільних**
    на payer-і (рента буфера, повертається). На devnet це вирішується краном
    `rpc.magicblock.app/devnet` по 1 SOL — планувати заздалегідь.
+
+---
+
+## Task 5: Другий апгрейд програми + переробка relayer-а
+
+### 1. Частина A — програма (апгрейд #2)
+
+**Що змінено (2 файли логіки):**
+
+1. **`close_orphan_queue` — сигнал осиротілості.** Стара умова
+   `require!(ua.data_is_empty() || ua.owner != crate::ID, NotExited)` вимірялася в Task 4 як
+   **завжди хибна** (ER віддає розделегований `UserAccount` як клон базового: присутній,
+   власник `G2okX5…`, `exited = true`). Нова умова — обидві половини сигналу:
+
+   ```rust
+   if !ua.data_is_empty() && ua.owner == &crate::ID {
+       let u = UserAccount::try_deserialize(&mut &ua.data.borrow()[..])?;
+       require!(u.exited, DexxerError::NotExited);
+   }
+   ```
+
+   Тобто закривається, якщо акаунт **відсутній/чужий** АБО **присутній і `exited`**; живий
+   (`exited == false`) — як і раніше `6042 NotExited`. Legacy-акаунт, що не десеріалізується,
+   дає помилку — консервативно, черга не закривається.
+
+2. **`set_disclosure_delay(ctx: Context<AdminConfig>, slots: u64)`** — закриває відкрите
+   питання 1 з §6 Task 4 (`disclosure_delay_slots` писався лише в `init_config`). Патерн
+   1-в-1 як `pause`/`set_scheduler_signer`; `0` — легальне значення (потрібне демо M-H).
+
+**Гаунтлет:** `cargo fmt`, `clippy -D warnings`, `program_autofixer` (обидва змінені фрагменти —
+`issues: []`, `require_another_tool_call_after_fixing: false`), `anchor build`,
+unit **61**, LiteSVM **84 → 87** (нові: `close_orphan_queue_rejects_live_user`,
+`close_orphan_queue_accepts_absent_user`, `set_disclosure_delay_admin_only`; існуючий
+`close_orphan_queue_requires_empty_queue_and_exited_user` переписано на реальну devnet-форму —
+крок (3) тепер очікує **Ok** на присутньому `exited = true`, а не `NotExited`),
+`cmp target/idl/dexxer_core.json app/src/idl/dexxer_core.json` — байт-у-байт, `tsc` ×4.
+
+**Апгрейд #2 на devnet.** `.so` 1 213 624 B ≤ 1 310 416 B (довжина даних, розширена в Task 4) —
+`extend` не знадобився.
+
+| | |
+|---|---|
+| Підпис деплою | `rTNNmdXhWapr2ciVewNHwczY4ePY2NZPqLaGRyYoGoRdfyrEs8bDyJfSwvsHZ8Kt9s6vzmi3pXHfzfe9Py21RhG` |
+| SOL payer-а до | 6.950640579 |
+| SOL payer-а після | 6.944625579 |
+| **Вартість** | **0.006015 SOL** (лише мережеві збори; рента буфера ≈6.17 SOL повернулася) |
+
+**Доказ фіксу на живому devnet** — новий скрипт `tests/er/devnet/12-close-orphan.ts`
+(`npm run devnet:orphan`), прогнаний на осиротілій черзі, яку Task 4 навмисно лишив
+(`DDe6rXjnyCF9MdAd7MgYgE1nboyvyriUsgWVxQd8QdWf`, власник
+`8ZsNG1s1anFhA5ubZM978x4qRYwXwhf7jCoYhmx7Qe5E`, `len = 0`):
+
+| Крок | Результат |
+|---|---|
+| `close_orphan_queue` (crank, ER) | **OK** `3AR23nkojoE63f4CGv2VpVGGUp1Ymi5kxxTN5KpoptDE3EwkrMpAJkEoVFSQGxeB78BtXDoUfh8HpGJLgRKSTKcw` (до апгрейду ця сама черга давала `6042 NotExited`) |
+| Розделегування сіло на базу | так, `owner == G2okX5…` при першому ж поллінгу |
+| `close_exited_user` (fee_payer, base) | **OK** `jQTPGzV3jb5QaCkpxqiZEfAaMKrH69YLe6SQJPMPoUzNNwUtVbikZNBNQ2dcKVuaeEHDHwqP4gCQjuqh6CLVsL5` |
+| Рента назад на `fee_payer` | **+0.009953272 SOL** (три PDA мінус збір) |
+| Три PDA на базі після | усі три `closed` |
+
+Тобто повний шлях «вихід із боргом розкриття → дренаж черги → повернення ренти» вперше
+пройдено end-to-end на devnet. Блокер 0 із §6 Task 4 **закрито**.
+
+### 2. Частина B — relayer
+
+**`COMMIT_INTERVAL_TICKS`** (env, дефолт 300) замінює зашитий `DISCLOSURE_EVERY_TICKS`;
+видно в `/healthz` як `commitIntervalTicks`. Значення < 1 або нечислове відкочується на
+дефолт (а не крутить цикл щотіка). **На тиждень виставлено `60`** (≈1 хв) — це половина
+демо M-H: разом із `set_disclosure_delay(0)` закрите розкриття доходить до L1 за один цикл.
+
+**`runDisclosureCycle` — черговість (minor #8 з ревʼю Task 1).** Кандидати сортуються за
+`closed_slot` **найстарішого непогашеного** запису черги (нічия — за pubkey, щоб порядок був
+стабільним, а не залежав від порядку `getProgramAccounts`). Без цього один трейдер із повним
+рингом (`DQ_CAPACITY` записів — більше ніж один бандл дій) з'їдав би весь
+`MAX_ACTIONS_PER_COMMIT = 8` щоцикл вічно, і сусід із одним закриттям не комітився б ніколи.
+Перевірка «чи настав reveal» читає **ER-слот** (`ctx.conn` — ER-конекшн): `reveal_after_slot` —
+ER-слот (~80/с проти ~2.5/с на базі, вимір Task 4).
+
+**`src/orphan.ts` — `runOrphanCycle`,** раз на `COMMIT_INTERVAL_TICKS`, **після**
+disclosure-циклу (саме він дренує ринг того, хто йде; дренована цього ж циклу черга встигає
+бути прибраною в ньому ж). Два проходи:
+
+1. **ER (crank):** кожна `DisclosureQueue` з `len == 0`, чий `UserAccount` (читання через TEE
+   crank-токеном) відсутній АБО `exited == true` → `close_orphan_queue`. `len > 0` не
+   чіпається взагалі (транзакція навіть не шлеться — програма все одно дала б
+   `QueueStillPending`).
+2. **base (`fee_payer`):** власники, чиї три PDA повернулись під `dexxer_core` і в кого
+   `UserAccount.exited` → `close_exited_user`.
+
+Проходи навмисно незалежні: розделегування з проходу 1 сідає на базу вже після кінця циклу,
+тож власника підбирає прохід 2 **наступного** циклу — причому через скан ланцюга, а не
+пам'ять процесу (рестарт relayer-а не лишає нікого на півдорозі). Помилка на одному власнику
+логується й не зупиняє решту. Уся логіка на інжектованих читачах/писачах
+(`OrphanCycleDeps`) — 9 юніт-тестів без мережі.
+
+**Staleness за `publish_time`.** `isStale` тепер міряє вік **публікації оракула**, а не
+момент, коли процес отримав нотифікацію: TEE шле нотифікацію на кожен ER-слот незалежно від
+того, чи змінилися байти (вимір тижня 4, `useLiveAccount`), тому «прийшло повідомлення» не є
+доказом живого паблішера. Це та сама умова, якою `oracle.rs` гейтить кожне читання на
+ланцюзі. `publish_time` зберігається потіково (міграція `005_ticks_publish_time.sql`, epoch
+ms, nullable для доміграційних рядків), `/mark` віддає `{price, slot, ts, publishTime, stale}`,
+`/healthz.indexer` — `lastPublishTimeMs` + `oracleStale` за ним, WS-фрейм `mark` теж несе
+`publishTime`.
+
+**Sponsor-shapes:**
+
+| Зміна | Було | Стало |
+|---|---|---|
+| ATA `CreateIdempotent` | owner-paid (`{ownerIdx:2}`, `fee_payer` заборонений всюди) | **`{payerIdx:0, ownerIdx:2}`** — рент ATA платить `fee_payer`; `owner`@2 мусить бути підписантом (це й не дає профінансувати чужу ATA) |
+| `init_user_reuse_queue` | не в whitelist | **`{ownerIdx:0, payerIdx:1}`** |
+| `delegate_user` | `{ownerIdx:0, payerIdx:1}` (Task 3) | без змін |
+| `init_permissions`, `set_session` | у whitelist | **видалено** |
+| SystemProgram transfer (session top-up) | гілка за `SPONSOR_ALLOW_SESSION_TOPUP` | **видалено разом із env-змінною, `SESSION_FUND_LAMPORTS` і крос-перевіркою `set_session.session_key`** |
+
+Обґрунтування видалення ER-леґу: devnet-tee відхиляє чужого `fee_payer` як платника ER-tx
+(`InvalidAccountForFee`, вимір тижня 4), тож ця гілка **недосяжна для чесного клієнта і
+досяжна лише для атакера**. Побічний виграш: `fee_payer` тепер не рухає лампорти взагалі —
+дренажна поверхня прибрана конструктивно, а не перевірками.
+
+**Тести relayer-а: 61 → 72** (`node --import tsx --test test/*.test.ts`,
+`DEXXER_IDL_DIR=$PWD/../../app/src/idl`). Нове: `test/orphan.test.ts` (9 — уся таблиця
+рішень), sponsor (ATA payer=fee_payer для чужого owner-а → reject; самотня fee_payer-оплачена
+ATA → reject «немає owner-підписанта»; `delegate_user` з payer ≠ fee_payer → reject; будь-який
+SystemProgram → reject; `init_user_reuse_queue` → accept; цілі леґи L1a і L1b → accept),
+feed (`publishTimeMs`, staleness за publish_time, майбутній publish_time не stale), health
+(`commitIntervalTicks`).
+
+### 3. Деплой на Railway
+
+`railway up --service relayer` (проєкт `dexxer`, env `production`),
+`COMMIT_INTERVAL_TICKS=60` виставлено окремою змінною. `/healthz` після деплою:
+
+```json
+{"ok":true,"tick":27,"crankSol":0.1,"feePayerSol":0.198363312,"db":"ok",
+ "commitIntervalTicks":60,
+ "indexer":{"ticks":47,"lastTickTs":1790191005094,"lastPublishTimeMs":1790191005000,
+            "disclosures":0,"wsClients":0,"oracleStale":false}}
+```
+
+`/mark`: `{"price":"114212551","slot":343713380,"ts":1790191006094,"publishTime":1790191005000,"stale":false}`
+— `publishTime` є, `stale` рахується з нього.
+
+Міграція `005_ticks_publish_time.sql` застосувалася на старті (`db: applying migration …`).
+Тік: `tick n=35 slot=343714590 mark=114242939 … cu=15438 tick_ms=567 candidates=0` — без
+помилок. Цикл на 60-му тіку відпрацював повністю:
+
+```
+root: filled=6 slot=343719005
+commit_aggregate: sig=5EscbqHRRc3q3GKyNeLh2KZtHjyKzNfBNVh1hQxuGH1VghM8jqCNGb5Fovt8AcDgjNomK8iRDZ64ZQ44XuayLbF4 actions=0
+orphan: closed queue 9mjRLVMv43dqarsZ6RjM6gEWVQmTGKqC97yLKt9SgqkL of CgRmYr96f2vSpGubuVgomA8KCUkRkVPDD8szQBfipQLx in the ER (exited) sig=4mVscRRy2C9eM1C7SNCs9bQscAdL1bX8YZ4cYSfpsLjF6guo4iexdLGsRmJrzJioiXydgbqBBGmKAcDH4Pr8AC17
+orphan: closed the three PDAs of CgRmYr96f2vSpGubuVgomA8KCUkRkVPDD8szQBfipQLx on base … sig=4jZvbiJjBD1SSzf4s2u3WLA6KpY3MXTPNJZLVAPzmkRNSDBAz1E9it8mnBgXGS24i675LkcURnSY23WRNGjwGxEb
+orphan: closed the three PDAs of CEc1DtmbnMzs48tUu5g7Uo1vd5uQTBq54QeWx5biNHuj on base … sig=325JvjfjGfB54WbL8nFw1Evkkice1WeyRnD26TEdF3XsQQEMA2Ed8qWHFtGr2SewTixAZp3RqM3vAxusjWtQq5e1
+orphan cycle: scanned=30 closedInEr=1 closedOnBase=2 skipped=28 errors=1
+```
+
+Тобто **janitor одразу прибрав двох власників, що висіли з попередніх тижнів** — не лише
+логіка, а й реальний ефект підтверджено на живому сервісі з першого циклу.
+
+### 4. Fix round 1 — знайдено живим прогоном
+
+`errors=1` вище: `close_orphan_queue` для `CEc1Dtmb…` впав
+`InstructionError [0, "ReadonlyDataModified"]`
+(`4hLD8vAWhVd3woh7JGVrbkFLDxoVyaVB2gEgqtUAb29mLXDR2u2urvZRr5B3HKPGu2iRRQ96kowfwckTotoZSFji`).
+
+**Причина (новий вимір):** черга, чиє розделегування **вже сіло на базу**, усе одно
+віддається ER-ом — як **read-only клон базового акаунта**, з власником `dexxer_core` рівно
+так само, як делегована. Всередині ролапу ці два стани не розрізняються нічим. Розрізняє їх
+**власник на базі**: справді делегований акаунт там належить Delegation Program.
+
+**Фікс:** `listQueues` відкидає дреновані черги, чий базовий акаунт уже під `dexxer_core`
+(один батчений `getMultipleAccountsInfo` на цикл) — ними займається базовий прохід, який у
+цьому ж циклі обох власників і прибрав. Чиста предикат-функція `stillDelegatedOnBase`
+винесена окремо й покрита юніт-тестами. Тести relayer-а **72 → 75**.
+
+### 5. Відкрите після Task 5
+
+1. **Крос-задачна залежність: додаток (Task 6) мусить перейти на нові sponsor-shapes.**
+   `app/src/features/onboard/batchOnboarding.ts` зараз будує ATA з `payer = owner` і
+   `delegateUser({ payer: owner })` — обидва тепер **відхиляються** `/sponsor`-ом
+   (`account index 0 (payer) must be fee_payer` / `account index 1 (payer) must be
+   fee_payer`). Половина з `delegate_user` була такою вже після Task 3; ATA — нова з цієї
+   задачі. До Task 6 свіжий гаманець без dUSDC-ATA не завершить спонсорований леґ L1a.
+2. **`listBaseOwners` — O(n) скан бази** (gPA по дискримінатору `UserAccount` + по одному
+   `getAccountInfo`, бо власника не витягнути з адреси PDA). Раз на комміт-інтервал і на
+   devnet це копійки, але перед реальною кількістю юзерів потребує обмеження.
+3. **`set_disclosure_delay` задеплоєно, але ще не викликано на devnet** — це M-H у Task 7
+   (`delay 0` + `COMMIT_INTERVAL_TICKS=60`).
+4. **`fee_payer` — 0.198 SOL** (crank 0.1 SOL). Кошти не рухалися. Спонсорування за добу —
+   0.0616 SOL / 15 викликів; janitor-ові `close_exited_user` рент **повертають**, тож для
+   `fee_payer` цикл нетто-позитивний.
+5. **Legacy-акаунти з тижнів 1–2** (`RangeError` на декоді `UserAccount`, 4 позиції) далі
+   логуються щотіка як `skipping candidate …` — відомий пункт 3 з §6 Task 4, не регресія.
