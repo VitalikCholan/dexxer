@@ -248,7 +248,10 @@ for (let t = 5; t <= POLL_SECONDS; t += 5) {
   await sleep(5000);
   const s = await Promise.all([0, 1, 2, 3].map(async (i) => {
     const a = await readSlot(i);
-    return { ticks: a.ticks.toNumber(), count: a.count.toNumber(), lastSigner: a.lastSigner.toBase58() };
+    // `lamports` is here so the slot-side cost of a tick (and of the slot's own
+    // ephemeral permission) is reproducible from a plain `npm run w5:p3` run —
+    // the first run read these ad hoc, outside the script.
+    return { ticks: a.ticks.toNumber(), count: a.count.toNumber(), lamports: await erLamports(slotPda(i)), lastSigner: a.lastSigner.toBase58() };
   }));
   samples.push({ t, slots: s, escrow: await erLamports(escrowPda) });
   console.log(`  t+${t}s`, s.map((x, i) => `s${i}:${x.ticks}/${x.count}`).join(" "));
@@ -270,7 +273,12 @@ out.q2_cost = {
   totalTicksInPhase: totalTicks,
   perTickLamports: totalTicks > 0 ? (escrowAfterRegistration - escrowAfterTicks) / totalTicks : null,
   ownerErLamports: { start: ownerErStart, afterRegistration: ownerErAfterRegistration, afterTicks: ownerErAfterTicks },
+  // Slots 0/1/2 are private with 2 permission members, slot 3 is public with an
+  // empty member list — the difference between them is the ER rent of those
+  // members, charged to the slot PDA itself, not to the task authority.
+  slotErLamports: await Promise.all([0, 1, 2, 3].map(async (i) => ({ slot: i, private: i < 3, lamports: await erLamports(slotPda(i)) }))),
 };
+console.log("  slot ER lamports (0/1/2 private, 3 public):", JSON.stringify((out.q2_cost as any).slotErLamports));
 const lastSigners = (await Promise.all([0, 1, 2, 3].map(async (i) => (await readSlot(i)).lastSigner.toBase58())));
 out.q5_permissioned = {
   membersWere: "[owner] only — crank signer NOT a member",
