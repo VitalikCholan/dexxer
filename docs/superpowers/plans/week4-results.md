@@ -505,3 +505,12 @@ whitelist/rate-limit — увесь `services/relayer` — новий цього
 - `HistoryScreen.tsx` — 456 рядків, рестайлінг Task 10 не рефакторив структуру файлу, лише JSX.
 - Anonymity set при `PoolLive`-знімку (ризик #24) — differencing на кроці 100 dUSDC при малому
   числі одночасних трейдерів лишається відкритим; повне рішення — ZK-знімок (§2.4.5, пост-MVP).
+
+## Живий прогін на емуляторі (власник, 23.09.2026, fakewallet, після PR #5)
+
+Гаманець `UVX5Yn6fnz9Kmhykznmc8XEYo9bPXjT18NfZkDbgM7D` (свіжий акаунт fakewallet, 0.01 SOL від payer). Пройдено:
+Connect (SIWS) → Set up private account (2 промпти: `signMessages` + `signTransactions` ×4 payload; L1-rent PDA/eSPL — спонсорований, ATA + делегування — з owner) → Deposit 100 dUSDC → Trade Open Long 1 SOL 2× (без промпту, session key) → Positions (uPnL live, Liq $64.22) → Close → History одразу «COMMITTING…» → після циклу «REVEALED ✓» з лінком на L1 `Disclosure` (`EWb1…kc96`) → Ledger → Disclosures показує угоду без адреси, Receipt «Attested at slot 341361426 ✓»; друга позиція відкрита/закрита в тій же сесії.
+
+Знайдено й полагоджено того ж дня (усе в PR #5): гейт онбордингу (`index` не був стартовим роутом), `AppIdentity` «App» → «Dexxer», бейдж сесії «expired» при <1 год, TTL сесії 1 год → 24 год, `00.00` у полі Margin (обрізання `Input`, не математика), відсутність гейта недостатньої маржі, смужка ліквідації «100%», 4 знаки в History, щільність свічок 1m/5m, dark-only тема (legacy-обгортки йшли за системною темою), Trade під макет Claude Design.
+
+Не пройдено (перенесено на тиждень 5): Phantom APK, Withdraw/Exit наживо — не перевірялись у цьому прогоні.
