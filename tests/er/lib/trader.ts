@@ -319,8 +319,11 @@ export async function onboardTrader(
  * only has to be an existing writable account until Task 3 derives the real one
  * — the position PDA stands in, exactly as the LiteSVM `trade_accounts` builder
  * does.
+ *
+ * Takes the PDA triple structurally rather than a whole `Trader` so the devnet
+ * scripts, which assemble their own minimal trader object, can use it too.
  */
-export function tradeAccounts(boot: Bootstrapped, t: Trader) {
+export function tradeAccounts(boot: Bootstrapped, t: Pick<Trader, "userAccount" | "position" | "disclosureQueue">) {
   const market = pdas.market();
   return {
     config: pdas.config(),

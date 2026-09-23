@@ -36,6 +36,24 @@ pub struct CrankTick<'info> {
 /// `crank_tick`'s, which already carries a `Position` and a `UserAccount` and
 /// would blow the SBF 4096-byte stack limit — the same split
 /// `commit_aggregate` needed for the same account (`commit.rs`).
+///
+/// Everything this function touches is work only a candidate that is ACTUALLY
+/// being liquidated needs, which is why the queue's PDA derivation and decode
+/// live here rather than in `crank_tick`'s per-candidate preamble: a
+/// `find_program_address` is ~1.5k CU and a full tick carries up to
+/// `MAX_CANDIDATES` of them, almost none of which liquidate (fix round 1,
+/// finding 4). The cheap structural checks on `dq_ai` (program-owned,
+/// writable) stay in the loop, where they cost nothing.
+///
+/// Returns `false` when the owner's ring is full: the record is the only copy
+/// of the closed trade, so it must not be dropped — but neither may one such
+/// candidate abort the whole batch and take every other liquidation in the
+/// tick down with it (that would make a market-wide liquidation DoS cost
+/// eight open/close pairs — fix round 1, finding 2). The position stays
+/// `Open`, keeps accruing `liq_ticks`, and is liquidated on a later tick once
+/// a `commit_aggregate` reveal drains the ring. `close_position`'s own
+/// `QueueFull` stays a hard, atomic revert: that one is user-facing and the
+/// user can wait.
 #[allow(clippy::too_many_arguments)]
 #[inline(never)]
 fn liquidate_candidate(
@@ -49,9 +67,17 @@ fn liquidate_candidate(
     fee_bps: u32,
     clock: &Clock,
     delay_slots: u64,
-) -> Result<()> {
+) -> Result<bool> {
+    // The queue's address is derived from the position's own owner, which is
+    // what binds it to this candidate; `dq.owner` is re-checked after the
+    // decode as defence in depth.
+    let (exp_dq, _) = Pubkey::find_program_address(&[DQ_SEED, pos.owner.as_ref()], &crate::ID);
+    require!(dq_ai.key() == exp_dq, DexxerError::InvalidCandidate);
     let mut dq = DisclosureQueue::try_deserialize(&mut &dq_ai.try_borrow_data()?[..])?;
     require!(dq.owner == pos.owner, DexxerError::InvalidCandidate);
+    if dq.len as usize >= DQ_CAPACITY {
+        return Ok(false);
+    }
     finalize_close(
         market_key,
         risk_acc,
@@ -66,7 +92,7 @@ fn liquidate_candidate(
         delay_slots,
     )?;
     dq.try_serialize(&mut &mut dq_ai.try_borrow_mut_data()?[..])?;
-    Ok(())
+    Ok(true)
 }
 
 // anchor-lang 1.0.2's `Context<'info, T>` carries a single lifetime (not the
@@ -169,12 +195,11 @@ pub fn crank_tick<'info>(mut ctx: Context<'info, CrankTick<'info>>) -> Result<()
         );
         let (exp_user, _) =
             Pubkey::find_program_address(&[USER_SEED, user.owner.as_ref()], &crate::ID);
-        // The queue's address is derived from the same owner, which is what
-        // binds it to this candidate; `liquidate_candidate` re-checks
-        // `dq.owner` against it after deserializing, as defence in depth.
-        let (exp_dq, _) = Pubkey::find_program_address(&[DQ_SEED, user.owner.as_ref()], &crate::ID);
+        // `dq_ai`'s address is checked inside `liquidate_candidate`, not here:
+        // it is only ever read on the liquidation path, and deriving it for
+        // every candidate costs ~1.5k CU each (fix round 1, finding 4).
         require!(
-            pos_ai.key() == exp_pos && user_ai.key() == exp_user && dq_ai.key() == exp_dq,
+            pos_ai.key() == exp_pos && user_ai.key() == exp_user,
             DexxerError::InvalidCandidate
         );
         if pos.state != PositionState::Open {
@@ -188,7 +213,7 @@ pub fn crank_tick<'info>(mut ctx: Context<'info, CrankTick<'info>>) -> Result<()
             if pos.liq_ticks >= a.market.liq_hysteresis_ticks {
                 let fee_bps = a.market.liq_fee_bps as u32;
                 let delay = a.config.disclosure_delay_slots;
-                liquidate_candidate(
+                let done = liquidate_candidate(
                     dq_ai,
                     market_key,
                     &mut a.market_risk,
@@ -200,6 +225,13 @@ pub fn crank_tick<'info>(mut ctx: Context<'info, CrankTick<'info>>) -> Result<()
                     &clock,
                     delay,
                 )?;
+                if !done {
+                    // Ring full — skipped, not failed (see `liquidate_candidate`).
+                    // `liq_ticks` above is still written back below, so the
+                    // position stays hot and liquidates on the first tick after
+                    // a reveal drains the ring.
+                    msg!("liq skipped: queue full {}", pos_ai.key());
+                }
             }
         } else {
             pos.liq_ticks = 0;

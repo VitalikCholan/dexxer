@@ -53,6 +53,16 @@ pub const MAX_ACTIONS_PER_COMMIT: usize = 8;
 pub const ACTION_ESCROW_INDEX: u8 = 255;
 pub const SOL_SYMBOL: [u8; 8] = *b"SOL\0\0\0\0\0";
 pub const PERMISSION_MEMBERS: usize = 3; // owner, session, crank
+/// Upper bound on `crank_tick` candidates the PROGRAM accepts in one call.
+///
+/// It is not what a client can actually fit: since week-5 Task 1 a candidate is
+/// a `[Position, UserAccount, DisclosureQueue]` triple, and a legacy (non-v0)
+/// transaction carrying 8 triples plus a ComputeBudget instruction already
+/// measures ~1175 bytes — 9 triples overflow the 1232-byte packet (measured,
+/// fix round 1, finding 1). Clients on legacy transactions must therefore chunk
+/// at 8 (`CRANK_TX_MAX_CANDIDATES` in `services/relayer/src/crank.ts`); the
+/// program cap stays 16 so a v0 transaction with an address-lookup table can
+/// use the whole budget later.
 pub const MAX_CANDIDATES: usize = 16;
 // Week-2 Task 5 fix round 2 (controller ruling): guards against a sybil
 // griefing the shared `FeeEscrow`'s commit budget via a `withdraw(1)`-per-tx

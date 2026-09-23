@@ -53,9 +53,9 @@ fn random_sequences_keep_pool_invariants() {
     // triggered a replacement trader. Since week-5 Task 1 a close frees the
     // position immediately, so a trader is reusable indefinitely — until its
     // ring fills up: nothing in this loop drains it (no `commit_aggregate`,
-    // and the default 100-slot delay keeps records un-due anyway), and a close
-    // or liquidation into a full ring is a hard `QueueFull`. Such a trader is
-    // retired from the draw and from the crank list, and replaced exactly once.
+    // and the default 100-slot delay keeps records un-due anyway), after which
+    // a close is a hard `QueueFull` and a liquidation is silently skipped. Such
+    // a trader is retired from the draw (see below) and replaced exactly once.
     let mut replaced: Vec<bool> = vec![false; traders.len()];
 
     // A trader whose ring is full can no longer close or be liquidated.
@@ -107,9 +107,13 @@ fn random_sequences_keep_pool_invariants() {
         // #6) — staleness is `max_staleness_secs` (2s) old, independent of
         // whether a crank_tick happened to run this step.
         w.set_price(&mut h, price, 5, ts, slot);
-        // Draw uniformly among traders whose ring still has room — one that is
-        // full cannot close (`QueueFull`), so including it would just waste
-        // steps on ops that must fail. Falls back to the full roster on the
+        // Draw uniformly among traders whose ring still has room. This
+        // exclusion IS still needed (unlike the crank-candidate one below,
+        // which fix round 1 removed): nothing in this loop ever drains a ring,
+        // so a full trader can never close again for the rest of the run and
+        // every close/decrease-to-zero drawn for it would be a guaranteed
+        // `QueueFull` — burning steps that should be producing real closes and
+        // liquidations. Falls back to the full roster on the
         // essentially-unreachable case every tracked trader is full at once.
         let alive: Vec<usize> = (0..traders.len())
             .filter(|&idx| !ring_full(&h, &traders[idx]))
@@ -265,12 +269,14 @@ fn random_sequences_keep_pool_invariants() {
                 // that the roster (replaced 1:1, see below) can grow past
                 // that — so cap the candidate list to the Open positions,
                 // bounded to what one crank_tick accepts.
+                // Full-ring traders are deliberately NOT filtered out here:
+                // since fix round 1 the program skips such a candidate
+                // (`msg!("liq skipped: queue full ...")`) instead of failing
+                // the tick, and leaving them in is what exercises that path
+                // under the randomized run.
                 let all: Vec<&Trader> = traders
                     .iter()
-                    .filter(|t| {
-                        h.account::<Position>(&t.position).state == PositionState::Open
-                            && !ring_full(&h, t)
-                    })
+                    .filter(|t| h.account::<Position>(&t.position).state == PositionState::Open)
                     .take(MAX_CANDIDATES)
                     .collect();
                 h.send(&[ixs::crank_tick(&w.crank.pubkey(), &w, &all)], &[&w.crank])
@@ -330,8 +336,8 @@ fn random_sequences_keep_pool_invariants() {
             }
         }
         // Any trader whose ring filled up is replaced exactly once: it can no
-        // longer close or be liquidated, so leaving it in the roster would
-        // starve the run of both.
+        // longer close or be liquidated, so leaving it as the only roster
+        // would starve the run of both.
         for idx in 0..traders.len() {
             if !replaced[idx] && ring_full(&h, &traders[idx]) {
                 replaced[idx] = true;

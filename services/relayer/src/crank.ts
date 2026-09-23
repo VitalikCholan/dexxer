@@ -23,8 +23,9 @@
 // Every `CRANK_INTERVAL_MS` (default 1000): find every `Position` account
 // on the ER via `getProgramAccounts` + a Position-discriminator memcmp
 // filter, keep the ones with `state == Open`, pair each with its owner's
-// `UserAccount`, and send `crank_tick` in chunks of <=16 candidate pairs
-// (`MAX_CANDIDATES`, programs/dexxer_core/src/state/mod.rs). `feed` is read
+// `UserAccount`, and send `crank_tick` in chunks of <=8 candidate triples
+// (`CRANK_TX_MAX_CANDIDATES` — the legacy-transaction size ceiling, below;
+// the program itself accepts up to `MAX_CANDIDATES` = 16). `feed` is read
 // off the on-chain `Market.feed` field each tick. One log line per chunk:
 // `tick n=... slot=... mark=... mark_slot=... sig=... cu=... tick_ms=...
 // candidates=... liquidated=[...]`.
@@ -94,10 +95,18 @@ const INTERVAL = Number(process.env.CRANK_INTERVAL_MS ?? 1000);
 // same 300-tick (~5 min at the default 1s INTERVAL) interval as the `Pool`
 // commit itself.
 const DISCLOSURE_EVERY_TICKS = 300;
-// Must match `programs/dexxer_core/src/state/mod.rs`'s `MAX_CANDIDATES`
-// (crank_tick's Accounts context requires `remaining_accounts.len() / 2 <=
-// MAX_CANDIDATES`, checked on-chain).
-const MAX_CANDIDATES = 16;
+// How many candidates actually fit in ONE legacy (non-v0) transaction, which
+// is what this client sends. Since week-5 Task 1 a candidate is a
+// `[Position, UserAccount, DisclosureQueue]` triple, so a chunk costs 3
+// account keys instead of 2: 8 triples plus the ComputeBudget instruction
+// measure ~1175 bytes, and 9 overflow the 1232-byte packet limit
+// (`Transaction too large`). The on-chain cap
+// (`programs/dexxer_core/src/state/mod.rs`'s `MAX_CANDIDATES` = 16) is
+// deliberately left higher — a v0 transaction with an address-lookup table
+// could use all of it — but this client must chunk at the tx ceiling, or a
+// market with 9+ open positions would fail EVERY tick and stop both
+// liquidations and the mark/EMA advance.
+const CRANK_TX_MAX_CANDIDATES = 8;
 const MAX_ERRORS = 50;
 
 let stopRequested = false;
@@ -197,8 +206,8 @@ export async function startCrank(cfg: RelayerConfig, state: RelayerState): Promi
     const liquidated: string[] = [];
     // At least one iteration even with zero open positions, so the market's
     // mark/EMA still advances every tick.
-    for (let i = 0; i < Math.max(1, open.length); i += MAX_CANDIDATES) {
-      const chunk = open.slice(i, i + MAX_CANDIDATES);
+    for (let i = 0; i < Math.max(1, open.length); i += CRANK_TX_MAX_CANDIDATES) {
+      const chunk = open.slice(i, i + CRANK_TX_MAX_CANDIDATES);
       // Triples since week-5 Task 1: a liquidation is a close, and a close
       // pushes its `ClosedRecord` into the owner's `DisclosureQueue`, so the
       // tick has to carry that account for every candidate it might liquidate.
@@ -219,9 +228,10 @@ export async function startCrank(cfg: RelayerConfig, state: RelayerState): Promi
 
       const sendT0 = Date.now();
       const { blockhash } = await freshBlockhash();
-      // A full 16-candidate tick measured 205k CU in LiteSVM once week-5 Task 1
-      // added the `DisclosureQueue` to every triple — past the 200k default, so
-      // the limit has to be raised explicitly.
+      // 16 candidates measured 166k CU in LiteSVM when none liquidate and 367k
+      // when all of them do (week-5 Task 1 put a `DisclosureQueue` in every
+      // triple) — the liquidating case is well past the 200k default, so the
+      // limit has to be raised explicitly even though a chunk is only 8 here.
       const txn = new Transaction({ feePayer: cfg.crank.publicKey, recentBlockhash: blockhash })
         .add(ComputeBudgetProgram.setComputeUnitLimit({ units: 1_400_000 }))
         .add(ix);

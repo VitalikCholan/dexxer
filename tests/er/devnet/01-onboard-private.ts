@@ -70,7 +70,7 @@ const { ER_VALIDATOR, NET, baseConn, loadOrCreateKey, sendAndConfirmIx, teeConn,
 const assert: (cond: unknown, msg: string) => asserts cond = envMod.assert;
 const { DEXXER_CORE_PROGRAM_ID, accountNs, dexxerCoreProgram, delegationTriple, pdas } = await import("../lib/program.js");
 const { bootstrapDevnet } = await import("../lib/admin.js");
-const { creditDeposit, initPermissions, U64_MAX, usd, solSize } = await import("../lib/trader.js");
+const { creditDeposit, initPermissions, tradeAccounts, U64_MAX, usd, solSize } = await import("../lib/trader.js");
 
 if (NET !== "devnet") {
   console.error(`FAIL: DEXXER_NET must be "devnet" (got "${NET}"). Run: DEXXER_NET=devnet npm run devnet:onboard`);
@@ -257,19 +257,9 @@ async function main() {
   console.log("=== open_position (ER, signed ONLY by session) ===");
   const sessionConn = await teeConn(session);
   const coreSessionEr = dexxerCoreProgram(sessionConn, session);
-  const marketRisk = pdas.marketRisk(market);
   const openIx = await coreSessionEr.methods
     .openPosition({ long: {} }, new BN(solSize(OPEN_SIZE_SOL).toString()), new BN(usd(OPEN_MARGIN_USD).toString()), new BN(U64_MAX.toString()))
-    .accounts({
-      signer: session.publicKey,
-      config,
-      market,
-      marketRisk,
-      poolLive: boot.poolLive,
-      userAccount,
-      position,
-      feed: boot.feed,
-    })
+    .accounts({ signer: session.publicKey, ...tradeAccounts(boot, { userAccount, position, disclosureQueue }) })
     .instruction();
   const openSig = await sendAndConfirmIx(sessionConn, session, openIx);
   console.log("open_position (session-signed)", openSig);
@@ -296,7 +286,7 @@ async function main() {
     crank: crank.publicKey.toBase58(),
     mint: boot.mint.toBase58(),
     market: market.toBase58(),
-    marketRisk: marketRisk.toBase58(),
+    marketRisk: pdas.marketRisk(market).toBase58(),
     pool: boot.pool.toBase58(),
     poolAta: boot.poolAta.toBase58(),
     feed: boot.feed.toBase58(),

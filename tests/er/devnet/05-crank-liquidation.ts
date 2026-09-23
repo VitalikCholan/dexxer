@@ -50,7 +50,7 @@ const { ER_VALIDATOR, NET, baseConn, loadOrCreateKey, sendAndConfirmIx, sleep, t
 const assert: (cond: unknown, msg: string) => asserts cond = envMod.assert;
 const { DEXXER_CORE_PROGRAM_ID, accountNs, dexxerCoreProgram, delegationTriple, pdas } = await import("../lib/program.js");
 const { bootstrapDevnet } = await import("../lib/admin.js");
-const { creditDeposit, initPermissions, U64_MAX } = await import("../lib/trader.js");
+const { creditDeposit, initPermissions, tradeAccounts, U64_MAX } = await import("../lib/trader.js");
 
 if (NET !== "devnet") {
   console.error(`FAIL: DEXXER_NET must be "devnet" (got "${NET}"). Run: DEXXER_NET=devnet npm run devnet:liquidation`);
@@ -209,7 +209,6 @@ async function main() {
   console.log("set_session", setSessionSig, "fund session", fundSessionSig);
 
   console.log("=== open_position (~10x long, session-signed) ===");
-  const marketRisk = pdas.marketRisk(market);
   const marketBeforeOpen = await accountNs(coreOwnerEr).market.fetch(market);
   const price = BigInt(marketBeforeOpen.mark.toString()); // 1e6-scaled USD, per math.rs PRICE_SCALE
   assert(price > 0n, `Market.mark is seeded (nonzero) before opening — got ${price.toString()}. Run crank-fallback or schedule-crank first so the market has a mark.`);
@@ -226,7 +225,7 @@ async function main() {
   const coreSessionEr = dexxerCoreProgram(sessionConn, session);
   const openIx = await coreSessionEr.methods
     .openPosition({ long: {} }, new BN(sizeLamports.toString()), new BN(marginUsd.toString()), new BN(U64_MAX.toString()))
-    .accounts({ signer: session.publicKey, config, market, marketRisk, poolLive: boot.poolLive, userAccount, position, feed: boot.feed })
+    .accounts({ signer: session.publicKey, ...tradeAccounts(boot, { userAccount, position, disclosureQueue }) })
     .instruction();
   const openSig = await sendAndConfirmIx(sessionConn, session, openIx);
   console.log("open_position (session-signed)", openSig);

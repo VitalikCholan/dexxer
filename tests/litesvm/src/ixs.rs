@@ -606,9 +606,10 @@ pub fn undelegate_user(signer: &Pubkey, t: &Trader, wd: &World) -> Instruction {
 }
 
 /// `ComputeBudgetProgram::SetComputeUnitLimit` (discriminant `2`, u32 LE units),
-/// hand-built so the test crate needs no extra dependency. A `crank_tick` with a
-/// full 16-candidate batch no longer fits in the 200k default (week-5 Task 1 put
-/// a `DisclosureQueue` in every candidate triple), so any client that fills the
+/// hand-built so the test crate needs no extra dependency. A full `crank_tick`
+/// batch no longer fits in the 200k default: 16 candidates measure ~166k when
+/// none liquidate but 367k when all of them do (week-5 Task 1 put a
+/// `DisclosureQueue` in every candidate triple), so any client that fills the
 /// batch has to raise the limit — `services/relayer/src/crank.ts` does the same.
 pub fn set_compute_unit_limit(units: u32) -> Instruction {
     let mut data = vec![2u8];

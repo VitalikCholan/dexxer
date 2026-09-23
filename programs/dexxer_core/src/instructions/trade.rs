@@ -10,6 +10,15 @@ use anchor_lang::prelude::*;
 use ephemeral_rollups_sdk::consts::MAGIC_PROGRAM_ID;
 use solana_keccak_hasher::hashv;
 
+/// STACK BUDGET — read before adding an account here. Week-5 Task 1's four new
+/// fields put `Trade::try_accounts` 8 bytes over the SBF 4096-byte frame
+/// (`anchor build`: "Stack offset of 4104 exceeded max offset of 4096", plus
+/// five "function call overwrites values in the frame" errors). Boxing `config`
+/// bought back a `Config`'s worth of frame — `Config::INIT_SPACE` is 275 B — so
+/// roughly 270 B of headroom is left. Week-5 Task 3 adds `scheduler_signer`
+/// (an `UncheckedAccount`, cheap) and must stay inside that; if it does not,
+/// box the next-largest account (`market`, then `market_risk`). The build fails
+/// loudly on overflow, so this is a warning, not an invariant to trust blindly.
 #[derive(Accounts)]
 pub struct Trade<'info> {
     pub signer: Signer<'info>,
