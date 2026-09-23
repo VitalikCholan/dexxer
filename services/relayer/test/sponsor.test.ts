@@ -242,7 +242,7 @@ test("checkWhitelist: rejects a SystemProgram transfer with no accompanying set_
   tx.add(initUserIx, SystemProgram.transfer({ fromPubkey: feePayer.publicKey, toPubkey: session, lamports: 1_000_000 }));
   tx.partialSign(owner);
 
-  const result = checkWhitelist(tx, feePayer.publicKey);
+  const result = checkWhitelist(tx, feePayer.publicKey, true);
   assert.equal(result.ok, false);
   if (!result.ok) assert.match(result.error, /without a set_session/);
 });
@@ -259,7 +259,7 @@ test("checkWhitelist: rejects a SystemProgram transfer whose destination isn't s
   tx.add(SystemProgram.transfer({ fromPubkey: feePayer.publicKey, toPubkey: wrongDestination, lamports: 1_000_000 }));
   tx.partialSign(owner);
 
-  const result = checkWhitelist(tx, feePayer.publicKey);
+  const result = checkWhitelist(tx, feePayer.publicKey, true);
   assert.equal(result.ok, false);
   if (!result.ok) assert.match(result.error, /session_key argument/);
 });
@@ -275,7 +275,7 @@ test("checkWhitelist: rejects a SystemProgram transfer over the session fund cap
   tx.add(SystemProgram.transfer({ fromPubkey: feePayer.publicKey, toPubkey: session, lamports: SESSION_FUND_LAMPORTS + 1 }));
   tx.partialSign(owner);
 
-  const result = checkWhitelist(tx, feePayer.publicKey);
+  const result = checkWhitelist(tx, feePayer.publicKey, true);
   assert.equal(result.ok, false);
   if (!result.ok) assert.match(result.error, /exceeds the session fund cap/);
 });
@@ -291,7 +291,7 @@ test("checkWhitelist: rejects a SystemProgram transfer not originating from fee_
   tx.add(SystemProgram.transfer({ fromPubkey: owner.publicKey, toPubkey: session, lamports: 1_000_000 }));
   tx.partialSign(owner);
 
-  const result = checkWhitelist(tx, feePayer.publicKey);
+  const result = checkWhitelist(tx, feePayer.publicKey, true);
   assert.equal(result.ok, false);
   if (!result.ok) assert.match(result.error, /must originate from fee_payer/);
 });
@@ -308,12 +308,33 @@ test("checkWhitelist: accepts init_permissions + set_session + the matching sess
   tx.add(SystemProgram.transfer({ fromPubkey: feePayer.publicKey, toPubkey: session, lamports: SESSION_FUND_LAMPORTS }));
   tx.partialSign(owner);
 
-  const result = checkWhitelist(tx, feePayer.publicKey);
+  const result = checkWhitelist(tx, feePayer.publicKey, true);
   assert.equal(result.ok, true);
   if (result.ok) {
     assert.equal(result.owner.toBase58(), owner.publicKey.toBase58());
     assert.deepEqual(result.labels, ["dexxer_core:init_permissions", "dexxer_core:set_session", "system:transfer"]);
   }
+});
+
+test("checkWhitelist: by default (allowSessionTopUp omitted) rejects an otherwise-valid session top-up transfer", async () => {
+  // Week-5 route, unused by the app today (see sponsor.ts's header comment):
+  // the same tx as the accept case just above, but WITHOUT passing
+  // `allowSessionTopUp`, must be rejected — and with the gate's own error
+  // text, not any of the deeper transfer-shape checks below it.
+  const owner = Keypair.generate();
+  const feePayer = Keypair.generate();
+  const session = Keypair.generate().publicKey;
+  const tx = new Transaction();
+  tx.feePayer = feePayer.publicKey;
+  tx.recentBlockhash = FAKE_BLOCKHASH;
+  tx.add(await buildInitPermissionsIx(owner.publicKey));
+  tx.add(await buildSetSessionIx(owner.publicKey, session));
+  tx.add(SystemProgram.transfer({ fromPubkey: feePayer.publicKey, toPubkey: session, lamports: SESSION_FUND_LAMPORTS }));
+  tx.partialSign(owner);
+
+  const result = checkWhitelist(tx, feePayer.publicKey);
+  assert.equal(result.ok, false);
+  if (!result.ok) assert.match(result.error, /SystemProgram transfer sponsorship is disabled/);
 });
 
 test("checkWhitelist: rejects a tx the owner never signed", async () => {

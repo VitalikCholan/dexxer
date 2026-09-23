@@ -9,53 +9,63 @@
 // This file exists only so existing local tooling that spawns it as a
 // child process — scripts/demo/week1-cli.ts's
 // `spawn("npx", ["tsx", CRANK_SCRIPT])` — keeps working unchanged against
-// mb-stack: it builds a minimal `RelayerConfig`/`RelayerState` from
-// env/`tests/er/.keys/` (the same identities `services/relayer/src/index.ts`
-// would load) and calls `startCrank` directly, without the HTTP/health/
-// Postgres pieces (irrelevant to this local-only path). SIGINT still exits
-// after the in-flight tick finishes (`requestStop()`), matching this
-// script's pre-move behavior byte-for-byte on stdout (`tick n=...` lines —
-// week1-cli.ts's `parseTickLine` parses those unchanged).
+// mb-stack.
+//
+// Fix wave (23.09.2026, CI run 35836477084): this used to `await
+// import("../../services/relayer/src/crank.js")` directly and call
+// `startCrank` itself. That made `npx tsc --noEmit` in scripts/ — which has
+// no relayer node_modules installed — type-check relayer source files
+// (crank.ts, and transitively keys.ts/env.ts/program.ts), failing on
+// `@solana/web3.js`/`@coral-xyz/anchor`/the generated SDK (TS2307). scripts/
+// and services/relayer/ are deliberately separate npm packages (own
+// package-lock.json, own CI step) — a source-level import defeats that
+// isolation even though it worked fine at runtime.
+//
+// The fix: spawn the relayer as its OWN process (`npm --prefix
+// ../services/relayer start`, i.e. `node --import tsx src/index.ts` there)
+// instead of importing its TypeScript into this one. `keys.ts`'s
+// `keypairFromEnv` falls back to `loadOrCreateKey`'s `tests/er/.keys/`
+// files (same identities this shim used to load directly) when
+// `CRANK_KEY_B58`/`FEE_PAYER_KEY_B58` aren't set, so `npm start` works
+// unchanged with no env vars — `env: process.env` here only forwards
+// whatever the caller (week1-cli.ts, a shell) already set, e.g.
+// `DEXXER_NET=devnet`. `stdio: "inherit"` means the relayer's own
+// `console.log`/`console.error` output (crank.ts's unchanged `tick n=...`
+// lines included) flows straight through this process's stdout/stderr —
+// week1-cli.ts's `parseTickLine`, reading THIS process's stdout, keeps
+// working byte-for-byte.
 //
 // Not a deployable entrypoint — see services/relayer/ for that.
 
-export {}; // module marker: top-level await below requires this file to be a module
+import { spawn } from "node:child_process";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 
-if ((process.env.DEXXER_NET ?? "local") === "devnet") {
-  process.env.BASE_RPC ??= "https://rpc.magicblock.app/devnet";
-  process.env.ER_RPC ??= "https://devnet-tee.magicblock.app";
-  process.env.ER_WS ??= "wss://devnet-tee.magicblock.app";
-  process.env.PUBLIC_RPC ??= "https://rpc.magicblock.app/devnet";
-  process.env.ROUTER_RPC ??= "https://devnet-router.magicblock.app/";
-  process.env.ER_VALIDATOR ??= "MTEWGuqxUpYZGFJQcp8tLN7x5v9BSeoFHYWQQ3n3xzo";
-}
+const HERE = dirname(fileURLToPath(import.meta.url));
+const SCRIPTS_DIR = resolve(HERE, "..");
+const RELAYER_DIR = resolve(SCRIPTS_DIR, "..", "services", "relayer");
 
-const { loadOrCreateKey, NET } = await import("../../tests/er/lib/env.js");
-const { startCrank, requestStop } = await import("../../services/relayer/src/crank.js");
-type RelayerConfig = Parameters<typeof startCrank>[0];
-type RelayerState = Parameters<typeof startCrank>[1];
-
-const crank = loadOrCreateKey(NET === "devnet" ? "devnet-crank" : "admin");
-const feePayer = loadOrCreateKey(NET === "devnet" ? "devnet-fee-payer" : "admin");
-
-const cfg: RelayerConfig = {
-  net: NET,
-  baseRpc: "",
-  erRpc: "",
-  erWs: "",
-  crank,
-  feePayer,
-  port: 0,
-  indexerEnabled: false,
-  sponsorEnabled: false,
-};
-const state: RelayerState = { lastTickAt: null, lastCommitAt: null, tick: 0, errors: [] };
-
-process.on("SIGINT", () => {
-  requestStop();
+const child = spawn("npm", ["--prefix", RELAYER_DIR, "start"], {
+  stdio: "inherit",
+  env: process.env,
+  cwd: SCRIPTS_DIR,
 });
 
-startCrank(cfg, state).catch((e) => {
+for (const sig of ["SIGINT", "SIGTERM"] as const) {
+  process.on(sig, () => {
+    if (child.exitCode === null && child.signalCode === null) child.kill(sig);
+  });
+}
+
+child.on("exit", (code, signal) => {
+  if (signal) {
+    process.kill(process.pid, signal);
+    return;
+  }
+  process.exit(code ?? 1);
+});
+
+child.on("error", (e) => {
   console.error("crank-fallback FAIL", e);
   process.exit(1);
 });

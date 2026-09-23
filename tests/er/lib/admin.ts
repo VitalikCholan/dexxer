@@ -924,6 +924,15 @@ export async function bootstrapDevnet(): Promise<BootstrappedDevnet> {
     console.log("delegate_market: already delegated, skipped");
   }
 
+  // --- init + delegate PoolLive (Task 0/1 week 4): must run BEFORE
+  // seed_pool below, which hard-requires pool_live to exist as an Anchor
+  // account constraint (see `SeedPool` in admin.rs) — matches `bootstrap()`'s
+  // order. On a fresh devnet this is load-bearing (fix wave, 23.09.2026):
+  // `seed_pool` would fail outright without it. On an already-migrated
+  // devnet (weeks 1-3 state), `init_pool_live` just copies Pool's current
+  // non-zero counters and the later `seed_pool` call is a no-op. ---
+  const poolLive = await initAndDelegatePoolLive(core, admin, config, pool, mint, sigs);
+
   // --- admin dUSDC ATA + faucet + seed_pool + delegate_pool (shared with `bootstrap()`) ---
   await seedAndDelegatePool(core, admin, config, mintAuth, mint, pool, poolAta, sigs);
 
@@ -934,14 +943,9 @@ export async function bootstrapDevnet(): Promise<BootstrappedDevnet> {
   const balancesRoot = await initAndDelegateBalancesRoot(core, admin, config, sigs);
   const actionEscrow = await topUpActionEscrow(admin, feePayer, sigs);
 
-  // --- PoolLive migration (Task 3, steps 8-10): init + delegate PoolLive
-  // (base), then make MarketRisk + PoolLive permissioned [crank, admin] on
-  // the ER (risk #24). Placed after the steps above since devnet's Pool is
-  // already seeded from weeks 1-3 (seedAndDelegatePool's seed_pool call is
-  // a no-op there — capital_total already nonzero — so there's no ordering
-  // hazard with the already-completed seed_pool call earlier in this fn). ---
-  const poolLive = await initAndDelegatePoolLive(core, admin, config, pool, mint, sigs);
-  // Fix round 1: top up both PDAs' ER rent surplus first (see
+  // --- PoolLive migration (Task 3, steps 9-10): make MarketRisk + PoolLive
+  // (already init+delegated above) permissioned [crank, admin] on the ER
+  // (risk #24). Fix round 1: top up both PDAs' ER rent surplus first (see
   // `fundMarketPermissions`'s doc comment), then `init_market_permissions`
   // must succeed — no tolerance here, bootstrap must not silently leave
   // risk #24 open. Fix round 2: the tx landing is not sufficient proof —

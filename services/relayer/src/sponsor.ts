@@ -325,7 +325,7 @@ export type WhitelistCheck = { ok: true; owner: PublicKey; labels: string[] } | 
  * "Versioned messages must be deserialized with VersionedMessage.deserialize()"
  * before a `Transaction` object — and thus this function — is ever reached.
  */
-export function checkWhitelist(tx: Transaction, feePayer: PublicKey): WhitelistCheck {
+export function checkWhitelist(tx: Transaction, feePayer: PublicKey, allowSessionTopUp = false): WhitelistCheck {
   if (!tx.feePayer || !tx.feePayer.equals(feePayer)) {
     return { ok: false, error: `tx.feePayer must equal the relayer's fee_payer (${feePayer.toBase58()})` };
   }
@@ -373,6 +373,15 @@ export function checkWhitelist(tx: Transaction, feePayer: PublicKey): WhitelistC
       // ever sponsored — the session top-up transfer. Cross-checked against
       // `set_session`'s argument after the loop (order-independent: the
       // transfer can precede or follow `set_session` in the same tx).
+      //
+      // Gated behind `allowSessionTopUp` (env `SPONSOR_ALLOW_SESSION_TOPUP`,
+      // default false — see sponsor.ts's header comment): the app doesn't
+      // call this leg today (real devnet-tee rejects fee_payer as an ER
+      // tx's fee payer), so by default this behaves exactly like before
+      // finding A.3 — any SystemProgram instruction is rejected outright.
+      if (!allowSessionTopUp) {
+        return { ok: false, error: `instruction ${i}: SystemProgram transfer sponsorship is disabled (set SPONSOR_ALLOW_SESSION_TOPUP=true to enable)` };
+      }
       if (transfer) {
         return { ok: false, error: `instruction ${i}: only one SystemProgram transfer is ever sponsored per tx` };
       }
@@ -540,6 +549,12 @@ export interface SponsorDeps {
   dailyBudgetSol?: number;
   /** Injectable clock, defaults to `Date.now` — tests pin it. */
   now?: () => number;
+  /**
+   * Env `SPONSOR_ALLOW_SESSION_TOPUP`, default false — see `checkWhitelist`'s
+   * `allowSessionTopUp` param and this file's header comment. Week-5 route,
+   * unused by the app today.
+   */
+  allowSessionTopUp?: boolean;
 }
 
 export interface SponsorSnapshot {
@@ -575,7 +590,7 @@ export function sponsorRouter(deps: SponsorDeps): Router {
       return;
     }
 
-    const check = checkWhitelist(tx, deps.feePayer.publicKey);
+    const check = checkWhitelist(tx, deps.feePayer.publicKey, deps.allowSessionTopUp ?? false);
     if (!check.ok) {
       res.status(400).json({ error: check.error });
       return;

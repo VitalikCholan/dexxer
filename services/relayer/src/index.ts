@@ -72,6 +72,9 @@ const cfg: RelayerConfig = {
   databaseUrl: process.env.DATABASE_URL,
 };
 const sponsorDailyBudgetSol = Number(process.env.SPONSOR_DAILY_SOL ?? DEFAULT_DAILY_BUDGET_SOL);
+// Week-5 route, unused by the app today (see sponsor.ts's header comment) —
+// default false gates the SystemProgram session-top-up branch off.
+const sponsorAllowSessionTopUp = process.env.SPONSOR_ALLOW_SESSION_TOPUP === "true";
 // Task 7: default true so this is a no-op change for every existing
 // deployment — set `CRANK_ENABLED=false` only to measure the MagicBlock
 // scheduler's own `crank_tick` (schedule-eternal.ts) as the SOLE thing
@@ -150,6 +153,7 @@ if (cfg.sponsorEnabled && !pool) {
       store,
       estimateLamports: simulateCostEstimator(baseConn, cfg.feePayer),
       dailyBudgetSol: sponsorDailyBudgetSol,
+      allowSessionTopUp: sponsorAllowSessionTopUp,
     }),
   );
   getSponsorHealthSnapshot = sponsorSnapshot(store);

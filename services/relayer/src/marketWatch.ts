@@ -9,15 +9,16 @@
 //
 // Read is unauthenticated — same public-account pattern
 // `indexer/accounts.ts` already uses for the oracle feed connection
-// (`new Connection(erRpc, ...)` with no owner/session/crank token):
-// `Market` is delegated to the ER but, per CLAUDE.md's architecture note,
-// `Pool`/`MarketRisk` (and by the same `delegate_market` call, `Market`
-// itself) are NOT permissioned in ER — `delegate_market`/`delegate_pool`
-// never call `init_permissions` on them, only on the three per-user PDAs.
-// So this watcher deliberately does NOT reuse `cfg.crank`'s `teeConn` (that
+// (`new Connection(erRpc, ...)` with no owner/session/crank token): `Market`
+// is delegated to the ER and stays public (`delegate_market` never calls
+// `init_permissions` on it, same as before). `MarketRisk` is DIFFERENT as of
+// week 4 Task 2/3 — `init_market_permissions` now makes it (+`PoolLive`)
+// permissioned `[crank, admin]` (CLAUDE.md's week-4 rules, risk #24 closed);
+// this module watches `Market` only, so that change doesn't affect it. So
+// this watcher deliberately does NOT reuse `cfg.crank`'s `teeConn` (that
 // would tie "is the scheduler ticking" to our own crank identity's auth
 // token, defeating the point) — it opens its own throwaway, unauthenticated
-// connection to the same ER endpoint.
+// connection to the same ER endpoint (still fine since `Market` is public).
 //
 // Runs regardless of `CRANK_ENABLED`: this module only tracks "did `Market`
 // change", never "who changed it" — `index.ts` decides what that means via

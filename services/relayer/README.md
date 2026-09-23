@@ -121,6 +121,12 @@ owner-funded/owner-`feePayer` for now; this whitelist support is kept as
 forward-looking, tested, currently-unused capacity. See `src/sponsor.ts`'s
 header comment for the full design rationale (fix round 1, findings A/B/C).
 
+The SystemProgram transfer branch is additionally gated behind
+`SPONSOR_ALLOW_SESSION_TOPUP` (default `false` — see Env vars below): since
+the app doesn't call this leg today, every SystemProgram instruction is
+rejected outright by default, same as before this shape existed. Flip the
+env var to `true` only once a real caller needs it (week 5).
+
 ```
 POST /sponsor
 { "tx": "<base64 Transaction, owner already signed, tx.feePayer = fee_payer>" }
@@ -152,7 +158,7 @@ signer. Each instruction shape may appear at most once per sponsored tx.
 | eSPL | `transferToVaultIx` (prefix `2`) | 5 | — | pure token transfer (owner's dUSDC -> vault), no payer account |
 | eSPL | `delegateEphemeralAtaIx` (prefix `4`) | — | 0 | no owner account; `fee_payer` fronts delegation-record rent |
 | ATA program | `CreateIdempotent` (data `[1]`) | 2 | — | OWNER-funded, not `fee_payer` (index 0 must be owner, not `fee_payer`) |
-| SystemProgram | `Transfer` | — | — | exactly one per tx, `from = fee_payer`, `to` must equal the same tx's `set_session.session_key` arg, `lamports <= SESSION_FUND_LAMPORTS (10_000_000)` — the ER leg's session top-up |
+| SystemProgram | `Transfer` | — | — | rejected outright unless `SPONSOR_ALLOW_SESSION_TOPUP=true`; when enabled, exactly one per tx, `from = fee_payer`, `to` must equal the same tx's `set_session.session_key` arg, `lamports <= SESSION_FUND_LAMPORTS (10_000_000)` — the ER leg's session top-up |
 
 Any other `programId`/discriminator/opcode is rejected outright; the
 non-idempotent ATA `Create` and any other SystemProgram instruction are
@@ -190,6 +196,7 @@ rolling 24h spend (finalized rows only).
 | `INDEXER_ENABLED` | no (default `false`) | Task 5: starts the public-data indexer (see above) — needs `DATABASE_URL`, disabled with a warning if it's unset |
 | `SPONSOR_ENABLED` | no (default `false`) | Task 6: starts `POST /sponsor` (see below) — needs `DATABASE_URL`, disabled with a warning if it's unset |
 | `SPONSOR_DAILY_SOL` | no (default `0.5`) | rolling 24h cap on sponsored lamports across all owners |
+| `SPONSOR_ALLOW_SESSION_TOPUP` | no (default `false`) | gates the whitelist's SystemProgram session-top-up branch (see Whitelist above) — week-5 route, unused by the app today |
 
 Never commit key values. Encode a local keyfile for Railway with:
 
