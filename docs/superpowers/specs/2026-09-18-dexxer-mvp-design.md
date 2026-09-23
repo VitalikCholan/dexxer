@@ -231,6 +231,46 @@ Owner, ER: `require!(Position.Empty && DisclosureQueue порожня && free_ma
 
 **Не в тижні 4:** ZK-знімок, власний vault, merkle при N>64, funding/TP/SL, мульти-маркет, TEE-атестація в застосунку, локальні push (перенесено), перенесення disclosure/root у scheduler.
 
+### 2.6 Дизайн тижня 5: надійність — ліквідації без relayer, reveal за один цикл, Exit із боргом розкриття, 0-SOL онбординг **(week 5, 23.09.2026)**
+
+Джерело рішень — брейншторм 23.09 після живого прогону тижня 4 (пріоритет B «надійність продукту» + 0-SOL онбординг і швидший reveal; #27 і подача — тиждень 6). Правила приватності §2/CLAUDE.md незмінні: коміт ніколи подієвий, сервери читають лише публічне. Усі зміни програми — в одному редеплої на початку тижня; порядок: спайк P3 → P1+P2+P3+P4 → relayer → app → devnet-виміри → тех-борг.
+
+**2.6.1 P3 — ліквідації без relayer: per-position scheduler-задача (закриває #18 повністю)**
+
+- Тиждень 4 виміряв: глобальний `schedule_crank` тікає без `remaining_accounts`, тому не ліквідує. Рішення — **одна scheduler-задача на позицію з фіксованим набором акаунтів**, зареєстрована самою програмою.
+- Нова ER-інструкція `liquidation_check`: підписант — `Config.scheduler_signer` (`crank_signer_pda(admin)`, як у `crank_tick`); акаунти `[config, market, market_risk, pool_live, oracle_feed, position, user_account]` — усі делеговані або read-only (жодного writable-неделегованого — обмеження планувальника з тижня 2). Тіло = гілка ліквідації `crank_tick` для однієї пари; stale/невалідний оракул → no-op; порожня позиція → no-op.
+- Реєстрація — CPI `ScheduleCrankCpi` всередині `open_position`: `task_id = i64::from_le_bytes(keccak(position_pubkey)[0..8])`, `interval_ms = 5000`, `iterations = i64::MAX`; платник — делегований `FeeEscrow` (як у комітів). Повторна реєстрація з тим самим `task_id` = update (ідемпотентно).
+- Скасування — `CancelCrankCpi` з тим самим `task_id` у `close_position`, `finalize_close` (ліквідація) і `undelegate_user`.
+- **Спайк — перша задача тижня** (`spikes/05-crank-tee`): (1) три паралельні задачі з різними `task_id` тікають; (2) вартість реєстрації/тіка з `FeeEscrow`; (3) `cancel` через CPI з-під програми проходить; (4) чи видно реєстр задач поза TEE (публічний RPC/L1). Якщо (4) = видно, реєстрація/скасування при open/close стає подієвим витоком → fallback: реєструвати `liquidation_check` один раз при `init_user` (слот позиції) і ніколи не скасовувати (тік на порожній позиції — no-op); дорожче, але без подій. Рішення фіксується у `week5-results.md` до редеплою.
+
+**2.6.2 P2 — reveal за один цикл при нульовій затримці**
+
+- Зараз Close → `write_commitment` (bundle N) → `mark_committed` → запис у `DisclosureQueue` → `write_disclosure` (bundle N+1): два 5-хв цикли. При `Config.disclosure_delay_slots == 0` crank додає для одного `Position` (`Closed && !commitment_written`) **дві дії в один bundle**: `write_commitment` і `write_disclosure` з аргументами з `Position.closed` (там же `salt`); `MAX_ACTIONS_PER_COMMIT` 4 → 8 (cap мосту виміряно 28/29, тиждень 3).
+- Програма: `write_disclosure` отримує друге джерело записів — `Position` замість `DisclosureQueue` (той самий `DisclosureArgs`, той самий `commitment_hash`, та сама перевірка escrow-підписанта); `mark_committed` для вже розкритої позиції ставить `Position → Empty` і **не** кладе запис у чергу. При `delay > 0` — поточний шлях через чергу без змін. Подієвий коміт — заборонений (видає момент закриття).
+- Relayer: `COMMIT_INTERVAL_TICKS` env (default 300; демо 60 ≈ 80 с; вартість ≈0.2 SOL/год на devnet). Очікування: Close → «Revealed» ≤ один цикл (M-H).
+
+**2.6.3 P4 — Exit із боргом розкриття (частковий `undelegate_user`)**
+
+- `undelegate_user`: `UserAccount` і `Position` виходять лише при `Position.state == Empty` (`Closed` → `PendingCommitment`: спершу має пройти `mark_committed`); `DisclosureQueue` з `len == 0` виходить як тепер; з `len > 0` — **лишається делегованою**, members → `[crank]` (owner/session прибираються), у `UserAccount.exited = true` (новий прапорець) записується до виходу. Скраб приватних полів `UserAccount`/`Position` — як у тижні 3.
+- Crank: після `write_disclosure` останнього запису черги з `exited` власником викликає нову crank-only ER-інструкцію `close_orphan_queue` → `commit_and_undelegate` з нульовими полями, на L1 `close`, rent → `fee_payer` (він фондував `extra` при `init_user`).
+- Повторний онбординг того ж гаманця при живій сирітській черзі: окрема owner-інструкція `init_user_reuse_queue` (той самий контекст, що `init_user`, але `disclosure_queue` — існуючий делегований акаунт без `init`; `init_if_needed` заборонений); клієнт обирає її, якщо PDA черги вже існує; вона скидає `exited` і не чіпає вміст черги.
+- App: Exit-чеклист = «No open position» + «Balance withdrawn» (+ інформативно «N trades will be revealed later»); стан `Closed` показується як «Pending disclosure (≤5 min)» замість зеленої галочки черги.
+
+**2.6.4 P1 + R1 + A1 — 0-SOL онбординг, relayer, app**
+
+- `DelegateUser` отримує `#[account(mut)] payer: Signer` (rent трьох записів делегації — fee_payer; owner лишається authority); `/sponsor` shape `delegate_user`: `payerIdx == fee_payer`. ATA: `createAssociatedTokenAccountIdempotent(payer = fee_payer)`, `ATA_SHAPE` → `payerIdx 0 == fee_payer`, `ownerIdx 2 == owner-signer`. L1 top-up session key **вилучається** (session key підписує лише ER-tx; тиждень 4 показав, що торгівля працює при failed top-up) разом із гілкою SystemProgram у whitelist і `SPONSOR_ALLOW_SESSION_TOPUP`. Результат: owner з 0 SOL проходить Connect → Set up → Trade; копі повертається до макета «No SOL needed — account rent is sponsored». Вартість онбордингу для fee_payer ≈0.02 SOL → ~25/день при `SPONSOR_DAILY_SOL = 0.5`; вичерпання — помилка «Sponsor budget exhausted» (#27 гейт — тиждень 6).
+- Relayer: staleness оракула за `publish_time` фіду (`stale = now − publish_time > 30 s`), `/mark` віддає `publishTime`; crank-логіка P2/P4; `MAX_ACTIONS_PER_COMMIT = 8`.
+- App: `auth_token` зберігається з хешем `identity`; при розбіжності або на Disconnect — `deauthorize` + `authorize` (MWA-доки; прибирає `authorization request failed` після зміни identity). Онбординг без top-up-леґа (2 промпти: SIWS-connect + один `signTransactions`).
+
+**2.6.5 Тести, виміри, документи, тех-борг**
+
+- LiteSVM/unit: `delegate_user` з `payer ≠ owner`; `write_disclosure` з `Position` при delay 0 і `mark_committed` без черги; `undelegate_user` з `len > 0` лишає чергу, `Closed` → `PendingCommitment`; `close_orphan_queue` crank-only; `init_user` з наявною чергою; `liquidation_check` ліквідує / no-op при stale oracle (CPI планувальника — no-op без magic program, як `commit`). Relayer: staleness за `publish_time`, нові shapes, вилучена top-up гілка. Орієнтир: LiteSVM 71 → ~80, relayer 61 → ~66.
+- Devnet (один редеплой + міграція): **M-G′** — `CRANK_ENABLED=false`, позиція з liq поруч із mark → `liquidation_check` ліквідує без relayer; **M-H** — Close → Revealed за один цикл при `COMMIT_INTERVAL_TICKS=60` (секунди); **M-I** — гаманець з 0 SOL: онбординг → Long/Close → Exit із непорожньою чергою → crank дорозкриває → `close_orphan_queue` → повторний онбординг; регресія 06/07/08/09.
+- Документи: `week5-results.md`; §4.2 (нові інструкції), §7.1 (#18 закрито повністю або fallback init-time, #22 закрито, #27 → тиждень 6, нові ризики: видимість реєстру задач, вартість per-position тіків), §7.3; CLAUDE.md «Правила тижня 5»; README «Чесні обмеження»; `docs/deployments.md`.
+- Тех-борг (наприкінці): `HistoryScreen.tsx` → `HistoryRow`/`useHistoryRows`; видалити `PositionScreen.tsx` + роут; `user.rs` → окремий модуль permissions + `apply_permission_updates`; `Toast`/`Sheet` таймери; WS ping/pong.
+
+**Не в тижні 5:** #27 (SIWS + L1-гейт/invite-коди), відео/пітч/тег `v0.4-mvp`, Seeker Connect (web-only), ZK-знімок, multi-market, iOS.
+
 ## 3. Маржинальна математика й ліквідація
 
 ### 3.1 Одиниці
