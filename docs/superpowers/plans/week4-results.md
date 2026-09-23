@@ -213,6 +213,31 @@ rent повернуто payer'у, друга спроба пройшла чис�
    жодної зміни скрипту, щойно ризик #24 закрито — скрипт від початку перевіряв реальний on-chain
    стан (власника permission-PDA), не відсутність кинутої помилки.
 
+## Task 4: relayer на Railway (короткий підсумок)
+
+Повний звіт: `.superpowers/sdd/2026-09-22-week4-mvp-polish/task-4-report.md`. `services/relayer`
+(Express + `ws`, перейменований/розширений `scripts/crank-fallback`, комміт `ab6be5a`) — Dockerfile
+(10-стадійний), деплой на Railway (`railway up --service relayer --ci`, проєкт `dexxer`, оточення
+`production`). Домен `https://relayer-production-1ae7.up.railway.app`, `GET /healthz` →
+`{"ok":true,"tick":79,"crankSol":0.1,"feePayerSol":0.25,"schedulerActive":false,"db":"ok"}` live.
+Ключі `CRANK_KEY_B58`/`FEE_PAYER_KEY_B58` — Railway variables (base58), ніколи в git. Fix round 1
+(`58300ab`) — graceful `SIGTERM` тепер чекає завершення поточного `crank_tick` перед закриттям
+(`shutdown.ts`, 3 нові тести); підтверджено на реальному redeploy (лог: SIGTERM mid-tick-5 → tick 5
+довершився → лише тоді процес вийшов). `docs/deployments.md` заведено цією задачею (проєкт/сервіс
+id, домен, ролі ключів, program/PDA-адреси — без секретів).
+
+## Task 5: індексер публічних даних (короткий підсумок)
+
+Повний звіт: `.superpowers/sdd/2026-09-22-week4-mvp-polish/task-5-report.md`. Другий підсервіс у
+тому ж `relayer`-процесі (`INDEXER_ENABLED=true`), читає ЛИШЕ публічні акаунти (оракул без токена
+на TEE RPC, `Pool`/`BalancesRoot`/`Disclosure` на base RPC) — ніколи `crank`/`fee_payer`. REST
+`/prices?tf=&limit=`, `/mark`, `/pool/latest`, `/disclosures?limit=`, `/root/latest` + WS `mark`-
+фрейми — усі live на Railway з реальними devnet-даними (комміт `3644066`). Постгрес-міграція
+`001_indexer.sql`. Fix round 1 (`b462ce3`): `/mark` і WS `mark` тепер несуть `stale`-прапорець
+(окрема TEE→base стейлнес-логіка — контролер вирішив, що base-копія оракула є застарілим commit-
+знімком, тож фейловер туди показував би заморожену ціну як живу, гірше за відкриту помилку);
+golden vector для `tag=0` (Partial) feed-формату. Суїта `services/relayer` **22→27** тестів.
+
 ## Task 6 (fix round 1): sponsored rent, whitelist за позиціями акаунтів, атомарний rate-limit
 
 Повний звіт: `.superpowers/sdd/2026-09-22-week4-mvp-polish/task-6-report.md`, розділ
@@ -356,6 +381,17 @@ remaining_accounts (liquidation candidates are supplied by the fallback script's
 spec §2.5.2, `CLAUDE.md`'s рядок про планувальник — усі узгоджено відображають «застосовано,
 mark-backstop так, ліквідаційний backstop ні».
 
+## Task 8: дизайн-токени, UI-примітиви, 5-табовий layout (короткий підсумок)
+
+Повний звіт: `.superpowers/sdd/2026-09-22-week4-mvp-polish/task-8-report.md`. Комміт `51579fa`.
+`app/scripts/gen-tokens.ts` (`npm run gen:tokens`) читає `docs/design/tokens.json` → генерує
+`app/src/theme/tokens.ts` (детерміновано, форматовано Prettier). IBM Plex Sans/Mono (`@expo-google-
+fonts/*`), `useTheme()` (dark-only, без light mode). 12 UI-примітивів (`Button, Input, Segment,
+LeverageSlider, Card, Row, Badge, Sheet, Toast, Skeleton, EmptyState, Address`). Нові таби
+**Trade · Positions · History · Ledger · Account**; Developer-екрани (Onboard/Position/Demo/Spikes/
+UI gallery) переїхали в Account → Settings. Гаунтлет чистий (`tsc`, `expo lint`, `prettier`).
+Емулятор — не запускався агентом (правило).
+
 ## Task 9: клієнтський шар даних — `accountSubscribe`-first `useLiveAccount`, indexer-клієнт, History одразу
 
 **Спайк `accountSubscribe` на TEE (виконано контролером до задачі, 23.09.2026):**
@@ -419,3 +455,51 @@ inline-коментарем, той самий `eslint-disable` спосіб). �
 `assertCommitmentGolden`; продубльовано й запущено окремо через `node` — всі кейси PASS.
 Емулятор/on-device — не запускався агентом (`docs/superpowers/plans/...`'s правило); ручний
 чек-лист — у `task-9-report.md`.
+
+## Task 10: екрани застосунку за макетами Claude Design (короткий підсумок)
+
+Повний звіт: `.superpowers/sdd/2026-09-22-week4-mvp-polish/task-10-report.md`. 7 коммітів
+(`e12fce3`..`39f7782`) + fix round 1 (`2b306e0`). Bigint-порт `math.rs` у `app/src/lib/math.ts`
+(`notional`/`fee`/`requiredMargin`/`liqPrice`/slippage-ліміти), `__DEV__`-самоперевірка проти
+`math.rs`'s власних `#[cfg(test)]`-векторів — усі 5 збіглись. Шість екранів переписано на
+`ui/*`-примітиви: **Trade** (SVG-графік без бібліотеки, Long/Short тікет, слайдер плеча),
+**Positions** (жива uPnL, Increase/Decrease sheets, дистанція до ліквідації), **Ledger** (без
+гаманця — три таби лише на `indexer.ts`), **Account** (Deposit/Withdraw/Receipt/Exit-чек-лист),
+**Onboard** (3-крокова `batchOnboarding.ts`-пачка, копі-фікс контролера: «rent сплачений, ≈0.004
+SOL на делегування» замість «SOL не потрібен»), **History** (рестайлінг, `Position.closed`/
+`DisclosureQueue`/L1 `Disclosure` — логіка тижня 9 не чіпалась). Гаунтлет чистий (`tsc`,
+`expo lint`, `prettier`). Fix round 1 (контролер): `TradeScreen.tsx`'s три незалежні
+stale/disconnected-перевірки об'єднано в один `oracle`-предикат (dot/banner/gate більше не можуть
+розійтись); видалено невикористаний `account-feature.tsx`. Емулятор — не запускався агентом.
+
+## Підсумок тижня 4
+
+Гілка `week4-mvp-polish`, база `93cb8ee` (week 3 фінал) → **29 коммітів** до
+`2b306e0` (поточний HEAD цього документа). Зроблено: `PoolLive`+знімок (ризик #24 закрито),
+devnet-редеплой+міграція (M-F), `services/relayer` на Railway (crank+індексер+`/sponsor`),
+sponsored rent онбординг (Task 6, частково закриває ризик #22), scheduler `i64::MAX` на живому
+розкладі (ризик #18 закрито як mark-backstop), дизайн-токени+UI-примітиви+5 табів, клієнтський
+`accountSubscribe`-шар, шість екранів за макетами Claude Design.
+
+**Тести:** unit `dexxer_core` **55/55** (було 51), LiteSVM `dexxer_litesvm` **71/71** (було 65),
+`services/relayer` **27/27** (нові цього тижня). `tsc --noEmit`/`expo lint`/`prettier --check` чисті
+в `app`, `tests/er`, `scripts`, `services/relayer`.
+
+**Живі URL:** relayer/індексер `https://relayer-production-1ae7.up.railway.app` (`/healthz`,
+`/mark`, `/prices`, `/pool/latest`, `/disclosures`, `/root/latest`, `wss://…/ws`); devnet-tee
+`https://devnet-tee.magicblock.app`; base RPC `https://rpc.magicblock.app/devnet`; програма
+`G2okX5Bae4CxfK8vzso1Ecc96QUv7E3P4YvxaZnaYXoV` (детальніше — `docs/deployments.md`).
+
+**Паркований залишок (тиждень 5+):**
+- ER-леґ онбордингу лишається owner-funded (`delegate_user`'s CPI не приймає `fee_payer`,
+  TEE `InvalidAccountForFee`) — реальний мінімум ≈0.0033–0.0035 SOL, не нуль (Task 6).
+- `delegate_user` rent — не досліджено окремо (потребує Delegation Program CPI-дослідження).
+- Планувальник `i64::MAX` — mark-backstop, НЕ ліквідаційний backstop; ліквідації лишаються
+  повністю залежними від `services/relayer`/`crank-fallback` (Task 7, ризик #18 звужений).
+- Oracle-стейлнес в індексері рахується за часом прийому (ingestion time), не за `posted_slot`'s
+  block time — прийнятно для rolling-архіву, не для точного леджера (Task 5).
+- `PositionScreen.tsx` (стара, легасі) — досі має хардкоджений hex і прихований route, не
+  переписана під токени (поза скоупом Task 10, ще існує як dev-посилання).
+- `HistoryScreen.tsx` — 456 рядків, рестайлінг Task 10 не рефакторив структуру файлу, лише JSX.
+- Anonymity set при `PoolLive`-знімку (ризик #24) — differencing на кроці 100 dUSDC при малому
+  числі одночасних трейдерів лишається відкритим; повне рішення — ZK-знімок (§2.4.5, пост-MVP).
