@@ -1,133 +1,89 @@
 // app/src/features/onboard/OnboardScreen.tsx
 //
-// The private onboarding flow, driven by `useOnboarding()`. One "Continue"
-// button drives the whole sequence — [createAta] + faucet_init + init_user
-// + delegateSpl + delegate_user + init_permissions + set_session + session
-// top-up, collected into up to four transactions and signed in ONE wallet
-// prompt (Task 6, week 4 — see useOnboarding.ts header); `batchProgress`
-// below surfaces `Collecting -> Signing -> Submitting(i/n) -> Done |
-// Failed(step)`. Each step is idempotent, so tapping "Continue" again after
-// a failure (network blip, a declined MWA prompt, a relayer rejection)
-// resumes from wherever it broke instead of restarting.
+// Task 10: Connect -> "Set up private account" (3 steps, StepsList.tsx) ->
+// Done, per design. One "Confirm in wallet" button drives the whole
+// remaining batch (`useOnboarding`'s `advance` -> `runBatchedOnboarding`);
+// each leg is idempotent, so re-tapping after a failure resumes rather than
+// restarts.
 //
-// `credit_deposit` is NOT part of the batch (Task 10 owns the real Deposit
-// screen) — the "Deposit (dev)" button below runs it standalone, same as
-// before, for anyone testing past onboarding without waiting for Task 10.
-import { useEffect } from 'react'
-import { Button, ScrollView, Text, View } from 'react-native'
+// Copy correction (controller ruling — measured fact overrides the design
+// mockup): the subtitle is NOT "No SOL needed" — rent for the L1
+// PDAs/eSPL delegation is sponsored (`services/relayer`'s `/sponsor`,
+// Task 6), but `delegate_user`'s own CPI to the Delegation Program still
+// draws directly from the owner and has no sponsor path (Task 6 fix round
+// 1's residual-gap finding, `batchOnboarding.ts`'s header comment): a
+// genuinely 0-SOL wallet cannot complete onboarding, real measured minimum
+// ≈0.0033-0.0035 SOL. The subtitle below says so plainly instead of
+// promising zero.
+import { router } from 'expo-router'
+import { ScrollView, Text, View } from 'react-native'
 import { AppPage } from '@/components/app-page'
-import { useOnboarding, type OnboardState } from './useOnboarding'
-
-const STATE_LABEL: Record<OnboardState, string> = {
-  Disconnected: 'Wallet not connected',
-  NotOnboarded: 'Not onboarded',
-  Funded: 'Faucet funded (dUSDC minted)',
-  Initialized: 'User initialized (UserAccount/Position/DisclosureQueue on L1)',
-  Delegated: 'Delegated to the ER',
-  Credited: 'Deposit credited (ER free_margin)',
-  Permissioned: 'Private permissions set (owner + crank)',
-  SessionSet: 'Session key active — ready to trade',
-}
-
-const STATE_ORDER: OnboardState[] = [
-  'Disconnected',
-  'NotOnboarded',
-  'Funded',
-  'Initialized',
-  'Delegated',
-  'Credited',
-  'Permissioned',
-  'SessionSet',
-]
-
-function progressFraction(state: OnboardState): number {
-  const i = STATE_ORDER.indexOf(state)
-  return i <= 1 ? 0 : (i - 1) / (STATE_ORDER.length - 2)
-}
+import { useTheme } from '@/src/theme'
+import { useTextStyle } from '@/src/ui/styles'
+import { Button } from '@/src/ui/Button'
+import { Address } from '@/src/ui/Address'
+import { ConnectScreen } from './ConnectScreen'
+import { StepsList } from './StepsList'
+import { useOnboarding } from './useOnboarding'
 
 export function OnboardScreen() {
-  const { owner, session, state, busy, log, error, batchProgress, connectWallet, refresh, advance, runDeposit } =
-    useOnboarding()
+  const { colors, space } = useTheme()
+  const title = useTextStyle('title')
+  const body = useTextStyle('body')
+  const caption = useTextStyle('caption')
 
-  useEffect(() => {
-    void refresh()
-    // Only re-check when the connected wallet changes — `refresh` is
-    // recreated each render (it closes over `owner`), so it isn't a dep here.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [owner?.toBase58()])
+  const { owner, session, state, busy, error, batchProgress, connectWallet, advance } = useOnboarding()
 
-  const done = state === 'SessionSet'
+  if (!owner) {
+    return (
+      <AppPage>
+        <ConnectScreen busy={busy} onConnect={() => void connectWallet()} />
+      </AppPage>
+    )
+  }
+
+  if (state === 'SessionSet') {
+    return (
+      <AppPage>
+        <View style={{ flex: 1, justifyContent: 'center', gap: space.lg, paddingHorizontal: space.lg }}>
+          <Text style={[title, { color: colors.textPrimary, textAlign: 'center' }]}>You&apos;re set.</Text>
+          <Text style={[body, { color: colors.textSecondary, textAlign: 'center' }]}>Session key active for 24h</Text>
+          <Button variant="primary" onPress={() => router.push('/trade')}>
+            Go to Trade
+          </Button>
+        </View>
+      </AppPage>
+    )
+  }
+
+  const failedStep = batchProgress.phase === 'Failed'
 
   return (
     <AppPage>
-      <ScrollView contentContainerStyle={{ gap: 16, paddingVertical: 16 }}>
-        <Text style={{ fontSize: 20, fontWeight: '700' }}>Private onboarding</Text>
+      <ScrollView contentContainerStyle={{ gap: space.lg, paddingVertical: space.lg }}>
+        <Text style={[title, { color: colors.textPrimary }]}>Set up private account</Text>
 
-        <View style={{ gap: 4 }}>
-          <Text style={{ fontWeight: '600' }}>Owner</Text>
-          <Text selectable>{owner ? owner.toBase58() : 'not connected'}</Text>
+        <View style={{ gap: space.xs }}>
+          <Text style={[caption, { color: colors.textSecondary }]}>Owner</Text>
+          <Address pubkey={owner.toBase58()} />
+          {session ? (
+            <>
+              <Text style={[caption, { color: colors.textSecondary }]}>Session key</Text>
+              <Address pubkey={session.toBase58()} />
+            </>
+          ) : null}
         </View>
 
-        <View style={{ gap: 4 }}>
-          <Text style={{ fontWeight: '600' }}>Session key (this device, never leaves it)</Text>
-          <Text selectable>{session ? session.toBase58() : 'not generated yet'}</Text>
-        </View>
+        <StepsList state={state} progress={batchProgress} />
 
-        <View style={{ gap: 4 }}>
-          <Text style={{ fontWeight: '600' }}>Status</Text>
-          <Text>
-            {state} — {STATE_LABEL[state]}
-          </Text>
-          <View style={{ height: 8, borderRadius: 4, backgroundColor: '#3333', overflow: 'hidden' }}>
-            <View
-              style={{
-                height: 8,
-                width: `${Math.round(progressFraction(state) * 100)}%`,
-                backgroundColor: done ? '#22c55e' : '#3b82f6',
-              }}
-            />
-          </View>
-        </View>
+        {error ? <Text style={{ color: colors.short }}>{error}</Text> : null}
 
-        {owner && batchProgress.phase !== 'Idle' ? (
-          <View style={{ gap: 4 }}>
-            <Text style={{ fontWeight: '600' }}>Batch</Text>
-            <Text>
-              {batchProgress.phase}
-              {batchProgress.phase === 'Submitting' || batchProgress.phase === 'Failed'
-                ? ` — ${batchProgress.step ?? ''} (${batchProgress.i}/${batchProgress.n})`
-                : ''}
-            </Text>
-          </View>
-        ) : null}
-
-        {error ? (
-          <Text selectable style={{ color: '#ef4444' }}>
-            {error}
-          </Text>
-        ) : null}
-
-        {!owner ? (
-          <Button title="Connect wallet" onPress={() => void connectWallet()} disabled={busy} />
-        ) : (
-          <Button
-            title={done ? 'Onboarding complete' : busy ? 'Working…' : 'Continue onboarding'}
-            onPress={() => void advance()}
-            disabled={busy || done}
-          />
-        )}
-
-        {owner ? <Button title="Deposit (dev)" onPress={() => void runDeposit()} disabled={busy} /> : null}
-
-        <View style={{ gap: 4 }}>
-          <Text style={{ fontWeight: '600' }}>Log</Text>
-          {log.length === 0 ? <Text style={{ opacity: 0.6 }}>No steps run yet.</Text> : null}
-          {log.map((line, i) => (
-            <Text key={i} selectable style={{ fontSize: 12 }}>
-              {line}
-            </Text>
-          ))}
-        </View>
+        <Button variant="primary" disabled={busy && !failedStep} onPress={() => void advance()}>
+          {busy ? 'Confirming…' : failedStep ? 'Retry' : 'Confirm in wallet'}
+        </Button>
+        <Text style={[caption, { color: colors.textSecondary, textAlign: 'center' }]}>
+          Account rent is sponsored — you need ≈0.004 SOL for delegation
+        </Text>
       </ScrollView>
     </AppPage>
   )
