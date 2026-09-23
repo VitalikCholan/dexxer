@@ -70,17 +70,30 @@ pub struct Trade<'info> {
     // biggest per-user account of the three.
     #[account(mut, seeds = [DQ_SEED, user_account.owner.as_ref()], bump = disclosure_queue.bump)]
     pub disclosure_queue: Box<Account<'info, DisclosureQueue>>,
-    // Declared for the per-position liquidation task (week-5 Task 3): the
-    // delegated PDA that pays the scheduler CPI's fees, exactly as in
-    // `commit_aggregate`/`withdraw`. Unused by this task's handlers.
+    // The per-position liquidation task's payer AND authority (week-5 Task 3):
+    // `open_position` registers the task with this PDA as the `ScheduleTask`
+    // CPI payer, which is what makes the PROGRAM the task's authority, and
+    // `close_position`/`decrease_position`-to-zero cancel with the same PDA as
+    // `CancelCrankCpi.authority`. Same delegated escrow `commit_aggregate` and
+    // `withdraw` pay their commit CPIs from.
     #[account(mut, seeds = [FEE_ESCROW_SEED], bump = fee_escrow.bump)]
     pub fee_escrow: Box<Account<'info, FeeEscrow>>,
     /// CHECK: Magic Actions task-context account for this position's liquidation
-    /// task (week-5 Task 3). Caller-supplied and unconstrained, exactly as in
-    /// `ScheduleCrank`/`CancelCrank` (`crank.rs`): no on-chain derivation for it
-    /// exists in `ephemeral-rollups-sdk` 0.16.2, and a wrong value can only fail
-    /// the scheduler CPI that Task 3 adds. Unused by this task's handlers.
-    #[account(mut)]
+    /// task (week-5 Task 3), passed to `ScheduleTask`/`CancelTask` as account
+    /// index 1. No on-chain derivation for it exists in `ephemeral-rollups-sdk`
+    /// 0.16.2 and the Magic Program treats it as an inert writable placeholder:
+    /// any already-existing writable account is accepted and left byte-identical
+    /// (week-5 Task 0, measurement 6).
+    ///
+    /// PINNED TO `position` anyway (fix round 1, M-1). "Any writable account"
+    /// plus `mut` would let a caller name ANOTHER trader's delegated account
+    /// here, write-locking it for the duration of the transaction — a free
+    /// contention/DoS handle on someone else's position, which the placeholder's
+    /// inertness does nothing to prevent. Pinning it costs nothing (every client
+    /// already passes the position PDA) and additionally guarantees that the
+    /// registration and the later cancel name the same account. Anchor permits
+    /// the duplicate key because neither field is `init`.
+    #[account(mut, constraint = task_context.key() == position.key() @ DexxerError::InvalidCandidate)]
     pub task_context: UncheckedAccount<'info>,
     /// CHECK: address-checked; gates the Task 3 scheduler CPI via `.executable`
     #[account(address = MAGIC_PROGRAM_ID)]
@@ -100,14 +113,26 @@ pub struct Trade<'info> {
 /// `ScheduleTask` order: index 0 (the payer) is prepended by the CPI, index 1
 /// is the task context, 2.. are the task's own accounts.
 ///
-/// LEAKED ON PURPOSE. `ScheduleCrankCpi` wants `&'a [compat::AccountInfo<'a>]`
-/// with ONE lifetime, and `AccountInfo<'a>` is invariant in `'a` (it holds a
-/// `RefCell<&'a mut [u8]>`), so a slice borrowed from a local `Vec` can never
-/// satisfy it — `schedule_crank` solves this by making the client repeat every
-/// account in `remaining_accounts`, which is acceptable for an admin-only
-/// instruction and not for `open_position`. `Box::leak` hands back a genuinely
-/// `'info`-scoped slice instead. The "leak" is ~10 `AccountInfo`s on the BPF
-/// bump allocator, which is reset at the end of this instruction.
+/// LEAKED ON PURPOSE — for brevity, not out of necessity. `ScheduleCrankCpi`
+/// wants `&'a [compat::AccountInfo<'a>]` with ONE lifetime, and
+/// `AccountInfo<'a>` is invariant in `'a` (it holds a `RefCell<&'a mut [u8]>`),
+/// so a slice borrowed from a local `Vec` can never satisfy THAT type —
+/// `schedule_crank` works around it by making the client repeat every account
+/// in `remaining_accounts`, acceptable for an admin-only instruction and not
+/// for `open_position`. `Box::leak` hands back a genuinely `'info`-scoped slice
+/// instead; the "leak" is ~10 `AccountInfo`s on the BPF bump allocator, which
+/// is reset at the end of this instruction.
+///
+/// The alternative, for the record, also works and has no lifetime problem at
+/// all: build the CPI instruction by hand —
+/// `Instruction::new_with_bincode(MAGIC_PROGRAM_ID,
+/// &MagicBlockInstruction::ScheduleTask(args), metas)` — and call
+/// `solana_program::program::invoke_signed` with a plain local
+/// `Vec<AccountInfo<'info>>`, since that function's slice lifetime and the
+/// `AccountInfo` lifetime are independent. It was not chosen because it
+/// re-implements the account-meta layout the SDK already owns (payer writable
+/// signer at index 0, then each account with its own flags), and a silent
+/// divergence there would be a devnet-only failure.
 fn liq_task_accounts<'info>(a: &'info Trade<'info>) -> &'info [AccountInfo<'info>] {
     let infos: Vec<AccountInfo<'info>> = vec![
         a.task_context.to_account_info(),

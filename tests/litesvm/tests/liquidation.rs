@@ -67,18 +67,22 @@ fn liquidation_check_liquidates_underwater_position() {
     // liq price is ~142.5 for a 10 SOL long at $150 with $150 margin.
     let (w, t) = world_with_long(&mut h, 142_000_000);
 
-    // Tick 1: hysteresis not met yet (liq_hysteresis_ticks = 2).
-    h.send(
-        &[ixs::liquidation_check(&w.crank.pubkey(), &w, &t)],
-        &[&w.crank],
-    )
-    .unwrap();
-    let pos: Position = h.account(&t.position);
-    assert_eq!(pos.state, PositionState::Open);
-    assert_eq!(pos.liq_ticks, 1);
+    // Ticks below the hysteresis gate (default `liq_hysteresis_ticks` is 3
+    // since fix round 1 — two callers now share one `liq_ticks` counter): the
+    // position stays open and only the counter moves.
+    for expected in 1..MarketParams::sol_perp_defaults().liq_hysteresis_ticks {
+        h.send(
+            &[ixs::liquidation_check(&w.crank.pubkey(), &w, &t)],
+            &[&w.crank],
+        )
+        .unwrap();
+        let pos: Position = h.account(&t.position);
+        assert_eq!(pos.state, PositionState::Open);
+        assert_eq!(pos.liq_ticks, expected);
+    }
 
-    // Tick 2: liquidated, and the record lands in the owner's ring in the same
-    // instruction (week-5 Task 1's queue-first close).
+    // The tick that meets the gate: liquidated, and the record lands in the
+    // owner's ring in the same instruction (week-5 Task 1's queue-first close).
     h.send(
         &[ixs::liquidation_check(&w.crank.pubkey(), &w, &t)],
         &[&w.crank],
@@ -218,4 +222,42 @@ fn open_registers_task_idempotently() {
         PositionState::Open
     );
     assert_invariant(&h, &w, &[&t]);
+}
+
+/// Fix round 1, M-1: `task_context` is an inert placeholder to the Magic
+/// Program, but it is `mut` in this context — so an unconstrained one would let
+/// any caller name another trader's delegated account and write-lock it for the
+/// whole transaction, purely to contend with them. It is pinned to the caller's
+/// own `position`.
+#[test]
+fn open_position_rejects_foreign_task_context() {
+    let mut h = Harness::new();
+    let w = World::bootstrap(&mut h);
+    h.warp(100, NOW);
+    w.set_price(&mut h, P150, 5, NOW, 100);
+    let victim = w.new_trader(&mut h, 1_000_000_000);
+    let attacker = w.new_trader(&mut h, 1_000_000_000);
+
+    let mut ix = ixs::open_position(
+        &attacker.kp.pubkey(),
+        &attacker,
+        &w,
+        Side::Long,
+        SOL10,
+        M150,
+        P150,
+    );
+    // `task_context` is the second-to-last account of `Trade`, right before
+    // `magic_program` and `liq_crank_signer` (see `Trader::trade_accounts`).
+    let task_context_idx = ix.accounts.len() - 3;
+    assert_eq!(ix.accounts[task_context_idx].pubkey, attacker.position);
+    ix.accounts[task_context_idx].pubkey = victim.position;
+
+    let r = h.send(&[ix], &[&attacker.kp]);
+    assert_custom_error(&r, 6000 + DexxerError::InvalidCandidate as u32);
+    assert_eq!(
+        h.account::<Position>(&attacker.position).state,
+        PositionState::Empty,
+        "the open must not have happened"
+    );
 }

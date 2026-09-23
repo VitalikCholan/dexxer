@@ -111,8 +111,12 @@ fn stale_oracle_skips_liquidation_and_counts_ticks() {
     assert_eq!(h.account::<Market>(&w.market).stale_ticks, 3);
 }
 
+/// Renamed in week-5 Task 3, fix round 1: the gate is `liq_hysteresis_ticks`,
+/// whose default went 2 -> 3 once `crank_tick` and the scheduled
+/// `liquidation_check` started sharing one `liq_ticks` counter. The test reads
+/// the parameter instead of hardcoding the number.
 #[test]
-fn liquidation_after_two_ticks_below_mmr() {
+fn liquidation_after_hysteresis_ticks_below_mmr() {
     let mut h = Harness::new();
     let w = World::bootstrap(&mut h);
     h.warp(100, NOW);
@@ -128,14 +132,17 @@ fn liquidation_after_two_ticks_below_mmr() {
     )
     .unwrap();
     w.set_price(&mut h, 142_000_000, 5, NOW, 101); // liq price 142.5 -> equity < MMR
-    h.send(
-        &[ixs::crank_tick(&w.crank.pubkey(), &w, &[&t])],
-        &[&w.crank],
-    )
-    .unwrap();
-    let pos: Position = h.account(&t.position);
-    assert_eq!(pos.state, PositionState::Open);
-    assert_eq!(pos.liq_ticks, 1);
+    let hyst = MarketParams::sol_perp_defaults().liq_hysteresis_ticks;
+    for expected in 1..hyst {
+        h.send(
+            &[ixs::crank_tick(&w.crank.pubkey(), &w, &[&t])],
+            &[&w.crank],
+        )
+        .unwrap();
+        let pos: Position = h.account(&t.position);
+        assert_eq!(pos.state, PositionState::Open);
+        assert_eq!(pos.liq_ticks, expected);
+    }
     h.send(
         &[ixs::crank_tick(&w.crank.pubkey(), &w, &[&t])],
         &[&w.crank],
@@ -228,7 +235,8 @@ fn crank_tick_skips_candidate_with_full_queue() {
     )
     .unwrap();
     w.set_price(&mut h, 142_000_000, 5, NOW, 101); // both below MMR (liq price 142.5)
-    for _ in 0..2 {
+    let hyst = MarketParams::sol_perp_defaults().liq_hysteresis_ticks;
+    for _ in 0..hyst {
         h.send(
             &[ixs::crank_tick(&w.crank.pubkey(), &w, &[&a, &b])],
             &[&w.crank],
@@ -243,7 +251,7 @@ fn crank_tick_skips_candidate_with_full_queue() {
         "A is skipped, not liquidated — its ring has no room for the record"
     );
     assert_eq!(
-        pos_a.liq_ticks, 2,
+        pos_a.liq_ticks, hyst,
         "and it keeps accruing ticks, so it liquidates on the first tick after a reveal drains the ring"
     );
     assert_eq!(
@@ -312,7 +320,7 @@ fn bad_debt_is_counted_not_paid() {
     )
     .unwrap();
     w.set_price(&mut h, 120_000_000, 5, NOW, 101); // pnl -300 $ > margin 150 $
-    for _ in 0..2 {
+    for _ in 0..MarketParams::sol_perp_defaults().liq_hysteresis_ticks {
         h.send(
             &[ixs::crank_tick(&w.crank.pubkey(), &w, &[&t])],
             &[&w.crank],

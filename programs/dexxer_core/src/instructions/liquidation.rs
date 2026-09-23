@@ -61,10 +61,29 @@ pub fn fee_escrow_pda() -> Pubkey {
 ///
 /// Returns `true` when this tick's health check says the position must be
 /// liquidated now. Both liquidation paths call it, so their semantics cannot
-/// diverge; note that the two paths tick at different rates (1 s for
-/// `crank_tick`, `LIQ_TASK_INTERVAL_MS` for the scheduled check), so the same
-/// `liq_hysteresis_ticks` means different wall-clock grace on each — see the
-/// constant's doc comment in `state/mod.rs`.
+/// diverge.
+///
+/// TWO INDEPENDENT CALLERS, ONE COUNTER (fix round 1). `liq_ticks` advances
+/// once per CALL, and since week-5 Task 3 there are two callers running at
+/// different rates: the relayer's `crank_tick` at ~1 s and this position's
+/// scheduled `liquidation_check` at ~3.75 s (`LIQ_TASK_INTERVAL_MS` is 5 s but
+/// the scheduler overshoots — week-5 Task 0, measurement 1). They do not
+/// coordinate, so a scheduled tick that lands between two crank ticks counts
+/// the SAME `Market.mark` sample a second time — the very double-count
+/// `crank_tick` already refuses to make within one transaction (its
+/// duplicate-candidate check). The counter therefore no longer measures
+/// "distinct price samples", only "calls".
+///
+/// The fix is a parameter, not a layout change: `MarketParams`'s default
+/// `liq_hysteresis_ticks` went 2 -> 3 (`state/market.rs`). 3 is the smallest
+/// value for which the worst-case interleaving — crank, scheduled, crank —
+/// still spans at least two DISTINCT mark samples, which is what the original
+/// 2 meant on a single-caller crank. Raising it further would only delay the
+/// backstop.
+///
+/// Wall-clock grace differs per path as a consequence: 3 ticks is ~3 s of
+/// crank time but ~11 s of scheduled time. That asymmetry is accepted — see
+/// `LIQ_TASK_INTERVAL_MS` in `state/mod.rs`.
 pub(crate) fn liq_due(pos: &mut Position, market: &Market, mark: u64) -> Result<bool> {
     if risk::liquidatable_now(pos, market, mark)? {
         pos.liq_ticks = pos

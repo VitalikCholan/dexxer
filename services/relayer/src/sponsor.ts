@@ -51,7 +51,9 @@
 // `app/src/idl/dexxer_core.json` (same IDL `tests/er/lib/program.ts`
 // already loads for every other relayer subsystem):
 //   faucet_init, init_user       — owner@0, payer@1 (payer must be fee_payer)
-//   delegate_user                — owner@0, no payer account at all
+//   delegate_user                — owner@0, payer@1 (week-5 Task 3 P1: the
+//                                   three delegation records got their own
+//                                   payer, split out of `owner`)
 //   init_permissions, set_session — owner@0, no payer account (the
 //                                   permissioned account self-funds its own
 //                                   permission rent inside the ER — see

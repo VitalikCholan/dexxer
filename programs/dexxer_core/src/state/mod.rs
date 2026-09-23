@@ -83,10 +83,15 @@ pub const WITHDRAW_COOLDOWN_SLOTS: u64 = 300;
 /// Task 0, measurement 1), and every position carries its own task, so the
 /// tick rate is multiplied by the number of open positions. `liq_ticks`
 /// hysteresis is counted in TICKS, not wall time, which means the same
-/// `Market.liq_hysteresis_ticks` is ~2 s of grace on the crank path and ~10 s
-/// on this one. That is deliberate and the constant is NOT adjusted for it:
+/// `Market.liq_hysteresis_ticks` is ~3 s of grace on the crank path and ~11 s
+/// on this one. That is deliberate and this constant is NOT adjusted for it:
 /// the scheduled path is the backstop, the crank is the fast path, and a
 /// backstop that fires later is the safe direction.
+///
+/// What DID have to be adjusted is the tick budget itself: both callers share
+/// one `Position.liq_ticks`, so the default `liq_hysteresis_ticks` went 2 -> 3
+/// to keep the gate spanning more than one distinct mark sample — the full
+/// reasoning is on `liq_due` in `instructions/liquidation.rs`.
 pub const LIQ_TASK_INTERVAL_MS: i64 = 5_000;
 
 /// Magic Actions `task_id` for one position's liquidation task.

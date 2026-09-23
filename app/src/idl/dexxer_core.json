@@ -198,10 +198,20 @@
         {
           "name": "task_context",
           "docs": [
-            "task (week-5 Task 3). Caller-supplied and unconstrained, exactly as in",
-            "`ScheduleCrank`/`CancelCrank` (`crank.rs`): no on-chain derivation for it",
-            "exists in `ephemeral-rollups-sdk` 0.16.2, and a wrong value can only fail",
-            "the scheduler CPI that Task 3 adds. Unused by this task's handlers."
+            "task (week-5 Task 3), passed to `ScheduleTask`/`CancelTask` as account",
+            "index 1. No on-chain derivation for it exists in `ephemeral-rollups-sdk`",
+            "0.16.2 and the Magic Program treats it as an inert writable placeholder:",
+            "any already-existing writable account is accepted and left byte-identical",
+            "(week-5 Task 0, measurement 6).",
+            "",
+            "PINNED TO `position` anyway (fix round 1, M-1). \"Any writable account\"",
+            "plus `mut` would let a caller name ANOTHER trader's delegated account",
+            "here, write-locking it for the duration of the transaction — a free",
+            "contention/DoS handle on someone else's position, which the placeholder's",
+            "inertness does nothing to prevent. Pinning it costs nothing (every client",
+            "already passes the position PDA) and additionally guarantees that the",
+            "registration and the later cancel name the same account. Anchor permits",
+            "the duplicate key because neither field is `init`."
           ],
           "writable": true
         },
@@ -781,10 +791,20 @@
         {
           "name": "task_context",
           "docs": [
-            "task (week-5 Task 3). Caller-supplied and unconstrained, exactly as in",
-            "`ScheduleCrank`/`CancelCrank` (`crank.rs`): no on-chain derivation for it",
-            "exists in `ephemeral-rollups-sdk` 0.16.2, and a wrong value can only fail",
-            "the scheduler CPI that Task 3 adds. Unused by this task's handlers."
+            "task (week-5 Task 3), passed to `ScheduleTask`/`CancelTask` as account",
+            "index 1. No on-chain derivation for it exists in `ephemeral-rollups-sdk`",
+            "0.16.2 and the Magic Program treats it as an inert writable placeholder:",
+            "any already-existing writable account is accepted and left byte-identical",
+            "(week-5 Task 0, measurement 6).",
+            "",
+            "PINNED TO `position` anyway (fix round 1, M-1). \"Any writable account\"",
+            "plus `mut` would let a caller name ANOTHER trader's delegated account",
+            "here, write-locking it for the duration of the transaction — a free",
+            "contention/DoS handle on someone else's position, which the placeholder's",
+            "inertness does nothing to prevent. Pinning it costs nothing (every client",
+            "already passes the position PDA) and additionally guarantees that the",
+            "registration and the later cancel name the same account. Anchor permits",
+            "the duplicate key because neither field is `init`."
           ],
           "writable": true
         },
@@ -1418,10 +1438,20 @@
         {
           "name": "task_context",
           "docs": [
-            "task (week-5 Task 3). Caller-supplied and unconstrained, exactly as in",
-            "`ScheduleCrank`/`CancelCrank` (`crank.rs`): no on-chain derivation for it",
-            "exists in `ephemeral-rollups-sdk` 0.16.2, and a wrong value can only fail",
-            "the scheduler CPI that Task 3 adds. Unused by this task's handlers."
+            "task (week-5 Task 3), passed to `ScheduleTask`/`CancelTask` as account",
+            "index 1. No on-chain derivation for it exists in `ephemeral-rollups-sdk`",
+            "0.16.2 and the Magic Program treats it as an inert writable placeholder:",
+            "any already-existing writable account is accepted and left byte-identical",
+            "(week-5 Task 0, measurement 6).",
+            "",
+            "PINNED TO `position` anyway (fix round 1, M-1). \"Any writable account\"",
+            "plus `mut` would let a caller name ANOTHER trader's delegated account",
+            "here, write-locking it for the duration of the transaction — a free",
+            "contention/DoS handle on someone else's position, which the placeholder's",
+            "inertness does nothing to prevent. Pinning it costs nothing (every client",
+            "already passes the position PDA) and additionally guarantees that the",
+            "registration and the later cancel name the same account. Anchor permits",
+            "the duplicate key because neither field is `init`."
           ],
           "writable": true
         },
@@ -3750,10 +3780,20 @@
         {
           "name": "task_context",
           "docs": [
-            "task (week-5 Task 3). Caller-supplied and unconstrained, exactly as in",
-            "`ScheduleCrank`/`CancelCrank` (`crank.rs`): no on-chain derivation for it",
-            "exists in `ephemeral-rollups-sdk` 0.16.2, and a wrong value can only fail",
-            "the scheduler CPI that Task 3 adds. Unused by this task's handlers."
+            "task (week-5 Task 3), passed to `ScheduleTask`/`CancelTask` as account",
+            "index 1. No on-chain derivation for it exists in `ephemeral-rollups-sdk`",
+            "0.16.2 and the Magic Program treats it as an inert writable placeholder:",
+            "any already-existing writable account is accepted and left byte-identical",
+            "(week-5 Task 0, measurement 6).",
+            "",
+            "PINNED TO `position` anyway (fix round 1, M-1). \"Any writable account\"",
+            "plus `mut` would let a caller name ANOTHER trader's delegated account",
+            "here, write-locking it for the duration of the transaction — a free",
+            "contention/DoS handle on someone else's position, which the placeholder's",
+            "inertness does nothing to prevent. Pinning it costs nothing (every client",
+            "already passes the position PDA) and additionally guarantees that the",
+            "registration and the later cancel name the same account. Anchor permits",
+            "the duplicate key because neither field is `init`."
           ],
           "writable": true
         },
@@ -5679,10 +5719,20 @@
         {
           "name": "task_context",
           "docs": [
-            "task (week-5 Task 3). Caller-supplied and unconstrained, exactly as in",
-            "`ScheduleCrank`/`CancelCrank` (`crank.rs`): no on-chain derivation for it",
-            "exists in `ephemeral-rollups-sdk` 0.16.2, and a wrong value can only fail",
-            "the scheduler CPI that Task 3 adds. Unused by this task's handlers."
+            "task (week-5 Task 3), passed to `ScheduleTask`/`CancelTask` as account",
+            "index 1. No on-chain derivation for it exists in `ephemeral-rollups-sdk`",
+            "0.16.2 and the Magic Program treats it as an inert writable placeholder:",
+            "any already-existing writable account is accepted and left byte-identical",
+            "(week-5 Task 0, measurement 6).",
+            "",
+            "PINNED TO `position` anyway (fix round 1, M-1). \"Any writable account\"",
+            "plus `mut` would let a caller name ANOTHER trader's delegated account",
+            "here, write-locking it for the duration of the transaction — a free",
+            "contention/DoS handle on someone else's position, which the placeholder's",
+            "inertness does nothing to prevent. Pinning it costs nothing (every client",
+            "already passes the position PDA) and additionally guarantees that the",
+            "registration and the later cancel name the same account. Anchor permits",
+            "the duplicate key because neither field is `init`."
           ],
           "writable": true
         },
