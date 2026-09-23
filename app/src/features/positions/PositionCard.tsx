@@ -2,9 +2,16 @@
 //
 // Task 10: open-position card per design — side/leverage header, Size/
 // Entry/Mark/Margin/Liq. price rows, live uPnL, a liquidation-distance bar,
-// Close/Increase/Decrease actions, and the "Recording commitment on-chain"
-// pending badge for the 5-minute window right after Close (`Position.state
-// === 'Closed' && !commitment_written`).
+// Close/Increase/Decrease actions.
+//
+// Week 5, Task 6: the "Recording commitment on-chain" pending badge this
+// card used to render for `Position.state === 'Closed' && !commitmentWritten`
+// is gone — `finalize_close` (week-5 Task 1) now pushes the `ClosedRecord`
+// straight into `DisclosureQueue` and resets `Position` to `Empty` in the
+// same instruction, so `Position.state` never observably sits at `Closed`
+// on this client (`Position.closed` is always `None`, `DecodedPosition`
+// no longer even carries the field — `program.ts`). That pending window is
+// HistoryScreen's job now (`useHistoryRows.ts`'s `pending_commitment` row).
 import { Text, View } from 'react-native'
 import { useTheme } from '@/src/theme'
 import { useTextStyle } from '@/src/ui/styles'
@@ -90,18 +97,6 @@ export function PositionCard({ position: p, mark, busy, onClose, onIncrease, onD
   const heading = useTextStyle('heading')
   const caption = useTextStyle('caption')
 
-  const isClosedPendingCommitment = p.state === 'Closed' && p.closed !== null && !p.closed.commitmentWritten
-  if (isClosedPendingCommitment) {
-    return (
-      <Card>
-        <Badge tone="pending">Recording commitment on-chain (≤5 min)</Badge>
-        <Text style={[caption, { color: colors.textSecondary }]}>
-          Your {p.closed!.side} {sol(p.closed!.size)} SOL close is final — PnL {p.closed!.pnl >= 0n ? '+' : ''}
-          {usd(p.closed!.pnl)} dUSDC. Follow it in History.
-        </Text>
-      </Card>
-    )
-  }
   if (p.state !== 'Open') return null
 
   const upnl = mark !== null ? computeUpnl(p.side, p.size, p.entry, mark) : null

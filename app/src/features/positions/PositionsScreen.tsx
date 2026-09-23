@@ -100,9 +100,7 @@ export function PositionsScreen() {
           />
         ) : sessionError ? (
           <EmptyState text={sessionError} />
-        ) : !position ||
-          (position.state !== 'Open' &&
-            !(position.state === 'Closed' && position.closed && !position.closed.commitmentWritten)) ? (
+        ) : !position || position.state !== 'Open' ? (
           <EmptyState text="No open position" action={{ label: 'Go to Trade', onPress: () => router.push('/trade') }} />
         ) : (
           <PositionCard

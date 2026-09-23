@@ -108,9 +108,11 @@ export function AccountScreen() {
 
   const checklist: ExitChecklist = {
     noOpenPosition: position.value === null || position.value.state === 'Empty',
-    historyQueueEmpty: dq.value === null || dq.value.len === 0,
     balanceWithdrawn: user.value === null || (user.value.freeMargin === 0n && user.value.lockedMargin === 0n),
   }
+  // Informational only (week-5 Task 2 retired the `QueueNotEmpty` gate) —
+  // how many still-queued trades will be revealed on schedule after exit.
+  const pendingDisclosures = dq.value?.len ?? 0
 
   return (
     <AppPage>
@@ -179,6 +181,7 @@ export function AccountScreen() {
           open={sheet === 'exit'}
           onClose={() => setSheet(null)}
           checklist={checklist}
+          pendingDisclosures={pendingDisclosures}
           busy={busy}
           onConfirm={handleExit}
         />
