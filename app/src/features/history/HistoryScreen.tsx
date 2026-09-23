@@ -1,8 +1,6 @@
 // app/src/features/history/HistoryScreen.tsx
 //
-// Task 9: closed-trade history. THREE data sources feed one list, mutually
-// exclusive at any point in time (see status.ts's file header for the full
-// state machine) — no dedup logic is needed beyond concatenating them:
+// Task 9: closed-trade history. THREE data sources feed one list:
 //
 //   1. `Position` (permissioned — owner/session/crank; read here over the
 //      session's own TEE connection via `useLiveAccount`, push-first per
@@ -28,6 +26,27 @@
 // `dexxer.hashes.<owner>`, and then used to fetch each `Disclosure` directly
 // by its hash-seeded PDA (`pdas.disclosure(hash)`) rather than scanning the
 // indexer's/L1's full `Disclosure` set.
+//
+// Fix round 1 (code review, 23.09.2026): the three sources are mutually
+// exclusive ONLY at the program-state level (a single atomic mutation moves
+// a record from one to the next) — they are read here through THREE
+// independent, differently-paced subscriptions (`position`'s TEE push,
+// `dq`'s TEE push, `revealed`'s 5s base-layer poll), so on the client they
+// can transiently disagree about which stage a given trade is in (e.g. the
+// `position` subscription hasn't yet delivered `mark_committed`'s effect
+// while `dq` already has, or `dq` hasn't delivered `write_disclosure`'s pop
+// while `revealed` already found the new `Disclosure`). Concatenating the
+// three lists would then render the SAME trade twice. `mergeHistoryRows`
+// below dedupes by the commitment hash — the same `commitmentHash(args,
+// salt)` this file already computes for the persisted-hash store — building
+// one `Map<hashHex, Row>` in ascending precedence `position` < `queue` <
+// `revealed`, so a later (higher-stage) insert overwrites an earlier
+// (lower-stage) one at the same key. `ClosedRecord` is written atomically by
+// `close_position` (trade.rs) with every field — including `salt` — already
+// populated the instant `Position.closed` becomes `Some`, so the hash is
+// always derivable from a `Position`-sourced record too; no `(owner,
+// nonce)` fallback key is needed (unlike a hypothetical partially-populated
+// record, which cannot occur here).
 //
 // Task 9: the old fixed `setInterval` pollers (2s for slot, 5s for the
 // revealed-disclosure re-fetch) are now react-query `useQuery`s — same
@@ -136,13 +155,14 @@ interface Row {
   statusText: string
 }
 
-function positionPendingRow(r: DecodedClosedRecord): Row {
+/** `hash` (the commitment hash — see `mergeHistoryRows`) becomes the row's React `key` too, so a row stays visually stable across a status transition instead of remounting. */
+function positionPendingRow(hash: string, r: DecodedClosedRecord): Row {
   // `slot: null` intentionally caps this at 'committing'/'committed' — see
   // status.ts's doc comment: a Position-sourced record can never legitimately
   // be 'reveals_in'/'revealed' before mark_committed moves it to the queue.
   const status = disclosureStatus(r, null)
   return {
-    key: 'position-pending',
+    key: hash,
     side: r.side,
     size: r.size,
     entry: r.entry,
@@ -154,10 +174,10 @@ function positionPendingRow(r: DecodedClosedRecord): Row {
   }
 }
 
-function queuePendingRow(r: DecodedClosedRecord, slot: bigint | null): Row {
+function queuePendingRow(hash: string, r: DecodedClosedRecord, slot: bigint | null): Row {
   const status = disclosureStatus(r, slot)
   return {
-    key: `pending-${r.nonce}`,
+    key: hash,
     side: r.side,
     size: r.size,
     entry: r.entry,
@@ -169,9 +189,9 @@ function queuePendingRow(r: DecodedClosedRecord, slot: bigint | null): Row {
   }
 }
 
-function revealedRow(pubkey: PublicKey, d: DecodedDisclosure): Row {
+function revealedRow(hash: string, d: DecodedDisclosure): Row {
   return {
-    key: `revealed-${pubkey.toBase58()}`,
+    key: hash,
     side: d.side,
     size: d.size,
     entry: d.entry,
@@ -180,6 +200,103 @@ function revealedRow(pubkey: PublicKey, d: DecodedDisclosure): Row {
     closedSlot: d.closedSlot,
     status: 'revealed',
     statusText: STATUS_LABEL.revealed,
+  }
+}
+
+/** One revealed `Disclosure` plus the commitment hash it was fetched by — `DecodedDisclosure` itself carries no `salt`/`reveal_after_slot`, so the hash can't be recomputed from it; it has to be threaded through from the `pdas.disclosure(hash)` lookup that found it (see `revealedQuery` below). */
+export interface RevealedEntry {
+  hash: string
+  pubkey: PublicKey
+  disclosure: DecodedDisclosure
+}
+
+/**
+ * Merge the three live sources into one row per commitment hash — see the
+ * file header's "Fix round 1" note for why dedup is needed (three
+ * independently-paced subscriptions can transiently disagree about a
+ * trade's stage) and why precedence is `position` < `queue` < `revealed`
+ * (later `Map.set` calls for the same key win, so a higher-stage source
+ * always overwrites a lower-stage one). Exported (pure, no hooks) so
+ * `assertHistoryMergeSelfCheck` below can exercise it directly.
+ */
+export function mergeHistoryRows(
+  posRecord: DecodedClosedRecord | null,
+  queueRecords: DecodedClosedRecord[],
+  revealed: RevealedEntry[],
+  slot: bigint | null,
+): Row[] {
+  const merged = new Map<string, Row>()
+  if (posRecord) {
+    const hash = recordHash(posRecord)
+    merged.set(hash, positionPendingRow(hash, posRecord))
+  }
+  for (const r of queueRecords) {
+    const hash = recordHash(r)
+    merged.set(hash, queuePendingRow(hash, r, slot))
+  }
+  for (const { hash, disclosure } of revealed) {
+    merged.set(hash, revealedRow(hash, disclosure))
+  }
+  return Array.from(merged.values()).sort((a, b) => Number(b.closedSlot - a.closedSlot))
+}
+
+/**
+ * Self-check (no test runner wired up for `app/` — same gap/pattern as
+ * `program.ts`'s golden vectors and `status.ts`'s
+ * `assertDisclosureStatusSelfCheck`): feeds ONE synthetic trade present in
+ * all three sources at once (the exact failure mode Fix round 1 addresses)
+ * and asserts `mergeHistoryRows` collapses it to a single row carrying the
+ * highest-stage status (`revealed`), not three rows. Throws on mismatch.
+ */
+export function assertHistoryMergeSelfCheck(): void {
+  const market = new PublicKey(new Uint8Array(32).fill(7))
+  const rec: DecodedClosedRecord = {
+    market,
+    side: 'Long',
+    size: 1_000_000_000n,
+    entry: 150_000_000n,
+    exit: 151_000_000n,
+    pnl: 1_000_000n,
+    fees: 100n,
+    reason: 'User',
+    openedSlot: 10n,
+    closedSlot: 20n,
+    salt: new Uint8Array(32).fill(9),
+    nonce: 3n,
+    revealAfterSlot: 25n,
+    commitmentWritten: true,
+  }
+  const hash = recordHash(rec)
+  const disclosure: DecodedDisclosure = {
+    market,
+    side: rec.side,
+    size: rec.size,
+    entry: rec.entry,
+    exit: rec.exit,
+    pnl: rec.pnl,
+    fees: rec.fees,
+    reason: rec.reason,
+    openedSlot: rec.openedSlot,
+    closedSlot: rec.closedSlot,
+    nonce: rec.nonce,
+  }
+  const revealedEntry: RevealedEntry = { hash, pubkey: new PublicKey(new Uint8Array(32).fill(5)), disclosure }
+
+  const rows = mergeHistoryRows(rec, [rec], [revealedEntry], 100n)
+  if (rows.length !== 1) {
+    throw new Error(`assertHistoryMergeSelfCheck: expected exactly 1 merged row for one trade in all 3 sources, got ${rows.length}`)
+  }
+  if (rows[0].status !== 'revealed') {
+    throw new Error(`assertHistoryMergeSelfCheck: expected highest-stage status 'revealed', got '${rows[0].status}'`)
+  }
+}
+
+if (__DEV__) {
+  try {
+    assertHistoryMergeSelfCheck()
+    console.log('[dexxer] assertHistoryMergeSelfCheck: History merge dedupe OK')
+  } catch (e) {
+    console.error('[dexxer] assertHistoryMergeSelfCheck FAILED', e)
   }
 }
 
@@ -231,9 +348,13 @@ export function HistoryScreen() {
       if (known.length === 0) return []
       const pubkeys = known.map((h) => pdas.disclosure(h))
       const infos = await baseConn.getMultipleAccountsInfo(pubkeys, 'confirmed')
-      const found: { pubkey: PublicKey; disclosure: DecodedDisclosure }[] = []
+      const found: RevealedEntry[] = []
       infos.forEach((info, i) => {
-        if (info) found.push({ pubkey: pubkeys[i], disclosure: decodeDisclosure(info.data) })
+        // `known[i]` (not re-derived) — the exact hash this pubkey was
+        // looked up by, threaded through so `mergeHistoryRows` can key on it
+        // (see `RevealedEntry`'s doc comment: a `DecodedDisclosure` alone
+        // can't reproduce this hash, it lacks `salt`/`reveal_after_slot`).
+        if (info) found.push({ hash: known[i], pubkey: pubkeys[i], disclosure: decodeDisclosure(info.data) })
       })
       return found
     },
@@ -245,11 +366,7 @@ export function HistoryScreen() {
 
   const [refreshing, setRefreshing] = useState(false)
 
-  const rows: Row[] = [
-    ...(posRecord ? [positionPendingRow(posRecord)] : []),
-    ...(dq.value?.records.map((r) => queuePendingRow(r, slot)) ?? []),
-    ...revealed.map(({ pubkey, disclosure }) => revealedRow(pubkey, disclosure)),
-  ].sort((a, b) => Number(b.closedSlot - a.closedSlot))
+  const rows: Row[] = mergeHistoryRows(posRecord, dq.value?.records ?? [], revealed, slot)
 
   const onRefresh = async () => {
     setRefreshing(true)
