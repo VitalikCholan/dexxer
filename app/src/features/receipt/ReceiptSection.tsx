@@ -7,18 +7,17 @@
 // session, and check whether the current public `BalancesRoot` (committed
 // with `Pool` every 5 min) already contains that exact leaf.
 //
-// Embedded in the Account tab (`app/components/account/account-feature.tsx`)
-// rather than a file directly under `app/app/(tabs)/account/*`: that
-// directory only holds route stubs (`index.tsx` renders `<AccountFeature/>`
-// as the entire screen, already wrapped in its own `AppPage`+`ScrollView`);
-// the actual account UI content lives in `components/account/account-feature.tsx`,
-// so that's where a new section has to slot in to share the existing scroll
-// container instead of fighting it for `flex: 1`. Deviates from the week-3
-// plan's literal file glob for that reason — noted in the task-9 report.
-import { Text, View } from 'react-native'
+// Task 10: restyled onto the shared primitives (Card/Row/Badge) — logic
+// unchanged, now mounted from `AccountScreen.tsx` instead of the old
+// `account-feature.tsx`.
+import { Text } from 'react-native'
 import { PublicKey } from '@solana/web3.js'
-import { AppText } from '@/components/app-text'
-import { AppView } from '@/components/app-view'
+import { useTheme } from '@/src/theme'
+import { useTextStyle } from '@/src/ui/styles'
+import { Card } from '@/src/ui/Card'
+import { Row } from '@/src/ui/Row'
+import { Badge } from '@/src/ui/Badge'
+import { Skeleton } from '@/src/ui/Skeleton'
 import {
   decodeBalancesRoot,
   leafHex,
@@ -41,37 +40,31 @@ function decodeUserForReceipt(data: Buffer): UserForReceipt {
 }
 
 function fmtUsd(raw: bigint): string {
-  return (Number(raw) / 1_000_000).toFixed(4)
+  return (Number(raw) / 1_000_000).toFixed(2)
 }
 
 /** Stable PDA (no seeds beyond the constant) — computed once at module load, not per render. */
 const BALANCES_ROOT_PDA = pdas.balancesRoot()
 
 export function ReceiptSection() {
+  const { colors } = useTheme()
+  const caption = useTextStyle('caption')
   const { owner, conn, accounts, loading, error } = useTradeSession()
   const user = useLiveAccount(conn, accounts?.userAccount ?? null, decodeUserForReceipt)
   const root = useLiveAccount(baseConn, BALANCES_ROOT_PDA, decodeBalancesRoot)
 
-  // No wallet connected: the rest of the Account tab already shows a
-  // "Connect your wallet" prompt — stay silent rather than duplicate it.
   if (!owner) return null
 
   return (
-    <AppView style={{ marginTop: 16, gap: 8, width: '100%' }}>
-      <AppText type="defaultSemiBold">Exit receipt</AppText>
-
+    <Card title="Receipt">
       {error || user.error || root.error ? (
-        <Text selectable style={{ color: '#ef4444' }}>
-          {error ?? user.error ?? root.error}
-        </Text>
-      ) : loading ? (
-        <AppText style={{ opacity: 0.6 }}>Loading session…</AppText>
-      ) : !conn || !accounts ? (
-        <AppText style={{ opacity: 0.6 }}>Finish onboarding first (Onboard tab) to see your exit receipt.</AppText>
+        <Text style={[caption, { color: colors.short }]}>{error ?? user.error ?? root.error}</Text>
+      ) : loading || !conn || !accounts ? (
+        <Skeleton lines={2} />
       ) : (
         <ReceiptBody owner={owner} user={user.value} root={root} />
       )}
-    </AppView>
+    </Card>
   )
 }
 
@@ -84,26 +77,25 @@ function ReceiptBody({
   user: UserForReceipt | null
   root: LiveAccount<DecodedBalancesRoot>
 }) {
-  let status: string
+  const caption = useTextStyle('caption')
+  let badge: { tone: 'pending' | 'success'; text: string }
   if (root.missing) {
-    status = 'BalancesRoot not initialized yet on this deployment.'
+    badge = { tone: 'pending', text: 'BalancesRoot not initialized yet' }
   } else if (!root.value || !user) {
-    status = 'Loading…'
+    badge = { tone: 'pending', text: 'Loading…' }
   } else {
     const computed = leafHex(owner, user.freeMargin, user.exitSalt, root.value.rootSlot)
     const included = root.value.leaves.some((l) => Buffer.from(l).toString('hex') === computed)
-    status = included
-      ? `Attested by the public root at slot ${root.value.rootSlot.toString()} ✓`
-      : 'Not yet included in the public root (next commit ≤5 min).'
+    badge = included
+      ? { tone: 'success', text: `Attested at slot ${root.value.rootSlot.toString()} ✓` }
+      : { tone: 'pending', text: 'Not yet included — next commit ≤5 min' }
   }
 
   return (
-    <View style={{ gap: 4, width: '100%' }}>
-      <View style={{ flexDirection: 'row', justifyContent: 'space-between' }}>
-        <AppText style={{ opacity: 0.7 }}>Free margin</AppText>
-        <AppText style={{ fontWeight: '600' }}>{user ? `$${fmtUsd(user.freeMargin)}` : '—'}</AppText>
-      </View>
-      <AppText style={{ opacity: 0.7 }}>{status}</AppText>
-    </View>
+    <>
+      <Row label="Free margin" value={user ? `$${fmtUsd(user.freeMargin)}` : '—'} mono />
+      <Badge tone={badge.tone}>{badge.text}</Badge>
+      <Text style={[caption, { opacity: 0.8 }]}>Proof that the protocol owes you — without revealing how much.</Text>
+    </>
   )
 }
