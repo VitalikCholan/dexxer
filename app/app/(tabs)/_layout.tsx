@@ -1,26 +1,30 @@
 import { Tabs } from 'expo-router'
 import React from 'react'
 import { UiIconSymbol } from '@/components/ui/ui-icon-symbol'
+import { useTheme } from '@/src/theme'
 
+// Visible order (task-8, Claude Design 5-tab layout): trade, positions,
+// history, ledger, account. Everything else (`index`, `onboard`, `position`,
+// `demo`, `spikes`, `settings`) is `href: null` — out of the tab bar but
+// still reachable via router.push, and linked from Account → Settings →
+// Developer (see app/app/(tabs)/settings/index.tsx).
 export default function TabLayout() {
+  const { colors, layout, border } = useTheme()
+
   return (
-    <Tabs screenOptions={{ headerShown: false }}>
-      {/* The index redirects to the account screen */}
-      <Tabs.Screen name="index" options={{ tabBarItemStyle: { display: 'none' } }} />
-      <Tabs.Screen
-        name="account"
-        options={{
-          title: 'Account',
-          tabBarIcon: ({ color }) => <UiIconSymbol size={28} name="wallet.pass.fill" color={color} />,
-        }}
-      />
-      <Tabs.Screen
-        name="onboard"
-        options={{
-          title: 'Onboard',
-          tabBarIcon: ({ color }) => <UiIconSymbol size={28} name="lock.shield.fill" color={color} />,
-        }}
-      />
+    <Tabs
+      screenOptions={{
+        headerShown: false,
+        tabBarActiveTintColor: colors.accent,
+        tabBarInactiveTintColor: colors.textSecondary,
+        tabBarStyle: {
+          height: layout.tabBar,
+          backgroundColor: colors.bgElevated,
+          borderTopColor: colors.border,
+          borderTopWidth: border.hairline,
+        },
+      }}
+    >
       <Tabs.Screen
         name="trade"
         options={{
@@ -29,10 +33,10 @@ export default function TabLayout() {
         }}
       />
       <Tabs.Screen
-        name="position"
+        name="positions"
         options={{
-          title: 'Position',
-          tabBarIcon: ({ color }) => <UiIconSymbol size={28} name="chart.line.uptrend.xyaxis" color={color} />,
+          title: 'Positions',
+          tabBarIcon: ({ color }) => <UiIconSymbol size={28} name="chart.bar.fill" color={color} />,
         }}
       />
       <Tabs.Screen
@@ -43,26 +47,27 @@ export default function TabLayout() {
         }}
       />
       <Tabs.Screen
-        name="settings"
+        name="ledger"
         options={{
-          title: 'Settings',
-          tabBarIcon: ({ color }) => <UiIconSymbol size={28} name="gearshape.fill" color={color} />,
+          title: 'Ledger',
+          tabBarIcon: ({ color }) => <UiIconSymbol size={28} name="list.bullet.rectangle.fill" color={color} />,
         }}
       />
       <Tabs.Screen
-        name="demo"
+        name="account"
         options={{
-          title: 'Demo',
-          tabBarIcon: ({ color }) => <UiIconSymbol size={28} name="ladybug.fill" color={color} />,
+          title: 'Account',
+          tabBarIcon: ({ color }) => <UiIconSymbol size={28} name="wallet.pass.fill" color={color} />,
         }}
       />
-      <Tabs.Screen
-        name="spikes"
-        options={{
-          title: 'Spikes',
-          tabBarIcon: ({ color }) => <UiIconSymbol size={28} name="ladybug.fill" color={color} />,
-        }}
-      />
+
+      {/* Not in the tab bar — reachable via navigation only. */}
+      <Tabs.Screen name="index" options={{ href: null }} />
+      <Tabs.Screen name="onboard" options={{ href: null, title: 'Onboard' }} />
+      <Tabs.Screen name="position" options={{ href: null, title: 'Position' }} />
+      <Tabs.Screen name="settings" options={{ href: null, title: 'Settings' }} />
+      <Tabs.Screen name="demo" options={{ href: null, title: 'Demo' }} />
+      <Tabs.Screen name="spikes" options={{ href: null, title: 'Spikes' }} />
     </Tabs>
   )
 }

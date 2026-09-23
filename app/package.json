@@ -9,6 +9,7 @@
     "doctor": "npx -y expo-doctor@latest",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
+    "gen:tokens": "tsx scripts/gen-tokens.ts",
     "ios": "expo run:ios",
     "lint": "expo lint --fix",
     "lint:check": "expo lint",
@@ -40,6 +41,8 @@
   "version": "1.0.0",
   "dependencies": {
     "@coral-xyz/anchor": "^0.32.1",
+    "@expo-google-fonts/ibm-plex-mono": "^0.4.1",
+    "@expo-google-fonts/ibm-plex-sans": "^0.4.1",
     "@expo/metro-runtime": "~57.0.15",
     "@expo/vector-icons": "^15.1.1",
     "@magicblock-labs/ephemeral-rollups-sdk": "^0.17.0",
@@ -92,10 +95,12 @@
   },
   "devDependencies": {
     "@types/color": "^4.2.1",
+    "@types/node": "^26.6.2",
     "@types/react": "~19.2.18",
     "eslint": "^9.39.5",
     "eslint-config-expo": "~57.0.2",
     "prettier": "^3.9.6",
+    "tsx": "^4.23.15",
     "typescript": "~6.0.3"
   },
   "private": true
