@@ -272,6 +272,118 @@
       ]
     },
     {
+      "name": "close_exited_user",
+      "discriminator": [
+        85,
+        128,
+        16,
+        33,
+        41,
+        221,
+        188,
+        207
+      ],
+      "accounts": [
+        {
+          "name": "fee_payer",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "user_account",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  117,
+                  115,
+                  101,
+                  114
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "user_account.owner",
+                "account": "UserAccount"
+              }
+            ]
+          }
+        },
+        {
+          "name": "position",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  111,
+                  115,
+                  105,
+                  116,
+                  105,
+                  111,
+                  110
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "user_account.owner",
+                "account": "UserAccount"
+              },
+              {
+                "kind": "account",
+                "path": "position.market",
+                "account": "Position"
+              }
+            ]
+          }
+        },
+        {
+          "name": "dq",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  100,
+                  113
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "user_account.owner",
+                "account": "UserAccount"
+              }
+            ]
+          }
+        }
+      ],
+      "args": []
+    },
+    {
       "name": "close_orphan_queue",
       "discriminator": [
         117,
@@ -675,65 +787,6 @@
           "type": "u64"
         }
       ]
-    },
-    {
-      "name": "close_queue_l1",
-      "discriminator": [
-        125,
-        202,
-        29,
-        45,
-        4,
-        109,
-        158,
-        210
-      ],
-      "accounts": [
-        {
-          "name": "fee_payer",
-          "writable": true,
-          "signer": true
-        },
-        {
-          "name": "config",
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  99,
-                  111,
-                  110,
-                  102,
-                  105,
-                  103
-                ]
-              }
-            ]
-          }
-        },
-        {
-          "name": "dq",
-          "writable": true,
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  100,
-                  113
-                ]
-              },
-              {
-                "kind": "account",
-                "path": "dq.owner",
-                "account": "DisclosureQueue"
-              }
-            ]
-          }
-        }
-      ],
-      "args": []
     },
     {
       "name": "commit_aggregate",

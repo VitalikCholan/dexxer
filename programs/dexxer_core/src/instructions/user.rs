@@ -537,6 +537,20 @@ pub struct DelegateUser<'info> {
     pub disclosure_queue: UncheckedAccount<'info>,
 }
 pub fn delegate_user(ctx: Context<DelegateUser>) -> Result<()> {
+    // Fix round 1 (controller ruling, IMPORTANT 2): `user_account` is an
+    // `UncheckedAccount` here (the `#[delegate]` macro's shape), so nothing
+    // would otherwise stop an exited account from being re-delegated straight
+    // back into the ER — scrubbed, `exit_salt` zeroed, `exited` still set —
+    // bypassing `init_user_reuse_queue` entirely. Read it manually: before
+    // delegation the account is still owned by this program, so a plain
+    // `try_deserialize` is valid (and fails on its own with
+    // `AccountDidNotDeserialize` for a short legacy v1 account). Scoped so the
+    // data borrow is released before the delegation CPI reassigns the owner.
+    {
+        let data = ctx.accounts.user_account.try_borrow_data()?;
+        let u = UserAccount::try_deserialize(&mut &data[..])?;
+        require!(!u.exited, DexxerError::NotExited);
+    }
     let o = ctx.accounts.owner.key();
     let m = ctx.accounts.market.key();
     ctx.accounts.delegate_user_account(
@@ -1150,31 +1164,53 @@ pub fn close_orphan_queue(ctx: Context<CloseOrphanQueue>) -> Result<()> {
     Ok(())
 }
 
-// Base layer, after `close_orphan_queue`'s undelegation has landed: reclaim
-// the queue's rent. `Account<'info, DisclosureQueue>` is the gate that makes
-// this safe to expose — Anchor's owner check only passes once the account is
-// back under this program, i.e. only once the undelegation has actually
-// settled on L1; while it is delegated the account is owned by the Delegation
-// Program and this instruction cannot touch it at all.
+// Base layer, after the ER side has handed everything back: reclaim the rent of
+// an exited user's three PDAs in one instruction.
 //
-// `fee_payer`, not the departed owner: the owner has exited and may never
-// sign again, and it is the protocol that fronted this rent in the first
-// place (`init_user`'s sponsored `payer`).
+// Fix round 1 (controller ruling, CRITICAL 1). The first version of this closed
+// ONLY the queue, which could strand an owner in a half-closed state no
+// instruction could repair: `init_user` fails on the surviving
+// `UserAccount`/`Position`, and `init_user_reuse_queue` fails on the missing
+// queue. All three go together, so after this the owner's slate is genuinely
+// blank and plain `init_user` is the re-onboarding path again.
+// (`init_user_reuse_queue` remains the path for the owner who comes back before
+// the crank has reclaimed anything.)
+//
+// Anchor's typed `Account<>` on all three is the gate that makes this safe to
+// expose: the owner check only passes once each account is back under this
+// program, i.e. only once the undelegation has actually settled on L1. While
+// any of them is still delegated it is owned by the Delegation Program and this
+// instruction cannot touch it at all.
+//
+// `fee_payer`, not the departed owner: the owner has exited and may never sign
+// again, and it is the protocol that fronted this rent in the first place
+// (`init_user`'s sponsored `payer`).
 #[derive(Accounts)]
-pub struct CloseQueueL1<'info> {
+pub struct CloseExitedUser<'info> {
     #[account(mut, constraint = fee_payer.key() == config.fee_payer @ DexxerError::Unauthorized)]
     pub fee_payer: Signer<'info>,
     #[account(seeds = [CONFIG_SEED], bump = config.bump)]
     pub config: Account<'info, Config>,
-    #[account(mut, close = fee_payer, seeds = [DQ_SEED, dq.owner.as_ref()], bump = dq.bump)]
+    // The owner is gone, so there is no owner signature to seed from — and the
+    // ruling's account order puts `dq` last, which Anchor cannot reference from
+    // an earlier field. `user_account.owner` is the same value and is bound
+    // first, so all three addresses below derive from this one account's stored
+    // owner: they cannot belong to different traders.
+    #[account(mut, close = fee_payer, seeds = [USER_SEED, user_account.owner.as_ref()], bump = user_account.bump,
+        constraint = user_account.exited @ DexxerError::NotExited,
+        constraint = user_account.free_margin == 0 && user_account.locked_margin == 0 @ DexxerError::BalanceNotZero)]
+    pub user_account: Box<Account<'info, UserAccount>>,
+    #[account(mut, close = fee_payer, seeds = [POSITION_SEED, user_account.owner.as_ref(), position.market.as_ref()], bump = position.bump,
+        constraint = position.state == PositionState::Empty @ DexxerError::HasOpenPosition)]
+    pub position: Box<Account<'info, Position>>,
+    #[account(mut, close = fee_payer, seeds = [DQ_SEED, user_account.owner.as_ref()], bump = dq.bump)]
     pub dq: Box<Account<'info, DisclosureQueue>>,
 }
-pub fn close_queue_l1(ctx: Context<CloseQueueL1>) -> Result<()> {
-    // Belt and braces on top of Anchor's `close`: every queue that reaches L1
-    // arrives scrubbed (`undelegate_user`/`close_orphan_queue` both empty it
-    // before committing), so this can only fire on operator error — and the
-    // cost of getting it wrong is destroying the only copy of a trade already
-    // promised to L1.
+pub fn close_exited_user(ctx: Context<CloseExitedUser>) -> Result<()> {
+    // Every queue that reaches L1 arrives scrubbed (`undelegate_user` and
+    // `close_orphan_queue` both empty it before committing), so this can only
+    // fire on operator error — and the cost of getting it wrong is destroying
+    // the only copy of a trade already promised to L1.
     require!(ctx.accounts.dq.len == 0, DexxerError::QueueStillPending);
     Ok(())
 }

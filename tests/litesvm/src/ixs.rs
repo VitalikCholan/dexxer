@@ -647,13 +647,51 @@ pub fn close_orphan_queue(crank: &Pubkey, t: &Trader, wd: &World) -> Instruction
     }
 }
 
-/// `close_queue_l1` (base layer, `Config.fee_payer`): rent reclaim on the
-/// undelegated queue.
-pub fn close_queue_l1(fee_payer: &Pubkey, dq: &Pubkey) -> Instruction {
+/// `close_exited_user` (base layer, `Config.fee_payer`): rent reclaim on all
+/// three of an exited owner's undelegated PDAs.
+pub fn close_exited_user(fee_payer: &Pubkey, t: &Trader, wd: &World) -> Instruction {
     Instruction {
         program_id: prog(),
-        accounts: vec![s(fee_payer), r(&pdas::config()), w(dq)],
-        data: ix::CloseQueueL1 {}.data(),
+        accounts: vec![
+            s(fee_payer),
+            r(&wd.config),
+            w(&t.user),
+            w(&t.position),
+            w(&t.dq),
+        ],
+        data: ix::CloseExitedUser {}.data(),
+    }
+}
+
+/// `delegate_user` (base layer): the `#[delegate]` macro expands each delegated
+/// PDA into a `[buffer, delegation_record, delegation_metadata, account]`
+/// quadruple — buffer under this program, record/metadata under the delegation
+/// program. LiteSVM deploys no delegation program, so the CPI itself always
+/// fails here; the builder exists so the guards that run BEFORE it (week-5 Task
+/// 2 fix round 1: `exited`) can be tested.
+pub fn delegate_user(owner: &Pubkey, wd: &World) -> Instruction {
+    use ephemeral_rollups_sdk::pda::{
+        DELEGATE_BUFFER_TAG, DELEGATION_METADATA_TAG, DELEGATION_RECORD_TAG,
+    };
+    let dlp = pk(anchor_lang::prelude::Pubkey::new_from_array(
+        ephemeral_rollups_sdk::consts::DELEGATION_PROGRAM_ID.to_bytes(),
+    ));
+    let mut accounts = vec![s(owner), r(&wd.config), r(&wd.market)];
+    for acc in [
+        pdas::user(owner),
+        pdas::position(owner, &wd.market),
+        pdas::dq(owner),
+    ] {
+        let buffer = Pubkey::find_program_address(&[DELEGATE_BUFFER_TAG, acc.as_ref()], &prog()).0;
+        let record = Pubkey::find_program_address(&[DELEGATION_RECORD_TAG, acc.as_ref()], &dlp).0;
+        let meta = Pubkey::find_program_address(&[DELEGATION_METADATA_TAG, acc.as_ref()], &dlp).0;
+        accounts.extend([w(&buffer), w(&record), w(&meta), w(&acc)]);
+    }
+    accounts.extend([r(&prog()), r(&dlp), r(&SYSTEM)]);
+    Instruction {
+        program_id: prog(),
+        accounts,
+        data: ix::DelegateUser {}.data(),
     }
 }
 

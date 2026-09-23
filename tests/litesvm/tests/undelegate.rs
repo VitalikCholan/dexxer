@@ -228,14 +228,32 @@ fn close_orphan_queue_rejects_stranger() {
 #[test]
 fn init_user_reuse_queue_reactivates() {
     let mut h = Harness::new();
-    let w = world_with_price(&mut h);
+    // delay 0 so one `commit_aggregate` drains the ring: fix round 1 (minor 6)
+    // — the reuse path is for the owner who comes back AFTER the reveal cycle
+    // has settled the debt but BEFORE the crank reclaimed the queue, so the
+    // queue is empty by then. A queue that still owed L1 a reveal would be
+    // crank-only and, on a real ER, still delegated.
+    let w = World::bootstrap_with_delay(&mut h, 0);
+    h.warp(9_101, NOW);
+    w.set_price(&mut h, P150, 5, NOW, 100);
     let t = trader_with_queue_debt(&mut h, &w);
     h.send(&[ixs::undelegate_user(&t.kp.pubkey(), &t, &w)], &[&t.kp])
         .unwrap();
+    h.send(
+        &[ixs::commit_aggregate(
+            &w.fee_payer.pubkey(),
+            &w,
+            &[AccountMeta::new(t.dq, false)],
+        )],
+        &[&w.fee_payer],
+    )
+    .unwrap();
+    assert_eq!(h.account::<DisclosureQueue>(&t.dq).len, 0);
 
     // Undelegation hands the three PDAs back to this program scrubbed — it
     // does not close them — so plain `init_user` cannot re-onboard: its
-    // `init`s hit accounts that already exist.
+    // `init`s hit accounts that already exist. (`close_exited_user` is what
+    // makes `init_user` viable again, see tests/user.rs.)
     let r = h.send(&[ixs::init_user(&t.kp.pubkey(), &w, [0x11; 32])], &[&t.kp]);
     assert!(
         r.is_err(),
@@ -257,8 +275,8 @@ fn init_user_reuse_queue_reactivates() {
         PositionState::Empty
     );
     let dq: DisclosureQueue = h.account(&t.dq);
-    assert_eq!(dq.len, 1, "the reused queue keeps its outstanding debt");
-    assert_eq!(dq.owner, apk(t.kp.pubkey()));
+    assert_eq!(dq.len, 0, "the reused queue carries no outstanding debt");
+    assert_eq!(dq.owner, apk(t.kp.pubkey()), "the queue itself is reused");
 }
 
 #[test]

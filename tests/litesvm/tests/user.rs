@@ -1,11 +1,12 @@
 use dexxer_core::{errors::DexxerError, state::*};
 use dexxer_litesvm::{
-    apk, assert_custom_error, ixs,
-    setup::{World, SEED_AMOUNT},
+    apk, assert_custom_error, custom_error_code, ixs,
+    setup::{Trader, World, SEED_AMOUNT},
     token_ix::*,
     Harness,
 };
 use solana_keypair::Keypair;
+use solana_pubkey::Pubkey;
 use solana_signer::Signer;
 
 #[test]
@@ -111,40 +112,147 @@ fn set_session_only_by_owner() {
     assert!(r.is_err(), "session key cannot re-issue itself");
 }
 
-// Week-5 Task 2: once an orphaned `DisclosureQueue` has been committed back to
-// L1 by `close_orphan_queue`, its rent is reclaimed here by the protocol's
-// `fee_payer` — the account is dead weight from then on, and the protocol,
-// not the departed user, is the one that can still sign for it.
+// ---------------------------------------------------------- week-5 Task 2
+// Exit-side rent reclaim and the re-onboarding guard around it.
+// Fix round 1 (controller ruling, CRITICAL 1): `close_queue_l1` closed only the
+// queue and could strand an owner in a state no instruction could repair.
+// `close_exited_user` closes all three PDAs together, so after it plain
+// `init_user` is the re-onboarding path again.
+
+/// Clean exit: no trades, so the ring is empty and `undelegate_user` takes all
+/// three accounts on its non-debt branch, leaving `exited == true`.
+fn exited_trader(h: &mut Harness, w: &World) -> Trader {
+    let t = w.new_trader(h, 0);
+    h.send(&[ixs::undelegate_user(&t.kp.pubkey(), &t, w)], &[&t.kp])
+        .unwrap();
+    assert!(h.account::<UserAccount>(&t.user).exited);
+    t
+}
+
+fn lamports(h: &Harness, k: &Pubkey) -> u64 {
+    h.svm.get_account(k).map(|a| a.lamports).unwrap_or(0)
+}
+
 #[test]
-fn close_queue_l1_returns_rent_to_fee_payer() {
+fn close_exited_user_returns_rent_of_three_pdas_to_fee_payer() {
     let mut h = Harness::new();
     let w = World::bootstrap(&mut h);
-    let t = w.new_trader(&mut h, 0);
+    let t = exited_trader(&mut h, &w);
 
     let stranger = Keypair::new();
     h.fund(&stranger.pubkey(), 1_000_000_000);
     let r = h.send(
-        &[ixs::close_queue_l1(&stranger.pubkey(), &t.dq)],
+        &[ixs::close_exited_user(&stranger.pubkey(), &t, &w)],
         &[&stranger],
     );
     assert_custom_error(&r, 6000 + DexxerError::Unauthorized as u32);
 
-    let before = h.svm.get_account(&w.fee_payer.pubkey()).unwrap().lamports;
-    let rent = h.svm.get_account(&t.dq).unwrap().lamports;
+    let before = lamports(&h, &w.fee_payer.pubkey());
+    let rent: u64 = [t.user, t.position, t.dq]
+        .iter()
+        .map(|k| lamports(&h, k))
+        .sum();
     assert!(rent > 0);
     h.send(
-        &[ixs::close_queue_l1(&w.fee_payer.pubkey(), &t.dq)],
+        &[ixs::close_exited_user(&w.fee_payer.pubkey(), &t, &w)],
         &[&w.fee_payer],
     )
     .unwrap();
+    for k in [t.user, t.position, t.dq] {
+        assert_eq!(lamports(&h, &k), 0, "PDA {k} must be closed");
+    }
     assert_eq!(
-        h.svm.get_account(&t.dq).map(|a| a.lamports).unwrap_or(0),
-        0,
-        "queue account closed"
-    );
-    assert_eq!(
-        h.svm.get_account(&w.fee_payer.pubkey()).unwrap().lamports,
+        lamports(&h, &w.fee_payer.pubkey()),
         before + rent,
-        "rent lands on fee_payer"
+        "the rent of all three PDAs lands on fee_payer"
+    );
+
+    // The slate is genuinely blank now — plain `init_user` onboards this owner
+    // again, which is the whole point of closing all three together.
+    h.send(&[ixs::init_user(&t.kp.pubkey(), &w, [0x7c; 32])], &[&t.kp])
+        .unwrap();
+    let u: UserAccount = h.account(&t.user);
+    assert!(!u.exited);
+    assert_eq!(u.exit_salt, [0x7c; 32]);
+    assert_eq!(h.account::<DisclosureQueue>(&t.dq).len, 0);
+}
+
+#[test]
+fn close_exited_user_rejects_non_exited() {
+    let mut h = Harness::new();
+    let w = World::bootstrap(&mut h);
+    // A live trader who never exited: the accounts are all present and valid,
+    // so only the `exited` gate stands between them and being closed.
+    let t = w.new_trader(&mut h, 0);
+    let r = h.send(
+        &[ixs::close_exited_user(&w.fee_payer.pubkey(), &t, &w)],
+        &[&w.fee_payer],
+    );
+    assert_custom_error(&r, 6000 + DexxerError::NotExited as u32);
+}
+
+#[test]
+fn close_exited_user_rejects_pending_queue() {
+    let mut h = Harness::new();
+    let w = World::bootstrap(&mut h);
+    h.warp(9_101, 2_000_000);
+    w.set_price(&mut h, 150_000_000, 5, 2_000_000, 100);
+    let t = w.new_trader(&mut h, 1_000_000_000);
+    h.send(
+        &[ixs::open_position(
+            &t.kp.pubkey(),
+            &t,
+            &w,
+            Side::Long,
+            10_000_000_000,
+            150_000_000,
+            150_000_000,
+        )],
+        &[&t.kp],
+    )
+    .unwrap();
+    h.send(&[ixs::close_position(&t.kp.pubkey(), &t, &w, 0)], &[&t.kp])
+        .unwrap();
+    let free = h.account::<UserAccount>(&t.user).free_margin;
+    h.send(&[ixs::withdraw(&t.kp.pubkey(), &t, &w, free)], &[&t.kp])
+        .unwrap();
+    // Partial exit: `exited` is set and the balances are zero, so every account
+    // constraint passes — the pending record is the only thing left to stop it.
+    h.send(&[ixs::undelegate_user(&t.kp.pubkey(), &t, &w)], &[&t.kp])
+        .unwrap();
+    assert_eq!(h.account::<DisclosureQueue>(&t.dq).len, 1);
+    let r = h.send(
+        &[ixs::close_exited_user(&w.fee_payer.pubkey(), &t, &w)],
+        &[&w.fee_payer],
+    );
+    assert_custom_error(&r, 6000 + DexxerError::QueueStillPending as u32);
+}
+
+// Fix round 1 (controller ruling, IMPORTANT 2): `DelegateUser` takes every PDA
+// as an `UncheckedAccount`, so without an explicit read an exited account could
+// be pushed straight back into the ER — scrubbed, `exit_salt` zeroed —
+// bypassing `init_user_reuse_queue` entirely.
+#[test]
+fn delegate_user_rejects_exited_account() {
+    let mut h = Harness::new();
+    let w = World::bootstrap(&mut h);
+    let t = exited_trader(&mut h, &w);
+
+    let r = h.send(&[ixs::delegate_user(&t.kp.pubkey(), &w)], &[&t.kp]);
+    assert_custom_error(&r, 6000 + DexxerError::NotExited as u32);
+
+    h.send(
+        &[ixs::init_user_reuse_queue(&t.kp.pubkey(), &w, [0x33; 32])],
+        &[&t.kp],
+    )
+    .unwrap();
+    // LiteSVM deploys no delegation program, so the CPI below still cannot
+    // succeed here — what this asserts is that the guard no longer fires and
+    // the call now reaches the delegation CPI.
+    let r = h.send(&[ixs::delegate_user(&t.kp.pubkey(), &w)], &[&t.kp]);
+    assert_ne!(
+        custom_error_code(&r),
+        Some(6000 + DexxerError::NotExited as u32),
+        "a re-onboarded account must pass the exited guard"
     );
 }

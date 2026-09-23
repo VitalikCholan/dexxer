@@ -176,8 +176,8 @@ pub mod dexxer_core {
     pub fn close_orphan_queue(ctx: Context<CloseOrphanQueue>) -> Result<()> {
         user::close_orphan_queue(ctx)
     }
-    pub fn close_queue_l1(ctx: Context<CloseQueueL1>) -> Result<()> {
-        user::close_queue_l1(ctx)
+    pub fn close_exited_user(ctx: Context<CloseExitedUser>) -> Result<()> {
+        user::close_exited_user(ctx)
     }
     pub fn init_user_reuse_queue(
         ctx: Context<InitUserReuseQueue>,

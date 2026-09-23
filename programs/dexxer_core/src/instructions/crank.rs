@@ -186,11 +186,18 @@ pub fn crank_tick<'info>(mut ctx: Context<'info, CrankTick<'info>>) -> Result<()
         let mut pos = Position::try_deserialize(&mut &pos_ai.try_borrow_data()?[..])?;
         // Week-5 Task 2 appended `exited` to `UserAccount` (layout version 2),
         // so a v1 account created before that upgrade is one byte short and
-        // cannot be deserialized into the current struct at all. Skip such a
-        // candidate rather than abort the batch and take every other
-        // liquidation in this tick down with it — the same containment rule
-        // the full-ring skip follows below. The owner re-onboards through
-        // `init_user_reuse_queue`; until then the account simply cannot trade.
+        // cannot be deserialized into the current struct at all. That is not a
+        // recoverable state and this skip does not make it one: a v1 account is
+        // unreadable by EVERY typed instruction, so its owner can neither close
+        // an open position nor be liquidated — the skip only keeps ONE such
+        // candidate from taking the whole tick's liquidations down with it
+        // (same containment rule as the full-ring skip below).
+        //
+        // No program-side migration exists, deliberately (fix round 1,
+        // controller ruling IMPORTANT 3): devnet's legacy accounts are test
+        // wallets, and the devnet policy is to close their positions on the OLD
+        // program before this upgrade is deployed (inventoried in Task 4). A
+        // production upgrade would need a real realloc migration instead.
         let mut user = match UserAccount::try_deserialize(&mut &user_ai.try_borrow_data()?[..]) {
             Ok(u) => u,
             Err(_) => {
