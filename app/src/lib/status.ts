@@ -116,7 +116,8 @@ export function formatSessionLeft(expirySec: number, nowSec: number): string {
   const secsLeft = expirySec - nowSec
   const hoursLeft = Math.floor(secsLeft / 3600)
   if (hoursLeft >= 1) return `Session active · ${hoursLeft}h left`
-  const minsLeft = Math.ceil(secsLeft / 60)
+  // floor + min 1 so 3599s reads "59m" (not "60m") and 30s still reads "1m"
+  const minsLeft = Math.max(1, Math.floor(secsLeft / 60))
   return `Session active · ${minsLeft}m left`
 }
 
