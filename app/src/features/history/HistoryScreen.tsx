@@ -73,7 +73,7 @@ import {
 import { pdas } from '@/src/lib/pdas'
 import { baseConn } from '@/src/lib/solana'
 import { useLiveAccount } from '@/src/lib/live'
-import { disclosureStatus, formatSlotsAsTime, type DisclosureStatus } from '@/src/lib/status'
+import { disclosureStatus, formatSlotsAsTime, formatUsd2, type DisclosureStatus } from '@/src/lib/status'
 import { useTheme } from '@/src/theme'
 import { useTextStyle, type Tone } from '@/src/ui/styles'
 import { Card } from '@/src/ui/Card'
@@ -114,9 +114,6 @@ async function rememberHashes(owner: PublicKey, hashes: string[]): Promise<void>
   }
 }
 
-function fmtUsd(raw: bigint): string {
-  return (Number(raw) / 1_000_000).toFixed(4)
-}
 function fmtSol(raw: bigint): string {
   return (Number(raw) / 1_000_000_000).toFixed(4)
 }
@@ -439,10 +436,10 @@ export function HistoryScreen() {
                   </Text>
                   <Badge tone={STATUS_TONE[r.status]}>{r.statusText}</Badge>
                 </View>
-                <UiRow label="Entry → Exit" value={`$${fmtUsd(r.entry)} → $${fmtUsd(r.exit)}`} mono />
+                <UiRow label="Entry → Exit" value={`$${formatUsd2(r.entry)} → $${formatUsd2(r.exit)}`} mono />
                 <UiRow
                   label="PnL"
-                  value={`${r.pnl >= 0n ? '+' : ''}$${fmtUsd(r.pnl)}`}
+                  value={`${r.pnl >= 0n ? '+' : ''}$${formatUsd2(r.pnl)}`}
                   tone={r.pnl >= 0n ? 'success' : 'danger'}
                 />
                 {r.explorerPubkey ? <Address pubkey={r.explorerPubkey} explorer /> : null}

@@ -12,7 +12,7 @@ import { Card } from '@/src/ui/Card'
 import { Row } from '@/src/ui/Row'
 import { Badge } from '@/src/ui/Badge'
 import { Button } from '@/src/ui/Button'
-import { computeUpnl, type DecodedPosition } from '@/src/lib/program'
+import { computeUpnl, type DecodedPosition, type SideName } from '@/src/lib/program'
 import { notional } from '@/src/lib/math'
 
 function usd(raw: bigint): string {
@@ -20,6 +20,60 @@ function usd(raw: bigint): string {
 }
 function sol(raw: bigint): string {
   return (Number(raw) / 1_000_000_000).toFixed(4)
+}
+
+/**
+ * Liquidation-distance fraction: how far `mark` would have to move, as a
+ * fraction of `mark` ITSELF, to reach `liqPrice` — `(mark - liq) / mark` for
+ * Long, `(liq - mark) / mark` for Short. Clamped to `[0, 1]`.
+ *
+ * Bug this fixes (observed live, smoke test 23.09.2026): the old formula was
+ * `(mark - liq) / (entry - liq)` — distance from `liqPrice` as a fraction of
+ * the entry→liq span. Right after opening, `mark ≈ entry` by construction,
+ * so that fraction reads ~100% ("100% away from liquidation", full
+ * warning-tone bar) no matter how thin the actual price cushion is — e.g.
+ * entry $116.73 / mark $116.71 / liq $64.22 rendered 100% even though mark
+ * is already less than half its own liq-distance from `liqPrice`. Measuring
+ * against `mark` instead answers the question the bar is actually for ("how
+ * much can the CURRENT price move before I'm liquidated") — the same
+ * numbers now read ~45%.
+ */
+export function liqDistancePct(side: SideName, mark: bigint, liq: bigint): number {
+  if (mark === 0n) return 0
+  const raw = side === 'Long' ? Number(mark - liq) / Number(mark) : Number(liq - mark) / Number(mark)
+  return Math.min(1, Math.max(0, raw))
+}
+
+/**
+ * Self-check, `lib/status.ts`'s style: asserts `liqDistancePct` against the
+ * live-observed repro (mark $116.71 / liq $64.22 -> 45%, not the old
+ * formula's ~100%) plus the Short-side mirror and the clamp edges. Throws on
+ * mismatch; called once from `__DEV__` startup logging below.
+ */
+export function assertLiqDistancePctSelfCheck(): void {
+  const MARK = 116_710_000n // $116.71
+  const LIQ = 64_220_000n // $64.22
+  const cases: [number, number][] = [
+    [Math.round(liqDistancePct('Long', MARK, LIQ) * 100), 45], // the observed repro
+    [Math.round(liqDistancePct('Short', 100_000_000n, 145_000_000n) * 100), 45], // Short mirror: liq above mark by the same 45%-of-mark gap
+    [liqDistancePct('Long', MARK, MARK), 0], // at the liq price itself -> 0% away
+    [liqDistancePct('Long', MARK, MARK + 1_000_000n), 0], // past liq (shouldn't happen live, but clamp holds) -> floor at 0
+    [liqDistancePct('Short', MARK, MARK - 1_000_000n), 0], // Short past liq -> floor at 0
+  ]
+  for (const [got, expected] of cases) {
+    if (got !== expected) {
+      throw new Error(`assertLiqDistancePctSelfCheck: liqDistancePct mismatch — got ${got}, expected ${expected}`)
+    }
+  }
+}
+
+if (__DEV__) {
+  try {
+    assertLiqDistancePctSelfCheck()
+    console.log('[dexxer] assertLiqDistancePctSelfCheck: liqDistancePct OK')
+  } catch (e) {
+    console.error('[dexxer] assertLiqDistancePctSelfCheck FAILED', e)
+  }
 }
 
 export interface PositionCardProps {
@@ -55,16 +109,11 @@ export function PositionCard({ position: p, mark, busy, onClose, onIncrease, onD
   const entryNotional = notional(p.size, p.entry)
   const leverage = p.margin > 0n ? Number(entryNotional) / Number(p.margin) : null
 
-  // Liquidation-distance bar: how far `mark` currently sits from `liqPrice`,
-  // as a fraction of the distance between `entry` and `liqPrice` (0% = at
-  // entry, 100% = at the liquidation price). Display-only, clamped to [0,1].
-  const distanceFrac = (() => {
-    if (mark === null) return null
-    const span = Math.abs(Number(p.entry) - Number(p.liqPrice))
-    if (span === 0) return null
-    const traveled = p.side === 'Long' ? Number(p.entry) - Number(mark) : Number(mark) - Number(p.entry)
-    return Math.min(1, Math.max(0, traveled / span))
-  })()
+  // Liquidation-distance bar — see `liqDistancePct`'s doc comment above for
+  // the bug this replaced. Display-only, [0,1].
+  const liqPct = mark !== null ? liqDistancePct(p.side, mark, p.liqPrice) : null
+  const liqTone =
+    liqPct === null ? colors.warning : liqPct >= 0.25 ? colors.long : liqPct >= 0.1 ? colors.warning : colors.short
 
   return (
     <Card>
@@ -88,13 +137,13 @@ export function PositionCard({ position: p, mark, busy, onClose, onIncrease, onD
       />
       <Row label="Margin" value={`$${usd(p.margin)}`} />
       <Row label="Liq. price" value={`$${usd(p.liqPrice)}`} />
-      {distanceFrac !== null ? (
+      {liqPct !== null ? (
         <View style={{ gap: space.xs }}>
           <View style={{ height: 4, borderRadius: 2, backgroundColor: colors.surfaceAlt, overflow: 'hidden' }}>
-            <View style={{ height: 4, width: `${(1 - distanceFrac) * 100}%`, backgroundColor: colors.warning }} />
+            <View style={{ height: 4, width: `${liqPct * 100}%`, backgroundColor: liqTone }} />
           </View>
           <Text style={[caption, { color: colors.textTertiary }]}>
-            {Math.round((1 - distanceFrac) * 100)}% away from liquidation
+            {Math.round(liqPct * 100)}% away from liquidation
           </Text>
         </View>
       ) : null}

@@ -99,6 +99,23 @@ export function formatSlotsAsTime(n: bigint): string {
 }
 
 /**
+ * A `u64`/`i64` USD amount at the program's 1e6 fixed point (`PRICE_SCALE`,
+ * math.rs) formatted to 2 decimals — e.g. `116_730_000n` -> `'116.73'`.
+ * Shared by History (`HistoryScreen.tsx`) and Ledger's disclosure feed
+ * (`ledger/DisclosuresTab.tsx`) so entry/exit prices and PnL read the same
+ * everywhere: elsewhere in the app (`TradeTicket`, `PositionCard`,
+ * `AccountScreen`, `ReceiptSection`, `PositionScreen`) local `usd`/`fmtUsd`
+ * helpers already do this same 2-decimal rounding — History/Ledger were the
+ * two outliers still at 4dp (observed live, smoke test 23.09.2026: History
+ * showed `$116.7300` next to Positions' `$116.71`). Size stays 4dp
+ * (`SIZE_SCALE`'s SOL amounts) — unrelated, unaffected by this helper, each
+ * screen keeps its own local `fmtSol`/`sol`.
+ */
+export function formatUsd2(raw1e6: bigint): string {
+  return (Number(raw1e6) / 1_000_000).toFixed(2)
+}
+
+/**
  * `UserAccount.sessionExpiry` (unix seconds) vs current wall-clock time,
  * formatted for the session badge (`AccountScreen.tsx`). Bug fixed here
  * (observed live, CLAUDE.md week-4 report): the old inline logic derived
@@ -173,12 +190,22 @@ export function assertDisclosureStatusSelfCheck(): void {
       throw new Error(`assertDisclosureStatusSelfCheck: formatSessionLeft mismatch — got ${got}, expected ${expected}`)
     }
   }
+  const usdCases: [string, string][] = [
+    [formatUsd2(116_730_000n), '116.73'], // the observed live mismatch — History used to show 116.7300
+    [formatUsd2(-40_000n), '-0.04'], // PnL, negative
+    [formatUsd2(0n), '0.00'],
+  ]
+  for (const [got, expected] of usdCases) {
+    if (got !== expected) {
+      throw new Error(`assertDisclosureStatusSelfCheck: formatUsd2 mismatch — got ${got}, expected ${expected}`)
+    }
+  }
 }
 
 if (__DEV__) {
   try {
     assertDisclosureStatusSelfCheck()
-    console.log('[dexxer] assertDisclosureStatusSelfCheck: disclosureStatus/formatSlotsAsTime OK')
+    console.log('[dexxer] assertDisclosureStatusSelfCheck: disclosureStatus/formatSlotsAsTime/formatUsd2 OK')
   } catch (e) {
     console.error('[dexxer] assertDisclosureStatusSelfCheck FAILED', e)
   }

@@ -12,10 +12,8 @@ import { Row } from '@/src/ui/Row'
 import { Skeleton } from '@/src/ui/Skeleton'
 import { EmptyState } from '@/src/ui/EmptyState'
 import { useDisclosures } from '@/src/lib/indexer'
+import { formatUsd2 as usd } from '@/src/lib/status'
 
-function usd(raw: bigint): string {
-  return (Number(raw) / 1_000_000).toFixed(2)
-}
 function sol(raw: bigint): string {
   return (Number(raw) / 1_000_000_000).toFixed(4)
 }
