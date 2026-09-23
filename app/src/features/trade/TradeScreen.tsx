@@ -11,18 +11,21 @@
 // `Side::Long => require(price <= limit_price)`, `Side::Short => require(price
 // >= limit_price)` — so Long needs a limit at/above mark, Short at/below),
 // read fresh right before building the tx rather than off a possibly-stale
-// polled value.
-import { useCallback, useEffect, useState } from 'react'
+// polled/pushed value — `handleOpen` still calls `readMarket` directly for
+// that reason.
+//
+// Task 9: `position`/`mark` display state used to be a 2s poll
+// (`readPosition`/`readMarket` on a `setInterval`). Now `useLiveAccount`
+// (push-first, 2s fallback poll only while pushes aren't flowing — see
+// live.ts) drives both, over the same session TEE connection. No explicit
+// post-tx refresh is needed any more: the ER validator pushes the changed
+// account within ~1 ER slot (tens of ms, Check8.tsx's spike finding) of
+// `open_position`/`close_position` landing.
+import { useCallback, useState } from 'react'
 import { Pressable, ScrollView, Text, TextInput, View } from 'react-native'
 import { AppPage } from '@/components/app-page'
-import {
-  closePosition,
-  describeTxError,
-  openPosition,
-  readMarket,
-  readPosition,
-  type DecodedPosition,
-} from '@/src/lib/program'
+import { closePosition, describeTxError, openPosition, readMarket, decodeMarket, decodePosition } from '@/src/lib/program'
+import { useLiveAccount } from '@/src/lib/live'
 import { useTradeSession } from './useTradeSession'
 
 type Side = 'long' | 'short'
@@ -37,32 +40,14 @@ export function TradeScreen() {
   const [side, setSide] = useState<Side>('long')
   const [sizeSol, setSizeSol] = useState('0.1')
   const [marginUsd, setMarginUsd] = useState('20')
-  const [mark, setMark] = useState<bigint | null>(null)
-  const [position, setPosition] = useState<DecodedPosition | null>(null)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [lastSig, setLastSig] = useState<string | null>(null)
 
-  const refresh = useCallback(async () => {
-    if (!conn || !accounts) return
-    try {
-      const [pos, mkt] = await Promise.all([readPosition(conn, accounts.position), readMarket(conn, accounts.market)])
-      setPosition(pos)
-      setMark(mkt?.mark ?? null)
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e))
-    }
-  }, [conn, accounts])
-
-  useEffect(() => {
-    // `refresh` only sets state from its own async continuation (after
-    // awaiting the account reads) — a legitimate "poll an external system,
-    // setState from the callback" effect, not a synchronous setState.
-    // eslint-disable-next-line react-hooks/set-state-in-effect
-    void refresh()
-    const timer = setInterval(refresh, 2000)
-    return () => clearInterval(timer)
-  }, [refresh])
+  const positionLive = useLiveAccount(conn, accounts?.position ?? null, decodePosition)
+  const marketLive = useLiveAccount(conn, accounts?.market ?? null, decodeMarket)
+  const position = positionLive.value
+  const mark = marketLive.value?.mark ?? null
 
   const hasOpenPosition = position?.state === 'Open'
 
@@ -77,13 +62,12 @@ export function TradeScreen() {
       const limitUsd = side === 'long' ? markUsd * 1.01 : markUsd * 0.99
       const sig = await openPosition(conn, session, accounts, side, Number(sizeSol), Number(marginUsd), limitUsd)
       setLastSig(sig)
-      await refresh()
     } catch (e) {
       setError(describeTxError(e))
     } finally {
       setBusy(false)
     }
-  }, [conn, session, accounts, side, sizeSol, marginUsd, refresh])
+  }, [conn, session, accounts, side, sizeSol, marginUsd])
 
   const handleClose = useCallback(async () => {
     if (!conn || !session || !accounts) return
@@ -92,13 +76,12 @@ export function TradeScreen() {
     try {
       const sig = await closePosition(conn, session, accounts)
       setLastSig(sig)
-      await refresh()
     } catch (e) {
       setError(describeTxError(e))
     } finally {
       setBusy(false)
     }
-  }, [conn, session, accounts, refresh])
+  }, [conn, session, accounts])
 
   const markUsd = mark !== null ? Number(mark) / 1_000_000 : null
   const previewLimitUsd = markUsd !== null ? (side === 'long' ? markUsd * 1.01 : markUsd * 0.99) : null
@@ -125,9 +108,9 @@ export function TradeScreen() {
           <Text>{markUsd !== null ? `$${markUsd.toFixed(4)}` : '—'}</Text>
         </View>
 
-        {sessionError || error ? (
+        {sessionError || error || positionLive.error || marketLive.error ? (
           <Text selectable style={{ color: '#ef4444' }}>
-            {sessionError ?? error}
+            {sessionError ?? error ?? positionLive.error ?? marketLive.error}
           </Text>
         ) : null}
 

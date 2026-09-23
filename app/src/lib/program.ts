@@ -150,7 +150,22 @@ const POSITION_ENTRY_OFFSET = POSITION_SIZE_OFFSET + 8
 const POSITION_MARGIN_OFFSET = POSITION_ENTRY_OFFSET + 8
 /** `Position.liq_price` offset: ...+ margin(8). */
 const POSITION_LIQ_PRICE_OFFSET = POSITION_MARGIN_OFFSET + 8
-// (opened_slot/liq_ticks/oi_notional/closed/bump follow — not needed by the UI, not decoded here.)
+/** `Position.opened_slot` offset: ...+ liq_price(8). */
+const POSITION_OPENED_SLOT_OFFSET = POSITION_LIQ_PRICE_OFFSET + 8
+/** `Position.liq_ticks` offset: ...+ opened_slot(8). */
+const POSITION_LIQ_TICKS_OFFSET = POSITION_OPENED_SLOT_OFFSET + 8
+/** `Position.oi_notional` offset: ...+ liq_ticks(1). */
+const POSITION_OI_NOTIONAL_OFFSET = POSITION_LIQ_TICKS_OFFSET + 1
+/**
+ * `Position.closed: Option<ClosedRecord>` tag offset (1 byte: 0=None,
+ * 1=Some, Borsh's `Option` encoding) — ...+ oi_notional(8). This offset
+ * itself is fixed (nothing variable-length precedes it); `bump` AFTER it is
+ * NOT at a fixed offset (it shifts by whether `closed` is Some/None), so —
+ * same as the block above — this file doesn't decode `bump`.
+ */
+const POSITION_CLOSED_TAG_OFFSET = POSITION_OI_NOTIONAL_OFFSET + 8
+/** `ClosedRecord` bytes start right after the `Option` tag when `closed` is `Some`. */
+const POSITION_CLOSED_RECORD_OFFSET = POSITION_CLOSED_TAG_OFFSET + 1
 
 const POSITION_STATES = ['Empty', 'Open', 'Closed'] as const
 export type PositionStateName = (typeof POSITION_STATES)[number]
@@ -164,9 +179,12 @@ export interface DecodedPosition {
   entry: bigint
   margin: bigint
   liqPrice: bigint
+  /** `Position.closed` — present only while `state === 'Closed'` (see `mark_committed`, which clears both together). Task 9: lets History show a `committing`/`committed` row before the record ever reaches `DisclosureQueue`. */
+  closed: DecodedClosedRecord | null
 }
 
 export function decodePosition(data: Buffer): DecodedPosition {
+  const hasClosed = data.readUInt8(POSITION_CLOSED_TAG_OFFSET) !== 0
   return {
     state: POSITION_STATES[data.readUInt8(POSITION_STATE_OFFSET)],
     side: SIDES[data.readUInt8(POSITION_SIDE_OFFSET)],
@@ -174,6 +192,7 @@ export function decodePosition(data: Buffer): DecodedPosition {
     entry: data.readBigUInt64LE(POSITION_ENTRY_OFFSET),
     margin: data.readBigUInt64LE(POSITION_MARGIN_OFFSET),
     liqPrice: data.readBigUInt64LE(POSITION_LIQ_PRICE_OFFSET),
+    closed: hasClosed ? decodeClosedRecord(data, POSITION_CLOSED_RECORD_OFFSET) : null,
   }
 }
 

@@ -355,3 +355,67 @@ remaining_accounts (liquidation candidates are supplied by the fallback script's
 Доки оновлено: `docs/deployments.md` (новий розділ «Scheduler (Task 7)»), spec §7.1 №18,
 spec §2.5.2, `CLAUDE.md`'s рядок про планувальник — усі узгоджено відображають «застосовано,
 mark-backstop так, ліквідаційний backstop ні».
+
+## Task 9: клієнтський шар даних — `accountSubscribe`-first `useLiveAccount`, indexer-клієнт, History одразу
+
+**Спайк `accountSubscribe` на TEE (виконано контролером до задачі, 23.09.2026):**
+`accountSubscribe` через `wss://devnet-tee.magicblock.app?token=<member-токен>` **працює**
+і для публічних (`Market`), і для permissioned акаунтів — 72 нотифікації за 25 с. Ключовий
+наслідок: TEE шле нотифікацію на кожен ER-слот **незалежно від того, чи змінились байти
+акаунта** — push сам собою не є сигналом "щось змінилось". `useLiveAccount` (`app/src/lib/
+live.ts`) тепер звіряє сирі байти (`Buffer.equals`) перед `decode`/`setState` на КОЖНОМУ push
+і на кожному fallback-полі; колишній безумовний 1 с-пол (Task 8) став fallback-лише: пол на
+2 с, тільки поки жоден push не прийшов за останні 5 с, або якщо сам `onAccountChange`-subscribe
+впав синхронно (той самий сценарій, що й раніше — `try/catch` навколо підписки).
+
+**Файли:**
+- `app/src/lib/live.ts` — `useLiveAccount` переписано на диф-перед-setState + push-first/
+  poll-fallback (вище)
+- `app/src/lib/status.ts` (новий) — `disclosureStatus(record, slot, hasCommitmentOnL1?)` /
+  `formatSlotsAsTime(n)`, з state machine `Position.closed` → `commit_aggregate` (
+  `write_commitment`, `commitment_written=true`) → `mark_committed` (crank, переносить у
+  `DisclosureQueue`) → `due_reveals`/`write_disclosure` (L1 `Disclosure`), звірено з поточним
+  `programs/dexxer_core/src/{instructions/{commit,disclosure},state/{position,disclosure}}.rs`
+- `app/src/lib/indexer.ts` (новий) — `useMark`/`useCandles`/`usePoolHistory`/`useDisclosures`/
+  `useRootLatest` (react-query REST) + один спільний модульний WS (`RELAYER_URL`'s `/ws`,
+  reconnect з експоненційним backoff, кап 15 с) патчить кеш на `mark`/`pool`/`disclosure`-фрейми;
+  `useIndexerConnected()`
+- `app/src/lib/program.ts` — `DecodedPosition` отримав поле `closed: DecodedClosedRecord | null`
+  (декодування `Position.closed: Option<ClosedRecord>` за фіксованим offset тега; `bump` після
+  нього лишається недекодованим — Borsh-offset після `Option` не фіксований)
+- `app/src/features/history/HistoryScreen.tsx` — третє джерело `useLiveAccount(conn, position,
+  decodePosition)`: `state==='Closed' && closed` рендерить рядок `committing`/`committed`
+  негайно, до першого `commit_aggregate`; два `setInterval`-поли (слот 2 с, revealed 5 с)
+  замінено на react-query `useQuery`
+- `app/src/features/trade/TradeScreen.tsx` — 2 с-пол `readPosition`/`readMarket` замінено на
+  `useLiveAccount` для обох акаунтів; ручний `refresh()` після open/close прибрано — push
+  наздоганяє сам
+
+**Рішення (merge key):** три джерела History (`Position.closed`, `DisclosureQueue.records`,
+L1 `Disclosure`) взаємовиключні в часі (`mark_committed` одночасно спорожняє `Position.closed`
+і заповнює чергу; `due_reveals` одночасно спорожняє чергу й пише `Disclosure`) — дедуп не
+потрібен, рядки просто конкатенуються. Матчинг із L1 лишається за хешем (Task 8b, ruling 9),
+не за `nonce`; хеш тепер персистується і з `Position.closed`, і з чергою (раніше — лише з черги).
+
+**Рішення (L1-дані для History лишаються прямим читанням, не `indexer.ts`):** `useDisclosures()`
+з нового `indexer.ts` — публічна, пагінована, Postgres-backed стрічка з нижнім `side`
+(`'long'`/`'short'`, не `'Long'`/`'Short'` — див. `services/relayer/src/indexer/accounts.ts`'s
+`sideToString`) і без гарантії роботи (`INDEXER_ENABLED` може бути `false`). "Чи розкрилась
+САМЕ моя угода" лишилось точним `pdas.disclosure(hash)`-читанням через `baseConn`, просто
+обгорнутим у react-query (`refetchInterval: 5000`) замість hand-rolled `setInterval` —
+коректність не приносилась у жертву формі.
+
+**`indexer.ts`'s WS:** один модульний singleton (лічильник монтованих споживачів), стартує при
+першому хуку, ніколи явно не закривається при 0 споживачах (дешево тримати відкритим при
+переходах між табами; тільки перестає плекати reconnect-спроби) — reconnect: `1000 * 2^attempt`,
+кап 15 000 мс, скидається на `open`.
+
+**Гаунтлет:** `cd app && npx tsc --noEmit` чисто; `npm run lint:check` чисто (один
+`react-hooks/set-state-in-effect` у `indexer.ts` — той самий "реконсиляція з зовнішньою
+системою на маунті" патерн, що вже є в `live.ts`/`useTradeSession.ts`, задокументовано
+inline-коментарем, той самий `eslint-disable` спосіб). Тест-раннера в `app/` нема (перевірено
+`package.json`) — для чистих модулів (`status.ts`) додано `__DEV__`-guarded self-check
+(`assertDisclosureStatusSelfCheck`), той самий патерн, що `program.ts`'s `assertLeafGolden`/
+`assertCommitmentGolden`; продубльовано й запущено окремо через `node` — всі кейси PASS.
+Емулятор/on-device — не запускався агентом (`docs/superpowers/plans/...`'s правило); ручний
+чек-лист — у `task-9-report.md`.
