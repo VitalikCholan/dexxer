@@ -2,15 +2,56 @@
 //
 // The batched onboarding engine (Task 6, week 4; extracted from
 // useOnboarding.ts in fix round 1, finding E): faucet_init (+ATA-create if
-// missing) + init_user + delegateSpl + delegate_user collected into up to
-// two sponsored L1 transactions, and init_permissions + set_session (+ the
-// session fee top-up) collected into one owner-paid ER transaction — signed
-// in ONE `mwa.signTransactions([...])` call. `useOnboarding.ts` stays the
-// thin hook wrapper: React state, `buildCtx`, and the legacy `runFlow`
-// fallback (`LEGACY_ONBOARDING`) live there; this file owns the shared
-// send/confirm primitives and the batch pipeline itself.
+// missing) + init_user (or init_user_reuse_queue for a returning owner) +
+// delegateSpl + delegate_user collected into two fee_payer-SPONSORED L1
+// transactions, and init_permissions + set_session collected into one
+// owner-paid ER transaction — signed in ONE `mwa.signTransactions([...])`
+// call. `useOnboarding.ts` stays the thin hook wrapper: React state and
+// `buildCtx` live there; this file owns the shared send/confirm primitives
+// and the batch pipeline itself.
 //
-// --- Fix round 1 (task-6 controller ruling) changes -----------------------
+// --- Week-5 Task 6: zero-SOL onboarding ------------------------------------
+//
+// Fix round 1 (week 4, task 6) got `faucet_init`/`init_user`/`delegateSpl`
+// fronted by `fee_payer` but left two costs on the owner: the ATA-create
+// (`createAssociatedTokenAccountIdempotentInstruction`, previously
+// owner-funded) and `delegate_user`'s own `payer` field, which had no
+// distinct-from-`owner` account at all — a genuinely 0-SOL owner could not
+// complete onboarding (real measured minimum ≈0.0033-0.0035 SOL). Week 5
+// closed both gaps program-side (`delegate_user` gained its own `payer`,
+// split from `owner` — week-5 Task 3 P1) and relayer-side
+// (`services/relayer/src/sponsor.ts`'s whitelist now fronts the ATA-create
+// AND `delegate_user`'s rent too, `payer@0`/`payer@1` respectively — see its
+// file header). This file follows: the ATA-create's `payer` and
+// `delegate_user`'s `payer` are now `feePayerPubkey`, not `owner`.
+//
+// The session fee top-up (a plain `SystemProgram.transfer(owner, session,
+// SESSION_LAMPORTS)`, `session.ts`'s former `sessionTopUpIx`) is GONE — not
+// just unsponsored-but-present, removed entirely. It funded the session
+// key's own ER tx fees; `services/relayer/src/sponsor.ts`'s week-5 file
+// header explains why: `fee_payer` cannot pay for an ER transaction it did
+// not itself originate (`InvalidAccountForFee`, measured week 4, finding
+// A.3), and a plain `SystemProgram.transfer` was the ONLY SystemProgram
+// instruction ever on the sponsor whitelist — removing the leg removes that
+// whole drain surface by construction (relayer's own words: "with it goes
+// the only SystemProgram instruction this endpoint ever accepted").
+//
+// `init_user` vs `init_user_reuse_queue` (week-5 Task 2): a fresh owner (no
+// `UserAccount` PDA on L1 yet) gets `init_user`. A RETURNING owner — one
+// who previously called `undelegate_user` and is not yet re-delegated — has
+// a `UserAccount` that already exists, is NOT owned by the Delegation
+// Program, and carries `exited == true`; `init_user`'s `init` constraint
+// would fail outright on that already-initialized PDA, so
+// `init_user_reuse_queue` (same account list, `mut` instead of `init`,
+// gated on `exited`) is used instead. It also requires `DisclosureQueue` to
+// be a plain, non-delegated `dexxer_core`-owned account — which only holds
+// once the relayer's orphan janitor (`close_orphan_queue`) has drained and
+// undelegated a queue that outlived its owner's exit with debt still owed;
+// until then the returning owner's re-onboarding fails with a decode error
+// on `disclosure_queue` (still Delegation-Program-owned) — a known,
+// documented gap, not a bug (see the brief's smoke-test step 8).
+//
+// --- Fix round 1 (task-6 controller ruling) changes, kept for history -----
 //
 // Finding A.1 (program): `faucet_init`/`init_user` gained a `payer` account
 // distinct from `owner` (programs/dexxer_core/src/instructions/user.rs) —
@@ -22,35 +63,13 @@
 // `transferToVaultIx` inside it still moves the OWNER's own dUSDC,
 // unaffected). Verified on real devnet this fix round.
 //
-// Finding A.3 (ER leg) — ATTEMPTED, REVERTED: tried sponsoring the
-// permissions+session leg too (`feePayer: feePayerPubkey`, sent on the
-// owner's TEE connection, with the session top-up folded in as a
-// SystemProgram transfer — `services/relayer/src/sponsor.ts` still supports
-// this shape in its whitelist). Verified directly against live devnet-tee
-// this fix round (`tests/er/devnet/zz-verify-sponsor-flow.ts`, a non-MWA
-// reproduction of this exact leg): the TEE rejects it — `"InvalidAccountForFee"`
-// — fee_payer is not a valid fee-paying account for a transaction on the ER
-// there (confirms `app/src/lib/session.ts`'s `sessionTopUpIx` doc comment:
-// the ER only clones a referenced non-delegated account's *L1* balance for
-// reads, so a non-delegated arbitrary payer's fee-paying role isn't
-// recognized). Reverted to owner-funded/owner-feePayer (below), the
-// pre-fix-round design, reconfirmed working end-to-end this run
-// (`tests/er/devnet/01-onboard-private.ts` PASS) — per the task-6 brief's
-// contingency: "keep L1 rent sponsorship [...] report DONE_WITH_CONCERNS
-// naming the residual gap." See `collectBatchLegs`'s ER-leg comment below
-// for the full account.
-//
-// Post-verification finding (not one of A-E, found while verifying A):
-// `delegate_user` has no `payer` field distinct from `owner` (unchanged by
-// this fix round — Finding A only touched `faucet_init`/`init_user`), and
-// its own CPI to the Delegation Program needs MORE lamports from `owner`
-// than `init_user`'s existing permission-rent prefund covers (observed on
-// real devnet: ~1.1-1.35M extra lamports, on top of the ~1.49M ATA rent +
-// ~0.65M owner-wallet rent floor already required). So a genuinely
-// zero-lamport owner still cannot complete onboarding even after this fix
-// round — real minimum observed ≈0.0033-0.0035 SOL, not zero. Flagged in
-// the report as a residual gap for a future round; not fixed here (out of
-// this round's assigned scope, needs its own investigation).
+// Finding A.3 (ER leg) — ATTEMPTED, REVERTED, and now PERMANENT (week 5):
+// sponsoring the permissions+session leg too (`feePayer: feePayerPubkey`,
+// sent on the owner's TEE connection) was tried and rejected outright by
+// devnet-tee — `"InvalidAccountForFee"` — fee_payer is not a valid
+// fee-paying account for a transaction on the ER there. The ER leg stays
+// owner-funded/owner-feePayer; only its (small) network fee remains a
+// non-zero cost, unrelated to rent.
 //
 // Finding D (review): blockhashes are fetched immediately before
 // `signTransactions` (not earlier — `collectBatchLegs` below does no RPC
@@ -83,13 +102,13 @@ import { baseConn, ER_VALIDATOR } from '@/src/lib/solana'
 import {
   dexxerCoreProgram,
   readConfigFeePayer,
+  readUserAccountExited,
   readUserAccountFreeMargin,
   readUserAccountSessionKey,
   DEXXER_CORE_PROGRAM_ID,
 } from '@/src/lib/program'
 import { delegationTriple } from '@/src/lib/pdas'
 import { sponsorTx, SponsorError } from '@/src/lib/sponsor'
-import { sessionTopUpIx, SESSION_LAMPORTS } from '@/src/lib/session'
 
 export type OnboardState =
   'Disconnected' | 'NotOnboarded' | 'Funded' | 'Initialized' | 'Delegated' | 'Credited' | 'Permissioned' | 'SessionSet'
@@ -298,12 +317,14 @@ export async function collectBatchLegs(
   const core = dexxerCoreProgram(baseConn, owner)
   const legs: BatchLeg[] = []
 
-  // --- L1a: [createAta?] + faucet_init + init_user (fee_payer fronts rent — Finding A.1) ---
+  // --- L1a: [createAta?] + faucet_init + init_user|init_user_reuse_queue ---
+  // (fee_payer fronts every bit of this leg's rent — the ATA-create too,
+  // week-5 Task 6, on top of fix round 1's faucet_init/init_user coverage)
   const l1a: TransactionInstruction[] = []
   const faucetInfo = await baseConn.getAccountInfo(faucetPda, 'confirmed')
   if (!faucetInfo) {
     const ataInfo = await baseConn.getAccountInfo(ownerAta, 'confirmed')
-    if (!ataInfo) l1a.push(createAssociatedTokenAccountIdempotentInstruction(owner, ownerAta, owner, mint))
+    if (!ataInfo) l1a.push(createAssociatedTokenAccountIdempotentInstruction(feePayerPubkey, ownerAta, owner, mint))
     l1a.push(
       await core.methods
         .faucetInit(new BN(DEPOSIT.toString()))
@@ -328,6 +349,25 @@ export async function collectBatchLegs(
     l1a.push(
       await core.methods
         .initUser(Array.from(exitSalt))
+        .accounts({
+          owner,
+          payer: feePayerPubkey,
+          config,
+          market,
+          userAccount,
+          position,
+          disclosureQueue,
+          systemProgram: SystemProgram.programId,
+        })
+        .instruction(),
+    )
+  } else if (!userAccountInfo.owner.equals(DELEGATION_PROGRAM_ID) && readUserAccountExited(userAccountInfo.data)) {
+    // Returning owner (week-5 Task 2): the PDA survived a prior exit and is
+    // still `dexxer_core`-owned but `exited == true` — `init_user`'s `init`
+    // constraint would fail on it, so re-initialize in place instead.
+    l1a.push(
+      await core.methods
+        .initUserReuseQueue(Array.from(exitSalt))
         .accounts({
           owner,
           payer: feePayerPubkey,
@@ -375,9 +415,11 @@ export async function collectBatchLegs(
         .delegateUser()
         .accounts({
           owner,
-          // Week 5, Task 3 (P1): delegation-record payer, split out of `owner`.
-          // Sponsoring it is Task 6 (the ER leg cannot be sponsored at all).
-          payer: owner,
+          // Week 5, Task 3 (P1) split this payer out of `owner`; Task 6
+          // sponsors it — `fee_payer` fronts the three delegation records'
+          // rent, closing fix round 1's residual "still ≈0.0033-0.0035 SOL"
+          // gap (see file header).
+          payer: feePayerPubkey,
           config,
           market,
           bufferUserAccount: ut.buffer,
@@ -411,27 +453,13 @@ export async function collectBatchLegs(
       onLanded: ['Delegated'],
     })
 
-  // --- Er: init_permissions + set_session (owner-paid, unsponsored) ---
+  // --- ER: init_permissions + set_session (owner-paid, unsponsored) ---
   //
-  // Finding A.3 was attempted as "sponsor this leg too" (feePayer =
-  // fee_payer, sent on the TEE connection, folding the session top-up in as
-  // a SystemProgram transfer the relayer whitelist cross-checks against
-  // `set_session`'s argument — see `services/relayer/src/sponsor.ts`, which
-  // still supports that shape). Verified directly against live devnet-tee
-  // this fix round (`tests/er/devnet/zz-verify-sponsor-flow.ts`, a
-  // non-MWA reproduction of this exact leg): the TEE rejects it outright —
-  // `"InvalidAccountForFee"` — fee_payer is not a valid fee-paying account
-  // for an ER transaction there, confirming the suspicion this file's
-  // header comment flagged (the ER only clones a referenced non-delegated
-  // account's *L1* balance for reads; it does not accept an arbitrary
-  // non-delegated account as the ER-side fee payer for a tx it did not
-  // itself originate). Reverted to owner-funded/owner-feePayer — the
-  // pre-fix-round design, reconfirmed working end-to-end this run
-  // (`tests/er/devnet/01-onboard-private.ts` PASS) — per the task-6 brief's
-  // own contingency: "keep L1 rent sponsorship [...] report
-  // DONE_WITH_CONCERNS naming the residual gap." The residual gap: the ER
-  // leg (init_permissions/set_session) and the session top-up still cost
-  // the owner a network fee + 0.01 SOL respectively — not sponsored.
+  // Cannot be sponsored — `fee_payer` is not a valid fee-paying account for
+  // an ER transaction it did not itself originate (`InvalidAccountForFee`,
+  // measured on devnet-tee, Finding A.3 — see file header). Stays
+  // owner-feePayer; the only remaining cost here is this leg's own (small)
+  // ER network fee.
   const ownerTee = await mwa.getConnection(owner)
   const coreEr = dexxerCoreProgram(ownerTee, owner)
   const userPermission = permissionPdaFromAccount(userAccount)
@@ -496,21 +524,6 @@ export async function collectBatchLegs(
       onLanded: ['Permissioned', 'SessionSet'],
     })
 
-  // --- session fee top-up (L1, owner-funded, unsponsored) ---
-  const sessionBalance = await baseConn.getBalance(session.publicKey, 'confirmed')
-  if (sessionBalance < SESSION_LAMPORTS / 2) {
-    legs.push({
-      label: 'session top-up',
-      ixs: [sessionTopUpIx(owner, session.publicKey)],
-      conn: baseConn,
-      feePayer: owner,
-      sponsor: false,
-      onLanded: [],
-    })
-  } else {
-    appendLog('session lamports: already funded, skipped')
-  }
-
   return legs
 }
 
@@ -518,10 +531,11 @@ export async function collectBatchLegs(
  * Collects whatever's left (`collectBatchLegs`), signs every leg's
  * transaction in ONE `mwa.signTransactions([...])` call, then submits each
  * sequentially — L1a before L1b (L1b's `delegate_user` needs L1a's
- * `init_user` to have landed), then the ER leg, then the session top-up.
- * The two L1 legs go through `/sponsor` first (fee_payer co-signs —
- * findings A.1/A.2); the ER leg and the session top-up don't (finding A.3,
- * attempted and reverted — see file header). `onProgress` reports
+ * `init_user`/`init_user_reuse_queue` to have landed), then the ER leg. The
+ * two L1 legs go through `/sponsor` first (fee_payer co-signs — findings
+ * A.1/A.2, and week-5 Task 6's ATA-create/`delegate_user` extension); the ER
+ * leg doesn't (finding A.3, attempted and permanently reverted — see file
+ * header). `onProgress` reports
  * `Collecting -> Signing -> Submitting(i/n) -> Done | Failed(step)` for the
  * UI; `setState` still drives the coarse `OnboardState` the screen's
  * progress bar already understands (each leg's `onLanded` states, in
