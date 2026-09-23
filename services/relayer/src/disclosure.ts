@@ -53,6 +53,52 @@
 // this can be tuned on Railway without a program redeploy once the real cap
 // is measured. `MAX_ACTIONS_PER_COMMIT` (8) stays the outer clamp — the
 // program itself will never schedule more than that regardless of env.
+//
+// Fix round 1 (same measurement, controller review): oldest-debt-first
+// selection means a queue that ALWAYS fails (a "poisoned" queue — see below)
+// is always the FIRST thing picked, every cycle, forever — since it never
+// succeeds, `selectCandidates` never gets past it to reach any younger
+// queue. This is a LIVE OUTAGE of automatic draining, not just wasted
+// retries: the measured `HgvCy4r2…` queue (owner `devnet-overflow`'s
+// `DsTSr…`, week-5 Task 7) failed the bridge's own cap at every tested
+// budget from 8 down to 1, and every other queue behind it (including
+// week-5 Task 7's own M-I wallets) would have starved forever without the
+// quarantine below — M-I only drained because Task 7 issued a manual,
+// out-of-band `commit_aggregate` that targeted those queues directly,
+// bypassing `selectCandidates` entirely.
+//
+// ROTATION + QUARANTINE (`QuarantineState`, `recordCycleFailure`/
+// `recordCycleSuccess`/`isQuarantined`): when a cycle's full-budget attempt
+// AND its halved retry both fail with the bridge's action-cap error, every
+// queue in the halved (confirmed-failing) set gets +1 consecutive failure.
+// The FIRST such failure already excludes that queue from `selectCandidates`
+// for exactly the next cycle (simple rotation — a single bad queue costs the
+// rest of the backlog at most one cycle). The SECOND consecutive failure
+// (`QUARANTINE_THRESHOLD`) excludes it for `QUARANTINE_CYCLES` cycles (env,
+// default 10 ≈ 10 min at the default 60-tick/60s cadence) and logs
+// `quarantined queue <key> (n failures)`; on expiry the queue gets exactly
+// one retry — its failure count is NOT reset, so a THIRD consecutive failure
+// (the one retry attempt) re-quarantines it immediately rather than
+// requiring two more failures. A successful bundle clears a queue's
+// failure/quarantine state entirely (`recordCycleSuccess`).
+//
+// Root cause: CHECKED against the controller's risk-#26 hypothesis (a
+// `write_commitment` silently dropped by the bridge while `commitment_written`
+// had already flipped in-ER, leaving `WriteDisclosure` reading a `Commitment`
+// PDA that never landed) and that hypothesis is NOT what's happening here —
+// direct on-chain check (fix round 1) of `HgvCy4r2…`'s 6 "due" records: all 6
+// have `commitmentWritten=true` in the ER AND their `Commitment` PDA exists on
+// base (6/6), and none of their `Disclosure` PDAs exist yet (0/6, so it's not
+// an `init`-on-an-existing-account conflict either). The remaining 2 records
+// are plain not-yet-committed (`commitmentWritten=false`), unrelated to the
+// stuck 6. So the `write_disclosure` actions for this queue are being
+// rejected by the bridge for a reason that is NOT "the Commitment PDA is
+// missing" — most likely a genuine per-action size/CU limit on the real
+// `WriteDisclosure` Magic Action (it carries the full `ClosedRecord` payload
+// plus reads `Commitment`) that this specific record shape exceeds, or
+// bridge-side congestion at the time of testing; NOT confirmed either way.
+// This is unresolved going into week 6 — quarantine below stops it from
+// blocking every other queue, it does not and cannot unstick this trader.
 
 import { randomBytes } from "crypto";
 import { PublicKey } from "@solana/web3.js";
@@ -94,6 +140,92 @@ export function parseCommitMaxActions(raw: string | undefined): number {
 }
 export const COMMIT_MAX_ACTIONS = parseCommitMaxActions(process.env.COMMIT_MAX_ACTIONS);
 
+/**
+ * Fix round 1: how many disclosure-cycles a queue stays excluded from
+ * selection after its SECOND consecutive bridge-cap failure (see
+ * `QUARANTINE_THRESHOLD`/`recordCycleFailure` below). Default 10 — at the
+ * default `COMMIT_INTERVAL_TICKS=60` (~60s/cycle) that's ~10 minutes.
+ */
+const DEFAULT_QUARANTINE_CYCLES = 10;
+// Exported for test/disclosure.test.ts (pure, no network).
+export function parseQuarantineCycles(raw: string | undefined): number {
+  const n = Number(raw ?? DEFAULT_QUARANTINE_CYCLES);
+  return Number.isFinite(n) && n >= 1 ? Math.trunc(n) : DEFAULT_QUARANTINE_CYCLES;
+}
+export const QUARANTINE_CYCLES = parseQuarantineCycles(process.env.QUARANTINE_CYCLES);
+
+/** Consecutive bridge-cap failures (see `recordCycleFailure`) before a queue is quarantined rather than just rotated past for one cycle. */
+export const QUARANTINE_THRESHOLD = 2;
+
+/**
+ * Fix round 1: cross-cycle poison-queue tracking, keyed by `PublicKey.toBase58()`.
+ * `failures` is a consecutive-failure counter (cleared on any success);
+ * `until` is the disclosure-cycle number before which a queue is excluded
+ * from `selectCandidates` — set to `cycle+2` (exclude exactly the next
+ * cycle: "rotation") on a queue's first tracked failure, and to
+ * `cycle+1+QUARANTINE_CYCLES` once `failures` reaches `QUARANTINE_THRESHOLD`.
+ * `failures` is deliberately NOT reset when a quarantine expires, so the one
+ * retry a queue gets on expiry either clears it (success) or immediately
+ * re-quarantines it (another failure) instead of requiring two more strikes.
+ * The caller (crank.ts) must create ONE `QuarantineState` and reuse it every
+ * cycle — a fresh one (the default when `DisclosureCtx.quarantine` is
+ * omitted, e.g. in a single-cycle test) has no memory across calls.
+ */
+export interface QuarantineState {
+  failures: Map<string, number>;
+  until: Map<string, number>;
+}
+
+export function createQuarantineState(): QuarantineState {
+  return { failures: new Map(), until: new Map() };
+}
+
+/** True iff `keyB58` is excluded from selection at `cycle`. */
+export function isQuarantined(state: QuarantineState, keyB58: string, cycle: number): boolean {
+  const until = state.until.get(keyB58);
+  return until !== undefined && cycle < until;
+}
+
+/**
+ * Records that every queue in `failedKeys` was part of a bundle that failed
+ * the bridge's action-cap check THIS cycle (both the full-budget attempt and
+ * its halved retry, per `runDisclosureCycle` — or a single already-minimal
+ * bundle that can't be halved further, see there). First failure: rotate it
+ * out for exactly the next cycle. `QUARANTINE_THRESHOLD`-th (and any later)
+ * consecutive failure: quarantine for `quarantineCycles` cycles and log it.
+ */
+export function recordCycleFailure(
+  state: QuarantineState,
+  failedKeys: PublicKey[],
+  cycle: number,
+  quarantineCycles: number,
+  log: (line: string) => void = console.log,
+): void {
+  for (const pk of failedKeys) {
+    const k = pk.toBase58();
+    const n = (state.failures.get(k) ?? 0) + 1;
+    state.failures.set(k, n);
+    if (n >= QUARANTINE_THRESHOLD) {
+      state.until.set(k, cycle + 1 + quarantineCycles);
+      log(`quarantined queue ${k} (${n} failures)`);
+    } else {
+      // Rotation: not yet at the threshold, but still give the rest of the
+      // backlog priority for one cycle rather than re-trying the same queue
+      // immediately.
+      state.until.set(k, cycle + 2);
+    }
+  }
+}
+
+/** A queue that made it into a SUCCESSFUL bundle is healthy again — clears its failure/quarantine state entirely. */
+export function recordCycleSuccess(state: QuarantineState, includedKeys: PublicKey[]): void {
+  for (const pk of includedKeys) {
+    const k = pk.toBase58();
+    state.failures.delete(k);
+    state.until.delete(k);
+  }
+}
+
 export interface DisclosureCtx {
   /** Crank-authenticated ER connection: reads the private `DisclosureQueue`/`UserAccount` accounts via `getProgramAccounts`, and signs `set_balances_root`. */
   conn: Connection;
@@ -108,6 +240,24 @@ export interface DisclosureCtx {
   poolLive: PublicKey;
   balancesRoot: PublicKey;
   feeEscrow: PublicKey;
+  /**
+   * Fix round 1 (IMPORTANT finding, controller review): a thin injectable
+   * seam for tests — `runDisclosureCycle`'s try→halve→quarantine→bare retry
+   * sequence needs to be exercised without real RPCs. Defaults to the real
+   * `sendCommitAggregate` below when omitted, so production wiring
+   * (crank.ts) never has to set this.
+   */
+  sendCommitAggregate?: (ctx: DisclosureCtx, remainingKeys: PublicKey[]) => Promise<string>;
+  /**
+   * Fix round 1: cross-cycle quarantine state — see `QuarantineState`'s
+   * comment. Defaults to a fresh (memory-less) state when omitted, which is
+   * correct for a single-cycle test but WRONG for production — crank.ts
+   * creates one `QuarantineState` once and passes the same object every
+   * cycle.
+   */
+  quarantine?: QuarantineState;
+  /** Fix round 1: monotonic disclosure-cycle counter (NOT the 1s tick counter) — crank.ts increments it once per `COMMIT_INTERVAL_TICKS`. Defaults to 0. */
+  cycle?: number;
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -182,16 +332,25 @@ function oldestPendingSlot(dq: any, slot: bigint): number {
  * included PARTIALLY (its own `actions` clamped to whatever budget is left);
  * the program's own `room` clamp (commit.rs) handles the rest, see the
  * CANDIDATE SELECTION comment above `runDisclosureCycle`.
+ *
+ * Fix round 1: `quarantine`/`cycle` (both optional — omitted means no
+ * filtering, the pre-fix-round-1 behavior every existing caller/test still
+ * gets) skip any queue currently quarantined (`isQuarantined`) — see this
+ * file's header comment for why oldest-debt-first alone is a live-outage
+ * risk without this.
  */
 // Exported for test/disclosure.test.ts (pure, no network).
 export function selectCandidates(
   pendingQueues: { key: PublicKey; actions: number }[],
   budget: number,
+  quarantine?: QuarantineState,
+  cycle = 0,
 ): { key: PublicKey; actions: number }[] {
   const candidates: { key: PublicKey; actions: number }[] = [];
   let remaining = budget;
   for (const q of pendingQueues) {
     if (remaining <= 0) break;
+    if (quarantine && isQuarantined(quarantine, q.key.toBase58(), cycle)) continue;
     const actions = Math.min(remaining, q.actions);
     candidates.push({ key: q.key, actions });
     remaining -= actions;
@@ -278,6 +437,14 @@ export async function runRootCycle(ctx: DisclosureCtx): Promise<void> {
 }
 
 export async function runDisclosureCycle(ctx: DisclosureCtx): Promise<void> {
+  // Fix round 1: injectable send (tests), and cross-cycle quarantine state —
+  // see DisclosureCtx's comments. A ctx that omits `quarantine` gets a fresh,
+  // memory-less one each call, which is correct for a single-cycle test and
+  // wrong for production (crank.ts passes the same object every cycle).
+  const send = ctx.sendCommitAggregate ?? sendCommitAggregate;
+  const quarantine = ctx.quarantine ?? createQuarantineState();
+  const cycle = ctx.cycle ?? 0;
+
   // --- (1) DisclosureQueue candidates: every queue with at least one record
   // that still owes L1 a commitment or a (due) disclosure. Since week-5 Task 1
   // this is the only candidate kind `commit_aggregate` accepts. ---
@@ -298,9 +465,9 @@ export async function runDisclosureCycle(ctx: DisclosureCtx): Promise<void> {
     // across cycles rather than RPC-order-dependent.
     .sort((a, b) => a.oldest - b.oldest || a.key.toBase58().localeCompare(b.key.toBase58()));
 
-  // --- (2) fill the bundle up to COMMIT_MAX_ACTIONS — see the CANDIDATE
-  // SELECTION comment at the top of this file. ---
-  const candidates = selectCandidates(pendingQueues, COMMIT_MAX_ACTIONS);
+  // --- (2) fill the bundle up to COMMIT_MAX_ACTIONS, skipping quarantined
+  // queues — see the CANDIDATE SELECTION comment at the top of this file. ---
+  const candidates = selectCandidates(pendingQueues, COMMIT_MAX_ACTIONS, quarantine, cycle);
 
   // `commit_aggregate` IS the fixed-interval `Pool`+`BalancesRoot` commit
   // (CLAUDE.md: "фіксованим інтервалом батчем, ніколи подієво") — it must run
@@ -312,8 +479,9 @@ export async function runDisclosureCycle(ctx: DisclosureCtx): Promise<void> {
   // fires). `remaining_accounts` is simply empty in that case.
   const totalActions = candidates.reduce((n, c) => n + c.actions, 0);
   try {
-    const sig = await sendCommitAggregate(ctx, candidates.map((c) => c.key));
+    const sig = await send(ctx, candidates.map((c) => c.key));
     console.log(`commit_aggregate: sig=${sig} actions=${totalActions} queues=${candidates.length}`);
+    if (candidates.length > 0) recordCycleSuccess(quarantine, candidates.map((c) => c.key));
     return;
   } catch (e) {
     console.error(`commit_aggregate failed (actions=${totalActions} queues=${candidates.length}):`, String(e));
@@ -323,21 +491,41 @@ export async function runDisclosureCycle(ctx: DisclosureCtx): Promise<void> {
     // ACTION BUDGET (not the queue count — measured, a single full-ring
     // queue can alone exceed the bridge cap, so dropping whole queues would
     // never shrink that one bundle) and re-run `selectCandidates` over the
-    // same `pendingQueues` (still oldest-debt-first), then retry once. A
-    // bundle that still overshoots the bridge's real cap this way makes
-    // partial progress instead of falling straight through to a bare
-    // 0-action commit. One halving, not a loop: a second failure just falls
-    // through to the bare retry below — the next full cycle re-evaluates
-    // everything from scratch anyway.
-    if (totalActions > 1 && isBridgeActionCapError(e)) {
-      const halved = selectCandidates(pendingQueues, Math.floor(totalActions / 2));
-      const halvedActions = halved.reduce((n, c) => n + c.actions, 0);
-      try {
-        const sig = await sendCommitAggregate(ctx, halved.map((c) => c.key));
-        console.log(`commit_aggregate: halved retry sig=${sig} actions=${halvedActions} queues=${halved.length} (from actions=${totalActions} queues=${candidates.length})`);
-        return;
-      } catch (e2) {
-        console.error(`commit_aggregate halved retry failed (actions=${halvedActions} queues=${halved.length}):`, String(e2));
+    // same `pendingQueues` (still oldest-debt-first, still quarantine-aware),
+    // then retry once. A bundle that still overshoots the bridge's real cap
+    // this way makes partial progress instead of falling straight through to
+    // a bare 0-action commit. One halving, not a loop: a second failure just
+    // falls through to the bare retry below — the next cycle re-evaluates
+    // everything from scratch (and this failure is now on record — see the
+    // quarantine calls below).
+    if (isBridgeActionCapError(e)) {
+      if (totalActions > 1) {
+        const halved = selectCandidates(pendingQueues, Math.floor(totalActions / 2), quarantine, cycle);
+        const halvedActions = halved.reduce((n, c) => n + c.actions, 0);
+        try {
+          const sig = await send(ctx, halved.map((c) => c.key));
+          console.log(`commit_aggregate: halved retry sig=${sig} actions=${halvedActions} queues=${halved.length} (from actions=${totalActions} queues=${candidates.length})`);
+          if (halved.length > 0) recordCycleSuccess(quarantine, halved.map((c) => c.key));
+          return;
+        } catch (e2) {
+          console.error(`commit_aggregate halved retry failed (actions=${halvedActions} queues=${halved.length}):`, String(e2));
+          // Fix round 1 (CRITICAL finding, controller review): the full
+          // budget AND the halved retry both hit the bridge's cap — every
+          // queue in the halved (confirmed-failing) set is now suspect.
+          // Without this, oldest-debt-first means a queue that always fails
+          // is always picked first, forever, and no younger queue is EVER
+          // reached — a live outage of automatic draining, not just wasted
+          // retries (measured: week-5 Task 7's M-I needed a manual
+          // out-of-band commit for exactly this reason).
+          if (isBridgeActionCapError(e2) && halved.length > 0) {
+            recordCycleFailure(quarantine, halved.map((c) => c.key), cycle, QUARANTINE_CYCLES);
+          }
+        }
+      } else if (candidates.length > 0) {
+        // Nothing left to halve (a single-action bundle already IS the
+        // smallest possible granularity) — this candidate failed at the only
+        // budget there is, so treat it the same as "failed at both budgets".
+        recordCycleFailure(quarantine, candidates.map((c) => c.key), cycle, QUARANTINE_CYCLES);
       }
     }
 
@@ -348,7 +536,7 @@ export async function runDisclosureCycle(ctx: DisclosureCtx): Promise<void> {
     // the candidates are simply re-evaluated next cycle.
     if (candidates.length > 0) {
       try {
-        const sig = await sendCommitAggregate(ctx, []);
+        const sig = await send(ctx, []);
         console.log(`commit_aggregate: retry without candidates sig=${sig} actions=0`);
       } catch (e3) {
         console.error("commit_aggregate retry (no candidates) failed:", String(e3));

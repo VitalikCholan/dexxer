@@ -588,32 +588,96 @@ commit_aggregate: retry without candidates sig=5QoYshq7… actions=0
 запису, не лише від лічильника, тож `4` — це evidence-backed консервативний дефолт, не строго
 виведена межа.
 
-**Фікс (`services/relayer/src/disclosure.ts`):**
+**Фікс, раунд 1 (перше review виявило CRITICAL: цей самий вимір — доказ АКТИВНОГО liveness
+outage, не просто змарнованих ретраїв).** Перша версія фіксу (лише `COMMIT_MAX_ACTIONS` +
+halve-and-retry, без quarantine) мала фатальну діру: `selectCandidates` — oldest-debt-first,
+і `HgvCy4r2…` — найстарша черга з боргом. Оскільки вона провалюється на КОЖНОМУ бюджеті
+(таблиця вище), вона **завжди** обиралася першою, **завжди** провалювала і full, і halved
+спробу, і жодна молодша черга НІКОЛИ не діставалась до бандла — цикл щоразу падав до bare
+0-дій retry. Це не гіпотетично: саме тому M-I (§4 нижче) знадобився ручний, поза циклом
+`commit_aggregate`, що обійшов `selectCandidates` напряму — живий цикл сам НІКОЛИ б не
+дістався до гаманців M-I, поки `HgvCy4r2…` стоїть попереду.
+
+**Корінна причина (перевірено, гіпотезу #26 СПРОСТОВАНО):** контролер запропонував ризик #26 —
+`write_commitment` мовчки відкинутий містком, поки `commitment_written` вже піднявся в ER, тож
+`write_disclosure` читає неіснуючий `Commitment`. Пряма перевірка на ланцюгу (fix round 1):
+для всіх 6 «due»-записів `HgvCy4r2…` — `commitmentWritten=true` в ER, і `Commitment`-PDA
+**існує на базі для 6 з 6**; жоден із 6 `Disclosure`-PDA ще не існує (0 з 6 — не конфлікт
+`init` на вже зайнятий акаунт). Тобто ризик #26 **не** те, що тут відбувається — комміти
+реально landed, а `write_disclosure` все одно падає містком. Справжній механізм лишається
+непідтвердженим: найімовірніше — розмір/CU конкретної `write_disclosure`-дії (повний
+`ClosedRecord` + читання `Commitment`) або транзієнтна перевантаженість містка в момент
+вимірювання; не програмна помилка, яку можна полагодити цим тижнем без зміни програми.
+
+**Фікс, фінальна версія (`services/relayer/src/disclosure.ts`):**
 - новий env `COMMIT_MAX_ACTIONS` (дефолт **4**, clamp `[1, MAX_ACTIONS_PER_COMMIT]`, стеля
   8 — програмна, з `state/mod.rs`, лишається абсолютним верхнім клампом);
 - `tests/er/lib/program.ts`'s `MAX_ACTIONS_PER_COMMIT` виправлено `4 → 8` (застаріле дзеркало);
-- halve-and-retry на `0xA0000002` тепер халвить **бюджет дій**, а не кількість черг
-  (`selectCandidates(pendingQueues, floor(totalActions/2))`) — halvING по чергах нічого не дає,
-  коли одна-єдина черга сама перевищує стелю (вимірено вище: `queues=1` на кожному кроці);
-  один halve, далі — існуючий bare-retry (0 дій, комміт `Pool`+`BalancesRoot` усе одно
+- halve-and-retry на `0xA0000002` халвить **бюджет дій**, а не кількість черг
+  (`selectCandidates(pendingQueues, floor(totalActions/2), quarantine, cycle)`) — halvING по
+  чергах нічого не дає, коли одна-єдина черга сама перевищує стелю (вимірено вище:
+  `queues=1` на кожному кроці);
+- **quarantine/rotation (`QuarantineState`, fix round 1):** коли й full-budget, і halved
+  спроба падають на `0xA0000002` в одному циклі — кожна черга з halved-набору отримує +1
+  послідовну невдачу. Перша невдача одразу виключає чергу з відбору на **рівно наступний
+  цикл** («rotation» — жодна одна погана черга не коштує іншим більше одного циклу); друга
+  ПОСЛІДОВНА невдача (`QUARANTINE_THRESHOLD=2`) виключає на `QUARANTINE_CYCLES` циклів (env,
+  дефолт **10**, ~10 хв за `COMMIT_INTERVAL_TICKS=60`), з логом
+  `quarantined queue <key> (n failures)`; по завершенні карантину — рівно одна повторна
+  спроба (лічильник невдач НЕ скидається карантином, тож третя поспіль невдача одразу
+  повертає в карантин); будь-який успіх повністю чистить стан черги
+  (`recordCycleSuccess`);
+- один halve, далі — існуючий bare-retry (0 дій, комміт `Pool`+`BalancesRoot` усе одно
   проходить щоцикл незалежно від кандидатів, як і раніше);
-- `/healthz` несе `commitMaxActions`.
+- `/healthz` несе `commitMaxActions`; `sendCommitAggregate` тепер injectable через
+  `DisclosureCtx` (тестовий шов, IMPORTANT-пункт review) — дефолт лишається реальним.
 
-`services/relayer`: **89/89** тестів (було 75; нові — `test/disclosure.test.ts`:
-`parseCommitMaxActions`/`selectCandidates`/`isBridgeActionCapError`, чисті, без мережі;
-`test/health.test.ts` — `commitMaxActions` дефолт/override). `npx tsc --noEmit` — чисто.
+`services/relayer`: **100/100** тестів (було 75, 89 у першій версії фіксу; нові — quarantine/
+rotation: `selectCandidates` з `QuarantineState` (виключення після 2 невдач, rotation після 1,
+retry по завершенні карантину), `recordCycleFailure`/`recordCycleSuccess`/`isQuarantined`,
+`parseQuarantineCycles`, і один end-to-end тест `runDisclosureCycle`, що ганяє реальну
+послідовність try→halve→quarantine→bare через fake `conn`/`prog`+`sendCommitAggregate`,
+включно з ТРЕТІМ циклом, де карантинована черга A виключена і `send` бачить лише молодшу B).
+`npx tsc --noEmit` — чисто.
 
-**Деплой:** `railway up --service relayer` → `railway variables --set COMMIT_MAX_ACTIONS=4
---service relayer`. `/healthz` після деплою:
+**Деплой (фінальний, з quarantine):** `railway up --service relayer`. `/healthz`:
 ```json
-{"ok":true,"tick":13,"feePayerSol":0.191982024,"commitIntervalTicks":60,"commitMaxActions":4, ...}
+{"ok":true,"tick":11,"feePayerSol":0.191982024,"commitIntervalTicks":60,"commitMaxActions":4, ...}
 ```
-Підтверджено на живому проді (Railway logs, тик ~62, той самий беклог): запит 4 → FAIL → halved
-2 → FAIL → bare retry 0 → `sig=SADZ…` (комміт `Pool`+`BalancesRoot` пройшов) — точно поведінка,
-яку передбачав фікс; чергу `HgvCy4r2…` (власник `DsTSr…`) фікс **не рятує** (бо реальний cap
-для цих конкретних записів нижче навіть 1 — див. §4 «Відкрите»), але й не б'є по решті циклу —
-`Pool`/`BalancesRoot` продовжують комітитись щоцикл, а інші черги (M-I нижче) drain'яться
-нормально.
+`QUARANTINE_CYCLES` не виставлявся окремо — дефолт (10) лишено, як і радила review.
+
+**Підтверджено на живому проді, 3 послідовні цикли (`COMMIT_INTERVAL_TICKS=60`, спостережено
+через `railway logs`):**
+
+| Цикл (тик) | Що сталось | Sig(и) |
+| --- | --- | --- |
+| 1 (60) | full(4) FAIL → halved(2) FAIL → **failure #1 для `HgvCy4r2…`** (rotation, виключена на цикл 2) → bare(0) SUCCESS | full/halved: `0xA0000002`; bare: `5s8ZGhwB73qMSxjpy8zFxeXpTo11uMuELNsi4TcGarpfSjaV65m8BGYQKiKyhmVYnpfszVkwCvfTXiPWgyijKcW1` |
+| 2 (120) | `HgvCy4r2…` виключена (rotation), інших pending черг не було → primary SUCCESS одразу, **0 провалів узагалі** | `4PWifVv5e5x9StxzNmDhrJKLYi3QAAcFMtijuY8uhMWvm6WVYhPdPBtJAZK1Aeu7sVh3CH8xbR6ftjrTioS1MNBB` (actions=0 queues=0) |
+| 3 (180) | rotation минула, `HgvCy4r2…` знову відібрана → full(4) FAIL → halved(2) FAIL → **failure #2 → QUARANTINE** (лог `quarantined queue HgvCy4r2W5W3q4JmkEDYCQ3rSXbNNXMAypdb9zYuVHEY (2 failures)`) → bare(0) SUCCESS | full/halved: `0xA0000002`; bare: `5rBHyJ1eqK7eiSgi9zxXH7xjtrDF2hRKR2v7RFkF3D6jpAvteAXNx4MkXgT8Pkb5AUJmdgbUPCzrFAuN99wuXSpq` |
+
+**Пряма демонстрація «молодша черга drain'ється, поки отруєна — на карантині»:** оскільки на
+момент фіксу реального pending-беклогу, окрім `HgvCy4r2…`, не було (M-I вже drain'явся раніше
+ручним викликом — §4), це завдання онбордило ще одного 0-SOL трейдера через `/sponsor`
+(власник `5HaszEL9qcZ9AapKkTf9hzTc2yeFFhzgA9gdYYywDVi8`, черга
+`7Du8pfEvoE9ut1ZHrg4GUtqL3WCTuoxS7qBs38nJut4B`), відкрив і закрив позицію — свіжий, молодший
+за `HgvCy4r2…` запис. Наступний цикл (тик 360, `HgvCy4r2…` ще на карантині) підхопив і
+задренував його **без жодної невдалої спроби**: `commit_aggregate: sig=qveLP2tqr8jvVWMzPmN4B8neonw4CXnz9BDf7wkEhebEaKYMCHNZu7gqbUEjoeBwxxGHateK7wRxVgAMpzuy9Lu
+actions=1 queues=1`. Перевірено напряму: `DisclosureQueue.len` свіжого власника = **0**
+(повністю розкрито одним бандлом, `disclosure_delay_slots=0`), `HgvCy4r2…` лишилась
+незайманою — `len=8` (той самий стан, що й до фіксу) — картина точно та, яку мав дати фікс:
+одна погана черга більше не блокує решту.
+
+**Баланси (кінець фіксу, свіжий read):** `devnet-admin` 0.800648 SOL (не рухався),
+`devnet-fee-payer` 0.133726048 SOL (спад від 0.191982024 — sponsor-плата за L1a+L1b нового
+демо-трейдера плюс паралельний живий `/sponsor`-трафік, `sponsor.count_today` 20→25),
+`devnet-crank` 0.1 SOL.
+
+**Висновок:** `HgvCy4r2…` (`DsTSr…`'s власник) лишається так само незакритою, як і до фіксу
+(§4's «Відкрите» — коренева причина в бриджі/дії, не в клієнтському відборі), **але тепер це
+явно ЗАБЛОКОВАНА (quarantined) черга, а не активний liveness outage** — до фіксу вона
+блокувала ВЕСЬ цикл назавжди; після фіксу вона ізольована на `QUARANTINE_CYCLES` (10 циклів,
+потім одна повторна спроба), а все інше — `Pool`/`BalancesRoot`, і, як щойно доведено, молодші
+черги — продовжує йти щоцикл нормально.
 
 ### 1. M-G′ — ліквідація без relayer-а (планувальник сам, `CRANK_ENABLED=false`)
 
@@ -642,13 +706,15 @@ commit_aggregate: retry without candidates sig=5QoYshq7… actions=0
 `Disclosure` PDA `2aVzPtRd8co3soCfXYvf1frHyghKWZb8FQrbek8LeKN3`.
 
 Скрипт-поллінг (≤100 с, без ручного `commit_aggregate`) **сам по собі впав** —
-`mhLanded: false`, `mhCloseToDisclosureSeconds: 103.762` (тайм-аут, не landing-час). **Проте
-пряма перевірка вже під час цього завдання підтвердила обидва PDA існують на L1**
-(`getAccountInfo` — `exists: true` для обох) — реєстрація й розкриття landed, просто пізніше
-за вікно скрипту (COMMIT_INTERVAL_TICKS=60 означає ~60–120 с до наступного циклу, поллінг
-100 с — за краєм на один тик). **Висновок: M-H PASS по суті (комміт+розкриття одним бандлом,
-delay=0, підтверджено post-hoc), FAIL по жорсткому 100-секундному вікну скрипта** — вузьке
-вікно, не regresion; окремо від «Відкрите» §4 нижче (ця черга — не та, що застрягла).
+`mhLanded: false`, `mhCloseToDisclosureSeconds: 103.762` (тайм-аут поллінгу, **не** підтверджений
+момент landing-у). **Пряма перевірка вже під час цього завдання підтвердила обидва PDA існують
+на L1** (`getAccountInfo` — `exists: true` для обох) — реєстрація й розкриття таки landed, але
+**точний момент landing-у невідомий, відомо лише що > 103.8 с** (перевірка робилась значно
+пізніше, у процесі fix round 1's дослідження — жодного проміжного таймстампа між 103.8 с і
+моментом перевірки не знято). **Висновок: M-H PASS по суті (комміт+розкриття одним бандлом,
+delay=0, підтверджено post-hoc на L1), час landing-у — «unknown (> 103.8 с)», FAIL по
+жорсткому 100-секундному вікну скрипта** — вузьке вікно скрипта, не регресія; ця черга не
+пов'язана з `HgvCy4r2…` (окремий власник, окрема черга — див. §0/§4).
 `COMMIT_INTERVAL_TICKS`: рішення лишити **60** для демо не приймалось цим завданням — поза
 скоупом Task 7 (питання з week-4/5 Task 6 лишається відкритим).
 
@@ -667,7 +733,8 @@ QueueFull` (`2aanJKPqLzmyNMEq1N5HSKpDEcyp5DDmWJzKvUydbzeQXKgg6AZiMF2N8MSWjsPGJTm
 відновлено (`41LogbRToBLteRTL5xKrfT6zfh1y1mX6M8pwimX6J2xAb8Le6euSLubGRkDueQNrKcxc2dczzzZgyrKa3QroXuWu`,
 `finalDisclosureDelaySlots: "0"` підтверджено). **«Черга звільнить слот» — не підтверджено
 в межах скрипта** (`overflowFreedAfterSeconds: null`, тайм-аут 360 с) — і **лишається
-незакритою й на кінець цього завдання** (див. §4 нижче): §0's дефект — саме ця черга.
+незакритою й на кінець цього завдання** (§0's поганий бандл — саме ця черга; після fix
+round 1 вона на карантині, не активно блокує решту циклу, але сама так і не drain'ялась).
 
 ### 4. M-I — онбординг/exit на 0-SOL гаманцях
 
@@ -753,17 +820,21 @@ init_user, sponsored, 0 SOL) для **нового** ключа як замін�
 
 1. **Черга `HgvCy4r2W5W3q4JmkEDYCQ3rSXbNNXMAypdb9zYuVHEY` (власник `devnet-overflow`'s
    `DsTSr…`) лишається застряглою** — `len=8, uncommitted=2, due=6`, підтверджено свіжим
-   читанням наприкінці цього завдання. Відхиляється містком на кожному протестованому
-   бюджеті 1–8 (§0) — не рятується `COMMIT_MAX_ACTIONS`-тюнінгом, бо дефект — не про
-   кількість дій у бандлі. Оскільки oldest-debt-first завжди підбирає найстаршу чергу
-   першою, ця черга **потенційно блокує весь інший беклог** позаду себе, доки або (a) вона
-   якось сама пройде (спостерігалось як можливе для АНАЛОГІЧНИХ записів — M-H's окрема
-   черга врешті landed після кількох невдалих циклів), або (b) з'явиться skip-poison-and-continue
-   логіка понад «halve once» (поза скоупом цього завдання), або (c) ручне втручання, як
-   зроблено для M-I вище. Requires investigation: чи це справді per-action розмір
-   (`write_disclosure`, що читає `Commitment`+`ClosedRecord`, важчий за `write_commitment`),
-   чи транзієнтна перевантаженість містка, чи регресія тижня-5 Task 1's DQ-джерельної
-   `write_disclosure` проти старої Position-джерельної форми.
+   читанням наприкінці fix round 1. Відхиляється містком на кожному протестованому бюджеті
+   1–8 (§0) — не рятується `COMMIT_MAX_ACTIONS`-тюнінгом, бо дефект не про кількість дій у
+   бандлі. **Fix round 1 закрило liveness-частину** (§0): черга тепер на карантині
+   (`QuarantineState`, `QUARANTINE_CYCLES=10`) і більше НЕ блокує молодші черги — доведено
+   живим прогоном (§0's таблиця циклів 1–3 + пряма демонстрація на свіжому 0-SOL трейдері,
+   яка drain'ялась поки `HgvCy4r2…` стояла на карантині). **Що лишається відкритим — сам
+   трейдер досі не розкритий**, і корінна причина досі невідома: контролерова гіпотеза
+   (ризик #26, «Commitment ніколи не landed») **перевірена й спростована** (§0 — 6 з 6
+   `Commitment`-PDA існують на базі для «due»-записів). Requires investigation (week 6, зміна
+   програми): чи це справді per-action розмір/CU (`write_disclosure` читає `Commitment` і
+   несе повний `ClosedRecord`, важче за `write_commitment`), чи транзієнтна перевантаженість
+   містка в момент вимірювання, чи щось третє. Карантин періодично дає їй одну повторну
+   спробу (раз на ~10 циклів) — якщо колись пощастить (бридж відновиться/полагодять), вона
+   сама розкриється без подальшого втручання; якщо ні — трейдер лишається заблокованим
+   назавжди, і це вже питання до програми, не до relayer-а.
 2. **`init_user_reuse_queue`-вікно не зловлене на devnet** — при 60-тиковому janitor-і обидва
    проходи (ER+база) виконуються в одному циклі без паузи між ними; шлях лишається
    верифікованим лише в LiteSVM. Якщо вікно принципово важливе для продукту (а не лише

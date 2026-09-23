@@ -63,9 +63,7 @@ import type { Keypair } from "@solana/web3.js";
 import { confirmSignature, sleep, teeConn } from "../../../tests/er/lib/env.js";
 import type { Net } from "../../../tests/er/lib/env.js";
 import { POSITION_DISC, accountNs, dexxerCoreProgram, pdas } from "../../../tests/er/lib/program.js";
-import { COMMIT_MAX_ACTIONS, runDisclosureCycle, runRootCycle } from "./disclosure.js";
-
-export { COMMIT_MAX_ACTIONS };
+import { COMMIT_MAX_ACTIONS, createQuarantineState, runDisclosureCycle, runRootCycle } from "./disclosure.js";
 import { orphanDeps, runOrphanCycle } from "./orphan.js";
 
 type PublicKeyT = InstanceType<typeof PublicKey>;
@@ -111,6 +109,10 @@ function parseCommitInterval(raw: string | undefined): number {
   return Number.isFinite(n) && n >= 1 ? Math.trunc(n) : DEFAULT_COMMIT_INTERVAL_TICKS;
 }
 export const COMMIT_INTERVAL_TICKS = parseCommitInterval(process.env.COMMIT_INTERVAL_TICKS);
+// Fix round 1 (MINOR finding, controller review): re-exported next to the
+// other env-derived constants rather than sitting alone right after the
+// import.
+export { COMMIT_MAX_ACTIONS };
 // How many candidates actually fit in ONE legacy (non-v0) transaction, which
 // is what this client sends. Since week-5 Task 1 a candidate is a
 // `[Position, UserAccount, DisclosureQueue]` triple, so a chunk costs 3
@@ -167,6 +169,12 @@ export async function startCrank(cfg: RelayerConfig, state: RelayerState): Promi
   const baseConn = new Connection(cfg.baseRpc, "confirmed");
   const baseFeePayerProg = dexxerCoreProgram(baseConn, cfg.feePayer);
   let lastBlockhash: string | null = null;
+  // Fix round 1: ONE `QuarantineState` for the whole process lifetime — see
+  // disclosure.ts's header comment. `disclosureCycle` is a separate counter
+  // from the 1s tick counter `n` below: it increments once per
+  // `COMMIT_INTERVAL_TICKS`, which is what `QuarantineState.until` counts in.
+  const quarantine = createQuarantineState();
+  let disclosureCycle = 0;
 
   async function reconnect(): Promise<void> {
     conn = await teeConn(cfg.crank);
@@ -322,7 +330,8 @@ export async function startCrank(cfg: RelayerConfig, state: RelayerState): Promi
     // freshly computed `BalancesRoot`. Each cycle is its own try/catch, so
     // neither ever kills this 1s tick loop.
     if (n % COMMIT_INTERVAL_TICKS === 0) {
-      const cycleCtx = { conn, prog, crank: cfg.crank, feePayerConn, feePayerProg, feePayer: cfg.feePayer, pool, poolLive, balancesRoot, feeEscrow };
+      disclosureCycle += 1;
+      const cycleCtx = { conn, prog, crank: cfg.crank, feePayerConn, feePayerProg, feePayer: cfg.feePayer, pool, poolLive, balancesRoot, feeEscrow, quarantine, cycle: disclosureCycle };
       try {
         await runRootCycle(cycleCtx);
       } catch (e) {
