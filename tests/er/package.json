@@ -17,6 +17,8 @@
     "devnet:root": "DEXXER_NET=devnet tsx devnet/07-balances-root.ts",
     "devnet:undelegate": "DEXXER_NET=devnet tsx devnet/08-undelegate.ts",
     "devnet:snapshot": "DEXXER_NET=devnet tsx devnet/09-pool-snapshot.ts",
+    "devnet:setparams": "DEXXER_NET=devnet tsx devnet/10-set-params.ts",
+    "devnet:liqtask": "DEXXER_NET=devnet tsx devnet/11-liq-task-migration.ts",
     "selftest:hashes": "tsx lib/hashes.selftest.ts"
   },
   "dependencies": {

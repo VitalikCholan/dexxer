@@ -133,19 +133,24 @@ async function main() {
     return sendAndConfirmIx(feePayerConn, feePayer, ix);
   }
 
-  async function waitForSlot(target: bigint) {
-    let cur = BigInt(await baseConn.getSlot("confirmed"));
+  // `ClosedRecord.reveal_after_slot` is an ER slot, and the ER's slot counter
+  // is unrelated to the base layer's (week-5 Task 4: ~343.4M vs ~503.1M, and
+  // the ER advances ~80 slots/s against base's ~2.5). Polling base here — what
+  // this script did through week 4 — compared two different counters and
+  // returned instantly. Poll the ER.
+  async function waitForErSlot(target: bigint) {
+    let cur = BigInt(await ownerConn.getSlot("confirmed"));
     while (cur < target) {
-      await sleep(3000);
-      cur = BigInt(await baseConn.getSlot("confirmed"));
+      await sleep(1000);
+      cur = BigInt(await ownerConn.getSlot("confirmed"));
     }
   }
 
   // === Step 1: drain whatever 06 left in the ring (week-5 Task 1: the record
-  // of 06's second close is queued and uncommitted). One `commit_aggregate`
-  // schedules its `write_commitment`; after `reveal_after_slot` a second one
-  // schedules the `write_disclosure` and pops it. If the ring is already empty
-  // (a re-run), skip.
+  // of 06's second close is queued and uncommitted). Past the record's
+  // `reveal_after_slot`, ONE `commit_aggregate` emits both `write_commitment`
+  // and `write_disclosure` and pops it. If the ring is already empty (a
+  // re-run), skip.
   const posNow = await accountNs(coreOwnerEr).position.fetch(position);
   assert("empty" in posNow.state, "Position.state == Empty (close frees it immediately since week-5 Task 1)");
   const dqBefore = await accountNs(coreOwnerEr).disclosureQueue.fetch(disclosureQueue);
@@ -154,8 +159,9 @@ async function main() {
     const rec = dqBefore.records[dqBefore.head];
     const { args, salt } = recToArgsAndSalt(rec);
     const hash = commitmentHash(args, salt);
+    await waitForErSlot(args.revealAfterSlot);
     const sig = await commitAggregate(disclosureQueue);
-    console.log(`commit_aggregate(dq, commitment) sig=${sig}`);
+    console.log(`commit_aggregate(dq — commitment + disclosure in one bundle) sig=${sig}`);
     const commitmentAcc = await pollBase(`Commitment[hash]`, async () => {
       try {
         return await accountNs(coreBaseAdmin).commitment.fetch(pdas.commitment(hash));
@@ -167,9 +173,14 @@ async function main() {
     const matches = Buffer.compare(Buffer.from(hash), Buffer.from(onChainHash)) === 0;
     assert(matches, "closeout commitment hash matches (hash-seeded, no collision possible)");
     sigs.closeoutCommit = sig;
-    await waitForSlot(args.revealAfterSlot);
-    const drainSig = await commitAggregate(disclosureQueue);
-    console.log(`drained via commit_aggregate(dq, reveal): ${drainSig}`);
+    await pollBase("Disclosure[hash]", async () => {
+      try {
+        return await accountNs(coreBaseAdmin).disclosure.fetch(pdas.disclosure(hash));
+      } catch {
+        return null;
+      }
+    });
+    console.log("Disclosure landed on L1 from the same bundle");
     await sleep(3000);
   } else {
     console.log("DisclosureQueue already empty (re-run) — skipping closeout");
