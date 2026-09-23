@@ -83,10 +83,11 @@ export function useTradeSession(): TradeSession {
           feed: pdas.feedUnder(oracleProgram),
           disclosureQueue: pdas.disclosureQueue(owner!),
           feeEscrow: pdas.feeEscrow(),
-          // Stand-in until week-5 Task 3 derives the real task context — see
-          // `TradeAccounts.taskContext`.
+          // Inert writable placeholder; the position PDA is the convention on
+          // every client — see `TradeAccounts.taskContext`.
           taskContext: pdas.position(owner!, marketPda),
           magicProgram: MAGIC_PROGRAM_ID,
+          liqCrankSigner: pdas.liqCrankSigner(),
         }
         const teeConn = await teeConnectionForSession(sessionKp)
         if (cancelled) return

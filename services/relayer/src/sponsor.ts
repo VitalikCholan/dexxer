@@ -217,7 +217,8 @@ interface IxShape {
 const CORE_SHAPES: Record<string, IxShape> = {
   faucet_init: { ownerIdx: 0, payerIdx: 1 },
   init_user: { ownerIdx: 0, payerIdx: 1 },
-  delegate_user: { ownerIdx: 0 },
+  // Week-5 Task 3 (P1): `DelegateUser` gained `payer: Signer` at index 1.
+  delegate_user: { ownerIdx: 0, payerIdx: 1 },
   init_permissions: { ownerIdx: 0 },
   set_session: { ownerIdx: 0 },
 };

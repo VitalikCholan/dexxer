@@ -238,7 +238,10 @@ fn delegate_user_rejects_exited_account() {
     let w = World::bootstrap(&mut h);
     let t = exited_trader(&mut h, &w);
 
-    let r = h.send(&[ixs::delegate_user(&t.kp.pubkey(), &w)], &[&t.kp]);
+    let r = h.send(
+        &[ixs::delegate_user(&t.kp.pubkey(), &t.kp.pubkey(), &w)],
+        &[&t.kp],
+    );
     assert_custom_error(&r, 6000 + DexxerError::NotExited as u32);
 
     h.send(
@@ -249,10 +252,67 @@ fn delegate_user_rejects_exited_account() {
     // LiteSVM deploys no delegation program, so the CPI below still cannot
     // succeed here — what this asserts is that the guard no longer fires and
     // the call now reaches the delegation CPI.
-    let r = h.send(&[ixs::delegate_user(&t.kp.pubkey(), &w)], &[&t.kp]);
+    let r = h.send(
+        &[ixs::delegate_user(&t.kp.pubkey(), &t.kp.pubkey(), &w)],
+        &[&t.kp],
+    );
     assert_ne!(
         custom_error_code(&r),
         Some(6000 + DexxerError::NotExited as u32),
         "a re-onboarded account must pass the exited guard"
+    );
+}
+
+// Week-5 Task 3 (P1): `DelegateUser` gained a `payer: Signer` distinct from
+// `owner`, so the three delegation records can be funded by the relayer's
+// sponsor key while the owner keeps signing for its own PDAs. LiteSVM deploys
+// no delegation program, so the CPI itself can never succeed here — what is
+// assertable is the half that runs BEFORE it: `payer` really is a separate,
+// required signer, and a call carrying one still reaches the delegation CPI
+// instead of failing account validation. Whether the lamports actually come
+// out of `payer` is a devnet measurement (Task 4), not a LiteSVM one.
+#[test]
+fn delegate_user_with_separate_payer() {
+    let mut h = Harness::new();
+    let w = World::bootstrap(&mut h);
+    let t = w.new_trader(&mut h, 0);
+    let payer = Keypair::new();
+    h.fund(&payer.pubkey(), 5_000_000_000);
+
+    let ix = ixs::delegate_user(&t.kp.pubkey(), &payer.pubkey(), &w);
+    assert_eq!(ix.accounts[0].pubkey, t.kp.pubkey(), "owner stays first");
+    let payer_meta = &ix.accounts[1];
+    assert_eq!(payer_meta.pubkey, payer.pubkey(), "payer follows owner");
+    assert!(
+        payer_meta.is_signer && payer_meta.is_writable,
+        "payer must be a writable signer"
+    );
+
+    // (1) `payer` unsigned: Anchor's `Signer` check is what fires (3010,
+    // AccountNotSigner) — proof the new field is genuinely a required signer
+    // and not just along for the ride.
+    let mut unsigned = ix.clone();
+    unsigned.accounts[1].is_signer = false;
+    let r = h.send(&[unsigned], &[&t.kp]);
+    assert_eq!(
+        custom_error_code(&r),
+        Some(3010),
+        "payer must be rejected when it does not sign"
+    );
+
+    // (2) both sign: every constraint passes and the call reaches the
+    // delegation CPI, which cannot succeed without a delegation program.
+    let owner_before = h.svm.get_account(&t.kp.pubkey()).unwrap().lamports;
+    let r = h.send(&[ix], &[&t.kp, &payer]);
+    assert!(r.is_err(), "no delegation program is deployed on LiteSVM");
+    assert_eq!(
+        custom_error_code(&r),
+        None,
+        "the failure must be the missing delegation program, not a constraint"
+    );
+    assert_eq!(
+        h.svm.get_account(&t.kp.pubkey()).unwrap().lamports,
+        owner_before,
+        "a failed delegation charges the owner nothing"
     );
 }

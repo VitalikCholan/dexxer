@@ -375,6 +375,9 @@ export async function collectBatchLegs(
         .delegateUser()
         .accounts({
           owner,
+          // Week 5, Task 3 (P1): delegation-record payer, split out of `owner`.
+          // Sponsoring it is Task 6 (the ER leg cannot be sponsored at all).
+          payer: owner,
           config,
           market,
           bufferUserAccount: ut.buffer,

@@ -100,8 +100,8 @@ pub mod dexxer_core {
     pub fn withdraw(ctx: Context<Withdraw>, amount: u64) -> Result<()> {
         user::withdraw(ctx, amount)
     }
-    pub fn open_position(
-        ctx: Context<Trade>,
+    pub fn open_position<'info>(
+        ctx: Context<'info, Trade<'info>>,
         side: Side,
         size: u64,
         margin: u64,
@@ -112,7 +112,10 @@ pub mod dexxer_core {
     pub fn add_margin(ctx: Context<Trade>, amount: u64) -> Result<()> {
         trade::add_margin(ctx, amount)
     }
-    pub fn close_position(ctx: Context<Trade>, limit_price: u64) -> Result<()> {
+    pub fn close_position<'info>(
+        ctx: Context<'info, Trade<'info>>,
+        limit_price: u64,
+    ) -> Result<()> {
         trade::close_position(ctx, limit_price)
     }
     pub fn increase_position(
@@ -123,8 +126,18 @@ pub mod dexxer_core {
     ) -> Result<()> {
         trade::increase_position(ctx, add_size, add_margin, limit_price)
     }
-    pub fn decrease_position(ctx: Context<Trade>, close_size: u64, limit_price: u64) -> Result<()> {
+    pub fn decrease_position<'info>(
+        ctx: Context<'info, Trade<'info>>,
+        close_size: u64,
+        limit_price: u64,
+    ) -> Result<()> {
         trade::decrease_position(ctx, close_size, limit_price)
+    }
+    /// Week-5 Task 3: the per-position scheduled liquidation task's
+    /// instruction. Registered by `open_position`, signed by
+    /// `crank_signer_pda(fee_escrow)`, never carries `remaining_accounts`.
+    pub fn liquidation_check(ctx: Context<LiquidationCheck>) -> Result<()> {
+        liquidation::liquidation_check(ctx)
     }
     pub fn crank_tick<'info>(ctx: Context<'info, CrankTick<'info>>) -> Result<()> {
         crank::crank_tick(ctx)
@@ -170,7 +183,7 @@ pub mod dexxer_core {
     pub fn init_market_permissions(ctx: Context<InitMarketPermissions>) -> Result<()> {
         user::init_market_permissions(ctx)
     }
-    pub fn undelegate_user(ctx: Context<UndelegateUser>) -> Result<()> {
+    pub fn undelegate_user<'info>(ctx: Context<'info, UndelegateUser<'info>>) -> Result<()> {
         user::undelegate_user(ctx)
     }
     pub fn close_orphan_queue(ctx: Context<CloseOrphanQueue>) -> Result<()> {

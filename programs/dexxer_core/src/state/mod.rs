@@ -1,3 +1,5 @@
+use anchor_lang::prelude::Pubkey;
+
 pub mod balances_root;
 pub mod config;
 pub mod disclosure;
@@ -72,6 +74,64 @@ pub const MAX_CANDIDATES: usize = 16;
 pub const MIN_WITHDRAW: u64 = 1_000_000;
 /// Minimum slots between successful `withdraw` calls for the same `UserAccount`.
 pub const WITHDRAW_COOLDOWN_SLOTS: u64 = 300;
+
+// ------------------------------------------------------------- week-5 Task 3
+/// How often the per-position Magic Actions task calls `liquidation_check`.
+///
+/// 5 s, not the market crank's 1 s: the scheduler was measured to overshoot
+/// the requested interval (16 ticks per 60 s at `interval 5000` — week-5
+/// Task 0, measurement 1), and every position carries its own task, so the
+/// tick rate is multiplied by the number of open positions. `liq_ticks`
+/// hysteresis is counted in TICKS, not wall time, which means the same
+/// `Market.liq_hysteresis_ticks` is ~2 s of grace on the crank path and ~10 s
+/// on this one. That is deliberate and the constant is NOT adjusted for it:
+/// the scheduled path is the backstop, the crank is the fast path, and a
+/// backstop that fires later is the safe direction.
+pub const LIQ_TASK_INTERVAL_MS: i64 = 5_000;
+
+/// Magic Actions `task_id` for one position's liquidation task.
+///
+/// `task_id` is VALIDATOR-GLOBAL, not per-program (week-5 Task 0, open item
+/// 1), so it must be derived from something globally unique to this position —
+/// its own PDA. keccak256 is the project's hash primitive everywhere else
+/// (week-3 rule), and the first 8 bytes are plenty: a collision would need two
+/// positions whose PDAs share a 64-bit keccak prefix.
+pub fn liq_task_id(position: &Pubkey) -> i64 {
+    let h = solana_keccak_hasher::hashv(&[position.as_ref()]).to_bytes();
+    let mut b = [0u8; 8];
+    b.copy_from_slice(&h[..8]);
+    i64::from_le_bytes(b)
+}
+
+#[cfg(test)]
+mod liq_task_tests {
+    use super::*;
+
+    #[test]
+    fn liq_task_id_is_deterministic_and_position_specific() {
+        let a = Pubkey::new_from_array([7u8; 32]);
+        let b = Pubkey::new_from_array([8u8; 32]);
+        assert_eq!(liq_task_id(&a), liq_task_id(&a), "same input, same id");
+        assert_ne!(liq_task_id(&a), liq_task_id(&b));
+    }
+
+    /// Golden vector — pins the byte layout (keccak256 of the raw 32 pubkey
+    /// bytes, first 8 bytes read little-endian) so a client that recomputes
+    /// the id off-chain can be checked against the same number.
+    #[test]
+    fn liq_task_id_golden_vector() {
+        let p = Pubkey::new_from_array([0u8; 32]);
+        let h = solana_keccak_hasher::hashv(&[p.as_ref()]).to_bytes();
+        let expected = i64::from_le_bytes(h[..8].try_into().unwrap());
+        assert_eq!(liq_task_id(&p), expected);
+        // keccak256(32 zero bytes) = 290decd9548b62a8d60345a988386fc84ba6bc95484008f6362f93160ef3e563
+        assert_eq!(&h[..8], &[0x29, 0x0d, 0xec, 0xd9, 0x54, 0x8b, 0x62, 0xa8]);
+        assert_eq!(
+            liq_task_id(&p),
+            i64::from_le_bytes([0x29, 0x0d, 0xec, 0xd9, 0x54, 0x8b, 0x62, 0xa8])
+        );
+    }
+}
 
 #[cfg(test)]
 mod size_tests {

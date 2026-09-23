@@ -262,6 +262,11 @@ impl Trader {
             // ever reads it here.
             AccountMeta::new(self.position, false),
             AccountMeta::new_readonly(pdas::magic_program(), false),
+            // `liq_crank_signer` (week-5 Task 3): the signer a scheduled
+            // `liquidation_check` tick carries. Only checked on the scheduling
+            // path, which is gated out here (no Magic program on LiteSVM), but
+            // passed correctly anyway so the derivation stays exercised.
+            AccountMeta::new_readonly(pdas::liq_crank_signer(), false),
         ]
     }
 }

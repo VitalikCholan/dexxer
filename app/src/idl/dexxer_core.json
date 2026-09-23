@@ -208,6 +208,18 @@
         {
           "name": "magic_program",
           "address": "Magic11111111111111111111111111111111111111"
+        },
+        {
+          "name": "liq_crank_signer",
+          "docs": [
+            "`liquidation_check` ticks — `crank_signer_pda(fee_escrow)`, since the",
+            "`FeeEscrow` PDA is the `ScheduleTask` CPI payer and therefore the task",
+            "authority (week-5 Task 0). Deliberately NOT `Config.scheduler_signer`,",
+            "which is `crank_signer_pda(admin)` and belongs to the market-wide",
+            "`schedule_crank` task. Verified against the derivation in",
+            "`open_position` on the scheduling path only, so the ~1.5k CU",
+            "`find_program_address` is not charged to every trade."
+          ]
         }
       ],
       "args": [
@@ -779,6 +791,18 @@
         {
           "name": "magic_program",
           "address": "Magic11111111111111111111111111111111111111"
+        },
+        {
+          "name": "liq_crank_signer",
+          "docs": [
+            "`liquidation_check` ticks — `crank_signer_pda(fee_escrow)`, since the",
+            "`FeeEscrow` PDA is the `ScheduleTask` CPI payer and therefore the task",
+            "authority (week-5 Task 0). Deliberately NOT `Config.scheduler_signer`,",
+            "which is `crank_signer_pda(admin)` and belongs to the market-wide",
+            "`schedule_crank` task. Verified against the derivation in",
+            "`open_position` on the scheduling path only, so the ~1.5k CU",
+            "`find_program_address` is not charged to every trade."
+          ]
         }
       ],
       "args": [
@@ -1404,6 +1428,18 @@
         {
           "name": "magic_program",
           "address": "Magic11111111111111111111111111111111111111"
+        },
+        {
+          "name": "liq_crank_signer",
+          "docs": [
+            "`liquidation_check` ticks — `crank_signer_pda(fee_escrow)`, since the",
+            "`FeeEscrow` PDA is the `ScheduleTask` CPI payer and therefore the task",
+            "authority (week-5 Task 0). Deliberately NOT `Config.scheduler_signer`,",
+            "which is `crank_signer_pda(admin)` and belongs to the market-wide",
+            "`schedule_crank` task. Verified against the derivation in",
+            "`open_position` on the scheduling path only, so the ~1.5k CU",
+            "`find_program_address` is not charged to every trade."
+          ]
         }
       ],
       "args": [
@@ -2775,6 +2811,11 @@
           "signer": true
         },
         {
+          "name": "payer",
+          "writable": true,
+          "signer": true
+        },
+        {
           "name": "config",
           "pda": {
             "seeds": [
@@ -3719,6 +3760,18 @@
         {
           "name": "magic_program",
           "address": "Magic11111111111111111111111111111111111111"
+        },
+        {
+          "name": "liq_crank_signer",
+          "docs": [
+            "`liquidation_check` ticks — `crank_signer_pda(fee_escrow)`, since the",
+            "`FeeEscrow` PDA is the `ScheduleTask` CPI payer and therefore the task",
+            "authority (week-5 Task 0). Deliberately NOT `Config.scheduler_signer`,",
+            "which is `crank_signer_pda(admin)` and belongs to the market-wide",
+            "`schedule_crank` task. Verified against the derivation in",
+            "`open_position` on the scheduling path only, so the ~1.5k CU",
+            "`find_program_address` is not charged to every trade."
+          ]
         }
       ],
       "args": [
@@ -5257,6 +5310,184 @@
       ]
     },
     {
+      "name": "liquidation_check",
+      "docs": [
+        "Week-5 Task 3: the per-position scheduled liquidation task's",
+        "instruction. Registered by `open_position`, signed by",
+        "`crank_signer_pda(fee_escrow)`, never carries `remaining_accounts`."
+      ],
+      "discriminator": [
+        226,
+        200,
+        124,
+        67,
+        180,
+        185,
+        6,
+        68
+      ],
+      "accounts": [
+        {
+          "name": "crank",
+          "docs": [
+            "Authorization is asserted in the body rather than here: the accepted set",
+            "includes a derived PDA (`liq_crank_signer`), which an account constraint",
+            "cannot express without recomputing it on every field validation."
+          ],
+          "signer": true
+        },
+        {
+          "name": "config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "market",
+          "relations": [
+            "market_risk",
+            "position"
+          ]
+        },
+        {
+          "name": "market_risk",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  114,
+                  105,
+                  115,
+                  107
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "market"
+              }
+            ]
+          }
+        },
+        {
+          "name": "pool_live",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  111,
+                  111,
+                  108,
+                  95,
+                  108,
+                  105,
+                  118,
+                  101
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "pool_live.mint",
+                "account": "PoolLive"
+              }
+            ]
+          }
+        },
+        {
+          "name": "feed"
+        },
+        {
+          "name": "position",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  111,
+                  115,
+                  105,
+                  116,
+                  105,
+                  111,
+                  110
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "position.owner",
+                "account": "Position"
+              },
+              {
+                "kind": "account",
+                "path": "market"
+              }
+            ]
+          }
+        },
+        {
+          "name": "user_account",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  117,
+                  115,
+                  101,
+                  114
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "user_account.owner",
+                "account": "UserAccount"
+              }
+            ]
+          }
+        },
+        {
+          "name": "disclosure_queue",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  100,
+                  113
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "disclosure_queue.owner",
+                "account": "DisclosureQueue"
+              }
+            ]
+          }
+        }
+      ],
+      "args": []
+    },
+    {
       "name": "open_position",
       "discriminator": [
         135,
@@ -5458,6 +5689,18 @@
         {
           "name": "magic_program",
           "address": "Magic11111111111111111111111111111111111111"
+        },
+        {
+          "name": "liq_crank_signer",
+          "docs": [
+            "`liquidation_check` ticks — `crank_signer_pda(fee_escrow)`, since the",
+            "`FeeEscrow` PDA is the `ScheduleTask` CPI payer and therefore the task",
+            "authority (week-5 Task 0). Deliberately NOT `Config.scheduler_signer`,",
+            "which is `crank_signer_pda(admin)` and belongs to the market-wide",
+            "`schedule_crank` task. Verified against the derivation in",
+            "`open_position` on the scheduling path only, so the ~1.5k CU",
+            "`find_program_address` is not charged to every trade."
+          ]
         }
       ],
       "args": [

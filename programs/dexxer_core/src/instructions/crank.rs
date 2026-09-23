@@ -1,5 +1,8 @@
 use crate::{
-    errors::DexxerError, instructions::trade::finalize_close, math, oracle::read_price, risk,
+    errors::DexxerError,
+    instructions::liquidation::{liq_due, liquidate_now},
+    math,
+    oracle::read_price,
     state::*,
 };
 use anchor_lang::prelude::*;
@@ -75,10 +78,10 @@ fn liquidate_candidate(
     require!(dq_ai.key() == exp_dq, DexxerError::InvalidCandidate);
     let mut dq = DisclosureQueue::try_deserialize(&mut &dq_ai.try_borrow_data()?[..])?;
     require!(dq.owner == pos.owner, DexxerError::InvalidCandidate);
-    if dq.len as usize >= DQ_CAPACITY {
-        return Ok(false);
-    }
-    finalize_close(
+    // The settlement itself is shared with the scheduled per-position path
+    // (week-5 Task 3) so the two can never drift apart; everything above is
+    // this path's own untyped-account plumbing.
+    let done = liquidate_now(
         market_key,
         risk_acc,
         pool,
@@ -87,12 +90,13 @@ fn liquidate_candidate(
         &mut dq,
         mark,
         fee_bps,
-        CloseReason::Liquidated,
         clock,
         delay_slots,
     )?;
-    dq.try_serialize(&mut &mut dq_ai.try_borrow_mut_data()?[..])?;
-    Ok(true)
+    if done {
+        dq.try_serialize(&mut &mut dq_ai.try_borrow_mut_data()?[..])?;
+    }
+    Ok(done)
 }
 
 // anchor-lang 1.0.2's `Context<'info, T>` carries a single lifetime (not the
@@ -225,36 +229,30 @@ pub fn crank_tick<'info>(mut ctx: Context<'info, CrankTick<'info>>) -> Result<()
         if pos.state != PositionState::Open {
             continue;
         }
-        if risk::liquidatable_now(&pos, &a.market, mark)? {
-            pos.liq_ticks = pos
-                .liq_ticks
-                .checked_add(1)
-                .ok_or(DexxerError::MathOverflow)?;
-            if pos.liq_ticks >= a.market.liq_hysteresis_ticks {
-                let fee_bps = a.market.liq_fee_bps as u32;
-                let delay = a.config.disclosure_delay_slots;
-                let done = liquidate_candidate(
-                    dq_ai,
-                    market_key,
-                    &mut a.market_risk,
-                    &mut a.pool_live,
-                    &mut user,
-                    &mut pos,
-                    mark,
-                    fee_bps,
-                    &clock,
-                    delay,
-                )?;
-                if !done {
-                    // Ring full — skipped, not failed (see `liquidate_candidate`).
-                    // `liq_ticks` above is still written back below, so the
-                    // position stays hot and liquidates on the first tick after
-                    // a reveal drains the ring.
-                    msg!("liq skipped: queue full {}", pos_ai.key());
-                }
+        // Hysteresis is shared with `liquidation_check` (week-5 Task 3) — the
+        // one place `liq_ticks` moves, on either path.
+        if liq_due(&mut pos, &a.market, mark)? {
+            let fee_bps = a.market.liq_fee_bps as u32;
+            let delay = a.config.disclosure_delay_slots;
+            let done = liquidate_candidate(
+                dq_ai,
+                market_key,
+                &mut a.market_risk,
+                &mut a.pool_live,
+                &mut user,
+                &mut pos,
+                mark,
+                fee_bps,
+                &clock,
+                delay,
+            )?;
+            if !done {
+                // Ring full — skipped, not failed (see `liquidate_candidate`).
+                // `liq_ticks` above is still written back below, so the
+                // position stays hot and liquidates on the first tick after
+                // a reveal drains the ring.
+                msg!("liq skipped: queue full {}", pos_ai.key());
             }
-        } else {
-            pos.liq_ticks = 0;
         }
         pos.try_serialize(&mut &mut pos_ai.try_borrow_mut_data()?[..])?;
         user.try_serialize(&mut &mut user_ai.try_borrow_mut_data()?[..])?;

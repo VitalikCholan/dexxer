@@ -394,6 +394,26 @@ pub fn crank_tick(crank: &Pubkey, wd: &World, candidates: &[&Trader]) -> Instruc
         data: ix::CrankTick {}.data(),
     }
 }
+/// `liquidation_check` (ER): the per-position scheduled task's instruction.
+/// Fixed account list — the scheduler freezes it at registration time, so it
+/// never carries `remaining_accounts` (week-5 Task 3).
+pub fn liquidation_check(signer: &Pubkey, wd: &World, t: &Trader) -> Instruction {
+    Instruction {
+        program_id: prog(),
+        accounts: vec![
+            rs(signer),
+            r(&wd.config),
+            r(&wd.market),
+            w(&wd.risk),
+            w(&wd.pool_live),
+            r(&wd.feed),
+            w(&t.position),
+            w(&t.user),
+            w(&t.dq),
+        ],
+        data: ix::LiquidationCheck {}.data(),
+    }
+}
 pub fn credit_deposit(signer: &Pubkey, t: &Trader, wd: &World, amount: u64) -> Instruction {
     Instruction {
         program_id: prog(),
@@ -669,14 +689,16 @@ pub fn close_exited_user(fee_payer: &Pubkey, t: &Trader, wd: &World) -> Instruct
 /// program. LiteSVM deploys no delegation program, so the CPI itself always
 /// fails here; the builder exists so the guards that run BEFORE it (week-5 Task
 /// 2 fix round 1: `exited`) can be tested.
-pub fn delegate_user(owner: &Pubkey, wd: &World) -> Instruction {
+pub fn delegate_user(owner: &Pubkey, payer: &Pubkey, wd: &World) -> Instruction {
     use ephemeral_rollups_sdk::pda::{
         DELEGATE_BUFFER_TAG, DELEGATION_METADATA_TAG, DELEGATION_RECORD_TAG,
     };
     let dlp = pk(anchor_lang::prelude::Pubkey::new_from_array(
         ephemeral_rollups_sdk::consts::DELEGATION_PROGRAM_ID.to_bytes(),
     ));
-    let mut accounts = vec![s(owner), r(&wd.config), r(&wd.market)];
+    // Week-5 Task 3 (P1): `payer` sits immediately after `owner` and funds the
+    // three delegation records; `owner` still signs for its own PDAs.
+    let mut accounts = vec![s(owner), s(payer), r(&wd.config), r(&wd.market)];
     for acc in [
         pdas::user(owner),
         pdas::position(owner, &wd.market),

@@ -177,6 +177,10 @@ async function runFlow(
       .delegateUser()
       .accounts({
         owner,
+        // Week 5, Task 3 (P1): `payer` funds the three delegation records.
+        // Still the owner here — routing it through the relayer's sponsor key
+        // is Task 6's 0-SOL onboarding.
+        payer: owner,
         config,
         market,
         bufferUserAccount: ut.buffer,

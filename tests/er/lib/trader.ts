@@ -55,6 +55,7 @@ import {
 } from "@magicblock-labs/ephemeral-rollups-sdk";
 import { baseConn, ER_VALIDATOR, loadOrCreateKey, sendAndConfirmIx, teeConn, waitAccountExists, waitDelegated } from "./env.js";
 import { DEXXER_CORE_PROGRAM_ID, accountNs, dexxerCoreProgram, delegationTriple, mockOracleProgram, pdas } from "./program.js";
+import { crankSignerPda } from "./crank-signer.js";
 import { MOCK_CONF } from "./admin.js";
 import type { Bootstrapped } from "./admin.js";
 
@@ -249,6 +250,9 @@ export async function onboardTrader(
       .delegateUser()
       .accounts({
         owner: kp.publicKey,
+        // Week-5 Task 3 (P1): the delegation-record payer, split out of
+        // `owner` so a sponsor can fund it. The trader self-pays here.
+        payer: kp.publicKey,
         config,
         market,
         bufferUserAccount: ut.buffer,
@@ -314,11 +318,21 @@ export async function onboardTrader(
  *
  * Week-5 Task 1 appended four accounts: `disclosureQueue` (a close now pushes
  * its `ClosedRecord` straight into the owner's ring), `feeEscrow`, `taskContext`
- * and `magicProgram` (declared for the per-position liquidation task, Task 3;
- * unused by the current handlers). `taskContext` is unconstrained on-chain and
- * only has to be an existing writable account until Task 3 derives the real one
- * — the position PDA stands in, exactly as the LiteSVM `trade_accounts` builder
- * does.
+ * and `magicProgram`; Task 3 appended `liqCrankSigner` and put all five to work
+ * — `open_position` now registers a per-position liquidation task and
+ * `close_position` cancels it.
+ *
+ * `taskContext` is an inert writable placeholder on-chain: the Magic Program
+ * never creates, writes or reassigns it, and ANY already-existing writable
+ * account is accepted (week-5 Task 0, measurement 6). The position PDA is used
+ * on every client (here, LiteSVM's `trade_accounts`, and the app) so the
+ * registration and the cancel always name the same account.
+ *
+ * `liqCrankSigner` is `crank_signer_pda(feeEscrow)` — the signer the scheduler
+ * gives a scheduled tick, derived from the task AUTHORITY, which is the
+ * `ScheduleTask` CPI payer (the `FeeEscrow` PDA). It is NOT
+ * `Config.scheduler_signer` (= `crank_signer_pda(admin)`), which belongs to the
+ * market-wide `schedule_crank` task; `open_position` rejects any other value.
  *
  * Takes the PDA triple structurally rather than a whole `Trader` so the devnet
  * scripts, which assemble their own minimal trader object, can use it too.
@@ -337,6 +351,7 @@ export function tradeAccounts(boot: Bootstrapped, t: Pick<Trader, "userAccount" 
     feeEscrow: pdas.feeEscrow(),
     taskContext: t.position,
     magicProgram: MAGIC_PROGRAM_ID,
+    liqCrankSigner: crankSignerPda(pdas.feeEscrow()),
   };
 }
 

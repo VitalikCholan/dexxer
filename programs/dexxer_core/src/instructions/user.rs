@@ -19,6 +19,7 @@ use ephemeral_rollups_sdk::{
 
 use crate::{
     errors::DexxerError,
+    instructions::liquidation::cancel_liquidation_task,
     state::*,
     token::{transfer_signed_by_owner, transfer_signed_by_pool},
 };
@@ -521,6 +522,13 @@ pub fn withdraw(ctx: Context<Withdraw>, amount: u64) -> Result<()> {
 pub struct DelegateUser<'info> {
     #[account(mut)]
     pub owner: Signer<'info>,
+    // Week-5 Task 3 (P1): the rent for the three delegation records is the
+    // last owner-paid cost of onboarding (~0.004 SOL), which is what keeps the
+    // one-tap flow from being 0-SOL. Splitting `payer` out of `owner` lets the
+    // relayer's sponsor key fund it while the owner still signs for its own
+    // PDAs. `payer == owner` remains valid and is what the tests use.
+    #[account(mut)]
+    pub payer: Signer<'info>,
     #[account(seeds = [CONFIG_SEED], bump = config.bump)]
     pub config: Account<'info, Config>,
     /// CHECK: market key for the position seed
@@ -554,7 +562,7 @@ pub fn delegate_user(ctx: Context<DelegateUser>) -> Result<()> {
     let o = ctx.accounts.owner.key();
     let m = ctx.accounts.market.key();
     ctx.accounts.delegate_user_account(
-        &ctx.accounts.owner,
+        &ctx.accounts.payer,
         &[USER_SEED, o.as_ref()],
         DelegateConfig {
             validator: Some(ctx.accounts.config.tee_validator),
@@ -562,7 +570,7 @@ pub fn delegate_user(ctx: Context<DelegateUser>) -> Result<()> {
         },
     )?;
     ctx.accounts.delegate_position(
-        &ctx.accounts.owner,
+        &ctx.accounts.payer,
         &[POSITION_SEED, o.as_ref(), m.as_ref()],
         DelegateConfig {
             validator: Some(ctx.accounts.config.tee_validator),
@@ -570,7 +578,7 @@ pub fn delegate_user(ctx: Context<DelegateUser>) -> Result<()> {
         },
     )?;
     ctx.accounts.delegate_disclosure_queue(
-        &ctx.accounts.owner,
+        &ctx.accounts.payer,
         &[DQ_SEED, o.as_ref()],
         DelegateConfig {
             validator: Some(ctx.accounts.config.tee_validator),
@@ -906,7 +914,7 @@ fn close_permission_if_present<'info>(
 /// specifically because both the scrub and the permission close above have
 /// already run by the time `commit_and_undelegate` is reached, so nothing
 /// sensitive is left in the bytes that land publicly on L1.
-pub fn undelegate_user(ctx: Context<UndelegateUser>) -> Result<()> {
+pub fn undelegate_user<'info>(ctx: Context<'info, UndelegateUser<'info>>) -> Result<()> {
     let a = ctx.accounts;
     require!(
         a.position.state == PositionState::Empty,
@@ -1032,6 +1040,48 @@ pub fn undelegate_user(ctx: Context<UndelegateUser>) -> Result<()> {
             &a.magic_program.to_account_info(),
             &a.permission_program.to_account_info(),
             &[DQ_SEED, o.as_ref(), &db],
+        )?;
+    }
+
+    // Every mutation is done — hand the accounts over as a shared,
+    // `'info`-scoped reference, which is what the scheduler CPI below needs
+    // (`CancelCrankCpi` ties all of its accounts to one invariant lifetime;
+    // see `instructions/liquidation.rs`).
+    let a: &'info UndelegateUser<'info> = a;
+
+    // Cancel the position's liquidation task. This is the ONLY place that can
+    // clean up after a LIQUIDATED position: `crank_tick`/`liquidation_check`
+    // deliberately do not cancel (see `trade::cancel_liq_task`), so a task
+    // whose position was liquidated keeps ticking as a no-op until its owner
+    // exits — and once the `Position` leaves the ER below, a live task would
+    // be pointing at an account that is no longer there.
+    //
+    // KNOWN RISK, to be measured on devnet in Task 4 (M-I): on the ordinary
+    // path (`close_position` already cancelled, or the owner never opened a
+    // position at all) this cancels a `task_id` that does not exist. A failing
+    // CPI cannot be caught from inside a program, so IF the validator errors
+    // on an unknown task id, this aborts every exit and must be removed or
+    // made conditional. Nothing in `ephemeral-rollups-sdk` 0.16.2 documents
+    // the behaviour (it only forwards `MagicBlockInstruction::CancelTask`),
+    // and week-5 Task 0's spike only ever cancelled live tasks.
+    if a.magic_program.to_account_info().executable {
+        // `task_context` is the position's own PDA — the same convention the
+        // client uses when registering the task in `open_position`. The Magic
+        // Program treats this account as an inert writable placeholder: it
+        // never creates, writes or reassigns it, and any already-existing
+        // writable account is accepted (week-5 Task 0, measurement 6). Reusing
+        // `position` (already writable and delegated here) therefore costs
+        // this context no extra account — and adding one measurably did not
+        // fit: it put `UndelegateUser::try_accounts` 8 bytes over the SBF
+        // frame, which boxing `fee_escrow` did not recover.
+        let escrow: &'info Account<'info, FeeEscrow> = &a.fee_escrow;
+        let position: &'info Account<'info, Position> = &a.position;
+        cancel_liquidation_task(
+            escrow.as_ref(),
+            position.as_ref(),
+            &a.magic_program,
+            liq_task_id(&position.key()),
+            a.fee_escrow.bump,
         )?;
     }
 

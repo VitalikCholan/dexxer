@@ -157,6 +157,7 @@ async function main() {
     .delegateUser()
     .accounts({
       owner: owner.publicKey,
+      payer: owner.publicKey, // week-5 Task 3 (P1): delegation-record payer
       config,
       market,
       bufferUserAccount: ut.buffer,

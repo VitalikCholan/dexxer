@@ -178,6 +178,9 @@ async function main() {
     .delegateUser()
     .accounts({
       owner: owner.publicKey,
+      // Week-5 Task 3 (P1): `payer` funds the three delegation records. The
+      // devnet scripts keep the owner paying; sponsoring it is Task 5/6.
+      payer: owner.publicKey,
       config,
       market,
       bufferUserAccount: ut.buffer,

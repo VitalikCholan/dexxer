@@ -183,7 +183,7 @@ async function main() {
   const delegateUserSig = await core.methods
     .delegateUser()
     .accounts({
-      owner: owner.publicKey, config, market,
+      owner: owner.publicKey, payer: owner.publicKey, config, market,
       bufferUserAccount: ut.buffer, delegationRecordUserAccount: ut.record, delegationMetadataUserAccount: ut.metadata, userAccount,
       bufferPosition: pt.buffer, delegationRecordPosition: pt.record, delegationMetadataPosition: pt.metadata, position,
       bufferDisclosureQueue: dt.buffer, delegationRecordDisclosureQueue: dt.record, delegationMetadataDisclosureQueue: dt.metadata, disclosureQueue,

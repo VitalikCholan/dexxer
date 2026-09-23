@@ -54,6 +54,15 @@ pub fn feed(oracle_program: &Pubkey) -> Pubkey {
     Pubkey::find_program_address(&[b"price_feed", b"pyth-lazer", b"6"], oracle_program).0
 }
 
+/// `crank_signer_pda(fee_escrow)` — the signer the scheduler gives a
+/// per-position `liquidation_check` tick (week-5 Task 3). Derived through the
+/// program's own helper so client and program can never disagree.
+pub fn liq_crank_signer() -> Pubkey {
+    pk(dexxer_core::instructions::liquidation::liq_crank_signer(
+        &crate::apk(fee_escrow()),
+    ))
+}
+
 /// `ephemeral_rollups_sdk::compat::Pubkey` -> `solana_pubkey::Pubkey` (this
 /// crate's `Pubkey`, a different version), by bytes.
 fn compat_pk(p: ephemeral_rollups_sdk::compat::Pubkey) -> Pubkey {
