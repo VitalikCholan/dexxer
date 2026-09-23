@@ -57,7 +57,7 @@
 // bearing path for "did MY trade get revealed", independent of the indexer
 // being up), just no longer hand-rolled.
 import { useEffect, useState } from 'react'
-import { RefreshControl, ScrollView, Text, View } from 'react-native'
+import { Pressable, RefreshControl, ScrollView, Text, View } from 'react-native'
 import { PublicKey } from '@solana/web3.js'
 import * as SecureStore from 'expo-secure-store'
 import { useQuery } from '@tanstack/react-query'
@@ -74,10 +74,14 @@ import { pdas } from '@/src/lib/pdas'
 import { baseConn } from '@/src/lib/solana'
 import { useLiveAccount } from '@/src/lib/live'
 import { disclosureStatus, formatSlotsAsTime, type DisclosureStatus } from '@/src/lib/status'
+import { useTheme } from '@/src/theme'
+import { useTextStyle, type Tone } from '@/src/ui/styles'
+import { Card } from '@/src/ui/Card'
+import { Row as UiRow } from '@/src/ui/Row'
 import { Badge } from '@/src/ui/Badge'
+import { Address } from '@/src/ui/Address'
 import { EmptyState } from '@/src/ui/EmptyState'
 import { Skeleton } from '@/src/ui/Skeleton'
-import type { Tone } from '@/src/ui/styles'
 import { useTradeSession } from '../trade/useTradeSession'
 
 function hashStoreKey(owner: PublicKey): string {
@@ -153,6 +157,8 @@ interface Row {
   closedSlot: bigint
   status: DisclosureStatus
   statusText: string
+  /** Task 10: revealed rows only — the public `Disclosure` account's own address, for an explorer link. */
+  explorerPubkey?: string
 }
 
 /** `hash` (the commitment hash — see `mergeHistoryRows`) becomes the row's React `key` too, so a row stays visually stable across a status transition instead of remounting. */
@@ -189,7 +195,7 @@ function queuePendingRow(hash: string, r: DecodedClosedRecord, slot: bigint | nu
   }
 }
 
-function revealedRow(hash: string, d: DecodedDisclosure): Row {
+function revealedRow(hash: string, d: DecodedDisclosure, pubkey: PublicKey): Row {
   return {
     key: hash,
     side: d.side,
@@ -200,6 +206,7 @@ function revealedRow(hash: string, d: DecodedDisclosure): Row {
     closedSlot: d.closedSlot,
     status: 'revealed',
     statusText: STATUS_LABEL.revealed,
+    explorerPubkey: pubkey.toBase58(),
   }
 }
 
@@ -234,8 +241,8 @@ export function mergeHistoryRows(
     const hash = recordHash(r)
     merged.set(hash, queuePendingRow(hash, r, slot))
   }
-  for (const { hash, disclosure } of revealed) {
-    merged.set(hash, revealedRow(hash, disclosure))
+  for (const { hash, disclosure, pubkey } of revealed) {
+    merged.set(hash, revealedRow(hash, disclosure, pubkey))
   }
   return Array.from(merged.values()).sort((a, b) => Number(b.closedSlot - a.closedSlot))
 }
@@ -365,6 +372,7 @@ export function HistoryScreen() {
   const revealedError = revealedQuery.error ? (revealedQuery.error instanceof Error ? revealedQuery.error.message : String(revealedQuery.error)) : null
 
   const [refreshing, setRefreshing] = useState(false)
+  const [explainerOpen, setExplainerOpen] = useState(false)
 
   const rows: Row[] = mergeHistoryRows(posRecord, dq.value?.records ?? [], revealed, slot)
 
@@ -374,16 +382,32 @@ export function HistoryScreen() {
     setRefreshing(false)
   }
 
+  const { colors, space } = useTheme()
+  const heading = useTextStyle('title')
+  const body = useTextStyle('body')
+  const caption = useTextStyle('caption')
+
   return (
     <AppPage>
       <ScrollView
-        contentContainerStyle={{ gap: 16, paddingVertical: 16 }}
+        contentContainerStyle={{ gap: space.lg, paddingVertical: space.lg }}
         refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => void onRefresh()} />}
       >
-        <Text style={{ fontSize: 20, fontWeight: '700' }}>History</Text>
+        <Text style={[heading, { color: colors.textPrimary }]}>History</Text>
+
+        <Pressable onPress={() => setExplainerOpen((v) => !v)}>
+          <Text style={[caption, { color: colors.textSecondary }]}>
+            {explainerOpen ? '▾' : '▸'} Why do trades become public?
+          </Text>
+          {explainerOpen ? (
+            <Text style={[caption, { color: colors.textTertiary, marginTop: 4 }]}>
+              Your trades become public only after the delay — without your address.
+            </Text>
+          ) : null}
+        </Pressable>
 
         {sessionError || dq.error || position.error || revealedError ? (
-          <Text selectable style={{ color: '#ef4444' }}>
+          <Text selectable style={{ color: colors.short }}>
             {sessionError ?? dq.error ?? position.error ?? revealedError}
           </Text>
         ) : null}
@@ -393,38 +417,29 @@ export function HistoryScreen() {
         ) : !owner ? (
           <EmptyState text="Not connected — connect on the Onboard tab." />
         ) : rows.length === 0 ? (
-          <EmptyState text="No closed trades yet." />
+          <EmptyState text="No closed trades yet" />
         ) : (
-          <View style={{ gap: 12 }}>
+          <View style={{ gap: space.md }}>
             {rows.map((r) => (
-              <View key={r.key} style={{ gap: 4, borderBottomWidth: 1, borderColor: '#33333322', paddingBottom: 8 }}>
+              <Card key={r.key}>
                 <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
-                  <Text style={{ fontWeight: '600' }}>{r.side}</Text>
-                  <Text style={{ opacity: 0.7 }}>slot {r.closedSlot.toString()}</Text>
+                  <Text style={[body, { color: colors.textPrimary, fontWeight: '600' }]}>
+                    {r.side} {fmtSol(r.size)} SOL
+                  </Text>
+                  <Badge tone={STATUS_TONE[r.status]}>{r.statusText}</Badge>
                 </View>
-                <RowLine label="Size" value={`${fmtSol(r.size)} SOL`} />
-                <RowLine label="Entry" value={`$${fmtUsd(r.entry)}`} />
-                <RowLine label="Exit" value={`$${fmtUsd(r.exit)}`} />
-                <RowLine
+                <UiRow label="Entry → Exit" value={`$${fmtUsd(r.entry)} → $${fmtUsd(r.exit)}`} mono />
+                <UiRow
                   label="PnL"
                   value={`${r.pnl >= 0n ? '+' : ''}$${fmtUsd(r.pnl)}`}
-                  valueColor={r.pnl >= 0n ? '#22c55e' : '#ef4444'}
+                  tone={r.pnl >= 0n ? 'success' : 'danger'}
                 />
-                <Badge tone={STATUS_TONE[r.status]}>{r.statusText}</Badge>
-              </View>
+                {r.explorerPubkey ? <Address pubkey={r.explorerPubkey} explorer /> : null}
+              </Card>
             ))}
           </View>
         )}
       </ScrollView>
     </AppPage>
-  )
-}
-
-function RowLine({ label, value, valueColor }: { label: string; value: string; valueColor?: string }) {
-  return (
-    <View style={{ flexDirection: 'row', justifyContent: 'space-between' }}>
-      <Text style={{ opacity: 0.7 }}>{label}</Text>
-      <Text style={{ fontWeight: '600', color: valueColor }}>{value}</Text>
-    </View>
   )
 }
