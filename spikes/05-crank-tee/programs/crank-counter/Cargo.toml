@@ -26,6 +26,8 @@ anchor-lang = { version = "1.0.2", features = ["init-if-needed"] }
 ephemeral-rollups-sdk = { git = "https://github.com/magicblock-labs/ephemeral-rollups-sdk.git", rev = "0fc4604157de51df28693e02e5a1a6a4a08c8a03", features = [
     "anchor",
     "crank",
+    # week-5 Task 0 (spike P3): permissioned slot accounts for measurement (5)
+    "access-control",
 ] }
 
 
