@@ -482,8 +482,10 @@ sponsored rent онбординг (Task 6, частково закриває р�
 `accountSubscribe`-шар, шість екранів за макетами Claude Design.
 
 **Тести:** unit `dexxer_core` **55/55** (було 51), LiteSVM `dexxer_litesvm` **71/71** (було 65),
-`services/relayer` **27/27** (нові цього тижня). `tsc --noEmit`/`expo lint`/`prettier --check` чисті
-в `app`, `tests/er`, `scripts`, `services/relayer`.
+`services/relayer` **60/60** (candles, feed golden vectors, health, shutdown, keys, sponsor
+whitelist/rate-limit — увесь `services/relayer` — новий цього тижня, включно з `sponsor.test.ts`'s
+25 тестами з Task 6). `tsc --noEmit`/`expo lint`/`prettier --check` чисті в `app`, `tests/er`,
+`scripts`, `services/relayer`.
 
 **Живі URL:** relayer/індексер `https://relayer-production-1ae7.up.railway.app` (`/healthz`,
 `/mark`, `/prices`, `/pool/latest`, `/disclosures`, `/root/latest`, `wss://…/ws`); devnet-tee

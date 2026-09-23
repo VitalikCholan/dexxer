@@ -94,7 +94,7 @@ DEXXER_NET=devnet npm run devnet:onboard    # приклад devnet-скрипт
 ```sh
 cd services/relayer
 npm ci
-npm test                 # 27/27 — candles, feed golden vectors, health, shutdown, keys
+npm test                 # 60/60 — candles, feed golden vectors, health, shutdown, keys, sponsor whitelist/rate-limit
 npm run dev               # локальний запуск (DEXXER_NET=devnet, потребує CRANK_KEY_B58/FEE_PAYER_KEY_B58 env)
 ```
 
