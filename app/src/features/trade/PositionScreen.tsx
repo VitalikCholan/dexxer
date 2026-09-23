@@ -17,8 +17,10 @@
 // Task 9: `useLiveAccount` itself now lives in `src/lib/live.ts` (unchanged
 // implementation), so History/Receipt can reuse it without importing this
 // screen component.
+import { router } from 'expo-router'
 import { ScrollView, Text, View } from 'react-native'
 import { AppPage } from '@/components/app-page'
+import { Button } from '@/src/ui/Button'
 import {
   computeUpnl,
   decodeMarket,
@@ -29,6 +31,7 @@ import {
 } from '@/src/lib/program'
 import { useLiveAccount } from '@/src/lib/live'
 import { useTradeSession } from './useTradeSession'
+import { useOnboardingGate } from '../onboard/useOnboardingGate'
 
 function decodeFreeMargin(data: Buffer): bigint {
   return readUserAccountFreeMargin(data)
@@ -42,7 +45,8 @@ function fmtSol(raw: bigint): string {
 }
 
 export function PositionScreen() {
-  const { owner, session, conn, accounts, loading, error: sessionError } = useTradeSession()
+  const { owner, conn, accounts, loading, error: sessionError } = useTradeSession()
+  const gate = useOnboardingGate()
 
   const position = useLiveAccount<DecodedPosition>(conn, accounts?.position ?? null, decodePosition)
   const market = useLiveAccount<DecodedMarket>(conn, accounts?.market ?? null, decodeMarket)
@@ -60,19 +64,27 @@ export function PositionScreen() {
 
         <View style={{ gap: 4 }}>
           <Text style={{ fontWeight: '600' }}>Owner</Text>
-          <Text selectable>{owner ? owner.toBase58() : 'not connected (connect on Onboard tab)'}</Text>
+          <Text selectable>{owner ? owner.toBase58() : 'not connected'}</Text>
         </View>
 
-        {sessionError || position.error || market.error || freeMargin.error ? (
+        {(gate.status === 'needs_setup' ? null : sessionError) || position.error || market.error || freeMargin.error ? (
           <Text selectable style={{ color: '#ef4444' }}>
-            {sessionError ?? position.error ?? market.error ?? freeMargin.error}
+            {(gate.status === 'needs_setup' ? null : sessionError) ??
+              position.error ??
+              market.error ??
+              freeMargin.error}
           </Text>
         ) : null}
 
-        {loading || !session ? (
-          <Text style={{ opacity: 0.6 }}>
-            {loading ? 'Loading session…' : 'No session key yet — finish onboarding first'}
-          </Text>
+        {loading ? (
+          <Text style={{ opacity: 0.6 }}>Loading session…</Text>
+        ) : gate.status === 'needs_setup' ? (
+          <View style={{ gap: 8 }}>
+            <Text style={{ opacity: 0.6 }}>Your private account isn&apos;t set up on this device yet.</Text>
+            <Button variant="primary" onPress={() => router.push('/onboard')}>
+              Set up private account
+            </Button>
+          </View>
         ) : !isOpen ? (
           <Text style={{ opacity: 0.6 }}>
             {position.missing ? 'No Position account yet (open one on the Trade tab).' : 'No open position.'}

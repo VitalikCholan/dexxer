@@ -426,7 +426,7 @@ export function HistoryScreen() {
         {loading ? (
           <Skeleton lines={3} />
         ) : !owner ? (
-          <EmptyState text="Not connected — connect on the Onboard tab." />
+          <EmptyState text="Not connected — connect your wallet to see your trade history." />
         ) : rows.length === 0 ? (
           <EmptyState text="No closed trades yet" />
         ) : (

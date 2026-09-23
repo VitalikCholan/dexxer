@@ -25,6 +25,7 @@ import { Address } from '@/src/ui/Address'
 import { ConnectScreen } from './ConnectScreen'
 import { StepsList } from './StepsList'
 import { useOnboarding } from './useOnboarding'
+import { useOnboardingGate } from './useOnboardingGate'
 
 export function OnboardScreen() {
   const { colors, space } = useTheme()
@@ -33,6 +34,7 @@ export function OnboardScreen() {
   const caption = useTextStyle('caption')
 
   const { owner, session, state, busy, error, batchProgress, connectWallet, advance } = useOnboarding()
+  const gate = useOnboardingGate()
 
   if (!owner) {
     return (
@@ -42,13 +44,24 @@ export function OnboardScreen() {
     )
   }
 
-  if (state === 'SessionSet') {
+  // `state === 'SessionSet'` covers this run's batch just finishing;
+  // `gate.status === 'ready'` covers landing on /onboard with a device
+  // that was already set up in an earlier session — the gate re-derives
+  // readiness from L1 + the stored session key without replaying the
+  // onboarding state machine's own (mount-time-only) L1 check.
+  if (state === 'SessionSet' || gate.status === 'ready') {
     return (
       <AppPage>
         <View style={{ flex: 1, justifyContent: 'center', gap: space.lg, paddingHorizontal: space.lg }}>
           <Text style={[title, { color: colors.textPrimary, textAlign: 'center' }]}>You&apos;re set.</Text>
           <Text style={[body, { color: colors.textSecondary, textAlign: 'center' }]}>Session key active for 24h</Text>
-          <Button variant="primary" onPress={() => router.push('/trade')}>
+          <Button
+            variant="primary"
+            onPress={() => {
+              gate.refetch()
+              router.replace('/(tabs)/trade')
+            }}
+          >
             Go to Trade
           </Button>
         </View>

@@ -25,6 +25,8 @@ import { useLiveAccount } from '@/src/lib/live'
 import { decodeDisclosureQueue, decodePosition, decodeUserAccount, describeTxError } from '@/src/lib/program'
 import { pdas } from '@/src/lib/pdas'
 import { useTradeSession } from '../trade/useTradeSession'
+import { useOnboardingGate } from '../onboard/useOnboardingGate'
+import { SetupAccountCard } from '../onboard/SetupAccountCard'
 import { ReceiptSection } from '../receipt/ReceiptSection'
 import { DepositSheet } from './DepositSheet'
 import { WithdrawSheet } from './WithdrawSheet'
@@ -44,6 +46,7 @@ export function AccountScreen() {
   const { account, signTransactions } = useMobileWallet()
   const { getConnection } = useTeeConnection()
   const { owner, conn, accounts, loading, error } = useTradeSession()
+  const gate = useOnboardingGate()
   const mwa = useMemo(() => ({ signTransactions, getConnection }), [signTransactions, getConnection])
 
   const dqPubkey = owner ? pdas.disclosureQueue(owner) : null
@@ -123,11 +126,13 @@ export function AccountScreen() {
           </Badge>
         </View>
 
-        {error || user.error || position.error || dq.error ? (
+        {gate.status === 'needs_setup' ? null : error || user.error || position.error || dq.error ? (
           <Text style={{ color: colors.short }}>{error ?? user.error ?? position.error ?? dq.error}</Text>
         ) : null}
 
-        {loading ? (
+        {gate.status === 'needs_setup' ? (
+          <SetupAccountCard />
+        ) : loading ? (
           <Skeleton lines={4} />
         ) : (
           <>
@@ -156,12 +161,12 @@ export function AccountScreen() {
                 Exit private account
               </Button>
             </Card>
-
-            <Button variant="ghost" onPress={() => router.push('/settings')}>
-              Settings
-            </Button>
           </>
         )}
+
+        <Button variant="ghost" onPress={() => router.push('/settings')}>
+          Settings
+        </Button>
 
         <DepositSheet open={sheet === 'deposit'} onClose={() => setSheet(null)} busy={busy} onSubmit={handleDeposit} />
         <WithdrawSheet

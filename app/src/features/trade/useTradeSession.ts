@@ -62,7 +62,7 @@ export function useTradeSession(): TradeSession {
       try {
         const sessionKp = await getSessionKeypair(owner!)
         if (!sessionKp) {
-          throw new Error('No session key on this device yet — finish onboarding first (Onboard tab)')
+          throw new Error('No session key on this device yet — finish onboarding first')
         }
         const configPda = pdas.config()
         const configInfo = await baseConn.getAccountInfo(configPda, 'confirmed')

@@ -28,10 +28,12 @@ import { PositionCard } from './PositionCard'
 import { IncreaseSheet } from './IncreaseSheet'
 import { DecreaseSheet } from './DecreaseSheet'
 import { useTradeSession } from '../trade/useTradeSession'
+import { useOnboardingGate } from '../onboard/useOnboardingGate'
 
 export function PositionsScreen() {
   const { space } = useTheme()
   const { session, conn, accounts, loading, error: sessionError } = useTradeSession()
+  const gate = useOnboardingGate()
 
   const positionLive = useLiveAccount(conn, accounts?.position ?? null, decodePosition)
   const marketLive = useLiveAccount(conn, accounts?.market ?? null, decodeMarket)
@@ -91,6 +93,11 @@ export function PositionsScreen() {
       <ScrollView contentContainerStyle={{ gap: space.lg, paddingVertical: space.lg }}>
         {loading ? (
           <Skeleton lines={5} />
+        ) : gate.status === 'needs_setup' ? (
+          <EmptyState
+            text="Your private account isn't set up on this device yet."
+            action={{ label: 'Set up private account', onPress: () => router.push('/onboard') }}
+          />
         ) : sessionError ? (
           <EmptyState text={sessionError} />
         ) : !position ||

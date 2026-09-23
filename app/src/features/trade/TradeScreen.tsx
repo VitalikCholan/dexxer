@@ -31,6 +31,7 @@ import { PriceChart } from './PriceChart'
 import { TradeHeader } from './TradeHeader'
 import { TradeTicket, type MarketParams } from './TradeTicket'
 import { useTradeSession } from './useTradeSession'
+import { useOnboardingGate } from '../onboard/useOnboardingGate'
 
 type Tf = '1m' | '5m' | '15m'
 
@@ -39,6 +40,7 @@ export function TradeScreen() {
   const caption = useTextStyle('caption')
 
   const { session, conn, accounts, loading, error: sessionError } = useTradeSession()
+  const gate = useOnboardingGate()
   const [tf, setTf] = useState<Tf>('1m')
   const [busy, setBusy] = useState(false)
 
@@ -139,7 +141,14 @@ export function TradeScreen() {
         ) : oracle.reason === 'disconnected' ? (
           <Badge tone="warning">Price feed disconnected — trading paused</Badge>
         ) : null}
-        {sessionExpired ? (
+        {gate.status === 'needs_setup' ? (
+          <View style={{ gap: space.sm }}>
+            <Badge tone="warning">Private account not set up on this device</Badge>
+            <Button variant="secondary" onPress={() => router.push('/onboard')}>
+              Set up private account
+            </Button>
+          </View>
+        ) : sessionExpired ? (
           <View style={{ gap: space.sm }}>
             <Badge tone="danger">Session expired</Badge>
             <Button variant="secondary" onPress={() => router.push('/onboard')}>
@@ -147,7 +156,7 @@ export function TradeScreen() {
             </Button>
           </View>
         ) : null}
-        {sessionError || positionLive.error || marketLive.error ? (
+        {gate.status === 'needs_setup' ? null : sessionError || positionLive.error || marketLive.error ? (
           <Text style={[caption, { color: colors.short }]}>
             {sessionError ?? positionLive.error ?? marketLive.error}
           </Text>
