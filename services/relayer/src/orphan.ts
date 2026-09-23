@@ -158,6 +158,24 @@ export async function runOrphanCycle(deps: OrphanCycleDeps): Promise<OrphanCycle
   return result;
 }
 
+/**
+ * Fix round 1 (found on the live relayer's first cycle): a queue whose
+ * undelegation has ALREADY landed on base is still served by the ER — as a
+ * read-only base clone, owned by `dexxer_core` exactly like a delegated one,
+ * so nothing in the ER distinguishes the two. Writing to it fails
+ * `ReadonlyDataModified` (measured:
+ * `4hLD8vAWhVd3woh7JGVrbkFLDxoVyaVB2gEgqtUAb29mLXDR2u2urvZRr5B3HKPGu2iRRQ96kowfwckTotoZSFji`).
+ * Base ownership is what tells them apart: a genuinely delegated account is
+ * owned by the Delegation Program there. Anything already back under this
+ * program belongs to the base pass, not the ER one.
+ *
+ * `null` (no base account at all) counts as still-delegated-or-unknown: the
+ * ER close is then the right call, and if it is wrong it fails harmlessly.
+ */
+export function stillDelegatedOnBase(baseOwner: PublicKey | null, programId: PublicKey): boolean {
+  return baseOwner === null || !baseOwner.equals(programId);
+}
+
 // --- real wiring ---------------------------------------------------------
 
 export interface OrphanWiring {
@@ -172,6 +190,9 @@ export interface OrphanWiring {
   /** `Config.magic_fee_vault` — the ER close pays its commit through `FeeEscrow`, as every other commit-bearing ix does. */
   magicFeeVault: PublicKey;
 }
+
+/** `getMultipleAccountsInfo`'s per-call key ceiling. */
+const BASE_BATCH = 100;
 
 /** Builds the real `OrphanCycleDeps` — the only part of this file that touches an RPC. */
 export function orphanDeps(w: OrphanWiring): OrphanCycleDeps {
@@ -195,7 +216,20 @@ export function orphanDeps(w: OrphanWiring): OrphanCycleDeps {
           console.log(`orphan: skipped legacy queue ${a.pubkey.toBase58()} len=${a.account.data.length} (${String(e)})`);
         }
       }
-      return rows;
+      // Drop the ones already handed back to L1 — see `stillDelegatedOnBase`.
+      // Only the drained ones are worth the base round-trip: a queue with
+      // `len > 0` is skipped by the cycle anyway.
+      const drained = rows.filter((r) => r.len === 0);
+      if (drained.length === 0) return rows;
+      const home = new Set<string>();
+      for (let i = 0; i < drained.length; i += BASE_BATCH) {
+        const chunk = drained.slice(i, i + BASE_BATCH);
+        const infos = await w.baseConn.getMultipleAccountsInfo(chunk.map((r) => r.key), "confirmed");
+        infos.forEach((info, j) => {
+          if (!stillDelegatedOnBase(info ? info.owner : null, w.baseProg.programId)) home.add(chunk[j].key.toBase58());
+        });
+      }
+      return rows.filter((r) => !home.has(r.key.toBase58()));
     },
 
     async readErUserAccount(owner) {

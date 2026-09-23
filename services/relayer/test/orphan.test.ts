@@ -17,7 +17,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { Keypair, PublicKey } from "@solana/web3.js";
-import { runOrphanCycle, type OrphanCycleDeps, type OrphanQueueRow } from "../src/orphan.js";
+import { runOrphanCycle, stillDelegatedOnBase, type OrphanCycleDeps, type OrphanQueueRow } from "../src/orphan.js";
 
 function queue(owner: PublicKey, len: number): OrphanQueueRow {
   return { key: Keypair.generate().publicKey, owner, len };
@@ -149,4 +149,20 @@ test("runOrphanCycle: an empty rollup is a no-op that still reports", async () =
   const f = fakes({});
   const res = await runOrphanCycle(f.deps);
   assert.deepEqual(res, { scanned: 0, closedInEr: [], closedOnBase: [], skipped: 0, errors: 0 });
+});
+
+// --- fix round 1: telling a delegated queue from an already-returned one ---
+
+test("stillDelegatedOnBase: an account back under the program is NOT still delegated", () => {
+  const programId = Keypair.generate().publicKey;
+  assert.equal(stillDelegatedOnBase(programId, programId), false);
+});
+
+test("stillDelegatedOnBase: an account owned by someone else (the Delegation Program) still is", () => {
+  const programId = Keypair.generate().publicKey;
+  assert.equal(stillDelegatedOnBase(Keypair.generate().publicKey, programId), true);
+});
+
+test("stillDelegatedOnBase: no base account at all reads as still delegated", () => {
+  assert.equal(stillDelegatedOnBase(null, Keypair.generate().publicKey), true);
 });
