@@ -17,6 +17,8 @@ export interface TickRow {
   ts: number;
   price: bigint;
   slot: number;
+  /** Week-5 Task 5: the ORACLE's own `publish_time`, in epoch ms (`prices.ts::publishTimeMs`) — what staleness is measured against. `null` only for rows written before migration 005. */
+  publishTime: number | null;
 }
 
 export interface PoolSnapshotRow {
@@ -54,8 +56,8 @@ export interface RootRow {
 
 export async function insertTick(pool: DbPool, row: TickRow): Promise<void> {
   await pool.query(
-    "INSERT INTO ticks (ts, price, slot) VALUES ($1, $2, $3) ON CONFLICT (ts) DO UPDATE SET price = EXCLUDED.price, slot = EXCLUDED.slot",
-    [row.ts, row.price.toString(), row.slot],
+    "INSERT INTO ticks (ts, price, slot, publish_time) VALUES ($1, $2, $3, $4) ON CONFLICT (ts) DO UPDATE SET price = EXCLUDED.price, slot = EXCLUDED.slot, publish_time = EXCLUDED.publish_time",
+    [row.ts, row.price.toString(), row.slot, row.publishTime],
   );
 }
 
@@ -66,10 +68,18 @@ export async function listTicks(pool: DbPool, sinceTs: number): Promise<{ ts: nu
   return rows.map((r) => ({ ts: Number(r.ts), price: BigInt(r.price) }));
 }
 
-export async function latestTick(pool: DbPool): Promise<{ ts: number; price: bigint; slot: number } | null> {
-  const { rows } = await pool.query<{ ts: string; price: string; slot: string }>("SELECT ts, price, slot FROM ticks ORDER BY ts DESC LIMIT 1");
+export async function latestTick(pool: DbPool): Promise<TickRow | null> {
+  const { rows } = await pool.query<{ ts: string; price: string; slot: string; publish_time: string | null }>(
+    "SELECT ts, price, slot, publish_time FROM ticks ORDER BY ts DESC LIMIT 1",
+  );
   const r = rows[0];
-  return r ? { ts: Number(r.ts), price: BigInt(r.price), slot: Number(r.slot) } : null;
+  if (!r) return null;
+  return {
+    ts: Number(r.ts),
+    price: BigInt(r.price),
+    slot: Number(r.slot),
+    publishTime: r.publish_time === null ? null : Number(r.publish_time),
+  };
 }
 
 export async function insertPoolSnapshot(pool: DbPool, row: PoolSnapshotRow): Promise<void> {

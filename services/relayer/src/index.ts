@@ -51,7 +51,7 @@ if ((process.env.DEXXER_NET ?? "local") === "devnet") {
 }
 
 const { keypairFromEnv } = await import("./keys.js");
-const { startCrank, requestStop } = await import("./crank.js");
+const { COMMIT_INTERVAL_TICKS, startCrank, requestStop } = await import("./crank.js");
 const { NET, BASE, ER, ER_WS } = await import("../../../tests/er/lib/env.js");
 const { pdas } = await import("../../../tests/er/lib/program.js");
 const { startMarketWatch } = await import("./marketWatch.js");
@@ -72,9 +72,6 @@ const cfg: RelayerConfig = {
   databaseUrl: process.env.DATABASE_URL,
 };
 const sponsorDailyBudgetSol = Number(process.env.SPONSOR_DAILY_SOL ?? DEFAULT_DAILY_BUDGET_SOL);
-// Week-5 route, unused by the app today (see sponsor.ts's header comment) —
-// default false gates the SystemProgram session-top-up branch off.
-const sponsorAllowSessionTopUp = process.env.SPONSOR_ALLOW_SESSION_TOPUP === "true";
 // Task 7: default true so this is a no-op change for every existing
 // deployment — set `CRANK_ENABLED=false` only to measure the MagicBlock
 // scheduler's own `crank_tick` (schedule-eternal.ts) as the SOLE thing
@@ -116,7 +113,7 @@ const server = app.listen(cfg.port, () => {
 // Disclosure feed) — needs Postgres (`pool`) and `INDEXER_ENABLED=true`.
 // Reads ONLY public accounts (see indexer/accounts.ts's header comment) —
 // never `cfg.crank`/`cfg.feePayer`.
-const indexerStats: IndexerStats = { ticks: 0, lastTickTs: null, lastPoolSlot: null, disclosures: 0 };
+const indexerStats: IndexerStats = { ticks: 0, lastTickTs: null, lastPublishTimeMs: null, lastPoolSlot: null, disclosures: 0 };
 let wsHub: ReturnType<typeof attachWs> | null = null;
 let stopIndexer: (() => void) | null = null;
 if (cfg.indexerEnabled && !pool) {
@@ -153,7 +150,6 @@ if (cfg.sponsorEnabled && !pool) {
       store,
       estimateLamports: simulateCostEstimator(baseConn, cfg.feePayer),
       dailyBudgetSol: sponsorDailyBudgetSol,
-      allowSessionTopUp: sponsorAllowSessionTopUp,
     }),
   );
   getSponsorHealthSnapshot = sponsorSnapshot(store);
@@ -183,9 +179,12 @@ app.use(
     getIndexerSnapshot: () => ({
       ...indexerStats,
       wsClients: wsHub?.clientCount() ?? 0,
-      oracleStale: isStale(indexerStats.lastTickTs, Date.now(), ORACLE_STALE_MS),
+      // Week-5 Task 5: by the oracle's own publish time, not by when this
+      // process last received a notification — see indexer/prices.ts.
+      oracleStale: isStale(indexerStats.lastPublishTimeMs, Date.now(), ORACLE_STALE_MS),
     }),
     getSponsorSnapshot: getSponsorHealthSnapshot,
+    commitIntervalTicks: COMMIT_INTERVAL_TICKS,
   }),
 );
 

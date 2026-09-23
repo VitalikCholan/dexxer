@@ -2,16 +2,28 @@
 //
 // POST /sponsor (Task 6, week 4) — the relayer's `fee_payer` key
 // co-signs a whitelisted onboarding transaction the owner has ALREADY
-// signed, so the app can batch faucet_init/init_user/delegateSpl/
+// signed, so the app can batch createAta/faucet_init/init_user/delegateSpl/
 // delegate_user into a couple of MWA `signTransactions([...])` legs with
-// `fee_payer` fronting network fees and PDA/eSPL rent for those two L1
-// legs. The whitelist ALSO accepts init_permissions/set_session/a matching
-// SystemProgram session-top-up transfer (an ER leg) — the app tried
-// sponsoring that leg too this fix round and reverted it (real devnet-tee
-// rejects fee_payer as an ER tx's fee payer — see
-// app/src/features/onboard/batchOnboarding.ts's file header for the exact
-// error and the revert); this whitelist support is kept as tested,
-// currently-unused forward capacity, not something the app calls today.
+// `fee_payer` fronting network fees and PDA/ATA/eSPL rent for those two L1
+// legs.
+//
+// --- Week-5 Task 5: what this endpoint sponsors, and what it never will ---
+//
+// The ER leg (`init_permissions` + `set_session` + the session top-up) is
+// NOT sponsorable and its whitelist support has been removed rather than
+// left as dormant capacity: devnet-tee rejects a foreign `fee_payer` as an
+// ER transaction's fee payer outright (`InvalidAccountForFee`, measured in
+// week 4 — see app/src/features/onboard/batchOnboarding.ts's file header),
+// so every byte of that branch was code that could only ever be reached by
+// an attacker. With it goes the only SystemProgram instruction this
+// endpoint ever accepted: `fee_payer` now moves lamports for nobody, which
+// removes the drain surface that branch carried by construction.
+//
+// The ATA `CreateIdempotent` moved the other way — from owner-funded to
+// fee_payer-funded (`ATA_SHAPE.payerIdx = 0`), one of the two rent costs
+// the 0-SOL onboarding goal takes off a first-time owner. `init_user_reuse_queue`
+// (week-5 Task 2, the returning owner's `init_user`) joined the whitelist on
+// the same owner@0/payer@1 terms.
 //
 // The relayer never originates anything here and never calls
 // `sendRawTransaction` — it only `partialSign`s with `fee_payer` and hands
@@ -25,16 +37,10 @@
 // `FaucetInit`/`InitUser` gained a `payer` account distinct from `owner`
 // (`payer = payer` in every `init` constraint) — `fee_payer` now genuinely
 // fronts PDA rent, not just the flat network fee, for those two
-// instructions (verified on real devnet this fix round). `delegateSpl`'s
-// `payer` option lets `fee_payer` front the eSPL leg's rent too (app-side
-// change, also verified on real devnet). Sponsoring the ER leg
-// (`init_permissions` + `set_session` + the session top-up) was ALSO
-// attempted — the whitelist below still accepts that shape (plus exactly
-// one `SystemProgram` transfer shape for the session top-up) — but the app
-// reverted to NOT using it after real devnet-tee rejected `fee_payer` as
-// that leg's fee payer (`"InvalidAccountForFee"` — see
-// `app/src/features/onboard/batchOnboarding.ts`'s file header for the full
-// account). This whitelist capacity is kept, tested, currently unused.
+// instructions (verified on real devnet). `delegateSpl`'s `payer` option
+// lets `fee_payer` front the eSPL leg's rent too (app-side change, also
+// verified on real devnet). Sponsoring the ER leg was attempted and is now
+// permanently out — see the Task-5 note at the top of this file.
 //
 // Finding B (critical): the old whitelist matched programId + discriminator
 // only, never WHERE `fee_payer`/`owner` actually sit in an instruction's
@@ -51,16 +57,16 @@
 // `app/src/idl/dexxer_core.json` (same IDL `tests/er/lib/program.ts`
 // already loads for every other relayer subsystem):
 //   faucet_init, init_user       — owner@0, payer@1 (payer must be fee_payer)
+//   init_user_reuse_queue        — owner@0, payer@1 (week-5 Task 2: the
+//                                   returning owner, whose queue outlived
+//                                   their exit)
 //   delegate_user                — owner@0, payer@1 (week-5 Task 3 P1: the
 //                                   three delegation records got their own
 //                                   payer, split out of `owner`)
-//   init_permissions, set_session — owner@0, no payer account (the
-//                                   permissioned account self-funds its own
-//                                   permission rent inside the ER — see
-//                                   user.rs's `InitPermissions`/`SetSession`)
 // `init_position`/`init_dq`/`delegate_position`/`delegate_dq` don't exist as
 // standalone instructions — `init_user`/`delegate_user` cover all three
-// per-user PDAs in one call.
+// per-user PDAs in one call. `init_permissions`/`set_session` are the ER
+// leg and are deliberately absent (see the Task-5 note above).
 //
 // eSPL: the exact instruction shape `delegateSpl(owner, mint, amount,
 // { payer: feePayer, validator, initVaultIfMissing: false, idempotent:
@@ -74,27 +80,18 @@
 // Any other eSPL opcode (idempotent/private/shuttle variants) is NOT
 // whitelisted.
 //
-// ATA program: `createAssociatedTokenAccountIdempotentInstruction(owner,
+// ATA program: `createAssociatedTokenAccountIdempotentInstruction(feePayer,
 // ownerAta, owner, mint)` — `useOnboarding.ts` prepends this ahead of
-// `faucet_init` when the owner's dUSDC ATA doesn't exist yet. This one
-// stays OWNER-funded, not fee_payer — its `payer`@0 must be the owner, its
-// `owner`@2 must be the owner, and `fee_payer` must not appear in it at
-// all. Matched by `ASSOCIATED_TOKEN_PROGRAM_ID` + the single-byte
-// `CreateIdempotent` opcode (`[1]`); the (data-less) non-idempotent
-// `Create` is NOT whitelisted.
+// `faucet_init` when the owner's dUSDC ATA doesn't exist yet. Since week-5
+// Task 5 it is FEE_PAYER-funded: `payer`@0 must be fee_payer and `owner`@2
+// must be the signing owner (that second half is what stops it funding a
+// stranger's ATA). Matched by `ASSOCIATED_TOKEN_PROGRAM_ID` + the
+// single-byte `CreateIdempotent` opcode (`[1]`); the (data-less)
+// non-idempotent `Create` is NOT whitelisted.
 //
-// SystemProgram: exactly ONE `SystemProgram::transfer` is ever sponsored
-// per tx — the session top-up (`app/src/lib/session.ts`'s
-// `sessionTopUpIx`), now paid by `fee_payer` instead of the owner. It must
-// (a) originate `from` fee_payer, (b) transfer `to` the exact pubkey the
-// SAME tx's `set_session` instruction passes as its `session_key` argument
-// (cross-instruction check — decoded straight from the instruction's Borsh
-// args, no IDL coder needed for three fixed-width fields), and (c) move at
-// most `SESSION_FUND_LAMPORTS` lamports. Any other SystemProgram
-// instruction (or a transfer that fails any of those three checks, or a
-// second SystemProgram instruction in the same tx) is rejected outright —
-// letting an owner move `fee_payer`'s own lamports anywhere else would let
-// them drain the shared fee_payer on every call.
+// SystemProgram: nothing. `fee_payer` never moves lamports through this
+// endpoint, so no instruction can drain it beyond the rent and fees the
+// whitelisted shapes above imply.
 //
 // --- Signature checks --------------------------------------------------
 //
@@ -151,7 +148,7 @@
 
 import express from "express";
 import type { Router } from "express";
-import { PublicKey, SystemProgram, Transaction } from "@solana/web3.js";
+import { PublicKey, Transaction } from "@solana/web3.js";
 import type { Connection, Keypair, TransactionInstruction } from "@solana/web3.js";
 import bs58 from "bs58";
 import { EPHEMERAL_SPL_TOKEN_PROGRAM_ID } from "@magicblock-labs/ephemeral-rollups-sdk";
@@ -177,16 +174,10 @@ export const RATE_LIMIT_MS = 60 * 60 * 1000; // 60 min
 export const MAX_SPONSOR_CALLS_PER_OWNER_WINDOW = 6;
 export const DAY_MS = 24 * 60 * 60 * 1000;
 export const DEFAULT_DAILY_BUDGET_SOL = 0.5;
-/**
- * Session top-up cap (fix round 1, finding A.3) — mirrors `SESSION_LAMPORTS`
- * in `app/src/lib/session.ts`. Duplicated, not imported: the relayer and
- * the app are separate deployables with no shared package.
- */
-export const SESSION_FUND_LAMPORTS = 10_000_000;
 
 // --- whitelist -----------------------------------------------------------
 
-const CORE_WHITELIST = new Set(["faucet_init", "init_user", "delegate_user", "init_permissions", "set_session"]);
+const CORE_WHITELIST = new Set(["faucet_init", "init_user", "init_user_reuse_queue", "delegate_user"]);
 
 interface CoreIx {
   name: string;
@@ -219,10 +210,11 @@ interface IxShape {
 const CORE_SHAPES: Record<string, IxShape> = {
   faucet_init: { ownerIdx: 0, payerIdx: 1 },
   init_user: { ownerIdx: 0, payerIdx: 1 },
+  // Week-5 Task 2: the returning owner's `init_user` — same owner@0/payer@1
+  // shape, so it is sponsorable on exactly the same terms.
+  init_user_reuse_queue: { ownerIdx: 0, payerIdx: 1 },
   // Week-5 Task 3 (P1): `DelegateUser` gained `payer: Signer` at index 1.
   delegate_user: { ownerIdx: 0, payerIdx: 1 },
-  init_permissions: { ownerIdx: 0 },
-  set_session: { ownerIdx: 0 },
 };
 if (Object.keys(CORE_SHAPES).length !== CORE_WHITELIST.size) {
   throw new Error("sponsor: CORE_SHAPES is out of sync with CORE_WHITELIST");
@@ -235,8 +227,14 @@ const ESPL_SHAPES: Map<number, IxShape & { label: string }> = new Map([
   [4, { label: "espl:delegate_ephemeral_ata", payerIdx: 0 }],
 ]);
 
-/** ATA `CreateIdempotent(payer, ata, owner, mint, ...)` — owner-funded, `fee_payer` must not appear in it at all. */
-const ATA_SHAPE: IxShape = { ownerIdx: 2 };
+/**
+ * ATA `CreateIdempotent(payer, ata, owner, mint, ...)` — fee_payer-funded
+ * since week-5 Task 5 (it was owner-funded before; the ATA rent is one of
+ * the two costs the 0-SOL onboarding goal takes off the owner). `owner`@2
+ * must still be the signing owner, which is what stops this from funding a
+ * stranger's ATA on a whitelisted owner's signature.
+ */
+const ATA_SHAPE: IxShape = { payerIdx: 0, ownerIdx: 2 };
 
 interface IxCheck {
   ok: boolean;
@@ -296,24 +294,7 @@ function checkInstruction(ix: TransactionInstruction, feePayer: PublicKey, owner
     if (posErr) return { ok: false, reason: posErr };
     return { ok: true, label: "ata:create_idempotent" };
   }
-  return { ok: false, reason: `programId ${ix.programId.toBase58()} not in whitelist {dexxer_core, eSPL, ATA, SystemProgram (session top-up only)}` };
-}
-
-/** `set_session(session_key: Pubkey, expiry: i64, actions: u32)` — session_key is the first 32 bytes after the 8-byte discriminator. */
-function decodeSetSessionKey(ix: TransactionInstruction): PublicKey | null {
-  if (ix.data.length < 40) return null;
-  return new PublicKey(ix.data.subarray(8, 40));
-}
-
-const SYSTEM_TRANSFER_TAG = 2; // SystemInstruction::Transfer, 4-byte LE u32 tag
-
-function decodeSystemTransfer(ix: TransactionInstruction): { from: PublicKey; to: PublicKey; lamports: number } | null {
-  if (ix.data.length !== 12) return null; // 4-byte tag + 8-byte lamports, exactly
-  if (ix.data.readUInt32LE(0) !== SYSTEM_TRANSFER_TAG) return null;
-  if (ix.keys.length !== 2) return null;
-  const [fromMeta, toMeta] = ix.keys;
-  if (!fromMeta.isSigner || !fromMeta.isWritable) return null;
-  return { from: fromMeta.pubkey, to: toMeta.pubkey, lamports: Number(ix.data.readBigUInt64LE(4)) };
+  return { ok: false, reason: `programId ${ix.programId.toBase58()} not in whitelist {dexxer_core, eSPL, ATA}` };
 }
 
 export type WhitelistCheck = { ok: true; owner: PublicKey; labels: string[] } | { ok: false; error: string };
@@ -328,7 +309,7 @@ export type WhitelistCheck = { ok: true; owner: PublicKey; labels: string[] } | 
  * "Versioned messages must be deserialized with VersionedMessage.deserialize()"
  * before a `Transaction` object — and thus this function — is ever reached.
  */
-export function checkWhitelist(tx: Transaction, feePayer: PublicKey, allowSessionTopUp = false): WhitelistCheck {
+export function checkWhitelist(tx: Transaction, feePayer: PublicKey): WhitelistCheck {
   if (!tx.feePayer || !tx.feePayer.equals(feePayer)) {
     return { ok: false, error: `tx.feePayer must equal the relayer's fee_payer (${feePayer.toBase58()})` };
   }
@@ -365,43 +346,9 @@ export function checkWhitelist(tx: Transaction, feePayer: PublicKey, allowSessio
 
   const labels: string[] = [];
   const seenLabels = new Set<string>();
-  let sessionKeyArg: PublicKey | null = null;
-  let transfer: { from: PublicKey; to: PublicKey; lamports: number } | null = null;
 
   for (let i = 0; i < tx.instructions.length; i++) {
     const ix = tx.instructions[i];
-
-    if (ix.programId.equals(SystemProgram.programId)) {
-      // Fix round 1, finding A.3: exactly one SystemProgram instruction is
-      // ever sponsored — the session top-up transfer. Cross-checked against
-      // `set_session`'s argument after the loop (order-independent: the
-      // transfer can precede or follow `set_session` in the same tx).
-      //
-      // Gated behind `allowSessionTopUp` (env `SPONSOR_ALLOW_SESSION_TOPUP`,
-      // default false — see sponsor.ts's header comment): the app doesn't
-      // call this leg today (real devnet-tee rejects fee_payer as an ER
-      // tx's fee payer), so by default this behaves exactly like before
-      // finding A.3 — any SystemProgram instruction is rejected outright.
-      if (!allowSessionTopUp) {
-        return { ok: false, error: `instruction ${i}: SystemProgram transfer sponsorship is disabled (set SPONSOR_ALLOW_SESSION_TOPUP=true to enable)` };
-      }
-      if (transfer) {
-        return { ok: false, error: `instruction ${i}: only one SystemProgram transfer is ever sponsored per tx` };
-      }
-      const t = decodeSystemTransfer(ix);
-      if (!t) {
-        return { ok: false, error: `instruction ${i}: only a plain SystemProgram Transfer (the session top-up) is ever sponsored` };
-      }
-      if (!t.from.equals(feePayer)) {
-        return { ok: false, error: `instruction ${i}: SystemProgram transfer must originate from fee_payer` };
-      }
-      if (t.lamports > SESSION_FUND_LAMPORTS) {
-        return { ok: false, error: `instruction ${i}: SystemProgram transfer of ${t.lamports} lamports exceeds the session fund cap (${SESSION_FUND_LAMPORTS})` };
-      }
-      transfer = t;
-      labels.push("system:transfer");
-      continue;
-    }
 
     const check = checkInstruction(ix, feePayer, owner);
     if (!check.ok) {
@@ -413,18 +360,6 @@ export function checkWhitelist(tx: Transaction, feePayer: PublicKey, allowSessio
     }
     seenLabels.add(label);
     labels.push(label);
-    if (label === "dexxer_core:set_session") {
-      sessionKeyArg = decodeSetSessionKey(ix);
-    }
-  }
-
-  if (transfer) {
-    if (!sessionKeyArg) {
-      return { ok: false, error: "SystemProgram transfer present without a set_session instruction in the same tx" };
-    }
-    if (!transfer.to.equals(sessionKeyArg)) {
-      return { ok: false, error: "SystemProgram transfer destination must equal set_session's session_key argument" };
-    }
   }
 
   return { ok: true, owner, labels };
@@ -552,12 +487,6 @@ export interface SponsorDeps {
   dailyBudgetSol?: number;
   /** Injectable clock, defaults to `Date.now` — tests pin it. */
   now?: () => number;
-  /**
-   * Env `SPONSOR_ALLOW_SESSION_TOPUP`, default false — see `checkWhitelist`'s
-   * `allowSessionTopUp` param and this file's header comment. Week-5 route,
-   * unused by the app today.
-   */
-  allowSessionTopUp?: boolean;
 }
 
 export interface SponsorSnapshot {
@@ -593,7 +522,7 @@ export function sponsorRouter(deps: SponsorDeps): Router {
       return;
     }
 
-    const check = checkWhitelist(tx, deps.feePayer.publicKey, deps.allowSessionTopUp ?? false);
+    const check = checkWhitelist(tx, deps.feePayer.publicKey);
     if (!check.ok) {
       res.status(400).json({ error: check.error });
       return;

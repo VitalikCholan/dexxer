@@ -96,3 +96,14 @@ test("computeSchedulerActive: false when crank is disabled but Market's last cha
   const now = 1_000_000;
   assert.equal(computeSchedulerActive(false, now - (SCHEDULER_ACTIVE_WINDOW_MS + 1), now), false);
 });
+
+// --- Week-5 Task 5: commitIntervalTicks ---
+
+test("buildHealthPayload: reports commitIntervalTicks, defaulting to 300", () => {
+  const state = { lastTickAt: Date.now(), lastCommitAt: null, tick: 1, errors: [] };
+  assert.equal(buildHealthPayload(state, Date.now(), null, null, "ok").commitIntervalTicks, 300);
+  assert.equal(
+    buildHealthPayload(state, Date.now(), null, null, "ok", undefined, undefined, true, null, 60).commitIntervalTicks,
+    60,
+  );
+});

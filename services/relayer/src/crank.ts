@@ -50,19 +50,21 @@
 //    re-derives a fresh `teeConn` and is triggered from the tick loop's
 //    catch on anything that looks like a 401/timeout/connection-reset.
 //
-// Week 3 (Task 7): every `DISCLOSURE_EVERY_TICKS` ticks (~5 min at the
-// default 1s cadence), `runRootCycle` then `runDisclosureCycle`
-// (disclosure.ts) run root BEFORE disclosure, so a `commit_aggregate` call
-// always carries a freshly computed `BalancesRoot`. Both are wrapped in
-// their own try/catch here so a failure in either never kills the 1s tick
-// loop.
+// Week 3 (Task 7): every `COMMIT_INTERVAL_TICKS` ticks (300 by default,
+// ~5 min at the default 1s cadence; env-tunable since week-5 Task 5),
+// `runRootCycle` then `runDisclosureCycle` (disclosure.ts) run root BEFORE
+// disclosure, so a `commit_aggregate` call always carries a freshly computed
+// `BalancesRoot`, and then `runOrphanCycle` (orphan.ts) reclaims the queues
+// of owners who have finished leaving. All three are wrapped in their own
+// try/catch here so a failure in any never kills the 1s tick loop.
 
-import { ComputeBudgetProgram, PublicKey, Transaction } from "@solana/web3.js";
+import { ComputeBudgetProgram, Connection, PublicKey, Transaction } from "@solana/web3.js";
 import type { Keypair } from "@solana/web3.js";
 import { confirmSignature, sleep, teeConn } from "../../../tests/er/lib/env.js";
 import type { Net } from "../../../tests/er/lib/env.js";
 import { POSITION_DISC, accountNs, dexxerCoreProgram, pdas } from "../../../tests/er/lib/program.js";
 import { runDisclosureCycle, runRootCycle } from "./disclosure.js";
+import { orphanDeps, runOrphanCycle } from "./orphan.js";
 
 type PublicKeyT = InstanceType<typeof PublicKey>;
 
@@ -92,9 +94,21 @@ export interface RelayerConfig {
 
 const INTERVAL = Number(process.env.CRANK_INTERVAL_MS ?? 1000);
 // Week 3 (Task 7): cadence for `runRootCycle`/`runDisclosureCycle` — the
-// same 300-tick (~5 min at the default 1s INTERVAL) interval as the `Pool`
-// commit itself.
-const DISCLOSURE_EVERY_TICKS = 300;
+// same interval as the `Pool` commit itself, because `commit_aggregate` IS
+// that commit.
+//
+// Week-5 Task 5: made an env knob (was a hard-coded 300 = ~5 min at the
+// default 1s INTERVAL). The reveal delay and this interval together decide
+// how long a closed trade takes to reach L1, and the week-5 demo needs that
+// measured in a minute rather than five — see `/healthz.commitIntervalTicks`
+// and README's env table. A non-positive or unparseable value falls back to
+// the default rather than spinning the cycle every tick.
+const DEFAULT_COMMIT_INTERVAL_TICKS = 300;
+function parseCommitInterval(raw: string | undefined): number {
+  const n = Number(raw ?? DEFAULT_COMMIT_INTERVAL_TICKS);
+  return Number.isFinite(n) && n >= 1 ? Math.trunc(n) : DEFAULT_COMMIT_INTERVAL_TICKS;
+}
+export const COMMIT_INTERVAL_TICKS = parseCommitInterval(process.env.COMMIT_INTERVAL_TICKS);
 // How many candidates actually fit in ONE legacy (non-v0) transaction, which
 // is what this client sends. Since week-5 Task 1 a candidate is a
 // `[Position, UserAccount, DisclosureQueue]` triple, so a chunk costs 3
@@ -145,6 +159,11 @@ export async function startCrank(cfg: RelayerConfig, state: RelayerState): Promi
   // from `crank`'s identity (see disclosure.ts's `DisclosureCtx`).
   let feePayerConn = await teeConn(cfg.feePayer);
   let feePayerProg = dexxerCoreProgram(feePayerConn, cfg.feePayer);
+  // Week-5 Task 5: the orphan janitor's base-layer half (`close_exited_user`)
+  // is a plain L1 transaction signed by `fee_payer` — no TEE auth, no
+  // reconnect dance, so this pair is built once and never re-derived.
+  const baseConn = new Connection(cfg.baseRpc, "confirmed");
+  const baseFeePayerProg = dexxerCoreProgram(baseConn, cfg.feePayer);
   let lastBlockhash: string | null = null;
 
   async function reconnect(): Promise<void> {
@@ -273,7 +292,7 @@ export async function startCrank(cfg: RelayerConfig, state: RelayerState): Promi
     pool: pool.toBase58(),
     balancesRoot: balancesRoot.toBase58(),
     intervalMs: INTERVAL,
-    disclosureEveryTicks: DISCLOSURE_EVERY_TICKS,
+    commitIntervalTicks: COMMIT_INTERVAL_TICKS,
   });
 
   let n = 0;
@@ -300,7 +319,7 @@ export async function startCrank(cfg: RelayerConfig, state: RelayerState): Promi
     // Root BEFORE disclosure, so `commit_aggregate` always carries a
     // freshly computed `BalancesRoot`. Each cycle is its own try/catch, so
     // neither ever kills this 1s tick loop.
-    if (n % DISCLOSURE_EVERY_TICKS === 0) {
+    if (n % COMMIT_INTERVAL_TICKS === 0) {
       const cycleCtx = { conn, prog, crank: cfg.crank, feePayerConn, feePayerProg, feePayer: cfg.feePayer, pool, poolLive, balancesRoot, feeEscrow };
       try {
         await runRootCycle(cycleCtx);
@@ -313,6 +332,31 @@ export async function startCrank(cfg: RelayerConfig, state: RelayerState): Promi
         state.lastCommitAt = Date.now();
       } catch (e) {
         console.error("runDisclosureCycle failed", String(e));
+        pushError(state, e);
+      }
+      // Week-5 Task 5: the exit-with-debt janitor, LAST in the cycle — the
+      // disclosure cycle above is what drains a departing owner's ring, and
+      // only a drained ring can be reclaimed, so running it after gives an
+      // owner who finished paying their debt this very cycle a chance at
+      // being cleaned up in the same one. Its own try/catch, like the other
+      // two: a stuck orphan must never touch the 1s tick loop.
+      try {
+        const r = await runOrphanCycle(
+          orphanDeps({
+            erConn: conn,
+            erProg: prog,
+            crank: cfg.crank,
+            baseConn,
+            baseProg: baseFeePayerProg,
+            feePayer: cfg.feePayer,
+            magicFeeVault: config.magicFeeVault as PublicKeyT,
+          }),
+        );
+        if (r.closedInEr.length > 0 || r.closedOnBase.length > 0 || r.errors > 0) {
+          console.log(`orphan cycle: scanned=${r.scanned} closedInEr=${r.closedInEr.length} closedOnBase=${r.closedOnBase.length} skipped=${r.skipped} errors=${r.errors}`);
+        }
+      } catch (e) {
+        console.error("runOrphanCycle failed", String(e));
         pushError(state, e);
       }
     }

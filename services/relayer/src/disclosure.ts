@@ -5,7 +5,7 @@
 // deeper: services/relayer/src/ vs scripts/crank-fallback/).
 //
 // Week 3 (Task 7): the two cycles that ride on top of the crank tick loop
-// (crank.ts) every `DISCLOSURE_EVERY_TICKS` — root BEFORE disclosure, so a
+// (crank.ts) every `COMMIT_INTERVAL_TICKS` — root BEFORE disclosure, so a
 // `commit_aggregate` call always carries a freshly computed `BalancesRoot`
 // (plan Task 7 Interfaces).
 //
@@ -113,6 +113,31 @@ function pendingActionCount(dq: any, slot: bigint): number {
   return actions;
 }
 
+/**
+ * `closed_slot` of the OLDEST record that still owes L1 something — the
+ * fairness key (week-5 Task 1 review, minor 8). Without an ordering, the
+ * queues come back in whatever order `getProgramAccounts` returns them and a
+ * single trader with a full ring (`DQ_CAPACITY` records, more than one
+ * bundle's worth of actions) can take the whole `MAX_ACTIONS_PER_COMMIT`
+ * budget every cycle forever, so a trader who closed one position behind
+ * them never gets committed at all. Serving the oldest debt first bounds
+ * every queue's wait by the number of queues ahead of it.
+ *
+ * `Number.MAX_SAFE_INTEGER` for a queue with nothing pending — it is
+ * filtered out before the sort anyway, this only keeps the comparator total.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function oldestPendingSlot(dq: any, slot: bigint): number {
+  const cap = dq.records.length as number;
+  for (let i = 0; i < dq.len; i++) {
+    const rec = dq.records[(dq.head + i) % cap];
+    const due = !rec.commitmentWritten || BigInt(rec.revealAfterSlot.toString()) <= slot;
+    // The ring is in close order, so the first pending record IS the oldest.
+    if (due) return Number(rec.closedSlot.toString());
+  }
+  return Number.MAX_SAFE_INTEGER;
+}
+
 export async function runRootCycle(ctx: DisclosureCtx): Promise<void> {
   const userAccs = await ctx.conn.getProgramAccounts(ctx.prog.programId, {
     filters: [{ memcmp: { offset: 0, bytes: USER_DISC } }],
@@ -169,12 +194,19 @@ export async function runDisclosureCycle(ctx: DisclosureCtx): Promise<void> {
   const dqAccs = await ctx.conn.getProgramAccounts(ctx.prog.programId, {
     filters: [{ memcmp: { offset: 0, bytes: DQ_DISC } }],
   });
+  // `ctx.conn` is the ER connection, and `reveal_after_slot` is an ER slot
+  // (~80/s, vs ~2.5/s on base — measured, week-5 Task 4): reading the slot
+  // off base here would make every reveal look due decades early.
   const slot = BigInt(await ctx.conn.getSlot("confirmed"));
   const pendingQueues = dqAccs
     .map((p) => ({ key: p.pubkey, acc: decodeOrSkip(p.pubkey, p.account.data, () => decodeDisclosureQueue(ctx.prog, p.account.data)) }))
     .filter((p): p is { key: PublicKey; acc: ReturnType<typeof decodeDisclosureQueue> } => p.acc !== null)
-    .map((p) => ({ ...p, actions: pendingActionCount(p.acc, slot) }))
-    .filter((p) => p.actions > 0);
+    .map((p) => ({ ...p, actions: pendingActionCount(p.acc, slot), oldest: oldestPendingSlot(p.acc, slot) }))
+    .filter((p) => p.actions > 0)
+    // Oldest debt first — see `oldestPendingSlot`. Ties (two closes in the
+    // same slot) fall back to the pubkey so the order is at least stable
+    // across cycles rather than RPC-order-dependent.
+    .sort((a, b) => a.oldest - b.oldest || a.key.toBase58().localeCompare(b.key.toBase58()));
 
   // --- (2) fill the bundle up to MAX_ACTIONS_PER_COMMIT — see the CANDIDATE
   // SELECTION comment at the top of this file. ---

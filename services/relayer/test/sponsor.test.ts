@@ -33,7 +33,6 @@ import {
   DEFAULT_DAILY_BUDGET_SOL,
   MAX_SPONSOR_CALLS_PER_OWNER_WINDOW,
   RATE_LIMIT_MS,
-  SESSION_FUND_LAMPORTS,
   sponsorRouter,
   type CostEstimator,
   type SponsorReservation,
@@ -124,6 +123,44 @@ async function buildFaucetInitIx(owner: PublicKey, feePayer: PublicKey): Promise
     .instruction();
 }
 
+async function buildDelegateUserIx(owner: PublicKey, payer: PublicKey): Promise<TransactionInstruction> {
+  const core = coreProgram(Keypair.generate());
+  const k = () => Keypair.generate().publicKey;
+  return core.methods
+    .delegateUser()
+    .accounts({
+      owner,
+      payer,
+      config: CONFIG,
+      market: k(),
+      bufferUserAccount: k(), delegationRecordUserAccount: k(), delegationMetadataUserAccount: k(), userAccount: k(),
+      bufferPosition: k(), delegationRecordPosition: k(), delegationMetadataPosition: k(), position: k(),
+      bufferDisclosureQueue: k(), delegationRecordDisclosureQueue: k(), delegationMetadataDisclosureQueue: k(), disclosureQueue: k(),
+      ownerProgram: DEXXER_CORE_PROGRAM_ID,
+      delegationProgram: k(),
+      systemProgram: SystemProgram.programId,
+    })
+    .instruction();
+}
+
+async function buildInitUserReuseQueueIx(owner: PublicKey, payer: PublicKey): Promise<TransactionInstruction> {
+  const core = coreProgram(Keypair.generate());
+  const k = () => Keypair.generate().publicKey;
+  return core.methods
+    .initUserReuseQueue(Array.from(new Uint8Array(32)))
+    .accounts({
+      owner,
+      payer,
+      config: CONFIG,
+      market: k(),
+      userAccount: k(),
+      position: k(),
+      disclosureQueue: k(),
+      systemProgram: SystemProgram.programId,
+    })
+    .instruction();
+}
+
 async function buildDelegateSplTx(owner: Keypair, feePayer: PublicKey, payer: PublicKey = feePayer): Promise<Transaction> {
   const mint = Keypair.generate().publicKey;
   const validator = Keypair.generate().publicKey;
@@ -210,131 +247,6 @@ test("checkWhitelist: rejects a foreign programId", async () => {
   const result = checkWhitelist(tx, feePayer.publicKey);
   assert.equal(result.ok, false);
   if (!result.ok) assert.match(result.error, /not in whitelist/);
-});
-
-test("checkWhitelist: rejects a lone SystemProgram transfer (no owner signer, no set_session)", async () => {
-  const owner = Keypair.generate();
-  const feePayer = Keypair.generate();
-  const tx = new Transaction();
-  tx.feePayer = feePayer.publicKey;
-  tx.recentBlockhash = FAKE_BLOCKHASH;
-  tx.add(SystemProgram.transfer({ fromPubkey: feePayer.publicKey, toPubkey: owner.publicKey, lamports: 1_000_000_000 }));
-  // Only `feePayer` is a required signer of this instruction (`from`) — no
-  // owner signer exists at all, so this is rejected before the
-  // SystemProgram-specific checks are even reached.
-
-  const result = checkWhitelist(tx, feePayer.publicKey);
-  assert.equal(result.ok, false);
-  if (!result.ok) assert.match(result.error, /owner signer/);
-});
-
-test("checkWhitelist: rejects a SystemProgram transfer with no accompanying set_session", async () => {
-  const owner = Keypair.generate();
-  const feePayer = Keypair.generate();
-  const session = Keypair.generate().publicKey;
-  const initUserIx = (await buildInitUserTx(owner, feePayer.publicKey)).instructions[0];
-  const tx = new Transaction();
-  tx.feePayer = feePayer.publicKey;
-  tx.recentBlockhash = FAKE_BLOCKHASH;
-  // Both instructions must be added BEFORE signing once — signing then
-  // adding another instruction changes the message and invalidates the
-  // signature, which would mask this test's actual assertion.
-  tx.add(initUserIx, SystemProgram.transfer({ fromPubkey: feePayer.publicKey, toPubkey: session, lamports: 1_000_000 }));
-  tx.partialSign(owner);
-
-  const result = checkWhitelist(tx, feePayer.publicKey, true);
-  assert.equal(result.ok, false);
-  if (!result.ok) assert.match(result.error, /without a set_session/);
-});
-
-test("checkWhitelist: rejects a SystemProgram transfer whose destination isn't set_session's session_key", async () => {
-  const owner = Keypair.generate();
-  const feePayer = Keypair.generate();
-  const session = Keypair.generate().publicKey;
-  const wrongDestination = Keypair.generate().publicKey;
-  const tx = new Transaction();
-  tx.feePayer = feePayer.publicKey;
-  tx.recentBlockhash = FAKE_BLOCKHASH;
-  tx.add(await buildSetSessionIx(owner.publicKey, session));
-  tx.add(SystemProgram.transfer({ fromPubkey: feePayer.publicKey, toPubkey: wrongDestination, lamports: 1_000_000 }));
-  tx.partialSign(owner);
-
-  const result = checkWhitelist(tx, feePayer.publicKey, true);
-  assert.equal(result.ok, false);
-  if (!result.ok) assert.match(result.error, /session_key argument/);
-});
-
-test("checkWhitelist: rejects a SystemProgram transfer over the session fund cap", async () => {
-  const owner = Keypair.generate();
-  const feePayer = Keypair.generate();
-  const session = Keypair.generate().publicKey;
-  const tx = new Transaction();
-  tx.feePayer = feePayer.publicKey;
-  tx.recentBlockhash = FAKE_BLOCKHASH;
-  tx.add(await buildSetSessionIx(owner.publicKey, session));
-  tx.add(SystemProgram.transfer({ fromPubkey: feePayer.publicKey, toPubkey: session, lamports: SESSION_FUND_LAMPORTS + 1 }));
-  tx.partialSign(owner);
-
-  const result = checkWhitelist(tx, feePayer.publicKey, true);
-  assert.equal(result.ok, false);
-  if (!result.ok) assert.match(result.error, /exceeds the session fund cap/);
-});
-
-test("checkWhitelist: rejects a SystemProgram transfer not originating from fee_payer", async () => {
-  const owner = Keypair.generate();
-  const feePayer = Keypair.generate();
-  const session = Keypair.generate().publicKey;
-  const tx = new Transaction();
-  tx.feePayer = feePayer.publicKey;
-  tx.recentBlockhash = FAKE_BLOCKHASH;
-  tx.add(await buildSetSessionIx(owner.publicKey, session));
-  tx.add(SystemProgram.transfer({ fromPubkey: owner.publicKey, toPubkey: session, lamports: 1_000_000 }));
-  tx.partialSign(owner);
-
-  const result = checkWhitelist(tx, feePayer.publicKey, true);
-  assert.equal(result.ok, false);
-  if (!result.ok) assert.match(result.error, /must originate from fee_payer/);
-});
-
-test("checkWhitelist: accepts init_permissions + set_session + the matching session top-up transfer", async () => {
-  const owner = Keypair.generate();
-  const feePayer = Keypair.generate();
-  const session = Keypair.generate().publicKey;
-  const tx = new Transaction();
-  tx.feePayer = feePayer.publicKey;
-  tx.recentBlockhash = FAKE_BLOCKHASH;
-  tx.add(await buildInitPermissionsIx(owner.publicKey));
-  tx.add(await buildSetSessionIx(owner.publicKey, session));
-  tx.add(SystemProgram.transfer({ fromPubkey: feePayer.publicKey, toPubkey: session, lamports: SESSION_FUND_LAMPORTS }));
-  tx.partialSign(owner);
-
-  const result = checkWhitelist(tx, feePayer.publicKey, true);
-  assert.equal(result.ok, true);
-  if (result.ok) {
-    assert.equal(result.owner.toBase58(), owner.publicKey.toBase58());
-    assert.deepEqual(result.labels, ["dexxer_core:init_permissions", "dexxer_core:set_session", "system:transfer"]);
-  }
-});
-
-test("checkWhitelist: by default (allowSessionTopUp omitted) rejects an otherwise-valid session top-up transfer", async () => {
-  // Week-5 route, unused by the app today (see sponsor.ts's header comment):
-  // the same tx as the accept case just above, but WITHOUT passing
-  // `allowSessionTopUp`, must be rejected — and with the gate's own error
-  // text, not any of the deeper transfer-shape checks below it.
-  const owner = Keypair.generate();
-  const feePayer = Keypair.generate();
-  const session = Keypair.generate().publicKey;
-  const tx = new Transaction();
-  tx.feePayer = feePayer.publicKey;
-  tx.recentBlockhash = FAKE_BLOCKHASH;
-  tx.add(await buildInitPermissionsIx(owner.publicKey));
-  tx.add(await buildSetSessionIx(owner.publicKey, session));
-  tx.add(SystemProgram.transfer({ fromPubkey: feePayer.publicKey, toPubkey: session, lamports: SESSION_FUND_LAMPORTS }));
-  tx.partialSign(owner);
-
-  const result = checkWhitelist(tx, feePayer.publicKey);
-  assert.equal(result.ok, false);
-  if (!result.ok) assert.match(result.error, /SystemProgram transfer sponsorship is disabled/);
 });
 
 test("checkWhitelist: rejects a tx the owner never signed", async () => {
@@ -478,7 +390,16 @@ test("checkWhitelist: accepts the delegateSpl(payer:fee_payer, idempotent:false,
   }
 });
 
-test("checkWhitelist: accepts the ATA program's CreateIdempotent instruction (owner-funded, not fee_payer)", async () => {
+// Week-5 Task 5: the ATA leg is now fee_payer-paid (`ATA_SHAPE = {payerIdx:
+// 0, ownerIdx: 2}`) — one of the two rent costs the 0-SOL onboarding goal
+// moves off the owner. `owner`@2 must still be the signing owner, which is
+// what keeps it from funding a stranger's ATA (the test right below).
+test("checkWhitelist: a LONE fee_payer-paid ATA has no owner signer and is rejected", async () => {
+  // Making the ATA fee_payer-paid takes the owner out of that instruction's
+  // signer set entirely, so on its own the transaction has no owner signature
+  // for the endpoint to bind the `owner`@2 check to. It is only ever sponsored
+  // as part of the L1a leg, where `faucet_init`/`init_user` supply that
+  // signature (the accept case two tests below).
   const owner = Keypair.generate();
   const feePayer = Keypair.generate();
   const mint = Keypair.generate().publicKey;
@@ -486,14 +407,109 @@ test("checkWhitelist: accepts the ATA program's CreateIdempotent instruction (ow
   const tx = new Transaction();
   tx.feePayer = feePayer.publicKey;
   tx.recentBlockhash = FAKE_BLOCKHASH;
-  tx.add(createAssociatedTokenAccountIdempotentInstruction(owner.publicKey, ownerAta, owner.publicKey, mint));
+  tx.add(createAssociatedTokenAccountIdempotentInstruction(feePayer.publicKey, ownerAta, owner.publicKey, mint));
+
+  const result = checkWhitelist(tx, feePayer.publicKey);
+  assert.equal(result.ok, false);
+  if (!result.ok) assert.match(result.error, /owner signer/);
+});
+
+test("checkWhitelist: rejects any SystemProgram instruction", async () => {
+  // Week-5 Task 5: the session top-up branch is gone — the ER leg is never
+  // sponsored (devnet-tee rejects a foreign fee_payer on an ER tx), so there
+  // is no shape of SystemProgram instruction this endpoint co-signs any more.
+  const owner = Keypair.generate();
+  const feePayer = Keypair.generate();
+  const tx = new Transaction();
+  tx.feePayer = feePayer.publicKey;
+  tx.recentBlockhash = FAKE_BLOCKHASH;
+  tx.add((await buildInitUserTx(owner, feePayer.publicKey)).instructions[0]);
+  tx.add(SystemProgram.transfer({ fromPubkey: feePayer.publicKey, toPubkey: owner.publicKey, lamports: 1 }));
+  tx.partialSign(owner);
+
+  const result = checkWhitelist(tx, feePayer.publicKey);
+  assert.equal(result.ok, false);
+  if (!result.ok) assert.match(result.error, /not in whitelist/);
+});
+
+test("checkWhitelist: accepts init_user_reuse_queue (payer=fee_payer)", async () => {
+  // The returning owner's path: the queue survived their exit, so they come
+  // back through `init_user_reuse_queue` rather than `init_user`. Same
+  // owner@0/payer@1 shape, so it is sponsorable on the same terms.
+  const owner = Keypair.generate();
+  const feePayer = Keypair.generate();
+  const tx = new Transaction();
+  tx.feePayer = feePayer.publicKey;
+  tx.recentBlockhash = FAKE_BLOCKHASH;
+  tx.add(await buildInitUserReuseQueueIx(owner.publicKey, feePayer.publicKey));
+  tx.partialSign(owner);
+
+  const result = checkWhitelist(tx, feePayer.publicKey);
+  assert.equal(result.ok, true);
+  if (result.ok) assert.deepEqual(result.labels, ["dexxer_core:init_user_reuse_queue"]);
+});
+
+test("checkWhitelist: rejects delegate_user whose payer is not fee_payer", async () => {
+  // Same modelling as the init_user case above: a hand-crafted instruction
+  // with a NON-signer foreign pubkey in the payer slot, so the "exactly one
+  // owner signer" check doesn't fire first and mask the position check.
+  const owner = Keypair.generate();
+  const feePayer = Keypair.generate();
+  const someoneElse = Keypair.generate().publicKey;
+  const validIx = await buildDelegateUserIx(owner.publicKey, feePayer.publicKey);
+  const keys = validIx.keys.map((k, i) => (i === 1 ? { pubkey: someoneElse, isSigner: false, isWritable: k.isWritable } : k));
+  const tx = new Transaction();
+  tx.feePayer = feePayer.publicKey;
+  tx.recentBlockhash = FAKE_BLOCKHASH;
+  tx.add(new TransactionInstruction({ programId: validIx.programId, keys, data: validIx.data }));
+  tx.partialSign(owner);
+
+  const result = checkWhitelist(tx, feePayer.publicKey);
+  assert.equal(result.ok, false);
+  if (!result.ok) assert.match(result.error, /delegate_user: account index 1 \(payer\) must be fee_payer/);
+});
+
+test("checkWhitelist: accepts the whole L1a leg — ATA + faucet_init + init_user, all fee_payer-paid", async () => {
+  const owner = Keypair.generate();
+  const feePayer = Keypair.generate();
+  const mint = Keypair.generate().publicKey;
+  const ownerAta = getAssociatedTokenAddressSync(mint, owner.publicKey);
+  const tx = new Transaction();
+  tx.feePayer = feePayer.publicKey;
+  tx.recentBlockhash = FAKE_BLOCKHASH;
+  tx.add(createAssociatedTokenAccountIdempotentInstruction(feePayer.publicKey, ownerAta, owner.publicKey, mint));
+  tx.add(await buildFaucetInitIx(owner.publicKey, feePayer.publicKey));
+  tx.add((await buildInitUserTx(owner, feePayer.publicKey)).instructions[0]);
   tx.partialSign(owner);
 
   const result = checkWhitelist(tx, feePayer.publicKey);
   assert.equal(result.ok, true);
   if (result.ok) {
-    assert.equal(result.owner.toBase58(), owner.publicKey.toBase58());
-    assert.deepEqual(result.labels, ["ata:create_idempotent"]);
+    assert.deepEqual(result.labels, ["ata:create_idempotent", "dexxer_core:faucet_init", "dexxer_core:init_user"]);
+  }
+});
+
+test("checkWhitelist: accepts the whole L1b leg — delegateSpl + delegate_user, all fee_payer-paid", async () => {
+  const owner = Keypair.generate();
+  const feePayer = Keypair.generate();
+  const tx = await buildDelegateSplTx(owner, feePayer.publicKey);
+  // `buildDelegateSplTx` already signed; rebuild so the added instruction is
+  // covered by the owner's signature.
+  const full = new Transaction();
+  full.feePayer = feePayer.publicKey;
+  full.recentBlockhash = FAKE_BLOCKHASH;
+  full.add(...tx.instructions, await buildDelegateUserIx(owner.publicKey, feePayer.publicKey));
+  full.partialSign(owner);
+
+  const result = checkWhitelist(full, feePayer.publicKey);
+  assert.equal(result.ok, true);
+  if (result.ok) {
+    assert.deepEqual(result.labels, [
+      "espl:init_ephemeral_ata",
+      "espl:transfer_to_vault",
+      "espl:delegate_ephemeral_ata",
+      "dexxer_core:delegate_user",
+    ]);
   }
 });
 
