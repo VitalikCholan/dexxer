@@ -538,3 +538,248 @@ orphan cycle: scanned=30 closedInEr=1 closedOnBase=2 skipped=28 errors=1
    `fee_payer` цикл нетто-позитивний.
 5. **Legacy-акаунти з тижнів 1–2** (`RangeError` на декоді `UserAccount`, 4 позиції) далі
    логуються щотіка як `skipping candidate …` — відомий пункт 3 з §6 Task 4, не регресія.
+
+## Task 7: Виміри M-G′ / M-H / M-J / M-I / M-K
+
+Продовження після обриву попереднього агента (скрипти `13-liquidation-check.ts` /
+`14-close-reopen.ts` / `15-exit-debt.ts`, `tests/er/lib/admin.ts::setDisclosureDelay` — уже
+існували; цей запис завершує вимірювання, лагодить дефект релеєра, який вони й виявили, та
+пише підсумок).
+
+### 0. Реальний дефект, знайдений вимірами: місток МагикБлоку відхиляє «важкі» дії задовго до
+    програмної стелі `MAX_ACTIONS_PER_COMMIT`
+
+**Симптом у прод-логах Railway (до фіксу):**
+```
+root: filled=11 slot=344328608
+commit_aggregate failed: Error: transaction 4Qm3ZdPD… failed: {"InstructionError":[0,{"Custom":2684354562}]}
+commit_aggregate: retry without candidates sig=5QoYshq7… actions=0
+```
+`2684354562 = 0xA0000002` — та сама помилка містка MagicBlock, яку тиждень 3's M-C вимірював
+дешевою синтетичною дією (28 PASS / 29 FAIL). `tests/er/lib/program.ts`'s TS-дзеркало
+`MAX_ACTIONS_PER_COMMIT` тим часом застигло на **4**, тоді як Rust-константа
+(`state/mod.rs`) тижнем 5, Task 1 піднята до **8** (повна черга може потребувати до
+`DQ_CAPACITY` комітів + стільки ж розкриттів) — клієнт де-факто бюджетував на застарілій
+стелі в одну сторону, коментарі в `disclosure.ts` вже вважали 8 — в іншу.
+
+**Вимір реального бюджету (локальний одноразовий виклик `runDisclosureCycle` тим самим
+білдером, проти реального бeклогу на devnet):** черга `HgvCy4r2W5W3q4JmkEDYCQ3rSXbNNXMAypdb9zYuVHEY`
+(власник `DsTSrhSCHtCCcnyhqcuki8w34YQujfv1xs2mYhdE1fPg`, породжена M-J's тестом переповнення —
+повне кільце `DQ_CAPACITY=8`, 2 незакомічені + 6 прострочені `write_disclosure`) **відхилена
+місtком на КОЖНОМУ протестованому бюджеті** — 8, 6, 4 (halved 2), 2 (halved 1) — усі
+`0xA0000002`, жодного разу не PASS:
+
+| Запитаний бюджет | Результат | halve-and-retry |
+| --- | --- | --- |
+| 8 | FAIL (actions=8) | halved до 4 — теж FAIL |
+| 6 | FAIL (actions=6) | halved до 3 — теж FAIL |
+| 4 | FAIL (actions=4) | halved до 2 — теж FAIL |
+| 2 | FAIL (actions=2) | halved до 1 — теж FAIL |
+
+Тобто відмова містка тут **не проста лінійна «count > N»** — навіть ОДНА `write_disclosure`-дія
+з цього конкретного бeклогу відхиляється незалежно від того, скільки дій у бандлі. Контрольний
+позитивний вимір: **свіжий, не-беклоговий бандл з 4 реальними діями (2× `write_commitment` + 2×
+`write_disclosure`, дві різні черги, гаманці M-I нижче) пройшов одним викликом**
+(`2poYVpWqZLvjv4wh9TbeTtuKtRx6uwSrLpymaBTdJsurfsr6JeDcT2iM6B56sDAK9BWrztvVAZFMsnKtAXUwVuA7`) — це
+і є доказова основа дефолту `4`.
+
+**Виміряний N (найвищий підтверджений PASS у реальних умовах): 4.** Не «найвищий N, після
+якого завжди FAIL» — сам вимір показує, що FAIL/PASS тут залежить від вмісту/віку конкретного
+запису, не лише від лічильника, тож `4` — це evidence-backed консервативний дефолт, не строго
+виведена межа.
+
+**Фікс (`services/relayer/src/disclosure.ts`):**
+- новий env `COMMIT_MAX_ACTIONS` (дефолт **4**, clamp `[1, MAX_ACTIONS_PER_COMMIT]`, стеля
+  8 — програмна, з `state/mod.rs`, лишається абсолютним верхнім клампом);
+- `tests/er/lib/program.ts`'s `MAX_ACTIONS_PER_COMMIT` виправлено `4 → 8` (застаріле дзеркало);
+- halve-and-retry на `0xA0000002` тепер халвить **бюджет дій**, а не кількість черг
+  (`selectCandidates(pendingQueues, floor(totalActions/2))`) — halvING по чергах нічого не дає,
+  коли одна-єдина черга сама перевищує стелю (вимірено вище: `queues=1` на кожному кроці);
+  один halve, далі — існуючий bare-retry (0 дій, комміт `Pool`+`BalancesRoot` усе одно
+  проходить щоцикл незалежно від кандидатів, як і раніше);
+- `/healthz` несе `commitMaxActions`.
+
+`services/relayer`: **89/89** тестів (було 75; нові — `test/disclosure.test.ts`:
+`parseCommitMaxActions`/`selectCandidates`/`isBridgeActionCapError`, чисті, без мережі;
+`test/health.test.ts` — `commitMaxActions` дефолт/override). `npx tsc --noEmit` — чисто.
+
+**Деплой:** `railway up --service relayer` → `railway variables --set COMMIT_MAX_ACTIONS=4
+--service relayer`. `/healthz` після деплою:
+```json
+{"ok":true,"tick":13,"feePayerSol":0.191982024,"commitIntervalTicks":60,"commitMaxActions":4, ...}
+```
+Підтверджено на живому проді (Railway logs, тик ~62, той самий беклог): запит 4 → FAIL → halved
+2 → FAIL → bare retry 0 → `sig=SADZ…` (комміт `Pool`+`BalancesRoot` пройшов) — точно поведінка,
+яку передбачав фікс; чергу `HgvCy4r2…` (власник `DsTSr…`) фікс **не рятує** (бо реальний cap
+для цих конкретних записів нижче навіть 1 — див. §4 «Відкрите»), але й не б'є по решті циклу —
+`Pool`/`BalancesRoot` продовжують комітитись щоцикл, а інші черги (M-I нижче) drain'яться
+нормально.
+
+### 1. M-G′ — ліквідація без relayer-а (планувальник сам, `CRANK_ENABLED=false`)
+
+`13-liquidation-check.ts` (`npm run devnet:liqcheck`). `CRANK_ENABLED=false` на Railway
+(здоров'я підтвердило `crankEnabled:false, schedulerActive:true` за 16 полів здоров'я),
+свіжий трейдер відкрив ~10x лонг, `set_params(mmr_bps=9500, imr_bps=9600)` тимчасово зробив
+позицію ліквідовною, поллінг **owner-TEE токеном, без будь-якого relayer-виклику**:
+
+**PASS.** Позиція ліквідована за **6.97 с** (3 полли, `liq_ticks` історія `[0,2,0]`,
+`reason=liquidated`), `DisclosureQueue.len=1` після. Параметри та `CRANK_ENABLED=true`
+відновлено (`restoredParamsOk: true`, healthz підтвердив `crankEnabled:true` за 21 полл).
+Планувальник у TEE (без relayer'а взагалі) реально ліквідовує, не лише рухає `mark` — сильніший
+результат за тиждень-4 знахідку («scheduler mark-only, не ліквідаційний backstop»), бо тут
+позицію ліквідував саме планувальник (не `crank_tick` relayer-а, вимкненого на час тесту).
+
+### 2. M-H — one-cycle reveal (delay=0, `COMMIT_INTERVAL_TICKS=60`)
+
+`14-close-reopen.ts` (`npm run devnet:reopen`), окремий гаманець `devnet-mh-*` (НЕ той самий,
+що M-J нижче — окремі власники, окремі черги). Перший прогін (`14-run.log`) впав на
+`init_permissions` з `Custom 6002 = InvalidInput` (transient — не відтворено на повторі,
+`errors.rs`: `6000=MathOverflow, 6001=DivisionByZero, 6002=InvalidInput`). Другий прогін
+(`14-run2.log`): `set_disclosure_delay(0)` (сиг `2Aj4Apsx…`/`5tgiKQoWhCQs6rzc…` — двічі, бо
+перший прогін не дійшов до відновлення), `open_position` → `close_position`
+(`29MKQ9vRnym6e8yYydy71dvp7dyxgZk5ZrDYKsBEi5H6xEWsPL6KwN2bKYfMbQsn5A9jHwNVPLyV2DmCr93Q83Zz`),
+`DisclosureQueue.len=1`, `Commitment` PDA `tYkzxv5ZS7GnT1Dm2AEEbK8qcbL3wpy8Ct7zmJYhHvA`,
+`Disclosure` PDA `2aVzPtRd8co3soCfXYvf1frHyghKWZb8FQrbek8LeKN3`.
+
+Скрипт-поллінг (≤100 с, без ручного `commit_aggregate`) **сам по собі впав** —
+`mhLanded: false`, `mhCloseToDisclosureSeconds: 103.762` (тайм-аут, не landing-час). **Проте
+пряма перевірка вже під час цього завдання підтвердила обидва PDA існують на L1**
+(`getAccountInfo` — `exists: true` для обох) — реєстрація й розкриття landed, просто пізніше
+за вікно скрипту (COMMIT_INTERVAL_TICKS=60 означає ~60–120 с до наступного циклу, поллінг
+100 с — за краєм на один тик). **Висновок: M-H PASS по суті (комміт+розкриття одним бандлом,
+delay=0, підтверджено post-hoc), FAIL по жорсткому 100-секундному вікну скрипта** — вузьке
+вікно, не regresion; окремо від «Відкрите» §4 нижче (ця черга — не та, що застрягла).
+`COMMIT_INTERVAL_TICKS`: рішення лишити **60** для демо не приймалось цим завданням — поза
+скоупом Task 7 (питання з week-4/5 Task 6 лишається відкритим).
+
+### 3. M-J — close→reopen той самий слот, QueueFull, відновлення
+
+Той самий прогін (`14-run2.log`), два окремі власники:
+
+**Частина 1 (`devnet-reopen-*`):** `open #1` → `close #1` → **`open #2` (reopen) у наступній
+tx, без очікування** — `Position.state == Open` одразу після (1.7 с) — **PASS**.
+
+**Частина 2 (`devnet-overflow-*`, `set_disclosure_delay(12000)` тимчасово — щоб жоден з 8
+записів не встиг стати due до кінця циклу):** 8 close→open циклів заповнили кільце
+(`dq.len` 1→8, 33.6 с на всі 8), **9-те закриття FAILED як очікувалося** — `Custom 6023 =
+QueueFull` (`2aanJKPqLzmyNMEq1N5HSKpDEcyp5DDmWJzKvUydbzeQXKgg6AZiMF2N8MSWjsPGJTmanS6NvevLY1vNv2kXmhgj`),
+`Position` лишилась `Open` (транзакція відкотилась) — **PASS**. `set_disclosure_delay(0)`
+відновлено (`41LogbRToBLteRTL5xKrfT6zfh1y1mX6M8pwimX6J2xAb8Le6euSLubGRkDueQNrKcxc2dczzzZgyrKa3QroXuWu`,
+`finalDisclosureDelaySlots: "0"` підтверджено). **«Черга звільнить слот» — не підтверджено
+в межах скрипта** (`overflowFreedAfterSeconds: null`, тайм-аут 360 с) — і **лишається
+незакритою й на кінець цього завдання** (див. §4 нижче): §0's дефект — саме ця черга.
+
+### 4. M-I — онбординг/exit на 0-SOL гаманцях
+
+`15-exit-debt.ts` (`npm run devnet:exitdebt`). Прогін прерваного агента (`15-run.log`) довів
+обидва гаманці до `undelegate_user` (partial — `dq.len=1` лишено) і зупинився на власному
+240-секундному тайм-ауті (`w1DqDrainedAfterSeconds: null`, janitor не встиг у вікні скрипта).
+**Це завдання довело обидва гаманці до кінця, тим самим фіксом §0:**
+
+| Гаманець | Owner | 0 SOL протягом усього циклу? | L1a/L1b (sponsored) | ER-леґ (init_permissions+set_session, 0 SOL) | trade+close+withdraw | `undelegate_user` |
+| --- | --- | --- | --- | --- | --- | --- |
+| wallet1 | `8HQxfsyyGaQLhW3Xah6VSC5xXUmUkAhnkfYmpqYsAFBP` | так (виміряно: 0 lamports до і після) | OK | OK, `erLegZeroSolError: null`, `topUpLamports: 0` | OK | partial, `dq.len=1` |
+| wallet2 | `5s8739QeTJnpSxbfmuVsTVEX4k15aMKBabohVkTZuELh` | так | OK | OK, 0 SOL | OK | partial, `dq.len=1` |
+
+**Ручний одноразовий `commit_aggregate` (той самий білдер, поза автовідбором — обидві черги
+цільово в `remaining_accounts`, минаючи oldest-debt-first, бо той завжди першою бере
+«отруєну» чергу §0) прогнав обидві черги до `len=0` одним бандлом** (2 записи,
+`commitmentWritten=false→write_commitment→due(delay=0)→write_disclosure`, разом 4 реальні дії
+— це і є контрольний позитивний вимір §0): sig
+`2poYVpWqZLvjv4wh9TbeTtuKtRx6uwSrLpymaBTdJsurfsr6JeDcT2iM6B56sDAK9BWrztvVAZFMsnKtAXUwVuA7`.
+
+Далі — janitor (той самий Railway relayer, живий, `COMMIT_INTERVAL_TICKS=60`): протягом
+наступних циклів обидва власники пройшли ER-прохід (`close_orphan_queue`) і базовий прохід
+(`close_exited_user`) без ручного втручання — **перевірено напряму** (`pdas.userAccount`/
+`pdas.position`/`pdas.disclosureQueue`, коректно похідні від owner, а не від помилково
+підставленої адреси — перша спроба перевірки помилково використала owner-адресу як PDA черги
+й хибно «підтвердила» закриття завчасно, виправлено до write-up): усі три PDA обох гаманців
+**відсутні на L1** (`getAccountInfo` → `null`) — повний trio-reclaim, **PASS** для «disclosure
+drain → orphan ER pass → base pass».
+
+**Re-onboard wallet1:** оригінальний `owner`-ключпейр перерваного агента був
+`Keypair.generate()`, ніколи не збережений (`15-exit-debt.ts` навмисно ephemeral) — той самий
+власник фізично не відновлюваний новим процесом. Виконано ідентичний L1a-леґ (ATA+faucet_init+
+init_user, sponsored, 0 SOL) для **нового** ключа як заміну (чесно позначено): sig
+`2VADpHhRczNHF9UKtLVqAcotexk82VMbGws8CHYv8Shp37aah5dQoHa1kRyJafmQCN4d1vBw7RM4XjWpnX2nNobi`,
+`UserAccount` існує, `exited=false` — **PASS** (система здорова одразу після повного reclaim
+циклу; той самий owner pubkey відтворити не можна, дублюючий факт про ephemeral-ключі —
+залишок для наступного разу: скрипт має персистити тестові ключі, якщо повторюваність важлива).
+
+**wallet2 `init_user_reuse_queue`-гонка:** перша спроба (одразу після `undelegate_user`,
+черга ще делегована) — очікувано FAILED `Custom 3007`
+(`6vBvpLdYbkXtSRYWpxBecWwHh8vB3peMcE8VxdDHMf4i4VTDZ3gwr7LLrZCMuckr3Q2N1AY3KZoL93FP8eCW4M1`).
+Вікно «ER-прохід сів, базовий — ще ні» — **не спіймано**: на момент, коли це завдання
+перевірило стан, обидва проходи (ER + база) для wallet2 вже landed. При `COMMIT_INTERVAL_TICKS=60`
+обидва проходи виконуються в ОДНОМУ циклі одного вантажу (`runOrphanCycle` — обидва паси
+послідовно, без затримки між ними), тож вікно, якщо воно взагалі відкрите, — набагато
+коротше за час одного зовнішнього RPC-круговороту цього процесу. **Чесний висновок:
+`init_user_reuse_queue` лишається перевіреним лише в LiteSVM** (як і зазначав бриф — вікно
+або задовге, або ніколи не відкрите за 60-тикового janitor-а в один прохід).
+
+**SOL-таблиця (адреси й фінальний стан, підтверджено свіжим читанням наприкінці завдання):**
+
+| Ключ | Адреса | Баланс наприкінці |
+| --- | --- | --- |
+| `devnet-admin` | `8L4EyWLc6yGH4c3zrVWLCoJqRbgWGtUf9sYyqnMPkVtH` | 0.800648 SOL (не рухався цим завданням) |
+| `devnet-fee-payer` | `3HgDNwQPnHRRK6Sy5MXTN18zEYpGMJZioiGV3dD3Chnt` | 0.191982024 SOL |
+| `devnet-crank` | `2w7Xvd4GtS4rTE86tG51LMa9ZvLckDMFizb6XZDQerFA` | 0.1 SOL |
+
+`fee_payer` **не ізольований** — Railway обслуговує живий продовий `/sponsor`-трафік
+одночасно з цим виміром (`sponsor.count_today` зросло з 19→20 незалежно від дій цього
+завдання, і саме ця одна стороння дія — не M-I — пояснює проміжний стрибок
+0.204383616→0.191982024 після редеплою: дельта 0.012401592 SOL точно збігається з
+`sponsor.today_sol`'s 0.107454344→0.119855936). Чисто ізолювати ренту, повернену конкретно
+за wallet1/wallet2, від решти живого трафіка на спільному `fee_payer` — неможливо без
+виділеного тестового ключа; рекомендація в «Відкрите» нижче.
+
+### 5. M-K — нагадування користувачу (ручний прогін на Phantom/AVD)
+
+Агенти емулятор не запускають (правило з тижня 2/3, знято лише для верифікації з тижня 5+, не
+для повного мобільного UX-прогону з реальним гаманцем — Phantom sideload не автоматизований
+у цій сесії). **Чек-лист для користувача:**
+
+1. Підняти AVD з `-dns-server 8.8.8.8,8.8.4.4` (DNS-блипи `rpc.magicblock.app` без цього —
+   знахідка тижня 2, `week2-results.md`).
+2. Sideload Phantom (devnet mode), відкрити застосунок Dexxer.
+3. Онбординг → SIWS-промпт має показувати **«Dexxer»** (не generic origin).
+4. Онбординг-батч → `signTransactions` з **усіма 3 payload одним екраном** (не 3 окремі
+   промпти).
+5. ER-леґ (init_permissions+set_session) підписується з **TEE-blockhash** (не base) — якщо
+   Phantom показує помилку про застарілий blockhash, це регресія.
+6. Результат (PASS/нюанси кожного пункту) — дописати сюди або в окремий feedback-файл пам'яті.
+
+### Відкрите після Task 7
+
+1. **Черга `HgvCy4r2W5W3q4JmkEDYCQ3rSXbNNXMAypdb9zYuVHEY` (власник `devnet-overflow`'s
+   `DsTSr…`) лишається застряглою** — `len=8, uncommitted=2, due=6`, підтверджено свіжим
+   читанням наприкінці цього завдання. Відхиляється містком на кожному протестованому
+   бюджеті 1–8 (§0) — не рятується `COMMIT_MAX_ACTIONS`-тюнінгом, бо дефект — не про
+   кількість дій у бандлі. Оскільки oldest-debt-first завжди підбирає найстаршу чергу
+   першою, ця черга **потенційно блокує весь інший беклог** позаду себе, доки або (a) вона
+   якось сама пройде (спостерігалось як можливе для АНАЛОГІЧНИХ записів — M-H's окрема
+   черга врешті landed після кількох невдалих циклів), або (b) з'явиться skip-poison-and-continue
+   логіка понад «halve once» (поза скоупом цього завдання), або (c) ручне втручання, як
+   зроблено для M-I вище. Requires investigation: чи це справді per-action розмір
+   (`write_disclosure`, що читає `Commitment`+`ClosedRecord`, важчий за `write_commitment`),
+   чи транзієнтна перевантаженість містка, чи регресія тижня-5 Task 1's DQ-джерельної
+   `write_disclosure` проти старої Position-джерельної форми.
+2. **`init_user_reuse_queue`-вікно не зловлене на devnet** — при 60-тиковому janitor-і обидва
+   проходи (ER+база) виконуються в одному циклі без паузи між ними; шлях лишається
+   верифікованим лише в LiteSVM. Якщо вікно принципово важливе для продукту (а не лише
+   теоретична можливість), варто або штучно розсунути два паси в часі для тестування, або
+   прийняти, що на практиці воно ніколи не відкривається достатньо довго для зовнішнього
+   клієнта.
+3. **`fee_payer` ділить один ключ із живим `/sponsor`-трафіком** — будь-який майбутній
+   точний cost-accounting вимір (рента за цикл, вартість onboarding) буде зашумлений чужими
+   викликами. Рекомендація: виділений тестовий `fee_payer` для вимірювань, або читання
+   `sponsor.today_sol`/`count_today` до і після як контроль (зроблено тут post-hoc, спрацювало
+   — див. §4).
+4. **`COMMIT_INTERVAL_TICKS=60` vs `300`** — рішення для демо не прийнято в межах Task 7
+   (успадковано відкритим з Task 6/week-4).
+5. **M-H/M-J скрипти — окремі однопрогонні бюджети таймаутів (100 с / 360 с) занадто тісні**
+   для реальної живої мережі під навантаженням §0's дефекту — обидва тести технічно «FAIL»
+   за власним вердиктом скрипта, хоча M-H своєю метою досяг (post-hoc підтверджено), а M-J's
+   overflow-recovery — ні (черга й досі стоїть). Наступного разу — або довший бюджет, або
+   окрема post-hoc перевірка як зроблено тут.
+6. **M-K** — не виконано агентом (правило), чек-лист вище чекає на користувача.

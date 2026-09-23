@@ -20,6 +20,9 @@
     "devnet:setparams": "DEXXER_NET=devnet tsx devnet/10-set-params.ts",
     "devnet:liqtask": "DEXXER_NET=devnet tsx devnet/11-liq-task-migration.ts",
     "devnet:orphan": "DEXXER_NET=devnet tsx devnet/12-close-orphan.ts",
+    "devnet:liqcheck": "DEXXER_NET=devnet tsx devnet/13-liquidation-check.ts",
+    "devnet:reopen": "DEXXER_NET=devnet tsx devnet/14-close-reopen.ts",
+    "devnet:exitdebt": "DEXXER_NET=devnet tsx devnet/15-exit-debt.ts",
     "selftest:hashes": "tsx lib/hashes.selftest.ts"
   },
   "dependencies": {
