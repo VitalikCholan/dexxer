@@ -1132,10 +1132,12 @@ pub struct CloseOrphanQueue<'info> {
     // from — the account's stored owner is what pins its address.
     #[account(mut, seeds = [DQ_SEED, dq.owner.as_ref()], bump = dq.bump)]
     pub dq: Box<Account<'info, DisclosureQueue>>,
-    /// CHECK: deliberately unchecked and read-only — its ABSENCE is the signal
-    /// this instruction reads. After `undelegate_user`'s `commit_and_undelegate`
-    /// lands, the `UserAccount` is gone from the ER clone; the seeds constraint
-    /// is all that binds the address handed in here to `dq.owner`.
+    /// CHECK: deliberately unchecked and read-only — the handler reads it, if
+    /// it is there at all, to decide whether its owner has exited (week-5 Task
+    /// 5: either absent/foreign-owned, or present with `exited == true`). It
+    /// cannot be a typed `Account<UserAccount>`: the absent case must still
+    /// pass the account list. The seeds constraint is all that binds the
+    /// address handed in here to `dq.owner`.
     #[account(seeds = [USER_SEED, dq.owner.as_ref()], bump)]
     pub user_account: UncheckedAccount<'info>,
     /// CHECK: permission PDA of `dq`, under the permission program
@@ -1166,14 +1168,21 @@ pub fn close_orphan_queue(ctx: Context<CloseOrphanQueue>) -> Result<()> {
     // Nothing may be closed while L1 is still owed a reveal — the records are
     // the only copy of trades already promised publicly.
     require!(a.dq.len == 0, DexxerError::QueueStillPending);
-    // The orphan signal. A `UserAccount` that is still present AND still owned
-    // by this program means its owner has not actually left the rollup, so the
-    // queue is not an orphan and must stay where it is.
+    // The orphan signal. Week-5 Task 5 (measured on devnet-tee, Task 4): the
+    // first version read ABSENCE — "the `UserAccount` is gone from the ER
+    // clone" — and that never happens. After a partial `undelegate_user` the
+    // TEE goes on serving the BASE clone of the account: present, owned by
+    // this program, `exited == true`. So the signal is either half — the
+    // account is genuinely absent/foreign-owned, OR it is here and flagged as
+    // exited. A present, live (`exited == false`) account means its owner
+    // never left and the queue is not an orphan.
+    // A legacy (pre-`exited`) account short enough to fail deserialization
+    // errors out here, which is the conservative answer: it does not close.
     let ua = a.user_account.to_account_info();
-    require!(
-        ua.data_is_empty() || ua.owner != &crate::ID,
-        DexxerError::NotExited
-    );
+    if !ua.data_is_empty() && ua.owner == &crate::ID {
+        let u = UserAccount::try_deserialize(&mut &ua.data.borrow()[..])?;
+        require!(u.exited, DexxerError::NotExited);
+    }
 
     let o = a.dq.owner;
     let db = [a.dq.bump];

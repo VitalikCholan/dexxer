@@ -68,6 +68,9 @@ pub mod dexxer_core {
     ) -> Result<()> {
         admin::set_scheduler_signer(ctx, new_scheduler_signer)
     }
+    pub fn set_disclosure_delay(ctx: Context<AdminConfig>, slots: u64) -> Result<()> {
+        admin::set_disclosure_delay(ctx, slots)
+    }
     pub fn seed_pool(ctx: Context<SeedPool>, amount: u64) -> Result<()> {
         admin::seed_pool(ctx, amount)
     }

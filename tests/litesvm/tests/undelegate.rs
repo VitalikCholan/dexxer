@@ -144,6 +144,26 @@ fn undelegate_with_pending_disclosures_keeps_queue() {
     );
 }
 
+/// The shared preamble of the orphan-close tests: an exited owner whose ring
+/// has already been drained by one reveal cycle. `delay 0` makes a single
+/// `commit_aggregate` both commit and reveal the record.
+fn drained_orphan(h: &mut Harness, w: &World) -> Trader {
+    let t = trader_with_queue_debt(h, w);
+    h.send(&[ixs::undelegate_user(&t.kp.pubkey(), &t, w)], &[&t.kp])
+        .unwrap();
+    h.send(
+        &[ixs::commit_aggregate(
+            &w.fee_payer.pubkey(),
+            w,
+            &[AccountMeta::new(t.dq, false)],
+        )],
+        &[&w.fee_payer],
+    )
+    .unwrap();
+    assert_eq!(h.account::<DisclosureQueue>(&t.dq).len, 0);
+    t
+}
+
 #[test]
 fn close_orphan_queue_requires_empty_queue_and_exited_user() {
     let mut h = Harness::new();
@@ -175,21 +195,10 @@ fn close_orphan_queue_requires_empty_queue_and_exited_user() {
     .unwrap();
     assert_eq!(h.account::<DisclosureQueue>(&t.dq).len, 0);
 
-    // (3) ...but the owner has not actually left this ledger yet.
-    let r = h.send(
-        &[ixs::close_orphan_queue(&w.crank.pubkey(), &t, &w)],
-        &[&w.crank],
-    );
-    assert_custom_error(&r, 6000 + DexxerError::NotExited as u32);
-
-    // (4) LiteSVM deploys no Magic program, so `undelegate_user`'s
-    // `commit_and_undelegate` CPI was skipped and the `UserAccount` is still
-    // sitting here. In a real ER that account vanishes from the validator's
-    // clone the moment the undelegation lands — that absence IS the orphan
-    // signal `close_orphan_queue` reads. Reproduce it by hand (LiteSVM lets a
-    // test write account state directly, the same lever `World::set_price`
-    // pulls for the oracle feed).
-    h.blank_account(&t.user);
+    // (3) ...and now it closes. This is the shape measured on devnet-tee in
+    // week-5 Task 4: after a partial exit the TEE keeps serving the BASE clone
+    // of the `UserAccount` — present, owned by this program, `exited == true`.
+    // So "the account is gone" is not the orphan signal on a real ER. `exited` is.
     h.send(
         &[ixs::close_orphan_queue(&w.crank.pubkey(), &t, &w)],
         &[&w.crank],
@@ -207,6 +216,41 @@ fn close_orphan_queue_requires_empty_queue_and_exited_user() {
         apk(t.kp.pubkey()),
         "owner kept — it is the PDA seed"
     );
+}
+
+#[test]
+fn close_orphan_queue_rejects_live_user() {
+    let mut h = Harness::new();
+    let w = World::bootstrap(&mut h);
+    // A trader who never exited: empty ring, but `exited == false`. The queue
+    // belongs to a live account and must stay exactly where it is.
+    let t = w.new_trader(&mut h, 0);
+    assert!(!h.account::<UserAccount>(&t.user).exited);
+    let r = h.send(
+        &[ixs::close_orphan_queue(&w.crank.pubkey(), &t, &w)],
+        &[&w.crank],
+    );
+    assert_custom_error(&r, 6000 + DexxerError::NotExited as u32);
+}
+
+#[test]
+fn close_orphan_queue_accepts_absent_user() {
+    let mut h = Harness::new();
+    let w = World::bootstrap_with_delay(&mut h, 0);
+    h.warp(9_101, NOW);
+    w.set_price(&mut h, P150, 5, NOW, 100);
+    let t = drained_orphan(&mut h, &w);
+    // The other half of the orphan signal: an ER clone that really did drop the
+    // `UserAccount`. LiteSVM deploys no Magic program, so `commit_and_undelegate`
+    // was skipped and the account is still sitting here — blank it by hand (the
+    // same lever `World::set_price` pulls for the oracle feed).
+    h.blank_account(&t.user);
+    h.send(
+        &[ixs::close_orphan_queue(&w.crank.pubkey(), &t, &w)],
+        &[&w.crank],
+    )
+    .unwrap();
+    assert_eq!(h.account::<DisclosureQueue>(&t.dq).len, 0);
 }
 
 #[test]

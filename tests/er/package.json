@@ -19,6 +19,7 @@
     "devnet:snapshot": "DEXXER_NET=devnet tsx devnet/09-pool-snapshot.ts",
     "devnet:setparams": "DEXXER_NET=devnet tsx devnet/10-set-params.ts",
     "devnet:liqtask": "DEXXER_NET=devnet tsx devnet/11-liq-task-migration.ts",
+    "devnet:orphan": "DEXXER_NET=devnet tsx devnet/12-close-orphan.ts",
     "selftest:hashes": "tsx lib/hashes.selftest.ts"
   },
   "dependencies": {

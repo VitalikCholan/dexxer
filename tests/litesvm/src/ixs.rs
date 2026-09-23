@@ -199,6 +199,14 @@ pub fn set_scheduler_signer(
         .data(),
     }
 }
+// Week-5 Task 5: retune the reveal delay on a live config (AdminConfig shape).
+pub fn set_disclosure_delay(admin: &Pubkey, config: &Pubkey, slots: u64) -> Instruction {
+    Instruction {
+        program_id: prog(),
+        accounts: vec![rs(admin), w(config)],
+        data: ix::SetDisclosureDelay { slots }.data(),
+    }
+}
 pub fn seed_pool(admin: &Pubkey, wd: &World, amount: u64) -> Instruction {
     Instruction {
         program_id: prog(),
@@ -652,8 +660,9 @@ pub fn close_orphan_queue(crank: &Pubkey, t: &Trader, wd: &World) -> Instruction
             rs(crank),
             r(&wd.config),
             w(&t.dq),
-            // Read-only and unchecked on purpose: its absence (or foreign
-            // owner) is what the instruction reads as "the owner has exited".
+            // Read-only and unchecked on purpose: absent, foreign-owned, or
+            // present-and-`exited` is what the instruction reads as
+            // "the owner has exited".
             r(&t.user),
             w(&pdas::permission(&t.dq)),
             w(&pdas::ephemeral_vault()),

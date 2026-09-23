@@ -231,6 +231,15 @@ pub fn set_scheduler_signer(ctx: Context<AdminConfig>, new_scheduler_signer: Pub
     ctx.accounts.config.scheduler_signer = new_scheduler_signer;
     Ok(())
 }
+// Week-5 Task 5: `disclosure_delay_slots` was written once, in `init_config`,
+// and never again — an already-deployed config could not retune the reveal
+// delay without a full re-bootstrap. Same `AdminConfig` pattern as the two
+// above. `0` is a legal value (reveal in the same cycle as the commitment),
+// and is what the week-5 demo runs on devnet.
+pub fn set_disclosure_delay(ctx: Context<AdminConfig>, slots: u64) -> Result<()> {
+    ctx.accounts.config.disclosure_delay_slots = slots;
+    Ok(())
+}
 
 #[derive(Accounts)]
 pub struct SeedPool<'info> {
