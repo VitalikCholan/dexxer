@@ -5,7 +5,7 @@
 // Long/Short — session-signed, no MWA prompt), stale-oracle and
 // session-expired banners. Close/Increase/Decrease moved to the Positions
 // screen (Task 10) — this screen only opens.
-import { useCallback, useState } from 'react'
+import { useCallback, useMemo, useState } from 'react'
 import { router } from 'expo-router'
 import { ScrollView, Text, View } from 'react-native'
 import { AppPage } from '@/components/app-page'
@@ -57,9 +57,22 @@ export function TradeScreen() {
   const hasOpenPosition = positionLive.value?.state === 'Open'
   const marketMark = marketLive.value?.mark ?? null
   const markUsd = mark.data?.price ?? marketMark
-  const stale = mark.data?.stale === true
-  const fresh = mark.data ? !stale : marketMark !== null
-  const dotColor = fresh && indexerConnected ? colors.long : colors.warning
+
+  // Single source of truth for "is the oracle good enough to trade on" — the
+  // freshness dot, the paused banner, and the Open button's `disabled` all
+  // derive from this ONE predicate (fix round 1: previously the dot alone
+  // also gated on `indexerConnected`/loading, while the banner and
+  // `disabled` only checked `stale === true` — a disconnected or still-
+  // loading feed showed a yellow dot with no banner and a still-enabled
+  // Open button).
+  const oracle = useMemo((): { ok: boolean; reason: 'loading' | 'stale' | 'disconnected' | null } => {
+    if (mark.isLoading || mark.data === undefined) return { ok: false, reason: 'loading' }
+    if (mark.data.stale) return { ok: false, reason: 'stale' }
+    if (!indexerConnected) return { ok: false, reason: 'disconnected' }
+    return { ok: true, reason: null }
+  }, [mark.isLoading, mark.data, indexerConnected])
+  const tradingPaused = !oracle.ok
+  const dotColor = oracle.ok ? colors.long : colors.warning
 
   const pctChange = (() => {
     const c = change24h.data
@@ -137,7 +150,13 @@ export function TradeScreen() {
         />
         <PriceChart tf={tf} />
 
-        {stale ? <Badge tone="warning">Oracle price is stale — trading paused</Badge> : null}
+        {oracle.reason === 'loading' ? (
+          <Skeleton lines={1} />
+        ) : oracle.reason === 'stale' ? (
+          <Badge tone="warning">Oracle price is stale — trading paused</Badge>
+        ) : oracle.reason === 'disconnected' ? (
+          <Badge tone="warning">Price feed disconnected — trading paused</Badge>
+        ) : null}
         {sessionExpired ? (
           <View style={{ gap: space.sm }}>
             <Badge tone="danger">Session expired</Badge>
@@ -161,7 +180,7 @@ export function TradeScreen() {
             freeMarginUsd={userLive.value?.freeMargin ?? null}
             hasOpenPosition={hasOpenPosition}
             busy={busy}
-            disabled={stale || sessionExpired || !session}
+            disabled={tradingPaused || sessionExpired || !session}
             onOpen={handleOpen}
           />
         )}
