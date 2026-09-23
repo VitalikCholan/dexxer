@@ -28,19 +28,14 @@ import {
   type SideName,
 } from '@/src/lib/program'
 import { PriceChart } from './PriceChart'
+import { TradeHeader } from './TradeHeader'
 import { TradeTicket, type MarketParams } from './TradeTicket'
 import { useTradeSession } from './useTradeSession'
 
 type Tf = '1m' | '5m' | '15m'
 
-function fmtUsd(n: number): string {
-  return n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
-}
-
 export function TradeScreen() {
-  const { colors, space, radius } = useTheme()
-  const display = useTextStyle('display', { mono: true })
-  const body = useTextStyle('body')
+  const { colors, space } = useTheme()
   const caption = useTextStyle('caption')
 
   const { session, conn, accounts, loading, error: sessionError } = useTradeSession()
@@ -121,37 +116,7 @@ export function TradeScreen() {
   return (
     <AppPage>
       <ScrollView contentContainerStyle={{ gap: space.lg, paddingVertical: space.lg }}>
-        <View style={{ flexDirection: 'row', alignItems: 'flex-end', justifyContent: 'space-between', gap: space.md }}>
-          <View style={{ gap: space.xs }}>
-            <Text style={[caption, { color: colors.textSecondary }]}>SOL-PERP</Text>
-            <Text style={[display, { color: colors.textPrimary }]}>
-              {markUsdNum !== null ? `$${fmtUsd(markUsdNum)}` : '—'}
-            </Text>
-          </View>
-          <View style={{ alignItems: 'flex-end', gap: space.sm }}>
-            {pctChange !== null ? (
-              <Text style={[body, { color: pctChange >= 0 ? colors.long : colors.short }]}>
-                {pctChange >= 0 ? '+' : ''}
-                {pctChange.toFixed(1)}%
-              </Text>
-            ) : null}
-            <View
-              style={{
-                flexDirection: 'row',
-                alignItems: 'center',
-                gap: space.xs,
-                paddingHorizontal: space.sm,
-                paddingVertical: space.xs,
-                borderWidth: 1,
-                borderColor: colors.border,
-                borderRadius: radius.pill,
-              }}
-            >
-              <View style={{ width: 6, height: 6, borderRadius: 3, backgroundColor: dotColor }} />
-              <Text style={[caption, { color: colors.textSecondary }]}>Pyth Lazer</Text>
-            </View>
-          </View>
-        </View>
+        <TradeHeader markUsdNum={markUsdNum} pctChange={pctChange} dotColor={dotColor} />
 
         <View style={{ gap: space.sm }}>
           <PriceChart tf={tf} markUsd={markUsdNum} />

@@ -77,6 +77,7 @@ function ReceiptBody({
   user: UserForReceipt | null
   root: LiveAccount<DecodedBalancesRoot>
 }) {
+  const { colors } = useTheme()
   const caption = useTextStyle('caption')
   let badge: { tone: 'pending' | 'success'; text: string }
   if (root.missing) {
@@ -95,7 +96,9 @@ function ReceiptBody({
     <>
       <Row label="Free margin" value={user ? `$${fmtUsd(user.freeMargin)}` : '—'} mono />
       <Badge tone={badge.tone}>{badge.text}</Badge>
-      <Text style={[caption, { opacity: 0.8 }]}>Proof that the protocol owes you — without revealing how much.</Text>
+      <Text style={[caption, { color: colors.textSecondary }]}>
+        Proof that the protocol owes you — without revealing how much.
+      </Text>
     </>
   )
 }

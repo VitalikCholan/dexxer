@@ -16,6 +16,13 @@ const HEIGHT = 200
 const AXIS_W = 44
 const TIME_H = 20
 const PLOT_H = HEIGHT - TIME_H
+// Fix round 1: the top/bottom price ticks are exactly `min`/`max`, so
+// mapping them straight onto the plot's pixel edges (y=0 / y=PLOT_H) put
+// the label's ascender/descender outside the <Svg>'s own bounding box —
+// SVG clips there by default (no overflow:visible), which is what showed
+// up as the "119.28" tick getting cut off on the emulator. Insetting the
+// whole price→y mapping keeps every tick's label fully inside the canvas.
+const AXIS_INSET = 8
 const FONT = 'IBM Plex Mono, monospace'
 // Candle o/h/l/c arrive 1e6-scaled, the same raw unit as `mark`
 // (services/relayer/src/indexer/prices.ts's `price1e6`) — never rendered
@@ -71,7 +78,8 @@ function Chart({
   const span = max - min || 1
   const decimals = rawSpan >= 8 ? 0 : 2
 
-  const priceToY = (price: number) => PLOT_H - ((price - min) / span) * PLOT_H
+  const drawableH = PLOT_H - AXIS_INSET * 2
+  const priceToY = (price: number) => AXIS_INSET + ((max - price) / span) * drawableH
 
   const step = plotWidth / data.length
   const bodyW = Math.max(2, Math.min(8, step * 0.6))
@@ -79,7 +87,9 @@ function Chart({
 
   const markTone =
     markUsd !== null && data.length > 0 ? (markUsd >= dollars(data[0].o) ? colors.long : colors.short) : colors.accent
-  const markY = markUsd !== null ? Math.min(PLOT_H, Math.max(0, priceToY(markUsd))) : null
+  // Clamped to the same inset band as the price ticks (see AXIS_INSET) so
+  // the mark tag (±8px around markY) never clips at the canvas edge either.
+  const markY = markUsd !== null ? Math.min(PLOT_H - AXIS_INSET, Math.max(AXIS_INSET, priceToY(markUsd))) : null
 
   return (
     <Svg width={width} height={HEIGHT}>
