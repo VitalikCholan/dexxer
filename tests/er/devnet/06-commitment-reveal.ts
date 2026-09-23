@@ -275,9 +275,10 @@ async function main() {
 
   console.log("\n=== ONE commit_aggregate(remaining=[disclosure_queue]) — commitment AND disclosure ===");
   const tCommitStart = Date.now();
-  const commitPositionSig = await commitAggregate(disclosureQueue);
-  const commitDqSig = commitPositionSig; // one bundle now does both (week-5 Task 1)
-  console.log("commit_aggregate (dq) sig:", commitPositionSig, "(fee_payer-only signer — Ruling 8: measured PASS)");
+  // ONE signature for both actions since week-5 Task 1 — no separate
+  // commit/reveal transactions to name apart any more.
+  const commitAndRevealSig = await commitAggregate(disclosureQueue);
+  console.log("commit_aggregate (dq) sig:", commitAndRevealSig, "(fee_payer-only signer — Ruling 8: measured PASS)");
 
   const commitmentPda = pdas.commitment(realCommitHash);
   const commitmentAcc = await pollBase(`Commitment[hash] on base`, async () => {
@@ -365,7 +366,7 @@ async function main() {
       {
         runId, traderName, owner: owner.publicKey.toBase58(), position: position.toBase58(), disclosureQueue: disclosureQueue.toBase58(),
         nonce: realNonce.toString(), commitmentPda: commitmentPda.toBase58(), disclosurePda: disclosurePda.toBase58(),
-        sigs: { fundSig, faucetSig, initUserSig, delegateSplSig, delegateUserSig, creditSig, initPermSig, openNSig, closeNSig, commitPositionSig, open2Sig, close2Sig, commitDqSig },
+        sigs: { fundSig, faucetSig, initUserSig, delegateSplSig, delegateUserSig, creditSig, initPermSig, openNSig, closeNSig, commitAndRevealSig, open2Sig, close2Sig },
       },
       null,
       2,

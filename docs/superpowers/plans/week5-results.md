@@ -232,21 +232,55 @@ in-path cancel-и в `close_position`/`decrease_position`/`undelegate_user` ли
 > (`crank_tick`/`liquidation_check` не скасовують за задумом), і тоді (a) вимірювався б на
 > живому, а не невідомому `task_id`.
 
-**(c) Вихід із боргом розкриття — PASS, але форма не та, що очікувалась.**
-`undelegate_user` при `dq.len = 1`:
+**(c) Вихід із боргом розкриття — PASS за механікою, але сигнал-осиротілість у програмі
+ЗЛАМАНИЙ. Потрібен другий апгрейд.**
 
-| Акаунт | L1 після | ER, crank-токен | ER, owner-токен |
+Свіжий трейдер `8ZsNG1s1anFhA5ubZM978x4qRYwXwhf7jCoYhmx7Qe5E`, позиція
+`gb2v4XryA7PQ5WvjdxSbpXqViaJuJJrPxeoXXSr9WYb`, черга
+`DDe6rXjnyCF9MdAd7MgYgE1nboyvyriUsgWVxQd8QdWf`. `undelegate_user` при `dq.len = 1` —
+`AYTMeEzMPW5rU5QrS5CWtUGK5nF8tLeMiZB9cBDTHb51h2s1M2AtaZQHK7Ex1Gt5k7hBKM3sEVo96bhSyucbLHx`.
+Кожен акаунт прочитано з ТРЬОХ ендпоінтів **двічі** — t+10 с і t+40 с після того, як
+розделегування сіло на базу (на випадок лінивого клону в ER). **Обидва знімки ідентичні**,
+байт у байт і лампорт у лампорт:
+
+| Акаунт | base | TEE, owner-токен | TEE, crank-токен |
 |---|---|---|---|
-| `UserAccount` | `G2okX5…` (розделеговано), `version = 2`, `exited = true`, 151 B | — | — |
-| `Position` | `G2okX5…` (розделеговано) | — | — |
-| `DisclosureQueue` | `DELeGGvXpWV2…` (**лишився делегованим**) | **читається**, `len = 1` | **`null`** |
+| `UserAccount` | `G2okX5…` 151 B / 1 424 584 лампортів / `exited = true` | **те саме**: `G2okX5…` 151 B / 1 424 584 / `exited = true` | **те саме**: `G2okX5…` 151 B / 1 424 584 / `exited = true` |
+| `Position` | `G2okX5…` 265 B / 2 003 704 | **те саме** | **те саме** |
+| `DisclosureQueue` | `DELeGGvXpWV2…` 1156 B / 6 529 984 (**лишився делегованим**) | **`null`** | `G2okX5…` 1156 B / 6 524 832, `len = 1` |
 
-Тобто осиротіла черга **невидима власникові** — `undelegate_user` звужує її
-`EphemeralPermission` до `members = [crank]`, і owner-токен отримує ту саму відповідь, що й
-чужий гаманець. Сигнал-осиротілість, на який спирається `close_orphan_queue` (Task 2),
-видно **лише крану** — що якраз і правильно, але наївна перевірка «`getAccountInfo` == null
-для UA/Position» **не працює**: розделеговані акаунти не зникають з ER, вони повертаються
-туди звичайними акаунтами під `dexxer_core`. Скрипт 11 перевіряє саме п'ять фактів із таблиці.
+Два незалежні факти:
+
+1. **Черга невидима власникові.** `undelegate_user` звужує її `EphemeralPermission` до
+   `members = [crank]`, тож owner-токен отримує те саме `null`, що й чужий гаманець. Осиротілість
+   бачить **лише кранк** — тобто саме той, хто має її прибирати. Це працює як задумано.
+2. **Розделеговані `UserAccount`/`Position` НЕ зникають із ER** — TEE віддає клон базового
+   акаунта: той самий власник (`dexxer_core`), та сама довжина, ті самі лампорти, `exited = true`.
+   Клон видно **обом** токенам (permission-акаунт закрито `close_permission_if_present`, акаунт
+   знову публічний), і він **стабільний** між t+10 с і t+40 с.
+
+**(c2) Вирішальний вимір — не RPC, а сам рантайм ER.** RPC-читання ще не доводить, що бачить
+рантайм усередині транзакції, а весь сенс питання саме в цьому. Тому чергу вичерпано одним
+`commit_aggregate`
+(`5QBXkBVWuDFyUmzbtUGkaK5d4MaJ28yECRtdndAJd24Z3BnqQjWoecxCcZ44GVtFk73yc14WTDXgpvnPeHhthdzP`,
+`len 1 → 0`) і викликано справжню `close_orphan_queue` кранком на справжньому сироті:
+
+```
+31m5Ahe79PZu6go3pZzzCtEAxWtJSm4ZFt3SwkjpfDGWQRoaEEiCVhKzG8Xw35BRF9wrKuqi7mPdcuKM4vmpT4Fj
+  InstructionError [0, Custom 6042]  =  DexxerError::NotExited
+```
+
+**Вердикт: сигнал `require!(ua.data_is_empty() || ua.owner != crate::ID, NotExited)` у
+`close_orphan_queue` (`instructions/user.rs:1173`) на devnet-tee НІКОЛИ не спрацює** — акаунт
+присутній і належить `crate::ID`, тож жодну осиротілу чергу прибрати неможливо, і вони
+накопичуватимуться назавжди. Рантайм підтвердив те, що показав RPC.
+
+**Рекомендація (рішення за контролером):** приймати `exited == true`, коли дані присутні —
+тобто `require!(ua.data_is_empty() || ua.owner != crate::ID || UserAccount::try_deserialize(..)?.exited, NotExited)`,
+або простіше: типізувати `user_account` як `Account<'info, UserAccount>` з
+`constraint = user_account.exited`, лишивши `data_is_empty()`-гілку для випадку, коли акаунт
+із ER справді зник. Це **другий апгрейд програми** — сам по собі невеликий, але `close_orphan_queue`
+до нього неробочий.
 
 ### 5. Регресія
 
@@ -281,6 +315,16 @@ in-path cancel-и в `close_position`/`decrease_position`/`undelegate_user` ли
 разу. Relayer у цій задачі НЕ передеплоювався (Task 5).
 
 ### 6. Відкрите після Task 4
+
+0. **БЛОКЕР Task 2: `close_orphan_queue` непрацездатна на devnet-tee.** Її сигнал
+   `require!(ua.data_is_empty() || ua.owner != crate::ID, NotExited)` виміряно як завжди-хибний —
+   ER віддає розделегований `UserAccount` як клон базового (присутній, власник `crate::ID`),
+   і реальний виклик кранком упав `Custom 6042 NotExited`
+   (`31m5Ahe79PZu6go3pZzzCtEAxWtJSm4ZFt3SwkjpfDGWQRoaEEiCVhKzG8Xw35BRF9wrKuqi7mPdcuKM4vmpT4Fj`).
+   Потрібен **другий апгрейд програми**: приймати `exited == true`, коли дані присутні (деталі
+   й точне формулювання — §4 (c2) вище). Осиротіла черга
+   `DDe6rXjnyCF9MdAd7MgYgE1nboyvyriUsgWVxQd8QdWf` (`len = 0`, вже вичерпана) лишилася на devnet
+   як готовий тест-кейс для перевірки фіксу.
 
 1. **Немає `set_disclosure_delay`.** `Config.disclosure_delay_slots` пишеться раз, в
    `init_config`; змінити демо-затримку без реініту `Config` неможливо. Однорядкова

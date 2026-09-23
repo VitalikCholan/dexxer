@@ -27,8 +27,12 @@
 //       decides whether the in-path cancels can stay.
 //   (c) the exit-with-debt branch: `undelegate_user` with `dq.len > 0` takes
 //       `UserAccount`/`Position` out of the ER and deliberately LEAVES the
-//       `DisclosureQueue` behind, delegated and crank-only. That orphan is the
-//       signal `close_orphan_queue` (Task 2) keys off.
+//       `DisclosureQueue` behind, delegated and crank-only. The load-bearing
+//       question is what the ER then holds for the `UserAccount` that left,
+//       because `close_orphan_queue` keys off exactly that
+//       (`data_is_empty() || owner != crate::ID`, evaluated inside the ER).
+//       `verifyOrphanShape` below reads every account from base, from the TEE
+//       with the owner token and from the TEE with the crank token, twice.
 //
 // The three run as one trader on purpose: a close is what both arms a debt
 // record and cancels the live task, so (a) and (c) are the same exit.
@@ -103,18 +107,33 @@ async function txMeta(conn: any, sig: string): Promise<Record<string, unknown>> 
   return { unavailable: true };
 }
 
+/** One account, as seen from one endpoint. `null` means the endpoint has no such account at all. */
+interface AccountView {
+  endpoint: string;
+  present: boolean;
+  owner?: string;
+  dataLen?: number;
+  lamports?: number;
+  /** Only decoded when the account is present, program-owned and of the right length. */
+  exited?: boolean | string;
+}
+
 /**
  * (c) — the shape `undelegate_user`'s debt branch leaves behind, and the shape
  * `close_orphan_queue` (Task 2) keys off.
  *
- * MEASURED (Task 4), and it is not the naive one: the queue does NOT stay
- * readable to its owner. The debt branch rewrites the queue's
- * `EphemeralPermission` to `members = [crank]`, so an owner-token read of it on
- * the TEE returns `null` — the same "invisible" answer a stranger gets. The
- * orphan is visible only to the CRANK, which is exactly who has to find it. And
- * the two accounts that DID leave do not vanish from the ER either: they come
- * back as ordinary `dexxer_core`-owned accounts, no longer under the Delegation
- * Program. Hence the five assertions below, and not "getAccountInfo === null".
+ * WHY THREE ENDPOINTS AND TWO TIMESTAMPS. `close_orphan_queue`'s orphan signal
+ * is `user_account.data_is_empty() || user_account.owner != crate::ID`,
+ * evaluated INSIDE the ER. Whether that signal is right therefore depends on
+ * one measurable fact: what does the ER hold for a `UserAccount` that has just
+ * been undelegated out of it? Two possibilities with opposite consequences —
+ * the ER drops the account (signal correct), or the ER serves a clone of the
+ * base-layer account, program-owned and `exited = true` (signal wrong, and
+ * `close_orphan_queue` would refuse every real orphan). So every account is
+ * read from base, from the TEE with the OWNER token and from the TEE with the
+ * CRANK token (permissions differ per token, and the crank's view is the one
+ * that matters — it is the caller), twice: ~10 s and ~40 s after the exit
+ * landed on base, because an ER clone could be lazy.
  *
  * Idempotent, so it doubles as the re-verification path for a trader that has
  * already exited.
@@ -127,56 +146,190 @@ async function verifyOrphanShape(
   disclosureQueue: any,
   out: Record<string, unknown>,
 ): Promise<void> {
-  console.log("\n=== (c) polling for the orphan shape (<=180s) ===");
   const crank = loadOrCreateKey("devnet-crank");
   const crankConn = await teeConn(crank);
+  const coder = dexxerCoreProgram(baseConn, owner).coder;
+  const endpoints: [string, any][] = [["base", baseConn], ["tee/owner", ownerConn], ["tee/crank", crankConn]];
+
+  async function view(conn: any, endpoint: string, pubkey: any, kind: "userAccount" | "position" | "disclosureQueue"): Promise<AccountView> {
+    const info = await conn.getAccountInfo(pubkey, "confirmed");
+    if (info === null) return { endpoint, present: false };
+    const v: AccountView = { endpoint, present: true, owner: info.owner.toBase58(), dataLen: info.data.length, lamports: info.lamports };
+    if (kind === "userAccount" && info.owner.equals(DEXXER_CORE_PROGRAM_ID)) {
+      try {
+        v.exited = coder.accounts.decode("userAccount", info.data).exited;
+      } catch (e) {
+        v.exited = `decode failed: ${(e as Error).message.slice(0, 60)}`;
+      }
+    }
+    return v;
+  }
+
+  async function snapshot(label: string): Promise<Record<string, AccountView[]>> {
+    const rows: Record<string, AccountView[]> = {};
+    for (const [kind, pubkey] of [["userAccount", userAccount], ["position", position], ["disclosureQueue", disclosureQueue]] as const) {
+      rows[kind] = [];
+      for (const [name, conn] of endpoints) rows[kind].push(await view(conn, name, pubkey, kind));
+    }
+    console.log(`\n--- (c) snapshot ${label} ---`);
+    for (const [kind, views] of Object.entries(rows)) {
+      for (const v of views) console.log(`  ${kind.padEnd(16)} ${v.endpoint.padEnd(10)} ${v.present ? `owner=${v.owner} len=${v.dataLen} lamports=${v.lamports}${v.exited === undefined ? "" : ` exited=${v.exited}`}` : "NULL (endpoint has no such account)"}`);
+    }
+    return rows;
+  }
+
+  // Step 1: wait for the exit to land on base (owner flips off the Delegation
+  // Program for the two accounts that left).
+  console.log("\n=== (c) waiting for the base owner-flip (<=180s) ===");
   const deadline = Date.now() + ORPHAN_POLL_MS;
-  let orphanSeen = false;
-  const shape: Record<string, unknown> = {};
+  let flipped = false;
   while (Date.now() < deadline) {
-    const [uaL1, posL1, dqL1, dqErCrank, dqErOwner] = await Promise.all([
+    const [uaL1, posL1] = await Promise.all([
       baseConn.getAccountInfo(userAccount, "confirmed"),
       baseConn.getAccountInfo(position, "confirmed"),
-      baseConn.getAccountInfo(disclosureQueue, "confirmed"),
-      crankConn.getAccountInfo(disclosureQueue, "confirmed"),
-      ownerConn.getAccountInfo(disclosureQueue, "confirmed"),
     ]);
-    shape.l1UserAccountOwner = uaL1?.owner.toBase58() ?? "null";
-    shape.l1PositionOwner = posL1?.owner.toBase58() ?? "null";
-    shape.l1DisclosureQueueOwner = dqL1?.owner.toBase58() ?? "null";
-    shape.erDisclosureQueueAsCrank = dqErCrank === null ? "null" : `owner=${dqErCrank.owner.toBase58()}`;
-    shape.erDisclosureQueueAsOwner = dqErOwner === null ? "null" : `owner=${dqErOwner.owner.toBase58()}`;
-    const left = !!uaL1 && uaL1.owner.equals(DEXXER_CORE_PROGRAM_ID) && !!posL1 && posL1.owner.equals(DEXXER_CORE_PROGRAM_ID);
-    const stayed = !!dqL1 && dqL1.owner.equals(DELEGATION_PROGRAM_ID) && dqErCrank !== null;
-    if (left && stayed) { orphanSeen = true; break; }
+    if (uaL1 && uaL1.owner.equals(DEXXER_CORE_PROGRAM_ID) && posL1 && posL1.owner.equals(DEXXER_CORE_PROGRAM_ID)) { flipped = true; break; }
     await sleep(3000);
   }
-  console.log("orphan shape:", shape);
-  Object.assign(out, shape);
-  out.orphanSeen = orphanSeen;
+  assert(flipped, "(c) UserAccount/Position undelegated on base (owner back to dexxer_core)");
 
-  const uaL1Final = await baseConn.getAccountInfo(userAccount, "confirmed");
-  if (uaL1Final && uaL1Final.owner.equals(DEXXER_CORE_PROGRAM_ID)) {
-    const ua = dexxerCoreProgram(baseConn, owner).coder.accounts.decode("userAccount", uaL1Final.data);
-    out.l1UserAccountExited = ua.exited;
-    out.l1UserAccountVersion = ua.version;
-    out.l1UserAccountLen = uaL1Final.data.length;
-    console.log("L1 UserAccount:", { version: ua.version, exited: ua.exited, len: uaL1Final.data.length, freeMargin: ua.freeMargin.toString() });
-  }
-  // The queue's records survived the exit — that is the whole point of the
-  // debt branch (they are the only copy of trades already promised to L1).
-  if (shape.erDisclosureQueueAsCrank !== "null") {
-    const dqLeft = await accountNs(dexxerCoreProgram(crankConn, crank)).disclosureQueue.fetch(disclosureQueue);
-    out.orphanQueueLen = dqLeft.len;
-    console.log("orphan DisclosureQueue (crank-token read):", { len: dqLeft.len, head: dqLeft.head, owner: dqLeft.owner.toBase58() });
+  // Step 2: two snapshots, t+10s and t+40s from the flip.
+  await sleep(10_000);
+  const snapA = await snapshot("t+10s after the base owner-flip");
+  await sleep(30_000);
+  const snapB = await snapshot("t+40s after the base owner-flip");
+  out.snapshotT10 = snapA;
+  out.snapshotT40 = snapB;
+
+  const find = (snap: Record<string, AccountView[]>, kind: string, endpoint: string) => snap[kind].find((v) => v.endpoint === endpoint)!;
+
+  // --- base: the two that left are back under dexxer_core, the queue stayed delegated ---
+  assert(find(snapB, "userAccount", "base").owner === DEXXER_CORE_PROGRAM_ID.toBase58(), "(c) base: UserAccount back under dexxer_core");
+  assert(find(snapB, "position", "base").owner === DEXXER_CORE_PROGRAM_ID.toBase58(), "(c) base: Position back under dexxer_core");
+  assert(find(snapB, "userAccount", "base").exited === true, "(c) base: UserAccount.exited == true");
+  assert(find(snapB, "disclosureQueue", "base").owner === DELEGATION_PROGRAM_ID.toBase58(), "(c) base: DisclosureQueue is STILL delegated — the queue stayed behind");
+
+  // --- the ER's own view: this is what `close_orphan_queue`'s guard sees ---
+  const uaTeeCrankA = find(snapA, "userAccount", "tee/crank");
+  const uaTeeCrankB = find(snapB, "userAccount", "tee/crank");
+  assert(uaTeeCrankA.present === uaTeeCrankB.present, "(c) the ER's view of the exited UserAccount is stable between t+10s and t+40s (no lazy clone appearing late)");
+  out.erUserAccountPresentToCrank = uaTeeCrankB.present;
+  out.erUserAccountOwnerToCrank = uaTeeCrankB.owner ?? null;
+  out.erUserAccountExitedToCrank = uaTeeCrankB.exited ?? null;
+  if (uaTeeCrankB.present && uaTeeCrankB.owner === DEXXER_CORE_PROGRAM_ID.toBase58()) {
+    // The ER serves the base clone: `data_is_empty() || owner != crate::ID` is
+    // FALSE for it, so `close_orphan_queue` would reject every real orphan.
+    console.log("\n(c) VERDICT: the ER serves a program-owned clone of the exited UserAccount —");
+    console.log("    close_orphan_queue's `data_is_empty() || owner != crate::ID` signal is WRONG;");
+    console.log("    it must accept `exited == true` when the data is present.");
+    out.orphanSignalVerdict = "WRONG — ER serves the base clone (program-owned, exited=true)";
+  } else if (!uaTeeCrankB.present) {
+    console.log("\n(c) VERDICT: the ER has no such account — close_orphan_queue's");
+    console.log("    `data_is_empty() || owner != crate::ID` signal is CORRECT as written.");
+    out.orphanSignalVerdict = "CORRECT — ER has no account for the exited UserAccount";
+  } else {
+    console.log(`\n(c) VERDICT: unexpected — ER shows owner=${uaTeeCrankB.owner}; inspect manually.`);
+    out.orphanSignalVerdict = `UNEXPECTED owner=${uaTeeCrankB.owner}`;
   }
 
-  assert(out.l1UserAccountOwner === DEXXER_CORE_PROGRAM_ID.toBase58(), "(c) L1 UserAccount is back under dexxer_core (undelegated)");
-  assert(out.l1PositionOwner === DEXXER_CORE_PROGRAM_ID.toBase58(), "(c) L1 Position is back under dexxer_core (undelegated)");
-  assert(out.l1DisclosureQueueOwner === DELEGATION_PROGRAM_ID.toBase58(), "(c) L1 DisclosureQueue is STILL delegated — the queue stayed behind");
-  assert(shape.erDisclosureQueueAsCrank !== "null", "(c) the orphan queue is readable in the ER with the CRANK token");
-  assert(shape.erDisclosureQueueAsOwner === "null", "(c) the orphan queue is NOT readable with the OWNER token any more (members narrowed to [crank])");
-  assert(orphanSeen, "(c) orphan shape reached");
+  // --- the queue itself: still in the ER, crank-only members ---
+  const dqCrank = find(snapB, "disclosureQueue", "tee/crank");
+  const dqOwner = find(snapB, "disclosureQueue", "tee/owner");
+  assert(dqCrank.present, "(c) the orphan queue is readable in the ER with the CRANK token");
+  assert(!dqOwner.present, "(c) the orphan queue is NOT readable with the OWNER token any more (members narrowed to [crank])");
+  const dqLeft = await accountNs(dexxerCoreProgram(crankConn, crank)).disclosureQueue.fetch(disclosureQueue);
+  out.orphanQueueLen = dqLeft.len;
+  console.log("orphan DisclosureQueue (crank-token read):", { len: dqLeft.len, head: dqLeft.head, owner: dqLeft.owner.toBase58() });
+
+  // --- (c2) the decisive probe: run the real instruction against the real
+  // orphan. An RPC `getAccountInfo` on the TEE is strong evidence but not the
+  // same thing as what the ER RUNTIME hands a transaction, and the whole
+  // question is what `close_orphan_queue`'s `require!` sees. So drain the
+  // queue (its guard needs `len == 0`) and call it. `6042 NotExited` means the
+  // runtime agrees with the RPC — the account is present and program-owned —
+  // and the guard has to change. Success means the runtime does NOT see the
+  // clone and the guard is fine as written.
+  await runtimeOrphanProbe(crank, crankConn, ownerConn, userAccount, disclosureQueue, out);
+}
+
+/**
+ * Drain the orphan queue with one `commit_aggregate`, then call
+ * `close_orphan_queue` on it as the crank and record exactly what the ER
+ * runtime answers.
+ */
+async function runtimeOrphanProbe(
+  crank: any,
+  crankConn: any,
+  ownerConn: any,
+  userAccount: any,
+  disclosureQueue: any,
+  out: Record<string, unknown>,
+): Promise<void> {
+  console.log("\n=== (c2) draining the orphan queue, then close_orphan_queue (crank) ===");
+  const boot = await bootstrapDevnet();
+  const feePayer = loadOrCreateKey("devnet-fee-payer");
+  const feePayerConn = await teeConn(feePayer);
+  const feePayerCore = dexxerCoreProgram(feePayerConn, feePayer);
+  const config = pdas.config();
+  const cfg = await accountNs(feePayerCore).config.fetch(config);
+  const crankCore = dexxerCoreProgram(crankConn, crank);
+
+  const dqBefore = await accountNs(crankCore).disclosureQueue.fetch(disclosureQueue);
+  if (dqBefore.len > 0) {
+    // Wait past the pending record's reveal slot (an ER slot — see 06/08).
+    const rec = dqBefore.records[dqBefore.head];
+    const revealAfter = BigInt(rec.revealAfterSlot.toString());
+    let cur = BigInt(await crankConn.getSlot("confirmed"));
+    while (cur < revealAfter) {
+      await sleep(1000);
+      cur = BigInt(await crankConn.getSlot("confirmed"));
+    }
+    const drainIx = await feePayerCore.methods
+      .commitAggregate()
+      .accounts({
+        config, payer: feePayer.publicKey, pool: boot.pool, poolLive: boot.poolLive, balancesRoot: boot.balancesRoot,
+        feeEscrow: boot.feeEscrow, magicFeeVault: cfg.magicFeeVault, magicContext: MAGIC_CONTEXT_ID, magicProgram: MAGIC_PROGRAM_ID,
+      })
+      .remainingAccounts([{ pubkey: disclosureQueue, isWritable: true, isSigner: false }])
+      .instruction();
+    const drainSig = await sendAndConfirmIx(feePayerConn, feePayer, drainIx);
+    out.orphanDrainSig = drainSig;
+    console.log("commit_aggregate(orphan dq) sig:", drainSig);
+    await sleep(3000);
+  }
+  const dqDrained = await accountNs(crankCore).disclosureQueue.fetch(disclosureQueue);
+  out.orphanQueueLenAfterDrain = dqDrained.len;
+  console.log("orphan DisclosureQueue.len after drain:", dqDrained.len);
+  if (dqDrained.len !== 0) {
+    out.closeOrphanQueueResult = `skipped — queue still has ${dqDrained.len} record(s)`;
+    console.log("(c2) skipped: the queue did not drain, so the guard under test would not be reached");
+    return;
+  }
+
+  const closeIx = await crankCore.methods
+    .closeOrphanQueue()
+    .accounts({
+      crank: crank.publicKey, config, dq: disclosureQueue, userAccount,
+      dqPermission: permissionPdaFromAccount(disclosureQueue),
+      ephemeralVault: EPHEMERAL_VAULT_ID, permissionProgram: PERMISSION_PROGRAM_ID,
+      feeEscrow: pdas.feeEscrow(), magicFeeVault: cfg.magicFeeVault, magicContext: MAGIC_CONTEXT_ID, magicProgram: MAGIC_PROGRAM_ID,
+    })
+    .instruction();
+  try {
+    const sig = await sendAndConfirmIx(crankConn, crank, closeIx);
+    out.closeOrphanQueueResult = `OK ${sig}`;
+    console.log("(c2) close_orphan_queue SUCCEEDED:", sig);
+    console.log("     => the ER runtime does NOT see a program-owned clone; the guard is correct as written.");
+  } catch (e: any) {
+    const msg = e.message ?? String(e);
+    out.closeOrphanQueueResult = `FAIL ${msg}`;
+    console.log("(c2) close_orphan_queue FAILED:", msg);
+    if (msg.includes("6042") || msg.includes("0x179a")) {
+      console.log("     => 6042 NotExited: the runtime agrees with the RPC — the exited UserAccount IS");
+      console.log("        present and owned by dexxer_core inside the ER, so the guard must accept");
+      console.log("        `exited == true` when the data is present. SECOND UPGRADE REQUIRED.");
+    }
+  }
 }
 
 async function main() {
@@ -215,6 +368,9 @@ async function main() {
   // (its `UserAccount` is undelegated and `exited`, and `delegateSpl` would
   // fail on the eATA). Re-verify (c) against the state it left instead — the
   // orphan shape is durable, so this is a genuine re-measurement, not a skip.
+  // NOTE: the two timed snapshots are only meaningful right after the exit;
+  // on this path they both land long after it, which still answers "what does
+  // the ER hold now" but not "does a clone appear late".
   const uaL1Pre = await baseConn.getAccountInfo(userAccount, "confirmed");
   if (uaL1Pre && uaL1Pre.owner.equals(DEXXER_CORE_PROGRAM_ID) && dexxerCoreProgram(baseConn, owner).coder.accounts.decode("userAccount", uaL1Pre.data).exited) {
     console.log("\n=== trader has already exited — re-verifying (c) only ===");
