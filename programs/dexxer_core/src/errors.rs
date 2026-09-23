@@ -78,6 +78,8 @@ pub enum DexxerError {
     FaucetLimit,
     #[msg("withdraw is on cooldown for this account")]
     WithdrawCooldown,
+    /// Retired with `mark_committed` (week-5 Task 1) — kept so every later
+    /// variant keeps its on-chain error number.
     #[msg("commitment not yet written for this closed position")]
     CommitmentNotWritten,
     #[msg("reveal slot not reached")]
@@ -88,12 +90,16 @@ pub enum DexxerError {
     RootFull,
     #[msg("invalid leaf account")]
     InvalidLeafAccount,
+    /// Retired with `mark_committed` (week-5 Task 1): no instruction requires a
+    /// `Closed` position any more. Kept for stable error numbering.
     #[msg("position is not closed")]
     NotClosed,
     #[msg("disclosure does not match commitment hash")]
     BadDisclosureHash,
     #[msg("account balance must be zero to exit")]
     BalanceNotZero,
+    /// Unused since week-5 Task 1: `commit_aggregate` clamps every candidate to
+    /// the remaining budget instead of failing. Kept for stable error numbering.
     #[msg("too many actions in one commit bundle")]
     TooManyActions,
     #[msg("PoolLive mint does not match Pool mint")]

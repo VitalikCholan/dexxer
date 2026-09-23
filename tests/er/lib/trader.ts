@@ -309,6 +309,34 @@ export async function onboardTrader(
   return trader;
 }
 
+/**
+ * The non-signer half of the `Trade` context (`programs/dexxer_core/src/instructions/trade.rs`).
+ *
+ * Week-5 Task 1 appended four accounts: `disclosureQueue` (a close now pushes
+ * its `ClosedRecord` straight into the owner's ring), `feeEscrow`, `taskContext`
+ * and `magicProgram` (declared for the per-position liquidation task, Task 3;
+ * unused by the current handlers). `taskContext` is unconstrained on-chain and
+ * only has to be an existing writable account until Task 3 derives the real one
+ * — the position PDA stands in, exactly as the LiteSVM `trade_accounts` builder
+ * does.
+ */
+export function tradeAccounts(boot: Bootstrapped, t: Trader) {
+  const market = pdas.market();
+  return {
+    config: pdas.config(),
+    market,
+    marketRisk: pdas.marketRisk(market),
+    poolLive: boot.poolLive,
+    userAccount: t.userAccount,
+    position: t.position,
+    feed: boot.feed,
+    disclosureQueue: t.disclosureQueue,
+    feeEscrow: pdas.feeEscrow(),
+    taskContext: t.position,
+    magicProgram: MAGIC_PROGRAM_ID,
+  };
+}
+
 /** Open a position for `t` on the ER (Trade context; `side`: "long" | "short"). */
 export async function openPosition(
   boot: Bootstrapped,
@@ -320,7 +348,6 @@ export async function openPosition(
 ): Promise<string> {
   const conn = await teeConn(t.kp);
   const core = dexxerCoreProgram(conn, t.kp);
-  const market = pdas.market();
   const ix = await core.methods
     .openPosition(
       side === "long" ? { long: {} } : { short: {} },
@@ -328,16 +355,7 @@ export async function openPosition(
       new BN(usd(marginUsd).toString()),
       new BN(usd(limitUsdPrice).toString()),
     )
-    .accounts({
-      signer: t.kp.publicKey,
-      config: pdas.config(),
-      market,
-      marketRisk: pdas.marketRisk(market),
-      poolLive: boot.poolLive,
-      userAccount: t.userAccount,
-      position: t.position,
-      feed: boot.feed,
-    })
+    .accounts({ signer: t.kp.publicKey, ...tradeAccounts(boot, t) })
     .instruction();
   return sendAndConfirmIx(conn, t.kp, ix);
 }
@@ -356,19 +374,9 @@ export async function closePosition(boot: Bootstrapped, t: Trader, limitUsdPrice
   const posState = await accountNs(core).position.fetch(t.position);
   const isShort = "short" in posState.side;
   const limitArg: bigint = limitUsdPrice === 0 ? (isShort ? U64_MAX : 0n) : usd(limitUsdPrice);
-  const market = pdas.market();
   const ix = await core.methods
     .closePosition(new BN(limitArg.toString()))
-    .accounts({
-      signer: t.kp.publicKey,
-      config: pdas.config(),
-      market,
-      marketRisk: pdas.marketRisk(market),
-      poolLive: boot.poolLive,
-      userAccount: t.userAccount,
-      position: t.position,
-      feed: boot.feed,
-    })
+    .accounts({ signer: t.kp.publicKey, ...tradeAccounts(boot, t) })
     .instruction();
   return sendAndConfirmIx(conn, t.kp, ix);
 }
@@ -379,6 +387,20 @@ export async function readPosition(t: Trader): Promise<any> {
   const conn = await teeConn(t.kp);
   const core = dexxerCoreProgram(conn, t.kp);
   return accountNs(core).position.fetch(t.position);
+}
+
+/**
+ * The newest `ClosedRecord` in `t`'s ring, or `null` if the ring is empty.
+ * Since week-5 Task 1 this — not `Position.closed`, which is always `None`
+ * now — is where a close's record lands.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export async function readLastClosedRecord(t: Trader): Promise<any | null> {
+  const conn = await teeConn(t.kp);
+  const core = dexxerCoreProgram(conn, t.kp);
+  const dq = await accountNs(core).disclosureQueue.fetch(t.disclosureQueue);
+  if (dq.len === 0) return null;
+  return dq.records[(dq.head + dq.len - 1) % dq.records.length];
 }
 
 /**

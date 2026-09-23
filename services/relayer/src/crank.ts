@@ -56,9 +56,9 @@
 // their own try/catch here so a failure in either never kills the 1s tick
 // loop.
 
-import { PublicKey, Transaction } from "@solana/web3.js";
+import { ComputeBudgetProgram, PublicKey, Transaction } from "@solana/web3.js";
 import type { Keypair } from "@solana/web3.js";
-import { baseConn, confirmSignature, sleep, teeConn } from "../../../tests/er/lib/env.js";
+import { confirmSignature, sleep, teeConn } from "../../../tests/er/lib/env.js";
 import type { Net } from "../../../tests/er/lib/env.js";
 import { POSITION_DISC, accountNs, dexxerCoreProgram, pdas } from "../../../tests/er/lib/program.js";
 import { runDisclosureCycle, runRootCycle } from "./disclosure.js";
@@ -199,11 +199,18 @@ export async function startCrank(cfg: RelayerConfig, state: RelayerState): Promi
     // mark/EMA still advances every tick.
     for (let i = 0; i < Math.max(1, open.length); i += MAX_CANDIDATES) {
       const chunk = open.slice(i, i + MAX_CANDIDATES);
-      const remaining = chunk.flatMap((p) => [
-        { pubkey: p.key, isWritable: true, isSigner: false },
+      // Triples since week-5 Task 1: a liquidation is a close, and a close
+      // pushes its `ClosedRecord` into the owner's `DisclosureQueue`, so the
+      // tick has to carry that account for every candidate it might liquidate.
+      const remaining = chunk.flatMap((p) => {
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        { pubkey: pdas.userAccount(new PublicKey((p.acc as any).owner)), isWritable: true, isSigner: false },
-      ]);
+        const owner = new PublicKey((p.acc as any).owner);
+        return [
+          { pubkey: p.key, isWritable: true, isSigner: false },
+          { pubkey: pdas.userAccount(owner), isWritable: true, isSigner: false },
+          { pubkey: pdas.disclosureQueue(owner), isWritable: true, isSigner: false },
+        ];
+      });
       const ix = await prog.methods
         .crankTick()
         .accounts({ crank: cfg.crank.publicKey, config: pdas.config(), market: ctx.market, marketRisk: ctx.marketRisk, poolLive: ctx.poolLive, feed })
@@ -212,7 +219,12 @@ export async function startCrank(cfg: RelayerConfig, state: RelayerState): Promi
 
       const sendT0 = Date.now();
       const { blockhash } = await freshBlockhash();
-      const txn = new Transaction({ feePayer: cfg.crank.publicKey, recentBlockhash: blockhash }).add(ix);
+      // A full 16-candidate tick measured 205k CU in LiteSVM once week-5 Task 1
+      // added the `DisclosureQueue` to every triple — past the 200k default, so
+      // the limit has to be raised explicitly.
+      const txn = new Transaction({ feePayer: cfg.crank.publicKey, recentBlockhash: blockhash })
+        .add(ComputeBudgetProgram.setComputeUnitLimit({ units: 1_400_000 }))
+        .add(ix);
       txn.sign(cfg.crank);
       const sig = await conn.sendRawTransaction(txn.serialize(), { skipPreflight: true });
       await confirmSignature(conn, sig);
@@ -223,7 +235,10 @@ export async function startCrank(cfg: RelayerConfig, state: RelayerState): Promi
 
       for (const p of chunk) {
         const after = await accountNs(prog).position.fetch(p.key);
-        if ("closed" in after.state) liquidated.push(p.key.toBase58());
+        // Week-5 Task 1: a liquidated position is reset straight to `Empty`
+        // (the record now lives in the owner's queue), so "was open before the
+        // tick, empty after it" is what a liquidation looks like from here.
+        if ("empty" in after.state) liquidated.push(p.key.toBase58());
       }
 
       const market = await accountNs(prog).market.fetch(ctx.market);
@@ -276,7 +291,7 @@ export async function startCrank(cfg: RelayerConfig, state: RelayerState): Promi
     // freshly computed `BalancesRoot`. Each cycle is its own try/catch, so
     // neither ever kills this 1s tick loop.
     if (n % DISCLOSURE_EVERY_TICKS === 0) {
-      const cycleCtx = { baseConn, conn, prog, crank: cfg.crank, feePayerConn, feePayerProg, feePayer: cfg.feePayer, pool, poolLive, balancesRoot, feeEscrow };
+      const cycleCtx = { conn, prog, crank: cfg.crank, feePayerConn, feePayerProg, feePayer: cfg.feePayer, pool, poolLive, balancesRoot, feeEscrow };
       try {
         await runRootCycle(cycleCtx);
       } catch (e) {

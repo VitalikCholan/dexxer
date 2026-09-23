@@ -30,6 +30,45 @@ pub struct CrankTick<'info> {
     pub feed: UncheckedAccount<'info>,
 }
 
+/// One candidate's liquidation, split out and `#[inline(never)]` so the
+/// `DisclosureQueue` local (up to 1300 B, `state/mod.rs`'s
+/// `print_sizes_for_spec_q3` bound) lives in its own call frame instead of
+/// `crank_tick`'s, which already carries a `Position` and a `UserAccount` and
+/// would blow the SBF 4096-byte stack limit — the same split
+/// `commit_aggregate` needed for the same account (`commit.rs`).
+#[allow(clippy::too_many_arguments)]
+#[inline(never)]
+fn liquidate_candidate(
+    dq_ai: &AccountInfo,
+    market_key: Pubkey,
+    risk_acc: &mut MarketRisk,
+    pool: &mut PoolLive,
+    user: &mut UserAccount,
+    pos: &mut Position,
+    mark: u64,
+    fee_bps: u32,
+    clock: &Clock,
+    delay_slots: u64,
+) -> Result<()> {
+    let mut dq = DisclosureQueue::try_deserialize(&mut &dq_ai.try_borrow_data()?[..])?;
+    require!(dq.owner == pos.owner, DexxerError::InvalidCandidate);
+    finalize_close(
+        market_key,
+        risk_acc,
+        pool,
+        user,
+        pos,
+        &mut dq,
+        mark,
+        fee_bps,
+        CloseReason::Liquidated,
+        clock,
+        delay_slots,
+    )?;
+    dq.try_serialize(&mut &mut dq_ai.try_borrow_mut_data()?[..])?;
+    Ok(())
+}
+
 // anchor-lang 1.0.2's `Context<'info, T>` carries a single lifetime (not the
 // 4-lifetime `Context<'a, 'b, 'c, 'info, T>` of older Anchor versions), so the
 // wrapper below forwards just `'info` — matching how `remaining_accounts:
@@ -84,26 +123,32 @@ pub fn crank_tick<'info>(mut ctx: Context<'info, CrankTick<'info>>) -> Result<()
         return Ok(());
     }
     let mark = m.mark;
-    // (3)-(5) candidates: pairs [position, user_account]
+    // (3)-(5) candidates: triples [position, user_account, disclosure_queue].
+    // The queue joined the tuple in week-5 Task 1: a liquidation is a close,
+    // and a close now pushes its `ClosedRecord` straight into the owner's ring
+    // (`finalize_close`), so the crank must carry that account for every
+    // candidate it might liquidate this tick.
     let rem = ctx.remaining_accounts;
     require!(
-        rem.len() % 2 == 0 && rem.len() / 2 <= MAX_CANDIDATES,
+        rem.len() % 3 == 0 && rem.len() / 3 <= MAX_CANDIDATES,
         DexxerError::InvalidCandidate
     );
-    // Reject a duplicate [Position, UserAccount] pair inside the same
-    // remaining_accounts list — without this, the same candidate passed
+    // Reject a duplicate [Position, UserAccount, DisclosureQueue] triple inside
+    // the same remaining_accounts list — without this, the same candidate passed
     // twice would run `liquidatable_now`/hysteresis logic twice in one tx,
     // double-incrementing `liq_ticks` and being able to trip liquidation a
     // tick early.
     let mut seen: [Pubkey; MAX_CANDIDATES] = [Pubkey::default(); MAX_CANDIDATES];
     let mut seen_len: usize = 0;
-    for pair in rem.chunks(2) {
-        let (pos_ai, user_ai) = (&pair[0], &pair[1]);
+    for triple in rem.chunks(3) {
+        let (pos_ai, user_ai, dq_ai) = (&triple[0], &triple[1], &triple[2]);
         require!(
             pos_ai.owner == &crate::ID
                 && user_ai.owner == &crate::ID
+                && dq_ai.owner == &crate::ID
                 && pos_ai.is_writable
-                && user_ai.is_writable,
+                && user_ai.is_writable
+                && dq_ai.is_writable,
             DexxerError::InvalidCandidate
         );
         require!(
@@ -124,8 +169,12 @@ pub fn crank_tick<'info>(mut ctx: Context<'info, CrankTick<'info>>) -> Result<()
         );
         let (exp_user, _) =
             Pubkey::find_program_address(&[USER_SEED, user.owner.as_ref()], &crate::ID);
+        // The queue's address is derived from the same owner, which is what
+        // binds it to this candidate; `liquidate_candidate` re-checks
+        // `dq.owner` against it after deserializing, as defence in depth.
+        let (exp_dq, _) = Pubkey::find_program_address(&[DQ_SEED, user.owner.as_ref()], &crate::ID);
         require!(
-            pos_ai.key() == exp_pos && user_ai.key() == exp_user,
+            pos_ai.key() == exp_pos && user_ai.key() == exp_user && dq_ai.key() == exp_dq,
             DexxerError::InvalidCandidate
         );
         if pos.state != PositionState::Open {
@@ -139,7 +188,8 @@ pub fn crank_tick<'info>(mut ctx: Context<'info, CrankTick<'info>>) -> Result<()
             if pos.liq_ticks >= a.market.liq_hysteresis_ticks {
                 let fee_bps = a.market.liq_fee_bps as u32;
                 let delay = a.config.disclosure_delay_slots;
-                finalize_close(
+                liquidate_candidate(
+                    dq_ai,
                     market_key,
                     &mut a.market_risk,
                     &mut a.pool_live,
@@ -147,7 +197,6 @@ pub fn crank_tick<'info>(mut ctx: Context<'info, CrankTick<'info>>) -> Result<()
                     &mut pos,
                     mark,
                     fee_bps,
-                    CloseReason::Liquidated,
                     &clock,
                     delay,
                 )?;

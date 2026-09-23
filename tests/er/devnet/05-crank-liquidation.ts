@@ -261,9 +261,13 @@ async function main() {
       liqPollTries = i + 1;
       const pos = await accountNs(coreOwnerEr).position.fetch(position);
       liqTicksSeen.push(Number(pos.liqTicks));
-      if ("closed" in pos.state) {
+      // Week-5 Task 1: a liquidation is a close, and a close pushes its record
+      // into the owner's ring and frees the `Position` straight to `Empty` —
+      // so "the queue grew" is what a liquidation looks like from out here.
+      const dq = await accountNs(coreOwnerEr).disclosureQueue.fetch(disclosureQueue);
+      if ("empty" in pos.state && dq.len > 0) {
         liquidated = true;
-        closedInfo = pos.closed;
+        closedInfo = dq.records[(dq.head + dq.len - 1) % dq.records.length];
         console.log(`Position liquidated after ${((Date.now() - tSetParams) / 1000).toFixed(1)}s, ${liqPollTries} polls, liq_ticks history: ${JSON.stringify(liqTicksSeen)}`);
         break;
       }

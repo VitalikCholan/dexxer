@@ -369,6 +369,9 @@ pub fn decrease_position(
         .data(),
     }
 }
+/// `candidates` become `remaining_accounts` triples `[Position, UserAccount,
+/// DisclosureQueue]` (week-5 Task 1: a liquidation is a close, and a close
+/// pushes its record into the owner's queue).
 pub fn crank_tick(crank: &Pubkey, wd: &World, candidates: &[&Trader]) -> Instruction {
     // `crank: Signer<'info>` in `CrankTick` carries no `#[account(mut)]`, so the
     // client-side meta must be a readonly signer, not writable (`s`).
@@ -383,6 +386,7 @@ pub fn crank_tick(crank: &Pubkey, wd: &World, candidates: &[&Trader]) -> Instruc
     for t in candidates {
         accounts.push(w(&t.position));
         accounts.push(w(&t.user));
+        accounts.push(w(&t.dq));
     }
     Instruction {
         program_id: prog(),
@@ -600,13 +604,18 @@ pub fn undelegate_user(signer: &Pubkey, t: &Trader, wd: &World) -> Instruction {
         data: ix::UndelegateUser {}.data(),
     }
 }
-/// `mark_committed` (ER, crank): retires a `Closed && commitment_written` position's
-/// `ClosedRecord` into the owner's `DisclosureQueue` and frees the `Position` back
-/// to `Empty`. `MarkCommitted { crank, config, position, dq }` — no instruction args.
-pub fn mark_committed(crank: &Pubkey, t: &Trader, wd: &World) -> Instruction {
+
+/// `ComputeBudgetProgram::SetComputeUnitLimit` (discriminant `2`, u32 LE units),
+/// hand-built so the test crate needs no extra dependency. A `crank_tick` with a
+/// full 16-candidate batch no longer fits in the 200k default (week-5 Task 1 put
+/// a `DisclosureQueue` in every candidate triple), so any client that fills the
+/// batch has to raise the limit — `services/relayer/src/crank.ts` does the same.
+pub fn set_compute_unit_limit(units: u32) -> Instruction {
+    let mut data = vec![2u8];
+    data.extend_from_slice(&units.to_le_bytes());
     Instruction {
-        program_id: prog(),
-        accounts: vec![rs(crank), r(&wd.config), w(&t.position), w(&t.dq)],
-        data: ix::MarkCommitted {}.data(),
+        program_id: Pubkey::from_str_const("ComputeBudget111111111111111111111111111111"),
+        accounts: vec![],
+        data,
     }
 }

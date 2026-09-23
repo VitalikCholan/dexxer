@@ -11,8 +11,10 @@ permission member of (privacy rule, see repo `CLAUDE.md`).
 - `src/crank.ts` — the 1s `crank_tick` loop (liquidation candidates via
   `getProgramAccounts`), moved from `scripts/crank-fallback/index.ts`.
 - `src/disclosure.ts` — the ~5-min `set_balances_root` + `commit_aggregate`
-  + `mark_committed` cycle, moved unchanged (import paths only) from
-  `scripts/crank-fallback/disclosure.ts`.
+  cycle. Since week-5 Task 1 `commit_aggregate` sources both the
+  `write_commitment` and the `write_disclosure` actions from the owner's
+  `DisclosureQueue`, so the queue is the only candidate kind and the old
+  `mark_committed` follow-up is gone.
 - `src/keys.ts` — `keypairFromEnv(name, fileFallback)`: bs58 secret key from
   an env var in production, `tests/er/.keys/<fileFallback>.json` (via
   `loadOrCreateKey`) for local dev.

@@ -177,8 +177,10 @@ fn decrease_full_equals_close() {
     )
     .unwrap();
     let p: Position = h.account(&t.position);
-    assert_eq!(p.state, PositionState::Closed);
-    assert_eq!(p.closed.unwrap().reason, CloseReason::User);
+    assert_eq!(p.state, PositionState::Empty);
+    let dq: DisclosureQueue = h.account(&t.dq);
+    assert_eq!(dq.len, 1, "a full decrease queues its record like a close");
+    assert_eq!(dq.records[0].reason, CloseReason::User);
 }
 
 #[test]
@@ -247,7 +249,7 @@ fn close_after_increase_keeps_oi_ledger_exact() {
         .unwrap();
     assert_eq!(
         h.account::<Position>(&t.position).state,
-        PositionState::Closed
+        PositionState::Empty
     );
     assert_eq!(h.account::<MarketRisk>(&w.risk).oi_long, 0);
     assert_invariant(&h, &w, &[&t]);

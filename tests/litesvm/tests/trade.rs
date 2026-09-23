@@ -175,7 +175,9 @@ fn wrong_feed_account_rejected() {
     let w = world_with_price(&mut h);
     let t = w.new_trader(&mut h, 1_000_000_000);
     let mut ix = ixs::open_position(&t.kp.pubkey(), &t, &w, Side::Long, SOL10, M150, P150);
-    ix.accounts.last_mut().unwrap().pubkey = w.market; // any other account in place of the feed
+    // `feed` is index 7 of `Trader::trade_accounts` — no longer the last account
+    // (week-5 Task 1 appended dq / fee_escrow / task_context / magic_program).
+    ix.accounts[7].pubkey = w.market; // any other account in place of the feed
     let r = h.send(&[ix], &[&t.kp]);
     assert_custom_error(&r, 6000 + DexxerError::WrongFeed as u32);
 }
@@ -281,8 +283,9 @@ fn close_with_profit_pays_from_protocol_liquidity() {
     );
     assert_eq!(u.locked_margin, 0);
     let p: Position = h.account(&t.position);
-    assert_eq!(p.state, PositionState::Closed);
-    let rec = p.closed.unwrap();
+    assert_eq!(p.state, PositionState::Empty);
+    assert!(p.closed.is_none());
+    let rec = h.account::<DisclosureQueue>(&t.dq).records[0];
     assert_eq!(rec.pnl, 150_000_000);
     assert_eq!(rec.reason, CloseReason::User);
     assert_eq!(rec.exit, 165_000_000);
@@ -292,21 +295,12 @@ fn close_with_profit_pays_from_protocol_liquidity() {
     assert_eq!(pool.fees_accrued, 900_000 + 990_000);
     assert_eq!(pool.locked_total, 0);
     assert_eq!(h.account::<MarketRisk>(&w.risk).oi_long, 0);
+    // Closing again is a no-op error: the position is `Empty` now, not `Closed`
+    // (week-5 Task 1). Reopening straight away is covered by
+    // `disclosure.rs::reopen_immediately_after_close_keeps_invariant`, which
+    // does it at a price the deviation guard accepts.
     let r = h.send(&[ixs::close_position(&t.kp.pubkey(), &t, &w, 0)], &[&t.kp]);
     assert_custom_error(&r, 6000 + DexxerError::PositionNotOpen as u32);
-    let r = h.send(
-        &[ixs::open_position(
-            &t.kp.pubkey(),
-            &t,
-            &w,
-            Side::Long,
-            SOL10,
-            M150,
-            u64::MAX,
-        )],
-        &[&t.kp],
-    );
-    assert_custom_error(&r, 6000 + DexxerError::PositionNotEmpty as u32);
 }
 
 #[test]
@@ -395,7 +389,7 @@ fn deviation_guard_blocks_open_not_close() {
         .unwrap();
     assert_eq!(
         h.account::<Position>(&t.position).state,
-        PositionState::Closed
+        PositionState::Empty
     );
     assert_invariant(&h, &w, &[&t, &t2]);
 }

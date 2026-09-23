@@ -245,65 +245,24 @@ fn open_then_close(h: &mut Harness, w: &World) -> Trader {
     t
 }
 
+// Week-5 Task 1 retired the `Position` candidate kind: a close no longer parks
+// its record on the position, so a `Position` handed to `commit_aggregate` is a
+// stale caller and is rejected outright rather than silently doing nothing.
 #[test]
-fn commit_aggregate_marks_closed_position_commitment_written() {
+fn commit_aggregate_rejects_position_candidate() {
     let mut h = Harness::new();
     let w = world_with_price(&mut h);
     let t = open_then_close(&mut h, &w);
-    assert!(
-        !h.account::<Position>(&t.position)
-            .closed
-            .unwrap()
-            .commitment_written
-    );
     let extra = vec![AccountMeta::new(t.position, false)];
-    h.send(
+    let r = h.send(
         &[ixs::commit_aggregate(&w.fee_payer.pubkey(), &w, &extra)],
         &[&w.fee_payer],
-    )
-    .unwrap();
-    let p = h.account::<Position>(&t.position);
-    assert_eq!(
-        p.state,
-        PositionState::Closed,
-        "state unchanged until mark_committed"
     );
+    assert_custom_error(&r, 6000 + DexxerError::InvalidCandidate as u32);
     assert!(
-        p.closed.unwrap().commitment_written,
-        "flag flips even though Magic CPI is skipped on LiteSVM"
+        !h.account::<DisclosureQueue>(&t.dq).records[0].commitment_written,
+        "the rejected bundle scheduled nothing"
     );
-    assert_invariant(&h, &w, &[&t]);
-}
-
-#[test]
-fn commit_aggregate_ignores_open_position() {
-    let mut h = Harness::new();
-    let w = world_with_price(&mut h);
-    let t = w.new_trader(&mut h, 1_000_000_000);
-    h.send(
-        &[ixs::open_position(
-            &t.kp.pubkey(),
-            &t,
-            &w,
-            Side::Long,
-            SOL1,
-            M20,
-            P100,
-        )],
-        &[&t.kp],
-    )
-    .unwrap();
-    let extra = vec![AccountMeta::new(t.position, false)];
-    h.send(
-        &[ixs::commit_aggregate(&w.fee_payer.pubkey(), &w, &extra)],
-        &[&w.fee_payer],
-    )
-    .unwrap();
-    assert_eq!(
-        h.account::<Position>(&t.position).state,
-        PositionState::Open
-    );
-    assert!(h.account::<Position>(&t.position).closed.is_none());
 }
 
 #[test]
@@ -319,33 +278,29 @@ fn commit_aggregate_rejects_foreign_remaining_account() {
     assert_custom_error(&r, 6000 + DexxerError::InvalidCandidate as u32);
 }
 
-// Task 4: `mark_committed` (ER, crank) — the bridge from `commit_aggregate`'s
-// `write_commitment` scheduling to a retired `ClosedRecord` in the owner's
-// `DisclosureQueue` and a `Position` reset back to `Empty`.
-fn commit_position(h: &mut Harness, w: &World, t: &Trader) {
-    let extra = vec![AccountMeta::new(t.position, false)];
-    h.send(
-        &[ixs::commit_aggregate(&w.fee_payer.pubkey(), w, &extra)],
-        &[&w.fee_payer],
-    )
-    .unwrap();
-}
+// Week-5 Task 1: the close path is queue-first. `finalize_close` pushes the
+// `ClosedRecord` straight into the owner's `DisclosureQueue` and resets the
+// `Position` to `Empty` in the same instruction, so there is no `Closed`
+// holding state, no `pending_commitment` on the position, and no
+// `mark_committed` bridge any more. `commit_aggregate` sources BOTH
+// `write_commitment` (records still unwritten) and `write_disclosure`
+// (records due) from that queue, commitment first.
 
 #[test]
-fn mark_committed_moves_record_and_frees_position() {
+fn close_moves_record_to_queue_and_frees_position() {
     let mut h = Harness::new();
     let w = world_with_price(&mut h);
     let t = open_then_close(&mut h, &w);
-    commit_position(&mut h, &w, &t);
-    let before = h.account::<Position>(&t.position).closed.unwrap();
-    h.send(
-        &[ixs::mark_committed(&w.crank.pubkey(), &t, &w)],
-        &[&w.crank],
-    )
-    .unwrap();
-    let p = h.account::<Position>(&t.position);
-    assert_eq!(p.state, PositionState::Empty);
-    assert!(p.closed.is_none());
+    let p: Position = h.account(&t.position);
+    assert_eq!(
+        p.state,
+        PositionState::Empty,
+        "close frees the position now"
+    );
+    assert!(
+        p.closed.is_none(),
+        "the record lives in the queue, not the position"
+    );
     assert_eq!(
         (
             p.size,
@@ -356,49 +311,31 @@ fn mark_committed_moves_record_and_frees_position() {
             p.liq_ticks,
             p.opened_slot
         ),
-        (0, 0, 0, 0, 0, 0, 0)
+        (0, 0, 0, 0, 0, 0, 0),
+        "every trade field is reset, nothing left behind for the next open"
     );
-    let dq = h.account::<DisclosureQueue>(&t.dq);
+    let dq: DisclosureQueue = h.account(&t.dq);
     assert_eq!(dq.len, 1);
-    assert_eq!(dq.records[dq.head as usize].nonce, before.nonce);
-    assert_eq!(dq.records[dq.head as usize].salt, before.salt);
+    assert_eq!(dq.head, 0);
+    assert_eq!(
+        dq.records[0].nonce,
+        h.account::<UserAccount>(&t.user).nonce,
+        "the queued record carries the close's nonce"
+    );
+    assert!(
+        !dq.records[0].commitment_written,
+        "queued uncommitted — commit_aggregate is what flips this"
+    );
     assert_invariant(&h, &w, &[&t]);
 }
 
 #[test]
-fn mark_committed_requires_commitment_written() {
-    let mut h = Harness::new();
-    let w = world_with_price(&mut h);
-    let t = open_then_close(&mut h, &w); // no commit_aggregate
-    let r = h.send(
-        &[ixs::mark_committed(&w.crank.pubkey(), &t, &w)],
-        &[&w.crank],
-    );
-    assert_custom_error(&r, 6000 + DexxerError::CommitmentNotWritten as u32);
-}
-
-#[test]
-fn mark_committed_only_by_crank() {
+fn reopen_immediately_after_close_keeps_invariant() {
     let mut h = Harness::new();
     let w = world_with_price(&mut h);
     let t = open_then_close(&mut h, &w);
-    commit_position(&mut h, &w, &t);
-    let r = h.send(&[ixs::mark_committed(&t.kp.pubkey(), &t, &w)], &[&t.kp]);
-    assert_custom_error(&r, 6000 + DexxerError::Unauthorized as u32);
-}
-
-#[test]
-fn second_position_after_mark_committed() {
-    let mut h = Harness::new();
-    let w = world_with_price(&mut h);
-    let t = open_then_close(&mut h, &w);
-    commit_position(&mut h, &w, &t);
-    h.send(
-        &[ixs::mark_committed(&w.crank.pubkey(), &t, &w)],
-        &[&w.crank],
-    )
-    .unwrap();
-    // The week-1/2 "one position per trader per run" limit is gone:
+    // Same slot as the close: no crank tick, no commit_aggregate, no crank
+    // round-trip of any kind between the two trades.
     h.send(
         &[ixs::open_position(
             &t.kp.pubkey(),
@@ -416,20 +353,25 @@ fn second_position_after_mark_committed() {
         h.account::<Position>(&t.position).state,
         PositionState::Open
     );
+    assert_eq!(
+        h.account::<DisclosureQueue>(&t.dq).len,
+        1,
+        "the previous close is still queued, awaiting its commitment"
+    );
     assert_invariant(&h, &w, &[&t]);
 }
 
 #[test]
-fn mark_committed_queue_full() {
+fn close_with_full_queue_fails_atomically() {
     let mut h = Harness::new();
     let w = world_with_price(&mut h);
     let t = w.new_trader(&mut h, 10_000_000_000);
-    for _ in 0..DQ_CAPACITY {
+    let open = |h: &mut Harness, w: &World| {
         h.send(
             &[ixs::open_position(
                 &t.kp.pubkey(),
                 &t,
-                &w,
+                w,
                 Side::Long,
                 SOL1,
                 M20,
@@ -438,36 +380,92 @@ fn mark_committed_queue_full() {
             &[&t.kp],
         )
         .unwrap();
+    };
+    // Fill the ring: DQ_CAPACITY closes with nothing draining it (the default
+    // disclosure delay keeps every record un-due, and no commit_aggregate runs).
+    for _ in 0..DQ_CAPACITY {
+        open(&mut h, &w);
         h.send(&[ixs::close_position(&t.kp.pubkey(), &t, &w, 0)], &[&t.kp])
             .unwrap();
-        commit_position(&mut h, &w, &t);
-        h.send(
-            &[ixs::mark_committed(&w.crank.pubkey(), &t, &w)],
-            &[&w.crank],
+    }
+    assert_eq!(
+        h.account::<DisclosureQueue>(&t.dq).len as usize,
+        DQ_CAPACITY
+    );
+    open(&mut h, &w);
+    let r = h.send(&[ixs::close_position(&t.kp.pubkey(), &t, &w, 0)], &[&t.kp]);
+    assert_custom_error(&r, 6000 + DexxerError::QueueFull as u32);
+    // Atomic: the whole close reverted, so the position is still Open with its
+    // margin locked and the queue is untouched.
+    assert_eq!(
+        h.account::<Position>(&t.position).state,
+        PositionState::Open,
+        "a rejected close must leave the position open, not half-settled"
+    );
+    assert_eq!(
+        h.account::<DisclosureQueue>(&t.dq).len as usize,
+        DQ_CAPACITY
+    );
+    assert_invariant(&h, &w, &[&t]);
+}
+
+#[test]
+fn commit_aggregate_emits_commitment_and_disclosure_in_one_bundle_at_delay_zero() {
+    let mut h = Harness::new();
+    // disclosure_delay_slots == 0: the record is due the slot it is queued.
+    let w = World::bootstrap_with_delay(&mut h, 0);
+    h.warp(9_101, NOW);
+    w.set_price(&mut h, P100, 5, NOW, 100);
+    let t = open_then_close(&mut h, &w);
+    let extra = vec![AccountMeta::new(t.dq, false)];
+    let meta = h
+        .send(
+            &[ixs::commit_aggregate(&w.fee_payer.pubkey(), &w, &extra)],
+            &[&w.fee_payer],
         )
         .unwrap();
-    }
-    h.send(
-        &[ixs::open_position(
-            &t.kp.pubkey(),
-            &t,
-            &w,
-            Side::Long,
-            SOL1,
-            M20,
-            P100,
-        )],
-        &[&t.kp],
-    )
-    .unwrap();
-    h.send(&[ixs::close_position(&t.kp.pubkey(), &t, &w, 0)], &[&t.kp])
-        .unwrap();
-    commit_position(&mut h, &w, &t);
-    let r = h.send(
-        &[ixs::mark_committed(&w.crank.pubkey(), &t, &w)],
-        &[&w.crank],
+    // LiteSVM has no Magic program, so the bundle CPI is skipped and the
+    // CallHandlers never log their own `Instruction: Write*` lines — the
+    // program's own `actions=N` log is what the built bundle is asserted on.
+    assert!(
+        meta.logs.iter().any(|l| l.contains("actions=2")),
+        "expected write_commitment + write_disclosure in one bundle, logs: {:?}",
+        meta.logs
     );
-    assert_custom_error(&r, 6000 + DexxerError::QueueFull as u32);
+    let dq: DisclosureQueue = h.account(&t.dq);
+    assert_eq!(
+        dq.len, 0,
+        "a due record is committed and revealed in the same bundle, then popped"
+    );
+    assert_invariant(&h, &w, &[&t]);
+}
+
+#[test]
+fn due_reveals_skips_uncommitted() {
+    let mut h = Harness::new();
+    // Default delay (100 slots): the freshly queued record is not due yet, so
+    // only its `write_commitment` is scheduled this bundle.
+    let w = world_with_price(&mut h);
+    let t = open_then_close(&mut h, &w);
+    let extra = vec![AccountMeta::new(t.dq, false)];
+    let meta = h
+        .send(
+            &[ixs::commit_aggregate(&w.fee_payer.pubkey(), &w, &extra)],
+            &[&w.fee_payer],
+        )
+        .unwrap();
+    assert!(
+        meta.logs.iter().any(|l| l.contains("actions=1")),
+        "expected exactly one action (the commitment), logs: {:?}",
+        meta.logs
+    );
+    let dq: DisclosureQueue = h.account(&t.dq);
+    assert_eq!(dq.len, 1, "the record stays queued until its reveal slot");
+    assert!(
+        dq.records[0].commitment_written,
+        "the flag flips in the same ER tx that schedules the action"
+    );
+    assert_invariant(&h, &w, &[&t]);
 }
 
 // Task 8b (ruling 9): `nonce` is `UserAccount.nonce`, a per-user counter — two
@@ -483,8 +481,8 @@ fn commitments_from_two_traders_do_not_collide() {
     let t1 = open_then_close(&mut h, &w);
     let t2 = open_then_close(&mut h, &w);
 
-    let rec1 = h.account::<Position>(&t1.position).closed.unwrap();
-    let rec2 = h.account::<Position>(&t2.position).closed.unwrap();
+    let rec1 = h.account::<DisclosureQueue>(&t1.dq).records[0];
+    let rec2 = h.account::<DisclosureQueue>(&t2.dq).records[0];
     assert_eq!(
         rec1.nonce, 1,
         "test bug: expected each trader's first close"
@@ -507,28 +505,18 @@ fn commitments_from_two_traders_do_not_collide() {
         "same-nonce Commitment PDAs must not collide across traders"
     );
 
-    // Both commit in the same bundle; both actions target distinct PDAs and
-    // both positions flip commitment_written — no `init`-over-existing failure.
+    // Both queues commit in the same bundle; both actions target distinct PDAs
+    // and both records flip commitment_written — no `init`-over-existing failure.
     let extra = vec![
-        AccountMeta::new(t1.position, false),
-        AccountMeta::new(t2.position, false),
+        AccountMeta::new(t1.dq, false),
+        AccountMeta::new(t2.dq, false),
     ];
     h.send(
         &[ixs::commit_aggregate(&w.fee_payer.pubkey(), &w, &extra)],
         &[&w.fee_payer],
     )
     .unwrap();
-    assert!(
-        h.account::<Position>(&t1.position)
-            .closed
-            .unwrap()
-            .commitment_written
-    );
-    assert!(
-        h.account::<Position>(&t2.position)
-            .closed
-            .unwrap()
-            .commitment_written
-    );
+    assert!(h.account::<DisclosureQueue>(&t1.dq).records[0].commitment_written);
+    assert!(h.account::<DisclosureQueue>(&t2.dq).records[0].commitment_written);
     assert_invariant(&h, &w, &[&t1, &t2]);
 }

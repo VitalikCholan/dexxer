@@ -79,7 +79,7 @@ fn undelegate_scrubs_after_full_withdraw() {
 }
 
 #[test]
-fn undelegate_rejected_with_closed_unmarked_position() {
+fn undelegate_rejected_with_pending_queue_record() {
     let mut h = Harness::new();
     let w = world_with_price(&mut h);
     let t = w.new_trader(&mut h, 1_000_000_000);
@@ -96,20 +96,20 @@ fn undelegate_rejected_with_closed_unmarked_position() {
         &[&t.kp],
     )
     .unwrap();
-    // limit_price 0 accepts any price (as in commit_actions.rs's
-    // `second_commit_on_already_written_position_is_a_noop`). This leaves
-    // `position.state == Closed`, not `Empty` — the crank's `mark_committed`
-    // (after `commit_aggregate` observes the on-chain commitment) is what
-    // frees it back to `Empty`; until then `undelegate_user` must still
-    // block on `HasOpenPosition`, same as a genuinely `Open` position.
+    // limit_price 0 accepts any price. Since week-5 Task 1 the close frees the
+    // `Position` straight to `Empty`, so `HasOpenPosition` no longer fires —
+    // what blocks the exit now is the record the close left in the ring, which
+    // still owes L1 a commitment and a disclosure (`QueueNotEmpty`). Task 2
+    // turns this hard block into an exit that carries the debt.
     h.send(&[ixs::close_position(&t.kp.pubkey(), &t, &w, 0)], &[&t.kp])
         .unwrap();
     assert_eq!(
         h.account::<Position>(&t.position).state,
-        PositionState::Closed
+        PositionState::Empty
     );
+    assert_eq!(h.account::<DisclosureQueue>(&t.dq).len, 1);
     let r = h.send(&[ixs::undelegate_user(&t.kp.pubkey(), &t, &w)], &[&t.kp]);
-    assert_custom_error(&r, 6000 + DexxerError::HasOpenPosition as u32);
+    assert_custom_error(&r, 6000 + DexxerError::QueueNotEmpty as u32);
 }
 
 #[test]

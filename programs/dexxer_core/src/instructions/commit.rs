@@ -1,6 +1,6 @@
 use crate::{
     errors::DexxerError,
-    instructions::disclosure::{due_reveals, pending_commitment},
+    instructions::disclosure::{due_reveals, pending_commitments},
     state::*,
 };
 use anchor_lang::prelude::*;
@@ -71,41 +71,45 @@ pub struct CommitAggregate<'info> {
     pub magic_program: UncheckedAccount<'info>,
 }
 // anchor-lang 1.0.2's single-lifetime `Context<'info, T>` (see `crank_tick`'s
-// comment above `CrankTick`) — `remaining_accounts` is a mix of `Position` and
+// comment above `CrankTick`) — `remaining_accounts` is a list of
 // `DisclosureQueue` accounts (owner- and seeds-checked below), each producing
-// zero or more post-commit actions: a `Position` with a not-yet-written
-// `Closed` record emits `write_commitment`; a `DisclosureQueue` with due
-// records (`reveal_after_slot <= slot`) emits `write_disclosure` per record.
+// zero or more post-commit actions: first a `write_commitment` per record whose
+// commitment has not been scheduled yet, then a `write_disclosure` per record
+// that is both committed and past its reveal slot. Commitment actions are
+// pushed BEFORE disclosure actions because `WriteDisclosure` reads the
+// `Commitment` PDA the matching `WriteCommitment` creates, and the delegation
+// program executes a bundle's actions in order — so with
+// `disclosure_delay_slots == 0` a record is committed and revealed in the same
+// bundle, in that order.
+//
+// Week-5 Task 1 retired the `Position` candidate kind: a close now queues its
+// record immediately (`finalize_close`), so a `Position` never carries one and
+// is rejected here as `InvalidCandidate` along with any other account kind.
 // Both mutations (flip `commitment_written`, pop the queue) happen in the same
 // ER tx that schedules the action, so a failed/replayed bundle can never
 // re-emit the same action (nonce reuse hard-fails `write_commitment`'s L1
 // `init` — week-3 controller ruling 7).
-// Split out of `commit_aggregate` (and marked `#[inline(never)]`) so its local
-// `Position` (up to 400 B, `state/mod.rs`'s `print_sizes_for_spec_q3` bound)
-// lives in its own call frame rather than `commit_aggregate`'s — the two
-// candidate kinds are never live at once, but the SBF backend does not reuse
-// stack slots across sibling branches in the same function, and their combined
-// locals pushed `commit_aggregate` itself over the 4096-byte limit (build
-// warning, fixed by this split).
+
+/// Split out of `commit_aggregate` and marked `#[inline(never)]` so its local
+/// `DisclosureQueue` (up to 1300 B, `state/mod.rs`'s `print_sizes_for_spec_q3`
+/// bound) lives in its own call frame rather than `commit_aggregate`'s, which
+/// would otherwise blow the SBF 4096-byte stack limit.
 #[inline(never)]
-fn process_position_candidate<'info>(
+fn process_disclosure_queue_candidate<'info>(
     ai: &AccountInfo<'info>,
+    slot: u64,
     config_key: Pubkey,
     payer: &AccountInfo<'info>,
     system_program: Pubkey,
     actions: &mut Vec<CallHandler<'info>>,
 ) -> Result<()> {
-    let mut pos = Position::try_deserialize(&mut &ai.try_borrow_data()?[..])?;
-    let (exp, _) = Pubkey::find_program_address(
-        &[POSITION_SEED, pos.owner.as_ref(), pos.market.as_ref()],
-        &crate::ID,
-    );
+    let mut dq = DisclosureQueue::try_deserialize(&mut &ai.try_borrow_data()?[..])?;
+    let (exp, _) = Pubkey::find_program_address(&[DQ_SEED, dq.owner.as_ref()], &crate::ID);
     require!(ai.key() == exp, DexxerError::InvalidCandidate);
-    if let Some((nonce, hash)) = pending_commitment(&pos) {
-        require!(
-            actions.len() < MAX_ACTIONS_PER_COMMIT,
-            DexxerError::TooManyActions
-        );
+
+    // (1) commitments first — see the ordering comment above.
+    let room = MAX_ACTIONS_PER_COMMIT.saturating_sub(actions.len());
+    for (nonce, hash) in pending_commitments(&mut dq, room)? {
         // Hash-seeded (ruling 9): `nonce` is per-user, `hash` is globally unique.
         let (commitment, _) = Pubkey::find_program_address(&[COMMIT_SEED, &hash], &crate::ID);
         let data = crate::instruction::WriteCommitment { nonce, hash }.data();
@@ -129,28 +133,9 @@ fn process_position_candidate<'info>(
             escrow_authority: payer.clone(),
             compute_units: 100_000,
         });
-        if let Some(rec) = pos.closed.as_mut() {
-            rec.commitment_written = true;
-        }
-        pos.try_serialize(&mut &mut ai.try_borrow_mut_data()?[..])?;
     }
-    Ok(())
-}
 
-/// Same split as `process_position_candidate`, for `DisclosureQueue` (up to
-/// 1300 B — the larger of the two candidate kinds, per the same size bound).
-#[inline(never)]
-fn process_disclosure_queue_candidate<'info>(
-    ai: &AccountInfo<'info>,
-    slot: u64,
-    config_key: Pubkey,
-    payer: &AccountInfo<'info>,
-    system_program: Pubkey,
-    actions: &mut Vec<CallHandler<'info>>,
-) -> Result<()> {
-    let mut dq = DisclosureQueue::try_deserialize(&mut &ai.try_borrow_data()?[..])?;
-    let (exp, _) = Pubkey::find_program_address(&[DQ_SEED, dq.owner.as_ref()], &crate::ID);
-    require!(ai.key() == exp, DexxerError::InvalidCandidate);
+    // (2) then reveals, out of whatever budget the commitments left.
     let room = MAX_ACTIONS_PER_COMMIT.saturating_sub(actions.len());
     for (args, salt) in due_reveals(&mut dq, slot, room)? {
         // Hash-seeded (ruling 9), same hash as WriteDisclosure recomputes from (args, salt).
@@ -183,6 +168,9 @@ fn process_disclosure_queue_candidate<'info>(
             compute_units: 120_000,
         });
     }
+    // No explicit budget check: both loops above draw from `room`, which is
+    // `MAX_ACTIONS_PER_COMMIT` minus what earlier candidates already took, so
+    // `actions.len()` cannot exceed the cap by construction.
     dq.try_serialize(&mut &mut ai.try_borrow_mut_data()?[..])?;
     Ok(())
 }
@@ -211,21 +199,25 @@ pub fn commit_aggregate<'info>(ctx: Context<'info, CommitAggregate<'info>>) -> R
                 .try_into()
                 .map_err(|_| DexxerError::InvalidCandidate)?
         };
-        if disc == Position::DISCRIMINATOR {
-            process_position_candidate(ai, config_key, &payer_ai, system_program, &mut actions)?;
-        } else if disc == DisclosureQueue::DISCRIMINATOR {
-            process_disclosure_queue_candidate(
-                ai,
-                clock.slot,
-                config_key,
-                &payer_ai,
-                system_program,
-                &mut actions,
-            )?;
-        } else {
-            return err!(DexxerError::InvalidCandidate);
-        }
+        // `DisclosureQueue` is the only candidate kind since week-5 Task 1 — a
+        // `Position` handed in here is a stale caller, not a pending record.
+        require!(
+            disc == DisclosureQueue::DISCRIMINATOR,
+            DexxerError::InvalidCandidate
+        );
+        process_disclosure_queue_candidate(
+            ai,
+            clock.slot,
+            config_key,
+            &payer_ai,
+            system_program,
+            &mut actions,
+        )?;
     }
+    // The only observable record of the built bundle: on LiteSVM the Magic CPI
+    // below is skipped entirely, and on a real ER the actions execute on L1 a
+    // block later, so neither place shows what this call scheduled.
+    msg!("actions={}", actions.len());
 
     // Only in a real ER does a Magic program actually live at this address;
     // on LiteSVM (and any environment without the ER runtime) it is absent,

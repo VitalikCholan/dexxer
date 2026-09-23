@@ -1,9 +1,14 @@
 // tests/er/devnet/06-commitment-reveal.ts
 //
 // Task 8, script 1 of 3 (M-B): full commitment -> reveal round trip on real
-// devnet + devnet-tee, plus a second position on the same trader (proves
-// `mark_committed` actually frees `Position` back to `Empty` — the "one
-// position per run" limitation from week 2 is gone).
+// devnet + devnet-tee, plus a second position on the same trader (proves the
+// `Position` is reusable — the "one position per run" limitation from week 2
+// is gone).
+//
+// Week-5 Task 1: the close pushes its `ClosedRecord` into the owner's
+// `DisclosureQueue` and frees the `Position` in the same instruction, so both
+// the commitment and the disclosure are sourced from the queue and the old
+// `mark_committed` step is gone.
 //
 // Controller Ruling 8 (measured before this script existed — see
 // week3-results.md §Task 8 "Рішення після рулінгу 8"): `commit_aggregate`
@@ -202,8 +207,6 @@ async function main() {
   const feePayerConn = await teeConn(feePayer);
   const feePayerCore = dexxerCoreProgram(feePayerConn, feePayer);
   const cfg = await accountNs(feePayerCore).config.fetch(config);
-  const crankConn = await teeConn(crank);
-  const crankCore = dexxerCoreProgram(crankConn, crank);
 
   async function commitAggregate(remainingKey: InstanceType<typeof PublicKey>): Promise<string> {
     const ix = await feePayerCore.methods
@@ -215,10 +218,6 @@ async function main() {
       .remainingAccounts([{ pubkey: remainingKey, isWritable: true, isSigner: false }])
       .instruction();
     return sendAndConfirmIx(feePayerConn, feePayer, ix);
-  }
-
-  async function markCommitted(): Promise<string> {
-    return sendAndConfirmIx(crankConn, crank, await crankCore.methods.markCommitted().accounts({ crank: crank.publicKey, config, position, dq: disclosureQueue }).instruction());
   }
 
   async function waitForSlot(target: bigint) {
@@ -241,16 +240,20 @@ async function main() {
   const closeNSig = await closePosition(boot, traderCtx, 0);
   console.log("close_position", closeNSig);
   const posAfterClose = await accountNs(coreOwnerEr).position.fetch(position);
-  assert("closed" in posAfterClose.state && posAfterClose.closed !== null, "ClosedRecord present");
-  const { args: realArgs, salt: realSalt } = recToArgs(posAfterClose.closed);
+  assert("empty" in posAfterClose.state, "close frees the Position immediately (week-5 Task 1)");
+  const dqAfterClose = await accountNs(coreOwnerEr).disclosureQueue.fetch(disclosureQueue);
+  assert(dqAfterClose.len === 1, "the ClosedRecord went straight into the DisclosureQueue");
+  const queuedRecord = dqAfterClose.records[dqAfterClose.head];
+  assert(queuedRecord.commitmentWritten === false, "queued uncommitted — commit_aggregate is what flips this");
+  const { args: realArgs, salt: realSalt } = recToArgs(queuedRecord);
   const realNonce = realArgs.nonce;
   console.log(`ClosedRecord nonce=${realNonce} revealAfterSlot=${realArgs.revealAfterSlot}`);
   const realCommitHash = commitmentHash(realArgs, realSalt);
 
-  console.log("\n=== commit_aggregate(remaining=[position]) ===");
+  console.log("\n=== commit_aggregate(remaining=[disclosure_queue]) — commitment ===");
   const tCommitStart = Date.now();
-  const commitPositionSig = await commitAggregate(position);
-  console.log("commit_aggregate (position) sig:", commitPositionSig, "(fee_payer-only signer — Ruling 8: measured PASS)");
+  const commitPositionSig = await commitAggregate(disclosureQueue);
+  console.log("commit_aggregate (dq, commitment) sig:", commitPositionSig, "(fee_payer-only signer — Ruling 8: measured PASS)");
 
   const commitmentPda = pdas.commitment(realCommitHash);
   const commitmentAcc = await pollBase(`Commitment[hash] on base`, async () => {
@@ -267,12 +270,10 @@ async function main() {
   assert(matches, "M-B commitment landed");
   assert(matches, "hash matches");
 
-  const markNSig = await markCommitted();
-  const posAfterMark = await accountNs(coreOwnerEr).position.fetch(position);
-  assert("empty" in posAfterMark.state, "Position.state == Empty after mark_committed");
   const dqNow = await accountNs(coreOwnerEr).disclosureQueue.fetch(disclosureQueue);
-  console.log(`DisclosureQueue.len after mark_committed: ${dqNow.len}`);
-  assert(dqNow.len === 1, "DisclosureQueue.len == 1");
+  console.log(`DisclosureQueue.len after the commitment bundle: ${dqNow.len}`);
+  assert(dqNow.len === 1, "the record waits in the queue until its reveal slot");
+  assert(dqNow.records[dqNow.head].commitmentWritten === true, "commitment_written flipped in the same ER tx that scheduled the action");
 
   // === position #2 (brief's "second position": proves Position reuse) ===
   console.log("\n=== position #2: open Long (same trader, proves Position reuse) ===");
@@ -290,7 +291,7 @@ async function main() {
   await waitForSlot(realArgs.revealAfterSlot);
   console.log("reveal slot reached");
 
-  console.log("\n=== commit_aggregate(remaining=[disclosure_queue]) ===");
+  console.log("\n=== commit_aggregate(remaining=[disclosure_queue]) — reveal ===");
   const t2 = Date.now();
   const commitDqSig = await commitAggregate(disclosureQueue);
   console.log("commit_aggregate (dq) sig:", commitDqSig);
@@ -347,7 +348,7 @@ async function main() {
       {
         runId, traderName, owner: owner.publicKey.toBase58(), position: position.toBase58(), disclosureQueue: disclosureQueue.toBase58(),
         nonce: realNonce.toString(), commitmentPda: commitmentPda.toBase58(), disclosurePda: disclosurePda.toBase58(),
-        sigs: { fundSig, faucetSig, initUserSig, delegateSplSig, delegateUserSig, creditSig, initPermSig, openNSig, closeNSig, commitPositionSig, markNSig, open2Sig, close2Sig, commitDqSig },
+        sigs: { fundSig, faucetSig, initUserSig, delegateSplSig, delegateUserSig, creditSig, initPermSig, openNSig, closeNSig, commitPositionSig, open2Sig, close2Sig, commitDqSig },
       },
       null,
       2,

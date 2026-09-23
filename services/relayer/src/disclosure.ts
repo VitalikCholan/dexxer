@@ -17,37 +17,28 @@
 // `padding_seed`; it can never forge a balance, only omit a user (spec risk
 // #19).
 //
-// `runDisclosureCycle`: (1) finds `Position`s with `Closed &&
-// !closed.commitment_written` and `DisclosureQueue`s with at least one due
-// record (`reveal_after_slot <= slot`), builds a `remaining_accounts` list
-// (possibly empty — see below) for a single `commit_aggregate` call (signed
-// by `Config.fee_payer` — see the CANDIDATE-SELECTION HEURISTIC comment
-// below), then (2) for every Position already `commitment_written` (from an
-// EARLIER cycle — a bundle just sent in this same cycle has not propagated
-// to L1 yet), checks whether its `Commitment` PDA now exists on the base
-// layer and, if so, calls `mark_committed` (crank) to retire the record into
-// `DisclosureQueue` and free the `Position` back to `Empty`.
+// `runDisclosureCycle`: finds every `DisclosureQueue` with outstanding work
+// and hands them to a single `commit_aggregate` call (signed by
+// `Config.fee_payer`). Since week-5 Task 1 a close pushes its `ClosedRecord`
+// straight into the owner's ring, so the queue is the ONLY candidate kind:
+// `commit_aggregate` schedules a `write_commitment` for every record that
+// has not been committed yet and a `write_disclosure` for every record that
+// is both committed and past its reveal slot, in that order, inside one
+// bundle. The old `Position`-candidate scan and the `mark_committed`
+// follow-up (which needed the crank to observe the L1 `Commitment` first)
+// are gone with it.
 //
 // `commit_aggregate` IS the fixed-interval `Pool`+`BalancesRoot` commit
 // (CLAUDE.md: "фіксованим інтервалом батчем, ніколи подієво") — it is called
 // EVERY cycle, even with zero candidates (`remaining_accounts` empty), so a
-// quiet window (no closed positions, no due reveals) still lands
-// `runRootCycle`'s freshly computed root on L1. The program's own
-// `actions.is_empty()` branch on the Rust side already handles the
-// zero-candidate case (no post-commit actions attached, the `Pool`/
-// `BalancesRoot` commit itself still fires).
+// quiet window still lands `runRootCycle`'s freshly computed root on L1. The
+// program's own `actions.is_empty()` branch already handles that case.
 //
-// CANDIDATE-SELECTION HEURISTIC (MAX_ACTIONS_PER_COMMIT = 4, program-enforced
-// via `TooManyActions`): every pending `Position` contributes exactly one
-// `write_commitment` action, so the candidate list is built as at most 4
-// `Position` accounts; a single `DisclosureQueue` account is added ONLY if
-// there is still room left in the 4-account cap after Positions (the queue's
-// own due-record count is then further clamped in-program to whatever budget
-// remains — `disclosure::due_reveals`'s `room` parameter — so it never
-// overflows the action budget on its own). This keeps every call at <=4
-// remaining_accounts total and prioritises Positions (whose flag flip is
-// itself the only way to ever call `mark_committed` on them) over queue
-// reveals (which can wait one more cycle for free).
+// CANDIDATE SELECTION: each queue is added while the running action estimate
+// is under `MAX_ACTIONS_PER_COMMIT` (8). The estimate is only a hint — the
+// program clamps every candidate to the budget actually left
+// (`pending_commitments`/`due_reveals`'s `room`), so an over-estimate costs
+// a deferred action, never a failed bundle.
 
 import { randomBytes } from "crypto";
 import { PublicKey } from "@solana/web3.js";
@@ -58,49 +49,15 @@ import { sendAndConfirmIx } from "../../../tests/er/lib/env.js";
 import {
   DQ_DISC,
   MAX_ACTIONS_PER_COMMIT,
-  POSITION_DISC,
   ROOT_BATCH,
   USER_DISC,
   accountNs,
-  commitmentHash,
   decodeBalancesRoot,
   pdas,
-  reasonIndex,
-  sideIndex,
-  type DisclosureArgsBytes,
 } from "../../../tests/er/lib/program.js";
 
-/**
- * Rebuilds the `commitmentHash` args from a decoded (camelCase) `Position.closed`
- * `ClosedRecord`, mirroring `tests/er/devnet/06-commitment-reveal.ts`'s `recToArgs`.
- * Needed because (Task 8b, ruling 9) `Commitment`/`Disclosure` are seeded by this
- * hash, not by `nonce` alone.
- */
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-function argsFromClosedRecord(rec: any): { args: DisclosureArgsBytes; salt: Uint8Array } {
-  return {
-    args: {
-      market: new PublicKey(rec.market),
-      side: sideIndex(rec.side),
-      size: BigInt(rec.size.toString()),
-      entry: BigInt(rec.entry.toString()),
-      exit: BigInt(rec.exit.toString()),
-      pnl: BigInt(rec.pnl.toString()),
-      fees: BigInt(rec.fees.toString()),
-      reason: reasonIndex(rec.reason),
-      openedSlot: BigInt(rec.openedSlot.toString()),
-      closedSlot: BigInt(rec.closedSlot.toString()),
-      nonce: BigInt(rec.nonce.toString()),
-      revealAfterSlot: BigInt(rec.revealAfterSlot.toString()),
-    },
-    salt: Uint8Array.from(rec.salt as number[]),
-  };
-}
-
 export interface DisclosureCtx {
-  /** Base-layer (L1) connection — only used to poll for a `Commitment` PDA's existence before `mark_committed`. */
-  baseConn: Connection;
-  /** Crank-authenticated ER connection: reads private Position/DisclosureQueue/UserAccount via `getProgramAccounts`, and signs `set_balances_root`/`mark_committed`. */
+  /** Crank-authenticated ER connection: reads the private `DisclosureQueue`/`UserAccount` accounts via `getProgramAccounts`, and signs `set_balances_root`. */
   conn: Connection;
   prog: Program;
   crank: Keypair;
@@ -113,11 +70,6 @@ export interface DisclosureCtx {
   poolLive: PublicKey;
   balancesRoot: PublicKey;
   feeEscrow: PublicKey;
-}
-
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-function decodePosition(prog: Program, data: Buffer): any {
-  return prog.coder.accounts.decode("position", data);
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -141,17 +93,24 @@ function decodeOrSkip<T>(pubkey: PublicKey, data: Buffer, decode: () => T): T | 
   }
 }
 
-/** Number of ring-occupied records in `dq` whose `reveal_after_slot <= slot` (mirrors `disclosure::due_reveals`'s selection, without mutating). */
+/**
+ * How many post-commit actions `commit_aggregate` would schedule for `dq` at
+ * `slot`: one `write_commitment` per not-yet-committed record, plus one
+ * `write_disclosure` per record that is already committed and due. Mirrors
+ * `pending_commitments`/`due_reveals`'s selection without mutating — and
+ * deliberately does NOT count the disclosure a commitment scheduled in this
+ * same bundle unlocks, since the program only reaches it if budget is left.
+ */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-function dueRecordCount(dq: any, slot: bigint): number {
+function pendingActionCount(dq: any, slot: bigint): number {
   const cap = dq.records.length as number;
-  let due = 0;
+  let actions = 0;
   for (let i = 0; i < dq.len; i++) {
-    const idx = (dq.head + i) % cap;
-    const revealAfterSlot = BigInt(dq.records[idx].revealAfterSlot.toString());
-    if (revealAfterSlot <= slot) due++;
+    const rec = dq.records[(dq.head + i) % cap];
+    if (!rec.commitmentWritten) actions++;
+    else if (BigInt(rec.revealAfterSlot.toString()) <= slot) actions++;
   }
-  return due;
+  return actions;
 }
 
 export async function runRootCycle(ctx: DisclosureCtx): Promise<void> {
@@ -204,42 +163,28 @@ export async function runRootCycle(ctx: DisclosureCtx): Promise<void> {
 }
 
 export async function runDisclosureCycle(ctx: DisclosureCtx): Promise<void> {
-  // --- (1a) Position candidates: Closed && !commitment_written, and
-  // separately Closed && commitment_written (mark_committed candidates below). ---
-  const positionAccs = await ctx.conn.getProgramAccounts(ctx.prog.programId, {
-    filters: [{ memcmp: { offset: 0, bytes: POSITION_DISC } }],
-  });
-  const decodedPositions = positionAccs
-    .map((p) => ({ key: p.pubkey, acc: decodeOrSkip(p.pubkey, p.account.data, () => decodePosition(ctx.prog, p.account.data)) }))
-    .filter((p): p is { key: PublicKey; acc: ReturnType<typeof decodePosition> } => p.acc !== null);
-  const pendingCommitment = decodedPositions.filter(
-    (p) => "closed" in p.acc.state && p.acc.closed !== null && p.acc.closed.commitmentWritten === false,
-  );
-  const pendingMarkCommitted = decodedPositions.filter(
-    (p) => "closed" in p.acc.state && p.acc.closed !== null && p.acc.closed.commitmentWritten === true,
-  );
-
-  // --- (1b) DisclosureQueue candidates: at least one due record. ---
+  // --- (1) DisclosureQueue candidates: every queue with at least one record
+  // that still owes L1 a commitment or a (due) disclosure. Since week-5 Task 1
+  // this is the only candidate kind `commit_aggregate` accepts. ---
   const dqAccs = await ctx.conn.getProgramAccounts(ctx.prog.programId, {
     filters: [{ memcmp: { offset: 0, bytes: DQ_DISC } }],
   });
   const slot = BigInt(await ctx.conn.getSlot("confirmed"));
-  const dueQueues = dqAccs
+  const pendingQueues = dqAccs
     .map((p) => ({ key: p.pubkey, acc: decodeOrSkip(p.pubkey, p.account.data, () => decodeDisclosureQueue(ctx.prog, p.account.data)) }))
     .filter((p): p is { key: PublicKey; acc: ReturnType<typeof decodeDisclosureQueue> } => p.acc !== null)
-    .map((p) => ({ ...p, due: dueRecordCount(p.acc, slot) }))
-    .filter((p) => p.due > 0);
+    .map((p) => ({ ...p, actions: pendingActionCount(p.acc, slot) }))
+    .filter((p) => p.actions > 0);
 
-  // --- (1c) build the <=MAX_ACTIONS_PER_COMMIT candidate list — see the
-  // CANDIDATE-SELECTION HEURISTIC comment at the top of this file. ---
+  // --- (2) fill the bundle up to MAX_ACTIONS_PER_COMMIT — see the CANDIDATE
+  // SELECTION comment at the top of this file. ---
   const candidates: { key: PublicKey; actions: number }[] = [];
-  for (const p of pendingCommitment) {
-    if (candidates.length >= MAX_ACTIONS_PER_COMMIT) break;
-    candidates.push({ key: p.key, actions: 1 });
-  }
-  if (candidates.length < MAX_ACTIONS_PER_COMMIT && dueQueues.length > 0) {
-    const room = MAX_ACTIONS_PER_COMMIT - candidates.length;
-    candidates.push({ key: dueQueues[0].key, actions: Math.min(room, dueQueues[0].due) });
+  let budget = MAX_ACTIONS_PER_COMMIT;
+  for (const q of pendingQueues) {
+    if (budget <= 0) break;
+    const actions = Math.min(budget, q.actions);
+    candidates.push({ key: q.key, actions });
+    budget -= actions;
   }
 
   // `commit_aggregate` IS the fixed-interval `Pool`+`BalancesRoot` commit
@@ -300,36 +245,6 @@ export async function runDisclosureCycle(ctx: DisclosureCtx): Promise<void> {
       } catch (e2) {
         console.error("commit_aggregate retry (no candidates) failed:", String(e2));
       }
-    }
-  }
-
-  // --- (2) mark_committed: crank observes the L1 Commitment PDA (the ER
-  // cannot read L1 directly — spec §2.4.1) and, once it exists, retires the
-  // record into DisclosureQueue and frees the Position back to Empty. ---
-  for (const p of pendingMarkCommitted) {
-    const owner = new PublicKey(p.acc.owner);
-    const nonce = BigInt(p.acc.closed.nonce.toString());
-    // Task 8b (ruling 9): Commitment is seeded by commitmentHash(args, salt),
-    // not by nonce alone — recompute the hash from the closed record.
-    const { args, salt } = argsFromClosedRecord(p.acc.closed);
-    const commitmentPda = pdas.commitment(commitmentHash(args, salt));
-    let exists: Awaited<ReturnType<Connection["getAccountInfo"]>>;
-    try {
-      exists = await ctx.baseConn.getAccountInfo(commitmentPda, "confirmed");
-    } catch (e) {
-      console.error(`mark_committed: base getAccountInfo failed for owner=${owner.toBase58()} nonce=${nonce}:`, String(e));
-      continue;
-    }
-    if (!exists) continue; // not yet propagated to L1 — retry next cycle
-    try {
-      const ix = await ctx.prog.methods
-        .markCommitted()
-        .accounts({ crank: ctx.crank.publicKey, config: pdas.config(), position: p.key, dq: pdas.disclosureQueue(owner) })
-        .instruction();
-      const sig = await sendAndConfirmIx(ctx.conn, ctx.crank, ix);
-      console.log(`mark_committed: owner=${owner.toBase58()} nonce=${nonce} sig=${sig}`);
-    } catch (e) {
-      console.error(`mark_committed failed for owner=${owner.toBase58()} nonce=${nonce}:`, String(e));
     }
   }
 }

@@ -7,13 +7,18 @@ use crate::{
     state::*,
 };
 use anchor_lang::prelude::*;
+use ephemeral_rollups_sdk::consts::MAGIC_PROGRAM_ID;
 use solana_keccak_hasher::hashv;
 
 #[derive(Accounts)]
 pub struct Trade<'info> {
     pub signer: Signer<'info>,
+    // Boxed: week-5 Task 1 added four accounts to this context, which tipped
+    // `Trade::try_accounts` 8 bytes past the SBF stack limit (build error, same
+    // failure mode as `user_account`/`position` below). `Config` is the largest
+    // read-only account here, so it is the cheapest one to move to the heap.
     #[account(seeds = [CONFIG_SEED], bump = config.bump)]
-    pub config: Account<'info, Config>,
+    pub config: Box<Account<'info, Config>>,
     #[account(mut, seeds = [MARKET_SEED, &market.symbol], bump = market.bump)]
     pub market: Account<'info, Market>,
     #[account(mut, seeds = [RISK_SEED, market.key().as_ref()], bump = market_risk.bump, has_one = market)]
@@ -44,6 +49,28 @@ pub struct Trade<'info> {
     pub position: Box<Account<'info, Position>>,
     /// CHECK: validated in oracle::read_price (key == market.feed, owner == config.oracle_program)
     pub feed: UncheckedAccount<'info>,
+    // Week-5 Task 1: `finalize_close` pushes the `ClosedRecord` straight into
+    // the owner's ring, so every trading instruction that can close a position
+    // (`close_position`, `decrease_position` to zero) needs it. Boxed for the
+    // same SBF stack reason as `user_account`/`position` above — this is the
+    // biggest per-user account of the three.
+    #[account(mut, seeds = [DQ_SEED, user_account.owner.as_ref()], bump = disclosure_queue.bump)]
+    pub disclosure_queue: Box<Account<'info, DisclosureQueue>>,
+    // Declared for the per-position liquidation task (week-5 Task 3): the
+    // delegated PDA that pays the scheduler CPI's fees, exactly as in
+    // `commit_aggregate`/`withdraw`. Unused by this task's handlers.
+    #[account(mut, seeds = [FEE_ESCROW_SEED], bump = fee_escrow.bump)]
+    pub fee_escrow: Box<Account<'info, FeeEscrow>>,
+    /// CHECK: Magic Actions task-context account for this position's liquidation
+    /// task (week-5 Task 3). Caller-supplied and unconstrained, exactly as in
+    /// `ScheduleCrank`/`CancelCrank` (`crank.rs`): no on-chain derivation for it
+    /// exists in `ephemeral-rollups-sdk` 0.16.2, and a wrong value can only fail
+    /// the scheduler CPI that Task 3 adds. Unused by this task's handlers.
+    #[account(mut)]
+    pub task_context: UncheckedAccount<'info>,
+    /// CHECK: address-checked; gates the Task 3 scheduler CPI via `.executable`
+    #[account(address = MAGIC_PROGRAM_ID)]
+    pub magic_program: UncheckedAccount<'info>,
 }
 
 fn seed_mark(market: &mut Market, index: u64, slot: u64) {
@@ -205,6 +232,7 @@ pub fn close_position(mut ctx: Context<Trade>, limit_price: u64) -> Result<()> {
         &mut a.pool_live,
         &mut a.user_account,
         &mut a.position,
+        &mut a.disclosure_queue,
         px.price,
         fee_bps,
         CloseReason::User,
@@ -372,6 +400,7 @@ pub fn decrease_position(mut ctx: Context<Trade>, close_size: u64, limit_price: 
             &mut a.pool_live,
             &mut a.user_account,
             &mut a.position,
+            &mut a.disclosure_queue,
             px.price,
             fee_bps,
             CloseReason::User,
@@ -463,6 +492,13 @@ pub fn decrease_position(mut ctx: Context<Trade>, close_size: u64, limit_price: 
 }
 
 /// Shared by close_position, decrease_position (full) and crank liquidation.
+///
+/// Queue-first (week-5 Task 1): the `ClosedRecord` is pushed into `dq` and the
+/// `Position` is reset to `Empty` in this same instruction, so a trader can
+/// reopen immediately and no crank round-trip (`mark_committed`, now gone) sits
+/// between a close and the next trade. `dq.push` is fallible (`QueueFull`), and
+/// it is the LAST thing that can fail here — a full ring reverts the entire
+/// close rather than settling the money and losing the record.
 #[allow(clippy::too_many_arguments)]
 pub fn finalize_close(
     market_key: Pubkey,
@@ -470,6 +506,7 @@ pub fn finalize_close(
     pool: &mut PoolLive,
     user: &mut UserAccount,
     pos: &mut Position,
+    dq: &mut DisclosureQueue,
     exit: u64,
     fee_bps: u32,
     reason: CloseReason,
@@ -525,7 +562,7 @@ pub fn finalize_close(
         &clock.slot.to_le_bytes(),
     ])
     .to_bytes();
-    pos.closed = Some(ClosedRecord {
+    dq.push(ClosedRecord {
         market: market_key,
         side: pos.side,
         size: pos.size,
@@ -543,11 +580,20 @@ pub fn finalize_close(
             .checked_add(delay_slots)
             .ok_or(DexxerError::MathOverflow)?,
         commitment_written: false,
-    });
-    pos.state = PositionState::Closed;
+    })?;
+    // Fully `Empty`, field by field: the next `open_position` overwrites
+    // `state`/`side`/`size`/`entry`/`margin`/`liq_price`/`opened_slot`, but
+    // leaving any of them set in between would show a phantom trade to the
+    // owner's client, so nothing is left behind. `closed` stays in the layout
+    // (no account migration) and is now always `None`.
+    pos.state = PositionState::Empty;
+    pos.closed = None;
+    pos.side = Side::Long;
     pos.size = 0;
+    pos.entry = 0;
     pos.margin = 0;
     pos.liq_price = 0;
+    pos.opened_slot = 0;
     pos.liq_ticks = 0;
     Ok(s)
 }

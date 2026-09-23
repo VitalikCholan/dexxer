@@ -10,6 +10,10 @@ pub enum Side {
 pub enum PositionState {
     Empty,
     Open,
+    /// Unreachable since week-5 Task 1: `finalize_close` pushes the record into
+    /// the owner's `DisclosureQueue` and resets the position straight to
+    /// `Empty`. Kept so the discriminant of `Empty`/`Open` — and the IDL — stay
+    /// byte-identical for already-delegated accounts.
     Closed,
 }
 
@@ -80,6 +84,9 @@ pub struct Position {
     // underflow the ledger's `checked_sub`. Tracking the exact contribution
     // here keeps close/liquidation decrements always exact, never approximate.
     pub oi_notional: u64,
+    /// Always `None` since week-5 Task 1 (the record goes to the owner's
+    /// `DisclosureQueue` at close time). Kept in the layout so live delegated
+    /// `Position` accounts need no migration.
     pub closed: Option<ClosedRecord>,
     pub bump: u8,
 }

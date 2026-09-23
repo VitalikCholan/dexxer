@@ -139,9 +139,14 @@ fn liquidation_after_two_ticks_below_mmr() {
         &[&w.crank],
     )
     .unwrap();
+    // Week-5 Task 1: a liquidation is a close, so the record lands in the
+    // owner's `DisclosureQueue` and the position is freed in the same tick.
     let pos: Position = h.account(&t.position);
-    assert_eq!(pos.state, PositionState::Closed);
-    let rec = pos.closed.unwrap();
+    assert_eq!(pos.state, PositionState::Empty);
+    assert!(pos.closed.is_none());
+    let dq: DisclosureQueue = h.account(&t.dq);
+    assert_eq!(dq.len, 1);
+    let rec = dq.records[0];
     assert_eq!(rec.reason, CloseReason::Liquidated);
     assert_eq!(rec.exit, 142_000_000);
     // pnl = 10 * (142 - 150) = -80 $; liq fee 1 % of 1420 $ = 14.2 $; to_user = 150 - 80 - 14.2 = 55.8 $
@@ -231,7 +236,10 @@ fn sixteen_candidates_fit_in_cu_budget() {
     let refs: Vec<&_> = traders.iter().collect();
     let meta = h
         .send(
-            &[ixs::crank_tick(&w.crank.pubkey(), &w, &refs)],
+            &[
+                ixs::set_compute_unit_limit(1_400_000),
+                ixs::crank_tick(&w.crank.pubkey(), &w, &refs),
+            ],
             &[&w.crank],
         )
         .unwrap();
@@ -247,7 +255,7 @@ fn sixteen_candidates_fit_in_cu_budget() {
 }
 
 #[test]
-fn invalid_candidate_pair_rejected() {
+fn invalid_candidate_triple_rejected() {
     let mut h = Harness::new();
     let w = World::bootstrap(&mut h);
     h.warp(100, NOW);
@@ -255,20 +263,24 @@ fn invalid_candidate_pair_rejected() {
     let a = open_long(&mut h, &w);
     let b = w.new_trader(&mut h, 0);
     let mut ix = ixs::crank_tick(&w.crank.pubkey(), &w, &[&a]);
-    ix.accounts.last_mut().unwrap().pubkey = b.user; // position of A with user account of B
+    // Position and queue of A with the user account of B (the middle slot of
+    // the triple, which `crank_tick` derives both other addresses from).
+    let user_slot = ix.accounts.len() - 2;
+    ix.accounts[user_slot].pubkey = b.user;
     let r = h.send(&[ix], &[&w.crank]);
     assert_custom_error(&r, 6000 + DexxerError::InvalidCandidate as u32);
 }
 
 #[test]
-fn duplicate_candidate_pair_rejected() {
+fn duplicate_candidate_triple_rejected() {
     let mut h = Harness::new();
     let w = World::bootstrap(&mut h);
     h.warp(100, NOW);
     w.set_price(&mut h, P150, 5, NOW, 100);
     let t = open_long(&mut h, &w);
-    // Same [Position, UserAccount] pair passed twice in one crank_tick must
-    // not be allowed to drive liq_ticks 0 -> 2 in a single transaction.
+    // Same [Position, UserAccount, DisclosureQueue] triple passed twice in one
+    // crank_tick must not be allowed to drive liq_ticks 0 -> 2 in a single
+    // transaction.
     let r = h.send(
         &[ixs::crank_tick(&w.crank.pubkey(), &w, &[&t, &t])],
         &[&w.crank],

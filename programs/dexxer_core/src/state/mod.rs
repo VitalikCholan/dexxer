@@ -43,10 +43,12 @@ pub const SNAPSHOT_STEP: u64 = 100_000_000;
 pub const ROOT_LEAVES: usize = 64;
 /// UserAccounts per `set_balances_root` call (tx size / CU budget).
 pub const ROOT_BATCH: usize = 16;
-/// Post-commit actions per `commit_aggregate` bundle. Kept at 4 on purpose: M-C measured the
-/// bridge cap at 28 PASS / 29 FAIL on a fresh account with a 5-account spike action (week 3,
+/// Post-commit actions per `commit_aggregate` bundle. Raised to 8 in week-5 Task 1: a single
+/// `DisclosureQueue` can now need up to `DQ_CAPACITY` commitments plus the same number of
+/// reveals, and a budget of 4 would stall a full ring. Still far under the bridge cap M-C
+/// measured at 28 PASS / 29 FAIL on a fresh account with a 5-account spike action (week 3,
 /// Task 1); the real write_commitment/write_disclosure shape is heavier and was not re-probed.
-pub const MAX_ACTIONS_PER_COMMIT: usize = 4;
+pub const MAX_ACTIONS_PER_COMMIT: usize = 8;
 /// `ActionArgs::new` default escrow index (magic-actions.md).
 pub const ACTION_ESCROW_INDEX: u8 = 255;
 pub const SOL_SYMBOL: [u8; 8] = *b"SOL\0\0\0\0\0";

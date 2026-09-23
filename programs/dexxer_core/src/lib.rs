@@ -187,9 +187,6 @@ pub mod dexxer_core {
     ) -> Result<()> {
         disclosure::write_disclosure(ctx, args, salt)
     }
-    pub fn mark_committed(ctx: Context<MarkCommitted>) -> Result<()> {
-        disclosure::mark_committed(ctx)
-    }
     pub fn init_balances_root(ctx: Context<InitBalancesRoot>) -> Result<()> {
         root::init_balances_root(ctx)
     }

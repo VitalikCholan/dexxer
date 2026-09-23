@@ -18,6 +18,7 @@
 import { useEffect, useState } from 'react'
 import { Connection, Keypair, PublicKey } from '@solana/web3.js'
 import { useMobileWallet } from '@wallet-ui/react-native-web3js'
+import { MAGIC_PROGRAM_ID } from '@magicblock-labs/ephemeral-rollups-sdk'
 import { toPublicKey } from '@/src/spikes/mwa'
 import { baseConn } from '@/src/lib/solana'
 import { readConfigDusdcMint, readConfigOracleProgram, type TradeAccounts } from '@/src/lib/program'
@@ -80,6 +81,12 @@ export function useTradeSession(): TradeSession {
           userAccount: pdas.userAccount(owner!),
           position: pdas.position(owner!, marketPda),
           feed: pdas.feedUnder(oracleProgram),
+          disclosureQueue: pdas.disclosureQueue(owner!),
+          feeEscrow: pdas.feeEscrow(),
+          // Stand-in until week-5 Task 3 derives the real task context — see
+          // `TradeAccounts.taskContext`.
+          taskContext: pdas.position(owner!, marketPda),
+          magicProgram: MAGIC_PROGRAM_ID,
         }
         const teeConn = await teeConnectionForSession(sessionKp)
         if (cancelled) return

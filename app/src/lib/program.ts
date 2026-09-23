@@ -295,6 +295,18 @@ export interface TradeAccounts {
   userAccount: PublicKey
   position: PublicKey
   feed: PublicKey
+  /** Week 5, Task 1: a close pushes its `ClosedRecord` straight into the owner's ring, so every trade ix carries it. */
+  disclosureQueue: PublicKey
+  /** Week 5, Task 3 will pay the per-position liquidation task's scheduler CPI from here; declared now, unused by the current handlers. */
+  feeEscrow: PublicKey
+  /**
+   * Week 5, Task 3's Magic Actions task context. Unconstrained on-chain — it
+   * only has to be an existing writable account until Task 3 derives the real
+   * one, so callers pass the position PDA (same stand-in as the LiteSVM
+   * `trade_accounts` builder and `tests/er/lib/trader.ts`).
+   */
+  taskContext: PublicKey
+  magicProgram: PublicKey
 }
 
 // Poll `getSignatureStatuses` instead of `Connection.confirmTransaction` —
