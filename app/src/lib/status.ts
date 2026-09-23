@@ -99,11 +99,34 @@ export function formatSlotsAsTime(n: bigint): string {
 }
 
 /**
+ * `UserAccount.sessionExpiry` (unix seconds) vs current wall-clock time,
+ * formatted for the session badge (`AccountScreen.tsx`). Bug fixed here
+ * (observed live, CLAUDE.md week-4 report): the old inline logic derived
+ * `hoursLeft` first and only counted the session active when
+ * `hoursLeft > 0`, so any remaining time under a full hour (e.g. 57m left)
+ * floored to `0` and read as expired even though `expirySec > now`.
+ *
+ * `expirySec === 0` means the device has no session key yet (never set,
+ * distinct from an elapsed one) — `formatSessionLeft` special-cases it to
+ * 'No session' rather than 'Session expired'.
+ */
+export function formatSessionLeft(expirySec: number, nowSec: number): string {
+  if (expirySec === 0) return 'No session'
+  if (expirySec <= nowSec) return 'Session expired'
+  const secsLeft = expirySec - nowSec
+  const hoursLeft = Math.floor(secsLeft / 3600)
+  if (hoursLeft >= 1) return `Session active · ${hoursLeft}h left`
+  const minsLeft = Math.ceil(secsLeft / 60)
+  return `Session active · ${minsLeft}m left`
+}
+
+/**
  * Self-check (no test runner is wired up for this `app/` package — same gap
  * `program.ts`'s `assertLeafGolden`/`assertCommitmentGolden` work around,
- * same pattern followed here): asserts the four `disclosureStatus` branches
- * and `formatSlotsAsTime`'s edges match this file's doc comments. Throws on
- * mismatch; called once from `__DEV__` startup logging below.
+ * same pattern followed here): asserts the four `disclosureStatus` branches,
+ * `formatSlotsAsTime`'s edges, and `formatSessionLeft`'s branches match this
+ * file's doc comments. Throws on mismatch; called once from `__DEV__`
+ * startup logging below.
  */
 export function assertDisclosureStatusSelfCheck(): void {
   const notWritten = { commitmentWritten: false, revealAfterSlot: 100n }
@@ -132,6 +155,21 @@ export function assertDisclosureStatusSelfCheck(): void {
   for (const [got, expected] of timeCases) {
     if (got !== expected) {
       throw new Error(`assertDisclosureStatusSelfCheck: formatSlotsAsTime mismatch — got ${got}, expected ${expected}`)
+    }
+  }
+  const sessionCases: [string, string][] = [
+    [formatSessionLeft(0, 1000), 'No session'],
+    [formatSessionLeft(1000, 1000), 'Session expired'], // expirySec === now
+    [formatSessionLeft(900, 1000), 'Session expired'], // expirySec < now
+    [formatSessionLeft(1000 + 30, 1000), 'Session active · 1m left'], // 30s left, ceils up from 0m
+    [formatSessionLeft(1000 + 57 * 60, 1000), 'Session active · 57m left'], // the observed live bug: 57m left must NOT read expired
+    [formatSessionLeft(1000 + 3599, 1000), 'Session active · 59m left'], // just under an hour stays in minutes
+    [formatSessionLeft(1000 + 3600, 1000), 'Session active · 1h left'], // exactly an hour switches to hours
+    [formatSessionLeft(1000 + 2 * 3600 + 100, 1000), 'Session active · 2h left'],
+  ]
+  for (const [got, expected] of sessionCases) {
+    if (got !== expected) {
+      throw new Error(`assertDisclosureStatusSelfCheck: formatSessionLeft mismatch — got ${got}, expected ${expected}`)
     }
   }
 }

@@ -8,6 +8,17 @@ import { useTheme } from '@/src/theme'
 // `demo`, `spikes`, `settings`) is `href: null` — out of the tab bar but
 // still reachable via router.push, and linked from Account → Settings →
 // Developer (see app/app/(tabs)/settings/index.tsx).
+
+// Cold-start fix (observed live): expo-router's <Tabs> otherwise opens the
+// first declared `Tabs.Screen` ('trade') regardless of declaration order in
+// JSX vs. file layout, so `index.tsx`'s onboarding-gate `Redirect` never ran
+// on a fresh launch. `initialRouteName` is expo-router's documented,
+// file-based way to pick the initial route within a layout without
+// reordering the visible tab bar (`index` stays `href: null` below).
+export const unstable_settings = {
+  initialRouteName: 'index',
+}
+
 export default function TabLayout() {
   const { colors, layout, border } = useTheme()
 

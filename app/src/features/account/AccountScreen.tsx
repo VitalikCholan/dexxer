@@ -23,6 +23,7 @@ import { showToast } from '@/src/ui/Toast'
 import { useTeeConnection } from '@/src/lib/er'
 import { useLiveAccount } from '@/src/lib/live'
 import { decodeDisclosureQueue, decodePosition, decodeUserAccount, describeTxError } from '@/src/lib/program'
+import { formatSessionLeft } from '@/src/lib/status'
 import { pdas } from '@/src/lib/pdas'
 import { useTradeSession } from '../trade/useTradeSession'
 import { useOnboardingGate } from '../onboard/useOnboardingGate'
@@ -102,8 +103,8 @@ export function AccountScreen() {
   // eslint-disable-next-line react-hooks/purity
   const now = Math.floor(Date.now() / 1000)
   const expirySec = user.value ? Number(user.value.sessionExpiry) : 0
-  const hoursLeft = expirySec > 0 ? Math.max(0, Math.floor((expirySec - now) / 3600)) : null
-  const sessionActive = hoursLeft !== null && hoursLeft > 0 && expirySec > now
+  const sessionActive = expirySec > now
+  const sessionLabel = formatSessionLeft(expirySec, now)
 
   const checklist: ExitChecklist = {
     noOpenPosition: position.value === null || position.value.state === 'Empty',
@@ -121,9 +122,7 @@ export function AccountScreen() {
               Copy
             </Button>
           </View>
-          <Badge tone={sessionActive ? 'success' : 'danger'}>
-            {sessionActive ? `Session active · ${hoursLeft}h left` : 'Session expired'}
-          </Badge>
+          <Badge tone={sessionActive ? 'success' : 'danger'}>{sessionLabel}</Badge>
         </View>
 
         {gate.status === 'needs_setup' ? null : error || user.error || position.error || dq.error ? (

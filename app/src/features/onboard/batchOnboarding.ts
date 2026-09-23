@@ -108,7 +108,11 @@ export const IDLE_BATCH_PROGRESS: BatchProgress = { phase: 'Idle', step: null, i
 
 /** Faucet/deposit amount — 1,000 dUSDC (6 decimals), same as `tests/er/devnet/01-onboard-private.ts`. */
 export const DEPOSIT = 1_000_000_000n
-export const SESSION_EXPIRY_SECS = 3600
+// 24h, matching design copy ("Session key active for 24h", OnboardScreen.tsx)
+// — `Config.session_expiry`/`UserAccount.session_expiry` is `i64` unix
+// seconds with no program-side TTL cap (verified in dexxer_core), so this is
+// purely a client-chosen duration.
+export const SESSION_EXPIRY_SECS = 86_400
 export const SESSION_ACTIONS = 20
 
 export function errText(e: unknown): string {
