@@ -27,7 +27,9 @@ export function DepositSheet({ open, onClose, busy, onSubmit }: DepositSheetProp
   return (
     <Sheet open={open} onClose={onClose} title="Deposit">
       <Input label="Amount" value={amount} onChangeText={setAmount} suffix="dUSDC" keyboardType="decimal-pad" />
-      <Text style={[caption, { color: colors.textSecondary }]}>Devnet faucet — mints test dUSDC, then credits it to your free margin.</Text>
+      <Text style={[caption, { color: colors.textSecondary }]}>
+        Devnet faucet — mints test dUSDC, then credits it to your free margin.
+      </Text>
       <Button variant="primary" disabled={busy || amountNum <= 0} onPress={() => void onSubmit(amountNum)}>
         {busy ? 'Confirm in wallet…' : 'Deposit'}
       </Button>

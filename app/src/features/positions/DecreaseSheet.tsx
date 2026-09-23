@@ -62,7 +62,9 @@ export function DecreaseSheet({ open, onClose, position, markUsd, busy, onSubmit
       >
         {busy ? 'Signing with session key…' : 'Confirm decrease'}
       </Button>
-      <Text style={[caption, { color: colors.textSecondary, textAlign: 'center' }]}>No wallet prompt — signed by your session key</Text>
+      <Text style={[caption, { color: colors.textSecondary, textAlign: 'center' }]}>
+        No wallet prompt — signed by your session key
+      </Text>
     </Sheet>
   )
 }

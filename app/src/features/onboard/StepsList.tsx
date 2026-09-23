@@ -66,7 +66,14 @@ export function StepsList({ state, progress }: { state: OnboardState; progress: 
     <View style={{ gap: space.md }}>
       {STEPS.map((step) => {
         const status = stepStatus(step, state, progress)
-        const color = status === 'done' ? colors.long : status === 'failed' ? colors.short : status === 'waiting' ? colors.textTertiary : colors.accent
+        const color =
+          status === 'done'
+            ? colors.long
+            : status === 'failed'
+              ? colors.short
+              : status === 'waiting'
+                ? colors.textTertiary
+                : colors.accent
         return (
           <View key={step.label} style={{ flexDirection: 'row', gap: space.sm, alignItems: 'center' }}>
             <Text style={{ color, width: 20 }}>{STATUS_ICON[status]}</Text>

@@ -79,7 +79,11 @@ export function PositionCard({ position: p, mark, busy, onClose, onIncrease, onD
       <Row label="Mark" value={mark !== null ? `$${usd(mark)}` : '—'} mono />
       <Row
         label="Unrealized PnL"
-        value={upnl !== null ? `${upnl >= 0n ? '+' : ''}$${usd(upnl)}${upnlPct !== null ? ` (${upnlPct >= 0 ? '+' : ''}${upnlPct.toFixed(1)}%)` : ''}` : '—'}
+        value={
+          upnl !== null
+            ? `${upnl >= 0n ? '+' : ''}$${usd(upnl)}${upnlPct !== null ? ` (${upnlPct >= 0 ? '+' : ''}${upnlPct.toFixed(1)}%)` : ''}`
+            : '—'
+        }
         tone={upnl === null ? undefined : upnl >= 0n ? 'success' : 'danger'}
       />
       <Row label="Margin" value={`$${usd(p.margin)}`} />
@@ -89,7 +93,9 @@ export function PositionCard({ position: p, mark, busy, onClose, onIncrease, onD
           <View style={{ height: 4, borderRadius: 2, backgroundColor: colors.surfaceAlt, overflow: 'hidden' }}>
             <View style={{ height: 4, width: `${(1 - distanceFrac) * 100}%`, backgroundColor: colors.warning }} />
           </View>
-          <Text style={[caption, { color: colors.textTertiary }]}>{Math.round((1 - distanceFrac) * 100)}% away from liquidation</Text>
+          <Text style={[caption, { color: colors.textTertiary }]}>
+            {Math.round((1 - distanceFrac) * 100)}% away from liquidation
+          </Text>
         </View>
       ) : null}
       <View style={{ flexDirection: 'row', gap: space.sm }}>

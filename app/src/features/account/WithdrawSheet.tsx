@@ -36,8 +36,14 @@ export function WithdrawSheet({ open, onClose, availableUsd, busy, onSubmit }: W
         keyboardType="decimal-pad"
         hint={`Available: ${availableUsd} dUSDC`}
       />
-      <Text style={[caption, { color: colors.textSecondary }]}>Min {MIN_WITHDRAW_USD} dUSDC · one withdrawal per ~2 min</Text>
-      <Button variant="primary" disabled={busy || amountNum < MIN_WITHDRAW_USD} onPress={() => void onSubmit(amountNum)}>
+      <Text style={[caption, { color: colors.textSecondary }]}>
+        Min {MIN_WITHDRAW_USD} dUSDC · one withdrawal per ~2 min
+      </Text>
+      <Button
+        variant="primary"
+        disabled={busy || amountNum < MIN_WITHDRAW_USD}
+        onPress={() => void onSubmit(amountNum)}
+      >
         {busy ? 'Confirm in wallet…' : 'Withdraw'}
       </Button>
     </Sheet>

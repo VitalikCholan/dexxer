@@ -18,7 +18,15 @@ import { Skeleton } from '@/src/ui/Skeleton'
 import { showToast } from '@/src/ui/Toast'
 import { useLiveAccount } from '@/src/lib/live'
 import { useCandles, useIndexerConnected, useMark } from '@/src/lib/indexer'
-import { decodeMarket, decodePosition, decodeUserAccount, describeTxError, openPosition, readMarket, type SideName } from '@/src/lib/program'
+import {
+  decodeMarket,
+  decodePosition,
+  decodeUserAccount,
+  describeTxError,
+  openPosition,
+  readMarket,
+  type SideName,
+} from '@/src/lib/program'
 import { PriceChart } from './PriceChart'
 import { TradeTicket, type MarketParams } from './TradeTicket'
 import { useTradeSession } from './useTradeSession'
@@ -67,10 +75,15 @@ export function TradeScreen() {
   // elsewhere via a justified lint escape hatch.
   // eslint-disable-next-line react-hooks/purity
   const now = Math.floor(Date.now() / 1000)
-  const sessionExpired = userLive.value !== null && userLive.value.sessionExpiry > 0n && userLive.value.sessionExpiry < BigInt(now)
+  const sessionExpired =
+    userLive.value !== null && userLive.value.sessionExpiry > 0n && userLive.value.sessionExpiry < BigInt(now)
 
   const marketParams: MarketParams | null = marketLive.value
-    ? { imrBps: BigInt(marketLive.value.imrBps), mmrBps: BigInt(marketLive.value.mmrBps), openFeeBps: BigInt(marketLive.value.openFeeBps) }
+    ? {
+        imrBps: BigInt(marketLive.value.imrBps),
+        mmrBps: BigInt(marketLive.value.mmrBps),
+        openFeeBps: BigInt(marketLive.value.openFeeBps),
+      }
     : null
 
   const handleOpen = useCallback(
@@ -97,7 +110,9 @@ export function TradeScreen() {
         <View style={{ gap: space.xs }}>
           <Text style={[body, { color: colors.textSecondary }]}>SOL-PERP</Text>
           <View style={{ flexDirection: 'row', alignItems: 'baseline', gap: space.sm }}>
-            <Text style={[title, { color: colors.textPrimary }]}>{markUsd !== null ? `$${fmtUsd(Number(markUsd) / 1e6)}` : '—'}</Text>
+            <Text style={[title, { color: colors.textPrimary }]}>
+              {markUsd !== null ? `$${fmtUsd(Number(markUsd) / 1e6)}` : '—'}
+            </Text>
             {pctChange !== null ? (
               <Text style={[body, { color: pctChange >= 0 ? colors.long : colors.short }]}>
                 {pctChange >= 0 ? '+' : ''}
@@ -132,7 +147,9 @@ export function TradeScreen() {
           </View>
         ) : null}
         {sessionError || positionLive.error || marketLive.error ? (
-          <Text style={[caption, { color: colors.short }]}>{sessionError ?? positionLive.error ?? marketLive.error}</Text>
+          <Text style={[caption, { color: colors.short }]}>
+            {sessionError ?? positionLive.error ?? marketLive.error}
+          </Text>
         ) : null}
 
         {loading ? (

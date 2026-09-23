@@ -48,7 +48,15 @@ function safeLiq(side: SideName, entry: bigint, size: bigint, margin: bigint, mm
   }
 }
 
-export function TradeTicket({ markUsd, market, freeMarginUsd, hasOpenPosition, busy, disabled, onOpen }: TradeTicketProps) {
+export function TradeTicket({
+  markUsd,
+  market,
+  freeMarginUsd,
+  hasOpenPosition,
+  busy,
+  disabled,
+  onOpen,
+}: TradeTicketProps) {
   const { colors, space } = useTheme()
   const caption = useTextStyle('caption')
 

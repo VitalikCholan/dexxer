@@ -171,7 +171,13 @@ export function AccountScreen() {
           busy={busy}
           onSubmit={handleWithdraw}
         />
-        <ExitSheet open={sheet === 'exit'} onClose={() => setSheet(null)} checklist={checklist} busy={busy} onConfirm={handleExit} />
+        <ExitSheet
+          open={sheet === 'exit'}
+          onClose={() => setSheet(null)}
+          checklist={checklist}
+          busy={busy}
+          onConfirm={handleExit}
+        />
       </ScrollView>
     </AppPage>
   )

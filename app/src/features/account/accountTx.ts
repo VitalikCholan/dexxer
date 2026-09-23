@@ -107,7 +107,11 @@ export async function depositTx(
 export const MIN_WITHDRAW_USD = 1
 
 /** `withdraw` (ER, owner-signed). `FeeEscrow`/commit-intent plumbing is server-side; this only builds the one instruction. */
-export async function withdrawTx(p: AccountPdas, mwa: Pick<Mwa, 'signTransactions' | 'getConnection'>, amountUsd: number): Promise<string> {
+export async function withdrawTx(
+  p: AccountPdas,
+  mwa: Pick<Mwa, 'signTransactions' | 'getConnection'>,
+  amountUsd: number,
+): Promise<string> {
   if (amountUsd < MIN_WITHDRAW_USD) throw new Error(`minimum withdrawal is ${MIN_WITHDRAW_USD} dUSDC`)
   const amount = usdAmount(amountUsd)
   const ownerTee = await mwa.getConnection(p.owner)

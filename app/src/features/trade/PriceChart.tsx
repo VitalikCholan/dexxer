@@ -41,7 +41,10 @@ export function PriceChart({ tf }: { tf: '1m' | '5m' | '15m' }) {
               <Stop offset="1" stopColor={colors.accent} stopOpacity={0} />
             </LinearGradient>
           </Defs>
-          <Polygon points={`0,${HEIGHT} ${linePoints(data, width, HEIGHT)} ${width.toFixed(1)},${HEIGHT}`} fill="url(#markFill)" />
+          <Polygon
+            points={`0,${HEIGHT} ${linePoints(data, width, HEIGHT)} ${width.toFixed(1)},${HEIGHT}`}
+            fill="url(#markFill)"
+          />
           <Polyline points={linePoints(data, width, HEIGHT)} fill="none" stroke={colors.accent} strokeWidth={2} />
         </Svg>
       )}

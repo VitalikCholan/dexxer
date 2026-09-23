@@ -50,12 +50,24 @@ export function IncreaseSheet({ open, onClose, position, markUsd, mmrBps, busy, 
   return (
     <Sheet open={open} onClose={onClose} title="Increase position">
       <Input label="Add size" value={addSize} onChangeText={setAddSize} suffix="SOL" keyboardType="decimal-pad" />
-      <Input label="Add margin (optional)" value={addMargin} onChangeText={setAddMargin} suffix="dUSDC" keyboardType="decimal-pad" />
+      <Input
+        label="Add margin (optional)"
+        value={addMargin}
+        onChangeText={setAddMargin}
+        suffix="dUSDC"
+        keyboardType="decimal-pad"
+      />
       <Row label="New liq. price ≈" value={newLiq !== null ? `$${(Number(newLiq) / 1e6).toFixed(2)}` : '—'} />
-      <Button variant="primary" disabled={busy || addSizeNum <= 0} onPress={() => void onSubmit(addSizeNum, addMarginNum)}>
+      <Button
+        variant="primary"
+        disabled={busy || addSizeNum <= 0}
+        onPress={() => void onSubmit(addSizeNum, addMarginNum)}
+      >
         {busy ? 'Signing with session key…' : 'Confirm increase'}
       </Button>
-      <Text style={[caption, { color: colors.textSecondary, textAlign: 'center' }]}>No wallet prompt — signed by your session key</Text>
+      <Text style={[caption, { color: colors.textSecondary, textAlign: 'center' }]}>
+        No wallet prompt — signed by your session key
+      </Text>
     </Sheet>
   )
 }

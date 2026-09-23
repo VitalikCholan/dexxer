@@ -43,21 +43,18 @@ export function PositionsScreen() {
   const mark = marketLive.value?.mark ?? null
   const mmrBps = marketLive.value ? BigInt(marketLive.value.mmrBps) : 500n
 
-  const run = useCallback(
-    async (label: string, fn: () => Promise<string>) => {
-      setBusy(true)
-      try {
-        await fn()
-        showToast({ tone: 'success', text: `${label} confirmed` })
-        setSheet(null)
-      } catch (e) {
-        showToast({ tone: 'danger', text: describeTxError(e) })
-      } finally {
-        setBusy(false)
-      }
-    },
-    [],
-  )
+  const run = useCallback(async (label: string, fn: () => Promise<string>) => {
+    setBusy(true)
+    try {
+      await fn()
+      showToast({ tone: 'success', text: `${label} confirmed` })
+      setSheet(null)
+    } catch (e) {
+      showToast({ tone: 'danger', text: describeTxError(e) })
+    } finally {
+      setBusy(false)
+    }
+  }, [])
 
   const handleClose = useCallback(() => {
     if (!conn || !session || !accounts) return
@@ -78,7 +75,12 @@ export function PositionsScreen() {
   const handleDecrease = useCallback(
     (closeSizeSol: number) => {
       if (!conn || !session || !accounts || !position) return Promise.resolve()
-      const limitUsd = mark !== null ? Number(math.closeSlippageLimit(position.side, mark)) / 1_000_000 : position.side === 'Long' ? 0 : Number(U64_MAX) / 1_000_000
+      const limitUsd =
+        mark !== null
+          ? Number(math.closeSlippageLimit(position.side, mark)) / 1_000_000
+          : position.side === 'Long'
+            ? 0
+            : Number(U64_MAX) / 1_000_000
       return run('Decrease', () => decreasePosition(conn, session, accounts, closeSizeSol, limitUsd))
     },
     [conn, session, accounts, position, mark, run],
@@ -91,7 +93,9 @@ export function PositionsScreen() {
           <Skeleton lines={5} />
         ) : sessionError ? (
           <EmptyState text={sessionError} />
-        ) : !position || (position.state !== 'Open' && !(position.state === 'Closed' && position.closed && !position.closed.commitmentWritten)) ? (
+        ) : !position ||
+          (position.state !== 'Open' &&
+            !(position.state === 'Closed' && position.closed && !position.closed.commitmentWritten)) ? (
           <EmptyState text="No open position" action={{ label: 'Go to Trade', onPress: () => router.push('/trade') }} />
         ) : (
           <PositionCard

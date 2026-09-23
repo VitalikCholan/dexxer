@@ -45,7 +45,9 @@ export function ExitSheet({ open, onClose, checklist, busy, onConfirm }: ExitShe
       <ChecklistRow ok={checklist.noOpenPosition} label="No open position" />
       <ChecklistRow ok={checklist.historyQueueEmpty} label="History queue empty" />
       <ChecklistRow ok={checklist.balanceWithdrawn} label="Balance withdrawn" />
-      <Text style={[caption, { color: colors.textSecondary }]}>Your accounts return to L1 with private fields erased.</Text>
+      <Text style={[caption, { color: colors.textSecondary }]}>
+        Your accounts return to L1 with private fields erased.
+      </Text>
       <Button variant="destructive" disabled={!ready || busy} onPress={() => void onConfirm()}>
         {busy ? 'Confirm in wallet…' : 'Exit private account'}
       </Button>

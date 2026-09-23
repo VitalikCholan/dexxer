@@ -141,7 +141,12 @@ const STATUS_TONE: Record<DisclosureStatus, Tone> = {
 }
 
 /** `slot === null && status === 'committed'` from a `DisclosureQueue` record specifically means "already past mark_committed, just don't know the current slot yet" — 'Checking…' is more accurate there than the generic 'committed' label (which implies still-awaiting-crank, already false by definition for a queued record). */
-function rowStatusText(status: DisclosureStatus, revealAfterSlot: bigint, slot: bigint | null, source: 'position' | 'queue'): string {
+function rowStatusText(
+  status: DisclosureStatus,
+  revealAfterSlot: bigint,
+  slot: bigint | null,
+  source: 'position' | 'queue',
+): string {
   if (status === 'committed' && source === 'queue' && slot === null) return 'Checking…'
   if (status === 'reveals_in' && slot !== null) return `Reveals in ${formatSlotsAsTime(revealAfterSlot - slot)}`
   return STATUS_LABEL[status]
@@ -291,7 +296,9 @@ export function assertHistoryMergeSelfCheck(): void {
 
   const rows = mergeHistoryRows(rec, [rec], [revealedEntry], 100n)
   if (rows.length !== 1) {
-    throw new Error(`assertHistoryMergeSelfCheck: expected exactly 1 merged row for one trade in all 3 sources, got ${rows.length}`)
+    throw new Error(
+      `assertHistoryMergeSelfCheck: expected exactly 1 merged row for one trade in all 3 sources, got ${rows.length}`,
+    )
   }
   if (rows[0].status !== 'revealed') {
     throw new Error(`assertHistoryMergeSelfCheck: expected highest-stage status 'revealed', got '${rows[0].status}'`)
@@ -369,7 +376,11 @@ export function HistoryScreen() {
     refetchInterval: 5000,
   })
   const revealed = revealedQuery.data ?? []
-  const revealedError = revealedQuery.error ? (revealedQuery.error instanceof Error ? revealedQuery.error.message : String(revealedQuery.error)) : null
+  const revealedError = revealedQuery.error
+    ? revealedQuery.error instanceof Error
+      ? revealedQuery.error.message
+      : String(revealedQuery.error)
+    : null
 
   const [refreshing, setRefreshing] = useState(false)
   const [explainerOpen, setExplainerOpen] = useState(false)
