@@ -107,3 +107,14 @@ test("buildHealthPayload: reports commitIntervalTicks, defaulting to 300", () =>
     60,
   );
 });
+
+// --- Week-5 Task 7: commitMaxActions ---
+
+test("buildHealthPayload: reports commitMaxActions, defaulting to 4", () => {
+  const state = { lastTickAt: Date.now(), lastCommitAt: null, tick: 1, errors: [] };
+  assert.equal(buildHealthPayload(state, Date.now(), null, null, "ok").commitMaxActions, 4);
+  assert.equal(
+    buildHealthPayload(state, Date.now(), null, null, "ok", undefined, undefined, true, null, 300, 6).commitMaxActions,
+    6,
+  );
+});

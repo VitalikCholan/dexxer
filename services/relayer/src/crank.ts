@@ -63,7 +63,9 @@ import type { Keypair } from "@solana/web3.js";
 import { confirmSignature, sleep, teeConn } from "../../../tests/er/lib/env.js";
 import type { Net } from "../../../tests/er/lib/env.js";
 import { POSITION_DISC, accountNs, dexxerCoreProgram, pdas } from "../../../tests/er/lib/program.js";
-import { runDisclosureCycle, runRootCycle } from "./disclosure.js";
+import { COMMIT_MAX_ACTIONS, runDisclosureCycle, runRootCycle } from "./disclosure.js";
+
+export { COMMIT_MAX_ACTIONS };
 import { orphanDeps, runOrphanCycle } from "./orphan.js";
 
 type PublicKeyT = InstanceType<typeof PublicKey>;

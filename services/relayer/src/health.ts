@@ -105,6 +105,8 @@ export interface HealthPayload {
   db: "ok" | "error";
   /** Week-5 Task 5: `COMMIT_INTERVAL_TICKS` (env, default 300) — how many 1s ticks between one `commit_aggregate`/root/orphan cycle and the next. */
   commitIntervalTicks: number;
+  /** Week-5 Task 7: `disclosure.ts`'s `COMMIT_MAX_ACTIONS` (env, default 4, clamped to `[1, MAX_ACTIONS_PER_COMMIT=8]`) — the per-bundle post-commit-action budget the relayer requests, tuned below the program's hard ceiling because the MagicBlock bridge's own action cap is lower (measured, 0xA0000002). */
+  commitMaxActions: number;
   indexer: IndexerSnapshot;
   sponsor: SponsorHealthSnapshot;
 }
@@ -126,6 +128,7 @@ export function buildHealthPayload(
   crankEnabled = true,
   schedulerActive: boolean | null = null,
   commitIntervalTicks = 300,
+  commitMaxActions = 4,
 ): HealthPayload {
   const stale = crankEnabled && (state.lastTickAt === null || now - state.lastTickAt > STALE_MS);
   return {
@@ -139,6 +142,7 @@ export function buildHealthPayload(
     schedulerActive,
     db: dbStatus,
     commitIntervalTicks,
+    commitMaxActions,
     indexer: indexer ?? EMPTY_INDEXER_SNAPSHOT,
     sponsor: sponsor ?? EMPTY_SPONSOR_SNAPSHOT,
   };
@@ -160,6 +164,8 @@ export interface HealthDeps {
   getSponsorSnapshot?: () => Promise<SponsorHealthSnapshot>;
   /** Week-5 Task 5: `crank.ts`'s `COMMIT_INTERVAL_TICKS`, reported as-is. */
   commitIntervalTicks: number;
+  /** Week-5 Task 7: `crank.ts`'s re-exported `COMMIT_MAX_ACTIONS`, reported as-is. */
+  commitMaxActions: number;
 }
 
 interface BalanceCache {
@@ -211,6 +217,7 @@ export function healthRouter(deps: HealthDeps): Router {
       deps.crankEnabled,
       deps.getSchedulerActive?.() ?? null,
       deps.commitIntervalTicks,
+      deps.commitMaxActions,
     );
     res.status(payload.ok ? 200 : 503).json(payload);
   });

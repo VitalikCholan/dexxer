@@ -35,10 +35,24 @@
 // program's own `actions.is_empty()` branch already handles that case.
 //
 // CANDIDATE SELECTION: each queue is added while the running action estimate
-// is under `MAX_ACTIONS_PER_COMMIT` (8). The estimate is only a hint — the
-// program clamps every candidate to the budget actually left
-// (`pending_commitments`/`due_reveals`'s `room`), so an over-estimate costs
-// a deferred action, never a failed bundle.
+// is under `COMMIT_MAX_ACTIONS` (env, default 4 — see below). The estimate is
+// only a hint — the program clamps every candidate to the budget actually
+// left (`pending_commitments`/`due_reveals`'s `room`), so an over-estimate
+// costs a deferred action, never a failed bundle BY ITSELF.
+//
+// Week-5 Task 7 measured that the MagicBlock bridge enforces its own,
+// separate action cap UNDER the program's `MAX_ACTIONS_PER_COMMIT` (8, raised
+// from 4 in week-5 Task 1) for the real `write_commitment`/`write_disclosure`
+// action shape: a live Railway cycle against a devnet backlog that included a
+// full `DisclosureQueue` ring (8 pending actions) failed every cycle with
+// `Custom 2684354562` (0xA0000002 — the same bridge error week 3's M-C
+// measured at 28 PASS / 29 FAIL with a cheap 5-account spike action; the real
+// actions are heavier per-action, so the cap in action-count terms is lower).
+// `COMMIT_MAX_ACTIONS` (env, default 4, clamped to `[1, MAX_ACTIONS_PER_COMMIT]`)
+// caps the client-side budget independently of the program's hard ceiling, so
+// this can be tuned on Railway without a program redeploy once the real cap
+// is measured. `MAX_ACTIONS_PER_COMMIT` (8) stays the outer clamp — the
+// program itself will never schedule more than that regardless of env.
 
 import { randomBytes } from "crypto";
 import { PublicKey } from "@solana/web3.js";
@@ -55,6 +69,30 @@ import {
   decodeBalancesRoot,
   pdas,
 } from "../../../tests/er/lib/program.js";
+
+// Week-5 Task 7: the MagicBlock bridge's own action-cap error
+// (`0xA0000002` = `2684354562`, the same one week 3's M-C measured with a
+// cheap spike action). Matched on the stringified error since Anchor/web3.js
+// surface it inside a JSON-ish `{"InstructionError":[0,{"Custom":N}]}`
+// string, not a typed field.
+const BRIDGE_ACTION_CAP_CODE = "2684354562";
+
+/**
+ * How many post-commit actions to REQUEST per `commit_aggregate` bundle.
+ * Default 4 — see the CANDIDATE SELECTION comment above for the measurement
+ * behind that default. Clamped to `[1, MAX_ACTIONS_PER_COMMIT]`: the program
+ * itself (`state/mod.rs`) never schedules more than `MAX_ACTIONS_PER_COMMIT`
+ * (8) actions in one bundle regardless of this env var, so a value above it
+ * would be silently capped on-chain anyway — clamping here just keeps the
+ * relayer's own logs/estimates honest about what can actually happen.
+ */
+// Exported for test/disclosure.test.ts (pure, no network).
+export function parseCommitMaxActions(raw: string | undefined): number {
+  const n = Number(raw ?? 4);
+  if (!Number.isFinite(n)) return 4;
+  return Math.max(1, Math.min(MAX_ACTIONS_PER_COMMIT, Math.trunc(n)));
+}
+export const COMMIT_MAX_ACTIONS = parseCommitMaxActions(process.env.COMMIT_MAX_ACTIONS);
 
 export interface DisclosureCtx {
   /** Crank-authenticated ER connection: reads the private `DisclosureQueue`/`UserAccount` accounts via `getProgramAccounts`, and signs `set_balances_root`. */
@@ -138,6 +176,58 @@ function oldestPendingSlot(dq: any, slot: bigint): number {
   return Number.MAX_SAFE_INTEGER;
 }
 
+/**
+ * Fill a bundle up to `budget` actions, oldest-debt-first (`pendingQueues`
+ * arrives pre-sorted by `oldestPendingSlot` — see the caller). A queue can be
+ * included PARTIALLY (its own `actions` clamped to whatever budget is left);
+ * the program's own `room` clamp (commit.rs) handles the rest, see the
+ * CANDIDATE SELECTION comment above `runDisclosureCycle`.
+ */
+// Exported for test/disclosure.test.ts (pure, no network).
+export function selectCandidates(
+  pendingQueues: { key: PublicKey; actions: number }[],
+  budget: number,
+): { key: PublicKey; actions: number }[] {
+  const candidates: { key: PublicKey; actions: number }[] = [];
+  let remaining = budget;
+  for (const q of pendingQueues) {
+    if (remaining <= 0) break;
+    const actions = Math.min(remaining, q.actions);
+    candidates.push({ key: q.key, actions });
+    remaining -= actions;
+  }
+  return candidates;
+}
+
+/**
+ * Week-5 Task 7: true iff `e` is the MagicBlock bridge's own per-bundle
+ * action-cap rejection. Exported for test/disclosure.test.ts (pure, no network).
+ */
+export function isBridgeActionCapError(e: unknown): boolean {
+  return String(e instanceof Error ? e.message : e).includes(BRIDGE_ACTION_CAP_CODE);
+}
+
+/** Builds and sends one `commit_aggregate` call with the given `DisclosureQueue` keys as `remaining_accounts`. */
+async function sendCommitAggregate(ctx: DisclosureCtx, remainingKeys: PublicKey[]): Promise<string> {
+  const config = await accountNs(ctx.feePayerProg).config.fetch(pdas.config());
+  const ix = await ctx.feePayerProg.methods
+    .commitAggregate()
+    .accounts({
+      config: pdas.config(),
+      payer: ctx.feePayer.publicKey,
+      pool: ctx.pool,
+      poolLive: ctx.poolLive,
+      balancesRoot: ctx.balancesRoot,
+      feeEscrow: ctx.feeEscrow,
+      magicFeeVault: config.magicFeeVault,
+      magicContext: MAGIC_CONTEXT_ID,
+      magicProgram: MAGIC_PROGRAM_ID,
+    })
+    .remainingAccounts(remainingKeys.map((pubkey) => ({ pubkey, isWritable: true, isSigner: false })))
+    .instruction();
+  return sendAndConfirmIx(ctx.feePayerConn, ctx.feePayer, ix);
+}
+
 export async function runRootCycle(ctx: DisclosureCtx): Promise<void> {
   const userAccs = await ctx.conn.getProgramAccounts(ctx.prog.programId, {
     filters: [{ memcmp: { offset: 0, bytes: USER_DISC } }],
@@ -208,16 +298,9 @@ export async function runDisclosureCycle(ctx: DisclosureCtx): Promise<void> {
     // across cycles rather than RPC-order-dependent.
     .sort((a, b) => a.oldest - b.oldest || a.key.toBase58().localeCompare(b.key.toBase58()));
 
-  // --- (2) fill the bundle up to MAX_ACTIONS_PER_COMMIT — see the CANDIDATE
+  // --- (2) fill the bundle up to COMMIT_MAX_ACTIONS — see the CANDIDATE
   // SELECTION comment at the top of this file. ---
-  const candidates: { key: PublicKey; actions: number }[] = [];
-  let budget = MAX_ACTIONS_PER_COMMIT;
-  for (const q of pendingQueues) {
-    if (budget <= 0) break;
-    const actions = Math.min(budget, q.actions);
-    candidates.push({ key: q.key, actions });
-    budget -= actions;
-  }
+  const candidates = selectCandidates(pendingQueues, COMMIT_MAX_ACTIONS);
 
   // `commit_aggregate` IS the fixed-interval `Pool`+`BalancesRoot` commit
   // (CLAUDE.md: "фіксованим інтервалом батчем, ніколи подієво") — it must run
@@ -229,26 +312,35 @@ export async function runDisclosureCycle(ctx: DisclosureCtx): Promise<void> {
   // fires). `remaining_accounts` is simply empty in that case.
   const totalActions = candidates.reduce((n, c) => n + c.actions, 0);
   try {
-    const config = await accountNs(ctx.feePayerProg).config.fetch(pdas.config());
-    const ix = await ctx.feePayerProg.methods
-      .commitAggregate()
-      .accounts({
-        config: pdas.config(),
-        payer: ctx.feePayer.publicKey,
-        pool: ctx.pool,
-        poolLive: ctx.poolLive,
-        balancesRoot: ctx.balancesRoot,
-        feeEscrow: ctx.feeEscrow,
-        magicFeeVault: config.magicFeeVault,
-        magicContext: MAGIC_CONTEXT_ID,
-        magicProgram: MAGIC_PROGRAM_ID,
-      })
-      .remainingAccounts(candidates.map((c) => ({ pubkey: c.key, isWritable: true, isSigner: false })))
-      .instruction();
-    const sig = await sendAndConfirmIx(ctx.feePayerConn, ctx.feePayer, ix);
-    console.log(`commit_aggregate: sig=${sig} actions=${totalActions}`);
+    const sig = await sendCommitAggregate(ctx, candidates.map((c) => c.key));
+    console.log(`commit_aggregate: sig=${sig} actions=${totalActions} queues=${candidates.length}`);
+    return;
   } catch (e) {
-    console.error("commit_aggregate failed:", String(e));
+    console.error(`commit_aggregate failed (actions=${totalActions} queues=${candidates.length}):`, String(e));
+
+    // Week-5 Task 7: on the bridge's own action-cap rejection (0xA0000002,
+    // measured — see the CANDIDATE SELECTION comment above), halve the
+    // ACTION BUDGET (not the queue count — measured, a single full-ring
+    // queue can alone exceed the bridge cap, so dropping whole queues would
+    // never shrink that one bundle) and re-run `selectCandidates` over the
+    // same `pendingQueues` (still oldest-debt-first), then retry once. A
+    // bundle that still overshoots the bridge's real cap this way makes
+    // partial progress instead of falling straight through to a bare
+    // 0-action commit. One halving, not a loop: a second failure just falls
+    // through to the bare retry below — the next full cycle re-evaluates
+    // everything from scratch anyway.
+    if (totalActions > 1 && isBridgeActionCapError(e)) {
+      const halved = selectCandidates(pendingQueues, Math.floor(totalActions / 2));
+      const halvedActions = halved.reduce((n, c) => n + c.actions, 0);
+      try {
+        const sig = await sendCommitAggregate(ctx, halved.map((c) => c.key));
+        console.log(`commit_aggregate: halved retry sig=${sig} actions=${halvedActions} queues=${halved.length} (from actions=${totalActions} queues=${candidates.length})`);
+        return;
+      } catch (e2) {
+        console.error(`commit_aggregate halved retry failed (actions=${halvedActions} queues=${halved.length}):`, String(e2));
+      }
+    }
+
     // Final-review finding I-3 (week 3): one poison candidate (undecodable,
     // over budget, or rejected by the program's owner/discriminator checks)
     // must not block the fixed-interval Pool+BalancesRoot commit. Retry once
@@ -256,26 +348,10 @@ export async function runDisclosureCycle(ctx: DisclosureCtx): Promise<void> {
     // the candidates are simply re-evaluated next cycle.
     if (candidates.length > 0) {
       try {
-        const config = await accountNs(ctx.feePayerProg).config.fetch(pdas.config());
-        const bare = await ctx.feePayerProg.methods
-          .commitAggregate()
-          .accounts({
-            config: pdas.config(),
-            payer: ctx.feePayer.publicKey,
-            pool: ctx.pool,
-            poolLive: ctx.poolLive,
-            balancesRoot: ctx.balancesRoot,
-            feeEscrow: ctx.feeEscrow,
-            magicFeeVault: config.magicFeeVault,
-            magicContext: MAGIC_CONTEXT_ID,
-            magicProgram: MAGIC_PROGRAM_ID,
-          })
-          .remainingAccounts([])
-          .instruction();
-        const sig = await sendAndConfirmIx(ctx.feePayerConn, ctx.feePayer, bare);
+        const sig = await sendCommitAggregate(ctx, []);
         console.log(`commit_aggregate: retry without candidates sig=${sig} actions=0`);
-      } catch (e2) {
-        console.error("commit_aggregate retry (no candidates) failed:", String(e2));
+      } catch (e3) {
+        console.error("commit_aggregate retry (no candidates) failed:", String(e3));
       }
     }
   }

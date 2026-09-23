@@ -206,6 +206,7 @@ rolling 24h spend (finalized rows only).
 | `DATABASE_URL` | prod | Postgres connection string (Railway reference variable to the Postgres plugin); unset = no persistence, `/healthz`'s `db` reports `"error"` |
 | `CRANK_INTERVAL_MS` | no (default `1000`) | tick cadence |
 | `COMMIT_INTERVAL_TICKS` | no (default `300`) | ticks between one `commit_aggregate` + `BalancesRoot` + orphan-reclaim cycle and the next (300 ≈ 5 min at the default cadence). Reported by `/healthz` as `commitIntervalTicks`; a value below 1 falls back to the default |
+| `COMMIT_MAX_ACTIONS` | no (default `4`) | per-bundle `write_commitment`/`write_disclosure` action budget `runDisclosureCycle` requests (`src/disclosure.ts`). Clamped to `[1, 8]` — 8 is the program's own hard ceiling (`MAX_ACTIONS_PER_COMMIT`, `state/mod.rs`), but week-5 Task 7 measured the MagicBlock bridge itself rejecting a real 8-action bundle (`0xA0000002`) on devnet-tee, so the default sits below that ceiling. On a bridge-cap failure the cycle halves the candidate queue set once and retries before falling back to a bare 0-action commit (see disclosure.ts). Reported by `/healthz` as `commitMaxActions` |
 | `INDEXER_ENABLED` | no (default `false`) | Task 5: starts the public-data indexer (see above) — needs `DATABASE_URL`, disabled with a warning if it's unset |
 | `SPONSOR_ENABLED` | no (default `false`) | Task 6: starts `POST /sponsor` (see below) — needs `DATABASE_URL`, disabled with a warning if it's unset |
 | `SPONSOR_DAILY_SOL` | no (default `0.5`) | rolling 24h cap on sponsored lamports across all owners |

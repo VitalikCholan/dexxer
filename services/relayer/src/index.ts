@@ -51,7 +51,7 @@ if ((process.env.DEXXER_NET ?? "local") === "devnet") {
 }
 
 const { keypairFromEnv } = await import("./keys.js");
-const { COMMIT_INTERVAL_TICKS, startCrank, requestStop } = await import("./crank.js");
+const { COMMIT_INTERVAL_TICKS, COMMIT_MAX_ACTIONS, startCrank, requestStop } = await import("./crank.js");
 const { NET, BASE, ER, ER_WS } = await import("../../../tests/er/lib/env.js");
 const { pdas } = await import("../../../tests/er/lib/program.js");
 const { startMarketWatch } = await import("./marketWatch.js");
@@ -185,6 +185,7 @@ app.use(
     }),
     getSponsorSnapshot: getSponsorHealthSnapshot,
     commitIntervalTicks: COMMIT_INTERVAL_TICKS,
+    commitMaxActions: COMMIT_MAX_ACTIONS,
   }),
 );
 
