@@ -174,6 +174,7 @@ async function seedAndDelegatePool(
         .faucetInit(new BN(POOL_SEED_AMOUNT.toString()))
         .accounts({
           owner: admin.publicKey,
+          payer: admin.publicKey,
           config,
           faucet: faucetPda,
           dusdcMint: mint,

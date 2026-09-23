@@ -138,12 +138,12 @@ async function main() {
   await getOrCreateAssociatedTokenAccount(baseConn, owner, boot.mint, owner.publicKey);
   const faucetSig = await core.methods
     .faucetInit(new BN(DEPOSIT.toString()))
-    .accounts({ owner: owner.publicKey, config, faucet: faucetPda, dusdcMint: boot.mint, mintAuth, ownerAta, systemProgram: SystemProgram.programId, tokenProgram: TOKEN_PROGRAM_ID })
+    .accounts({ owner: owner.publicKey, payer: owner.publicKey, config, faucet: faucetPda, dusdcMint: boot.mint, mintAuth, ownerAta, systemProgram: SystemProgram.programId, tokenProgram: TOKEN_PROGRAM_ID })
     .rpc();
   const exitSalt = new Uint8Array(randomBytes(32));
   const initUserSig = await core.methods
     .initUser(Array.from(exitSalt))
-    .accounts({ owner: owner.publicKey, config, market, userAccount, position, disclosureQueue, systemProgram: SystemProgram.programId })
+    .accounts({ owner: owner.publicKey, payer: owner.publicKey, config, market, userAccount, position, disclosureQueue, systemProgram: SystemProgram.programId })
     .rpc();
   console.log("faucet_init", faucetSig, "init_user", initUserSig);
 

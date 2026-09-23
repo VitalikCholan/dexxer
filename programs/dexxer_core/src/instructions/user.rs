@@ -89,11 +89,18 @@ fn mint_with_limit<'info>(
 pub struct FaucetInit<'info> {
     #[account(mut)]
     pub owner: Signer<'info>,
+    // Fix round 1 (week 4, task 6 controller ruling): sponsored-rent onboarding —
+    // `fee_payer` (relayer) fronts the `Faucet` PDA's rent instead of `owner`, so a
+    // genuinely 0-SOL owner can still complete onboarding through `POST /sponsor`.
+    // `owner` remains the sole signer/authority everywhere else (`has_one`, seeds,
+    // `token::authority`) — only the rent-paying account changes.
+    #[account(mut)]
+    pub payer: Signer<'info>,
     #[account(seeds = [CONFIG_SEED], bump = config.bump, has_one = dusdc_mint)]
     pub config: Account<'info, Config>,
     #[account(
         init,
-        payer = owner,
+        payer = payer,
         space = 8 + Faucet::INIT_SPACE,
         seeds = [FAUCET_SEED, owner.key().as_ref()],
         bump
@@ -165,6 +172,12 @@ pub fn faucet_mint(ctx: Context<FaucetMint>, amount: u64) -> Result<()> {
 pub struct InitUser<'info> {
     #[account(mut)]
     pub owner: Signer<'info>,
+    // Fix round 1 (week 4, task 6 controller ruling): `fee_payer` fronts the
+    // rent for `UserAccount`/`Position`/`DisclosureQueue` and the three
+    // per-PDA `EphemeralPermission` prefund transfers below, instead of
+    // `owner` — see `FaucetInit`'s `payer` field for the same rationale.
+    #[account(mut)]
+    pub payer: Signer<'info>,
     #[account(seeds = [CONFIG_SEED], bump = config.bump)]
     pub config: Account<'info, Config>,
     // `UncheckedAccount`, not `Account<'info, Market>` (task-13 finding on
@@ -182,7 +195,7 @@ pub struct InitUser<'info> {
     pub market: UncheckedAccount<'info>,
     #[account(
         init,
-        payer = owner,
+        payer = payer,
         space = 8 + UserAccount::INIT_SPACE,
         seeds = [USER_SEED, owner.key().as_ref()],
         bump
@@ -190,7 +203,7 @@ pub struct InitUser<'info> {
     pub user_account: Account<'info, UserAccount>,
     #[account(
         init,
-        payer = owner,
+        payer = payer,
         space = 8 + Position::INIT_SPACE,
         seeds = [POSITION_SEED, owner.key().as_ref(), market.key().as_ref()],
         bump
@@ -200,7 +213,7 @@ pub struct InitUser<'info> {
     // (~4 KB limit) if kept inline alongside the other init'd accounts here.
     #[account(
         init,
-        payer = owner,
+        payer = payer,
         space = 8 + DisclosureQueue::INIT_SPACE,
         seeds = [DQ_SEED, owner.key().as_ref()],
         bump
@@ -238,7 +251,7 @@ pub fn init_user(ctx: Context<InitUser>, exit_salt: [u8; 32]) -> Result<()> {
             CpiContext::new(
                 ctx.accounts.system_program.key(),
                 Transfer {
-                    from: ctx.accounts.owner.to_account_info(),
+                    from: ctx.accounts.payer.to_account_info(),
                     to,
                 },
             ),

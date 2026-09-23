@@ -118,8 +118,9 @@ export function readConfigOracleProgram(data: Buffer): PublicKey {
  * matches `app/src/idl/dexxer_core.json`'s `Config` type field order
  * exactly (`version, admin, crank, paused, oracle_program, tee_validator,
  * dusdc_mint, disclosure_delay_slots, scheduler_signer, fee_payer, ...`).
- * `useOnboarding.ts`'s batched flow sets `tx.feePayer` to this for the two
- * L1 transactions it hands to the relayer's `POST /sponsor`.
+ * `batchOnboarding.ts`'s batched flow sets `tx.feePayer` to this for all
+ * three legs it hands to the relayer's `POST /sponsor` (fix round 1,
+ * finding A.3 — the ER leg is sponsored too now, not just the two L1 ones).
  */
 const CONFIG_FEE_PAYER_OFFSET = CONFIG_DUSDC_MINT_OFFSET + 32 + 8 + 32
 

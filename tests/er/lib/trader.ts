@@ -191,6 +191,7 @@ export async function onboardTrader(
       .faucetInit(new BN(deposit.toString()))
       .accounts({
         owner: kp.publicKey,
+        payer: kp.publicKey,
         config,
         faucet: faucetPda,
         dusdcMint: boot.mint,
@@ -219,7 +220,7 @@ export async function onboardTrader(
   if (!userAccountInfoPre) {
     const sig = await core.methods
       .initUser(Array.from(exitSalt))
-      .accounts({ owner: kp.publicKey, config, market, userAccount, position, disclosureQueue, systemProgram: SystemProgram.programId })
+      .accounts({ owner: kp.publicKey, payer: kp.publicKey, config, market, userAccount, position, disclosureQueue, systemProgram: SystemProgram.programId })
       .rpc();
     sigs.initUser = sig;
     console.log(`init_user (${name})`, sig);

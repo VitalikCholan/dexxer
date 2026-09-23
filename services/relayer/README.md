@@ -104,33 +104,78 @@ reach REST/WS clients as JSON **strings**. Candle `o/h/l/c` (SOL/USD price
 in 1e6 scale) and every `slot`/`ts`/`limit`/`nonce`-adjacent small integer
 stay plain JSON **numbers** — nowhere near 2^53.
 
-## Sponsor (Task 6)
+## Sponsor (Task 6, fix round 1)
 
 `SPONSOR_ENABLED=true` (needs `DATABASE_URL`) mounts `POST /sponsor` — the
 `fee_payer` key co-signs a whitelisted, already owner-signed onboarding
 transaction so the app can batch `faucet_init`/`init_user`/`delegateSpl`/
-`delegate_user` into one `signTransactions([...])` prompt. See
-`src/sponsor.ts`'s header comment for the exact whitelist (dexxer_core
-`{faucet_init, init_user, delegate_user}` by 8-byte discriminator, plus the
-three eSPL instructions `delegateSpl(..., {initVaultIfMissing:false,
-idempotent:false})` emits), the signature checks, and why `fee_payer`
-currently only ever fronts the flat network fee (not PDA rent — the
-program's `payer = owner` account constraints debit the owner's own
-balance regardless of who `tx.feePayer` is).
+`delegate_user` (the two L1 legs) into a `signTransactions([...])` prompt,
+with `fee_payer` fronting network fees and PDA/eSPL rent for those two legs.
+
+The whitelist ALSO accepts `init_permissions`/`set_session`/a matching
+SystemProgram session-top-up transfer (an ER leg) — that shape was tried in
+the app this fix round and reverted: real devnet-tee rejects `fee_payer` as
+an ER transaction's fee payer (`"InvalidAccountForFee"`) unless `fee_payer`
+itself originated the tx. The app's ER leg + session top-up stay
+owner-funded/owner-`feePayer` for now; this whitelist support is kept as
+forward-looking, tested, currently-unused capacity. See `src/sponsor.ts`'s
+header comment for the full design rationale (fix round 1, findings A/B/C).
 
 ```
 POST /sponsor
 { "tx": "<base64 Transaction, owner already signed, tx.feePayer = fee_payer>" }
 -> 200 { "tx": "<base64, now also fee_payer-signed>" }
 -> 400 { "error": "<specific reason>" }   # not whitelisted / bad signature / budget exceeded / ...
--> 429 { "error": "...", "retryAfterMs": N }  # one sponsor per owner per 60 min
+-> 429 { "error": "...", "retryAfterMs": N }  # rate limit — see below
 ```
 
 The relayer never calls `sendRawTransaction` for a sponsored tx — the
 caller submits it themselves, same as every other owner-signed step in
-`useOnboarding.ts`. Rate limit + daily budget are tracked in Postgres
-(`migrations/002_sponsors.sql`'s `sponsors` table); `/healthz`'s `sponsor`
-field (`{ today_sol, count_today }`) reports the rolling 24h spend.
+`app/src/features/onboard/batchOnboarding.ts`.
+
+### Whitelist (account positions validated by IDL/SDK order, fix round 1 finding B)
+
+Every instruction below is checked by BOTH discriminator/opcode AND account
+position — `fee_payer` may only ever sit at the listed `payer` index (or not
+appear at all, for shapes with no `payer` column), and `owner` must sit at
+the listed `owner` index and be the transaction's single non-fee_payer
+signer. Each instruction shape may appear at most once per sponsored tx.
+
+| Program | Instruction | owner idx | payer idx | Notes |
+| --- | --- | --- | --- | --- |
+| dexxer_core | `faucet_init` | 0 | 1 | `fee_payer` fronts `Faucet` PDA rent |
+| dexxer_core | `init_user` | 0 | 1 | `fee_payer` fronts `UserAccount`/`Position`/`DisclosureQueue` rent |
+| dexxer_core | `delegate_user` | 0 | — | no payer account; `fee_payer` must not appear at all |
+| dexxer_core | `init_permissions` | 0 | — | permissioned accounts self-fund permission rent in the ER |
+| dexxer_core | `set_session` | 0 | — | same; its `session_key` arg is cross-checked against the SystemProgram transfer below |
+| eSPL | `initEphemeralAtaIx` (prefix `0`) | 2 | 1 | `fee_payer` fronts the owner's eATA rent |
+| eSPL | `transferToVaultIx` (prefix `2`) | 5 | — | pure token transfer (owner's dUSDC -> vault), no payer account |
+| eSPL | `delegateEphemeralAtaIx` (prefix `4`) | — | 0 | no owner account; `fee_payer` fronts delegation-record rent |
+| ATA program | `CreateIdempotent` (data `[1]`) | 2 | — | OWNER-funded, not `fee_payer` (index 0 must be owner, not `fee_payer`) |
+| SystemProgram | `Transfer` | — | — | exactly one per tx, `from = fee_payer`, `to` must equal the same tx's `set_session.session_key` arg, `lamports <= SESSION_FUND_LAMPORTS (10_000_000)` — the ER leg's session top-up |
+
+Any other `programId`/discriminator/opcode is rejected outright; the
+non-idempotent ATA `Create` and any other SystemProgram instruction are
+never whitelisted.
+
+### Rate limit + budget (fix round 1, findings C + post-verification)
+
+The rate limit is enforced by a UNIQUE index on `sponsors (owner, "window",
+slot)` (`"window" = floor(ts / 3_600_000)`, `migrations/002_sponsors.sql` +
+`003_sponsors_window.sql` + `004_sponsors_slot.sql`) — `SponsorStore.reserve`
+tries each `slot` in `0..MAX_SPONSOR_CALLS_PER_OWNER_WINDOW` in turn via an
+atomic `INSERT ... ON CONFLICT DO NOTHING RETURNING`, so two concurrent
+calls for the same owner+slot can never both succeed (the database's own
+constraint is the race-closer, not application-level check-then-insert).
+`MAX_SPONSOR_CALLS_PER_OWNER_WINDOW = 6` — a post-verification finding, not
+one of the original A–E: a real onboarding needs up to 3 sponsored legs
+(L1a, L1b, the ER leg) for the SAME owner within the same hour, so the
+original "1 per owner per 60 min" ceiling could never complete one. A
+reservation that later fails the daily-budget check (`SPONSOR_DAILY_SOL`,
+rolling 24h across all owners) is released (`SponsorStore.release`) so that
+slot isn't burned for a request that was never actually sponsored.
+`/healthz`'s `sponsor` field (`{ today_sol, count_today }`) reports the
+rolling 24h spend (finalized rows only).
 
 ## Env vars
 

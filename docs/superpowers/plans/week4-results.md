@@ -212,3 +212,70 @@ rent повернуто payer'у, друга спроба пройшла чис�
 4. `09-pool-snapshot.ts` підтвердив на практиці те, що передбачалось: (c)/(e) стали PASS без
    жодної зміни скрипту, щойно ризик #24 закрито — скрипт від початку перевіряв реальний on-chain
    стан (власника permission-PDA), не відсутність кинутої помилки.
+
+## Task 6 (fix round 1): sponsored rent, whitelist за позиціями акаунтів, атомарний rate-limit
+
+Повний звіт: `.superpowers/sdd/2026-09-22-week4-mvp-polish/task-6-report.md`, розділ
+"Fix round 1 (fresh implementer)". Контролерський рулінг мав 5 знахідок (A–E); нижче — виміряні
+підсумки.
+
+**A.1 (програма, `payer` окремо від `owner`)** — `FaucetInit`/`InitUser` отримали
+`#[account(mut)] pub payer: Signer<'info>`; кожен `init, payer = payer`. Редеплой на devnet
+(`G2okX5Bae4CxfK8vzso1Ecc96QUv7E3P4YvxaZnaYXoV`, підпис `66hN978d…`). **Підтверджено на реальному
+devnet**: `faucet_init`+`init_user` в одній sponsored tx списали з owner **лише** ATA-рент
+(~1,488,440 lamports), решту рент PDA — з `fee_payer`.
+
+**A.2 (eSPL)** — `delegateSpl(..., { payer: feePayerPubkey, ... })`; підтверджено на devnet —
+`delegateSpl`+`delegate_user` пройшли в одній sponsored tx (за умови, що owner мав достатньо для
+`delegate_user`'s власного CPI, див. нижче).
+
+**A.3 (ER-леґ) — СПРОБУВАНО, ВІДКОТЛЕНО.** Спонсорування permissions+session-леґу (`feePayer =
+fee_payer`, TEE-з'єднання, SystemProgram-transfer сесійного топ-апу в тому ж tx) відхилено самим
+TEE: `"InvalidAccountForFee"` — fee_payer не є валідним fee-payer'ом для ER-транзакції, яку сам
+не ініціював (підтверджує `session.ts`'s коментар: ER клонує лише L1-баланс для читання, не
+приймає довільний неделегований акаунт як платника комісії). Відкотлено до pre-fix-round
+дизайну (owner-funded ER-леґ + окремий сесійний топ-ап) — підтверджено повним проходженням
+`tests/er/devnet/01-onboard-private.ts` (PASS, включно з `open_position`, сесійним підписом).
+Релеєрський whitelist (`sponsor.ts`) залишає підтримку цієї форми (init_permissions/set_session/
+SystemProgram-transfer) як готовність на майбутнє — код мертвий, поки додаток не використовує ці
+шляхи.
+
+**B (whitelist за позиціями акаунтів)** — `checkInstruction` тепер валідує позицію `payer`/`owner`
+за IDL/SDK-порядком акаунтів для кожної інструкції (`IxShape`), не лише дискримінатор/опкод; жоден
+інший ключ не може дорівнювати `fee_payer`. Закриває конкретну атаку зі звіту: fee_payer підставлений
+у слот `owner`/`payer` іншого акаунта. Тести: `services/relayer/test/sponsor.test.ts` — 52/52
+(fee_payer у owner-слоті; fee_payer у ATA payer-слоті з чужим owner; дублікат `init_user`;
+transfer на не-сесійний pubkey/понад ліміт/від owner; payer ≠ fee_payer).
+
+**C (атомарний rate-limit)** — `SponsorStore.reserve` через `INSERT ... ON CONFLICT (owner,
+"window", slot) DO NOTHING RETURNING`; конкурентний тест (два `Promise.all` на той самий owner)
+дає рівно один 200 і один 429. **Пост-верифікаційна знахідка (не входила в A–E):** оригінальний
+ліміт "1 sponsored tx на owner на 60 хв" робив повний onboarding (2–3 sponsored-леґи на того ж
+owner в тому ж вікні) фізично неможливим — леґ 2 завжди впирався в 429 від леґу 1. Виявлено лише
+під час наскрізної верифікації проти живого relayer. Виправлено: `MAX_SPONSOR_CALLS_PER_OWNER_WINDOW
+= 6` слотів на owner на вікно (кожен слот — окремий unique-індекс `(owner, "window", slot)`,
+атомарність fix-у C не порушена). Нова міграція `004_sponsors_slot.sql` (адитивна — `003` вже
+застосована на живій БД, редагування заднім числом не подіяло б).
+
+**D (свіжість blockhash)** — `collectBatchLegs` не читає blockhash взагалі (тільки стан акаунтів);
+blockhash береться прямо перед `signTransactions`. Між леґами — `Connection.isBlockhashValid`
+перед відправкою; протермінований леґ перебудовується й підписується окремо (`re-sign leg i
+(blockhash expired)`, один додатковий MWA-промпт) замість падіння всього батчу.
+
+**E (винесення файлу)** — `collectBatchLegs`/`runBatchedOnboarding`/`BatchLeg`/`runDevDeposit` →
+`app/src/features/onboard/batchOnboarding.ts`; `useOnboarding.ts` — тонка hook-обгортка (React
+state, `buildCtx`, legacy `runFlow`).
+
+**Пост-верифікаційна знахідка (не входила в A–E, не виправлено цього раунду):** `delegate_user`
+не має окремого `payer` (тільки `owner`), і його власний CPI до Delegation Program потребує
+більше lamports від owner, ніж вже існуючий permission-rent prefund в `init_user` покриває —
+виміряно на devnet: ~1.1–1.35M lamports понад ATA-рент (~1.49M) і власний rent-floor гаманця
+owner (~0.65M). Тобто **справді нульовий owner і після цього fix round не пройде онбординг** —
+реальний виміряний мінімум ≈0.0033–0.0035 SOL, не нуль. Не виправлено (поза скоупом цього
+раунду — потребує окремого дослідження Delegation Program CPI).
+
+**Емулятор:** контролер зупинив верифікацію на емуляторі на середині сесії (мережева
+нестабільність AVD — `UnknownHostException` на `rpc.magicblock.app`, задокументована ще в
+оригінальному task-6-звіті); ручний прогін 0-SOL онбордингу перенесено в Task 11. Наскрізна
+верифікація логіки виконана натомість через `tests/er`-скрипт з реальним TEE/relayer
+(деталі — task-6-звіт, розділ "Fix round 1").

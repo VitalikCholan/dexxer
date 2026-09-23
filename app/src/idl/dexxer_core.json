@@ -2842,6 +2842,11 @@
           "signer": true
         },
         {
+          "name": "payer",
+          "writable": true,
+          "signer": true
+        },
+        {
           "name": "config",
           "pda": {
             "seeds": [
@@ -4408,6 +4413,11 @@
       "accounts": [
         {
           "name": "owner",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "payer",
           "writable": true,
           "signer": true
         },

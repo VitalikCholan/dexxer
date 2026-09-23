@@ -219,6 +219,7 @@ pub fn faucet_init(owner: &Pubkey, wd: &World, amount: u64) -> Instruction {
         program_id: prog(),
         accounts: vec![
             s(owner),
+            s(owner), // payer (fix round 1, task 6 controller ruling): owner self-pays in tests
             r(&wd.config),
             w(&pdas::faucet(owner)),
             w(&wd.mint),
@@ -250,6 +251,7 @@ pub fn init_user(owner: &Pubkey, wd: &World, exit_salt: [u8; 32]) -> Instruction
         program_id: prog(),
         accounts: vec![
             s(owner),
+            s(owner), // payer (fix round 1, task 6 controller ruling): owner self-pays in tests
             r(&wd.config),
             r(&wd.market),
             w(&pdas::user(owner)),
