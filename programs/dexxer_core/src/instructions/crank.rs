@@ -184,7 +184,20 @@ pub fn crank_tick<'info>(mut ctx: Context<'info, CrankTick<'info>>) -> Result<()
         seen[seen_len] = pos_ai.key();
         seen_len = seen_len.checked_add(1).ok_or(DexxerError::MathOverflow)?;
         let mut pos = Position::try_deserialize(&mut &pos_ai.try_borrow_data()?[..])?;
-        let mut user = UserAccount::try_deserialize(&mut &user_ai.try_borrow_data()?[..])?;
+        // Week-5 Task 2 appended `exited` to `UserAccount` (layout version 2),
+        // so a v1 account created before that upgrade is one byte short and
+        // cannot be deserialized into the current struct at all. Skip such a
+        // candidate rather than abort the batch and take every other
+        // liquidation in this tick down with it — the same containment rule
+        // the full-ring skip follows below. The owner re-onboards through
+        // `init_user_reuse_queue`; until then the account simply cannot trade.
+        let mut user = match UserAccount::try_deserialize(&mut &user_ai.try_borrow_data()?[..]) {
+            Ok(u) => u,
+            Err(_) => {
+                msg!("liq skipped: undecodable user account {}", user_ai.key());
+                continue;
+            }
+        };
         require!(
             pos.market == market_key && pos.owner == user.owner,
             DexxerError::InvalidCandidate

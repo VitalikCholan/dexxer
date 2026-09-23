@@ -110,3 +110,41 @@ fn set_session_only_by_owner() {
     );
     assert!(r.is_err(), "session key cannot re-issue itself");
 }
+
+// Week-5 Task 2: once an orphaned `DisclosureQueue` has been committed back to
+// L1 by `close_orphan_queue`, its rent is reclaimed here by the protocol's
+// `fee_payer` — the account is dead weight from then on, and the protocol,
+// not the departed user, is the one that can still sign for it.
+#[test]
+fn close_queue_l1_returns_rent_to_fee_payer() {
+    let mut h = Harness::new();
+    let w = World::bootstrap(&mut h);
+    let t = w.new_trader(&mut h, 0);
+
+    let stranger = Keypair::new();
+    h.fund(&stranger.pubkey(), 1_000_000_000);
+    let r = h.send(
+        &[ixs::close_queue_l1(&stranger.pubkey(), &t.dq)],
+        &[&stranger],
+    );
+    assert_custom_error(&r, 6000 + DexxerError::Unauthorized as u32);
+
+    let before = h.svm.get_account(&w.fee_payer.pubkey()).unwrap().lamports;
+    let rent = h.svm.get_account(&t.dq).unwrap().lamports;
+    assert!(rent > 0);
+    h.send(
+        &[ixs::close_queue_l1(&w.fee_payer.pubkey(), &t.dq)],
+        &[&w.fee_payer],
+    )
+    .unwrap();
+    assert_eq!(
+        h.svm.get_account(&t.dq).map(|a| a.lamports).unwrap_or(0),
+        0,
+        "queue account closed"
+    );
+    assert_eq!(
+        h.svm.get_account(&w.fee_payer.pubkey()).unwrap().lamports,
+        before + rent,
+        "rent lands on fee_payer"
+    );
+}

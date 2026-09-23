@@ -84,6 +84,9 @@ pub enum DexxerError {
     CommitmentNotWritten,
     #[msg("reveal slot not reached")]
     RevealTooEarly,
+    /// Retired by week-5 Task 2: a pending queue no longer blocks the exit —
+    /// `undelegate_user` leaves the queue behind instead. Kept for stable
+    /// error numbering.
     #[msg("disclosure queue not empty")]
     QueueNotEmpty,
     #[msg("balances root has no free leaf slot")]
@@ -104,6 +107,15 @@ pub enum DexxerError {
     TooManyActions,
     #[msg("PoolLive mint does not match Pool mint")]
     PoolLiveMismatch,
+    /// Reserved by week-5 Task 2 for Task 3's per-position liquidation
+    /// scheduler, so the three numbers below are fixed now and cannot shift
+    /// when that task lands.
+    #[msg("scheduling the liquidation task failed")]
+    LiquidationTaskFailed,
+    #[msg("user account has not exited")]
+    NotExited,
+    #[msg("disclosure queue still has pending records")]
+    QueueStillPending,
 }
 
 impl From<MathError> for anchor_lang::error::Error {

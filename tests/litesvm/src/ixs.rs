@@ -620,3 +620,59 @@ pub fn set_compute_unit_limit(units: u32) -> Instruction {
         data,
     }
 }
+
+// ---------------------------------------------------------------- week-5 Task 2
+
+/// `close_orphan_queue` (ER, crank): reclaims the `DisclosureQueue` an exited
+/// user left behind once its last record has been revealed.
+pub fn close_orphan_queue(crank: &Pubkey, t: &Trader, wd: &World) -> Instruction {
+    Instruction {
+        program_id: prog(),
+        accounts: vec![
+            rs(crank),
+            r(&wd.config),
+            w(&t.dq),
+            // Read-only and unchecked on purpose: its absence (or foreign
+            // owner) is what the instruction reads as "the owner has exited".
+            r(&t.user),
+            w(&pdas::permission(&t.dq)),
+            w(&pdas::ephemeral_vault()),
+            r(&pdas::permission_program()),
+            w(&wd.fee_escrow),
+            w(&wd.magic_fee_vault),
+            w(&pdas::magic_context()),
+            r(&pdas::magic_program()),
+        ],
+        data: ix::CloseOrphanQueue {}.data(),
+    }
+}
+
+/// `close_queue_l1` (base layer, `Config.fee_payer`): rent reclaim on the
+/// undelegated queue.
+pub fn close_queue_l1(fee_payer: &Pubkey, dq: &Pubkey) -> Instruction {
+    Instruction {
+        program_id: prog(),
+        accounts: vec![s(fee_payer), r(&pdas::config()), w(dq)],
+        data: ix::CloseQueueL1 {}.data(),
+    }
+}
+
+/// `init_user_reuse_queue`: re-onboarding after an exit — same account shape as
+/// `init_user`, but every PDA already exists (undelegation hands them back
+/// scrubbed, it does not close them).
+pub fn init_user_reuse_queue(owner: &Pubkey, wd: &World, exit_salt: [u8; 32]) -> Instruction {
+    Instruction {
+        program_id: prog(),
+        accounts: vec![
+            s(owner),
+            s(owner), // payer: owner self-pays in tests, as in `init_user`
+            r(&wd.config),
+            r(&wd.market),
+            w(&pdas::user(owner)),
+            w(&pdas::position(owner, &wd.market)),
+            w(&pdas::dq(owner)),
+            r(&SYSTEM),
+        ],
+        data: ix::InitUserReuseQueue { exit_salt }.data(),
+    }
+}

@@ -272,6 +272,200 @@
       ]
     },
     {
+      "name": "close_orphan_queue",
+      "discriminator": [
+        117,
+        201,
+        72,
+        31,
+        229,
+        121,
+        34,
+        181
+      ],
+      "accounts": [
+        {
+          "name": "crank",
+          "signer": true
+        },
+        {
+          "name": "config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "dq",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  100,
+                  113
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "dq.owner",
+                "account": "DisclosureQueue"
+              }
+            ]
+          }
+        },
+        {
+          "name": "user_account",
+          "docs": [
+            "this instruction reads. After `undelegate_user`'s `commit_and_undelegate`",
+            "lands, the `UserAccount` is gone from the ER clone; the seeds constraint",
+            "is all that binds the address handed in here to `dq.owner`."
+          ],
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  117,
+                  115,
+                  101,
+                  114
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "dq.owner",
+                "account": "DisclosureQueue"
+              }
+            ]
+          }
+        },
+        {
+          "name": "dq_permission",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  101,
+                  114,
+                  109,
+                  105,
+                  115,
+                  115,
+                  105,
+                  111,
+                  110,
+                  58
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "dq"
+              }
+            ],
+            "program": {
+              "kind": "const",
+              "value": [
+                136,
+                161,
+                10,
+                196,
+                33,
+                152,
+                1,
+                214,
+                246,
+                106,
+                29,
+                60,
+                6,
+                152,
+                192,
+                102,
+                169,
+                175,
+                212,
+                217,
+                180,
+                252,
+                231,
+                71,
+                151,
+                141,
+                209,
+                5,
+                168,
+                212,
+                103,
+                82
+              ]
+            }
+          }
+        },
+        {
+          "name": "ephemeral_vault",
+          "writable": true,
+          "address": "MagicVau1t999999999999999999999999999999999"
+        },
+        {
+          "name": "permission_program",
+          "address": "ACLseoPoyC3cBqoUtkbjZ4aDrkurZW86v19pXz2XQnp1"
+        },
+        {
+          "name": "fee_escrow",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  102,
+                  101,
+                  101,
+                  95,
+                  101,
+                  115,
+                  99,
+                  114,
+                  111,
+                  119
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "magic_fee_vault",
+          "writable": true
+        },
+        {
+          "name": "magic_context",
+          "writable": true,
+          "address": "MagicContext1111111111111111111111111111111"
+        },
+        {
+          "name": "magic_program",
+          "address": "Magic11111111111111111111111111111111111111"
+        }
+      ],
+      "args": []
+    },
+    {
       "name": "close_position",
       "discriminator": [
         123,
@@ -481,6 +675,65 @@
           "type": "u64"
         }
       ]
+    },
+    {
+      "name": "close_queue_l1",
+      "discriminator": [
+        125,
+        202,
+        29,
+        45,
+        4,
+        109,
+        158,
+        210
+      ],
+      "accounts": [
+        {
+          "name": "fee_payer",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "dq",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  100,
+                  113
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "dq.owner",
+                "account": "DisclosureQueue"
+              }
+            ]
+          }
+        }
+      ],
+      "args": []
     },
     {
       "name": "commit_aggregate",
@@ -4785,6 +5038,172 @@
       ]
     },
     {
+      "name": "init_user_reuse_queue",
+      "discriminator": [
+        114,
+        35,
+        16,
+        160,
+        143,
+        248,
+        250,
+        44
+      ],
+      "accounts": [
+        {
+          "name": "owner",
+          "writable": true,
+          "signer": true,
+          "relations": [
+            "user_account",
+            "position"
+          ]
+        },
+        {
+          "name": "payer",
+          "docs": [
+            "Sponsorable, as in `InitUser`: the two ER permission prefunds below are",
+            "paid by whoever calls, typically the relayer's `fee_payer`."
+          ],
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "market",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  109,
+                  97,
+                  114,
+                  107,
+                  101,
+                  116
+                ]
+              },
+              {
+                "kind": "const",
+                "value": [
+                  83,
+                  79,
+                  76,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "user_account",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  117,
+                  115,
+                  101,
+                  114
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "owner"
+              }
+            ]
+          }
+        },
+        {
+          "name": "position",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  111,
+                  115,
+                  105,
+                  116,
+                  105,
+                  111,
+                  110
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "owner"
+              },
+              {
+                "kind": "account",
+                "path": "market"
+              }
+            ]
+          }
+        },
+        {
+          "name": "disclosure_queue",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  100,
+                  113
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "owner"
+              }
+            ]
+          }
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "exit_salt",
+          "type": {
+            "array": [
+              "u8",
+              32
+            ]
+          }
+        }
+      ]
+    },
+    {
       "name": "open_position",
       "discriminator": [
         135,
@@ -7021,6 +7440,21 @@
       "code": 6040,
       "name": "PoolLiveMismatch",
       "msg": "PoolLive mint does not match Pool mint"
+    },
+    {
+      "code": 6041,
+      "name": "LiquidationTaskFailed",
+      "msg": "scheduling the liquidation task failed"
+    },
+    {
+      "code": 6042,
+      "name": "NotExited",
+      "msg": "user account has not exited"
+    },
+    {
+      "code": 6043,
+      "name": "QueueStillPending",
+      "msg": "disclosure queue still has pending records"
     }
   ],
   "types": [
@@ -8032,6 +8466,17 @@
           {
             "name": "bump",
             "type": "u8"
+          },
+          {
+            "name": "exited",
+            "docs": [
+              "Week-5 Task 2 (spec §2.6.3): set by `undelegate_user`, cleared by",
+              "`init_user_reuse_queue`. Marks an account that has left the ER and is",
+              "sitting scrubbed and dormant on L1 — the gate that lets re-onboarding",
+              "re-initialize it in place instead of `init`-ing a PDA that already",
+              "exists. Appended at the END so every earlier field keeps its offset."
+            ],
+            "type": "bool"
           }
         ]
       }

@@ -173,6 +173,18 @@ pub mod dexxer_core {
     pub fn undelegate_user(ctx: Context<UndelegateUser>) -> Result<()> {
         user::undelegate_user(ctx)
     }
+    pub fn close_orphan_queue(ctx: Context<CloseOrphanQueue>) -> Result<()> {
+        user::close_orphan_queue(ctx)
+    }
+    pub fn close_queue_l1(ctx: Context<CloseQueueL1>) -> Result<()> {
+        user::close_queue_l1(ctx)
+    }
+    pub fn init_user_reuse_queue(
+        ctx: Context<InitUserReuseQueue>,
+        exit_salt: [u8; 32],
+    ) -> Result<()> {
+        user::init_user_reuse_queue(ctx, exit_salt)
+    }
     pub fn write_commitment(
         ctx: Context<WriteCommitment>,
         nonce: u64,

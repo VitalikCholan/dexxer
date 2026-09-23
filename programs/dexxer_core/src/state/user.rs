@@ -1,5 +1,13 @@
 use anchor_lang::prelude::*;
 
+/// Layout version of `UserAccount`. Bumped to 2 by week-5 Task 2, which
+/// appended `exited`. A v1 account (one byte shorter) can no longer be
+/// deserialized into this struct at all — `crank_tick` skips such a candidate
+/// instead of aborting its batch, and the app offers re-onboarding. No read
+/// path asserts this value; it is written on (re-)initialization and carried
+/// for off-chain readers.
+pub const USER_ACCOUNT_VERSION: u8 = 2;
+
 #[account]
 #[derive(InitSpace)]
 pub struct UserAccount {
@@ -21,4 +29,10 @@ pub struct UserAccount {
     /// from the published leaf hash.
     pub exit_salt: [u8; 32],
     pub bump: u8,
+    /// Week-5 Task 2 (spec §2.6.3): set by `undelegate_user`, cleared by
+    /// `init_user_reuse_queue`. Marks an account that has left the ER and is
+    /// sitting scrubbed and dormant on L1 — the gate that lets re-onboarding
+    /// re-initialize it in place instead of `init`-ing a PDA that already
+    /// exists. Appended at the END so every earlier field keeps its offset.
+    pub exited: bool,
 }
