@@ -8,6 +8,25 @@
 // something is wedged (stuck TEE auth, RPC outage, etc.) that should make
 // Railway restart the container.
 //
+// Task 7 (eternal scheduler backstop): when `CRANK_ENABLED=false` this
+// relayer's own crank loop never starts (`lastTickAt` stays `null`
+// forever), so staleness must NOT drive `ok`/503 in that mode — a relayer
+// that has deliberately turned its crank off is healthy by definition, not
+// wedged. `crankEnabled` (from `index.ts`'s `CRANK_ENABLED` env, default
+// `true`) gates the staleness check: `ok = !crankEnabled || !stale`.
+//
+// `schedulerActive` reports whether the MagicBlock scheduler's own
+// `crank_tick` (registered via `scripts/admin/schedule-eternal.ts`) is the
+// thing moving `Market` forward, INDEPENDENT of this relayer's crank
+// identity — see `marketWatch.ts`'s header comment for exactly what is
+// read and why. Per the controller ruling for Task 7, attributing "this
+// tick was the scheduler's, not ours" is not attempted (both write the same
+// public `Market` account with no per-tick attribution available over
+// RPC) — the definition actually implemented is the simple, honest one:
+// `schedulerActive = Market changed within SCHEDULER_ACTIVE_WINDOW_MS while
+// CRANK_ENABLED=false; otherwise null` (not attributable while our own
+// crank could equally be the cause) — see `computeSchedulerActive` below.
+//
 // `buildHealthPayload` is a pure function (no network, no Express) so it can
 // be unit-tested directly with a fake `RelayerState` — see test/health.test.ts.
 // `healthRouter` is the thin Express wrapper: it fetches `crankSol`/
@@ -26,6 +45,21 @@ import type { RelayerState } from "./crank.js";
 
 export const STALE_MS = 60_000;
 const BALANCE_CACHE_MS = 60_000;
+
+/** Task 7: how recent a `Market` change must be to count as "the scheduler is ticking" — see `marketWatch.ts`. */
+export const SCHEDULER_ACTIVE_WINDOW_MS = 10_000;
+
+/**
+ * Task 7 predicate, kept pure/standalone so it's directly unit-testable
+ * (test/health.test.ts) without any Express/RPC plumbing. See this file's
+ * header comment for why it returns `null` instead of guessing while our
+ * own crank is also enabled.
+ */
+export function computeSchedulerActive(crankEnabled: boolean, lastMarketChangeAt: number | null, now: number): boolean | null {
+  if (crankEnabled) return null;
+  if (lastMarketChangeAt === null) return false;
+  return now - lastMarketChangeAt < SCHEDULER_ACTIVE_WINDOW_MS;
+}
 
 /** Task 5 (indexer) snapshot — zeroed/null when the indexer is disabled or hasn't produced anything yet. */
 export interface IndexerSnapshot {
@@ -54,14 +88,21 @@ export interface HealthPayload {
   tick: number;
   crankSol: number | null;
   feePayerSol: number | null;
-  /** Task 7 wires the scheduler up; always false until then. */
-  schedulerActive: boolean;
+  /** Task 7: `CRANK_ENABLED` env, default `true`. */
+  crankEnabled: boolean;
+  /** Task 7: see this file's header comment / `computeSchedulerActive` for the exact definition. */
+  schedulerActive: boolean | null;
   db: "ok" | "error";
   indexer: IndexerSnapshot;
   sponsor: SponsorHealthSnapshot;
 }
 
-/** Pure: no I/O, so this is what test/health.test.ts exercises directly. */
+/**
+ * Pure: no I/O, so this is what test/health.test.ts exercises directly.
+ * `crankEnabled` defaults to `true` and `schedulerActive` to `null` so
+ * existing positional call sites (this file's own pre-Task-7 tests) keep
+ * their original behavior unchanged.
+ */
 export function buildHealthPayload(
   state: RelayerState,
   now: number,
@@ -70,8 +111,10 @@ export function buildHealthPayload(
   dbStatus: "ok" | "error",
   indexer?: IndexerSnapshot,
   sponsor?: SponsorHealthSnapshot,
+  crankEnabled = true,
+  schedulerActive: boolean | null = null,
 ): HealthPayload {
-  const stale = state.lastTickAt === null || now - state.lastTickAt > STALE_MS;
+  const stale = crankEnabled && (state.lastTickAt === null || now - state.lastTickAt > STALE_MS);
   return {
     ok: !stale,
     lastTickAt: state.lastTickAt,
@@ -79,7 +122,8 @@ export function buildHealthPayload(
     tick: state.tick,
     crankSol,
     feePayerSol,
-    schedulerActive: false,
+    crankEnabled,
+    schedulerActive,
     db: dbStatus,
     indexer: indexer ?? EMPTY_INDEXER_SNAPSHOT,
     sponsor: sponsor ?? EMPTY_SPONSOR_SNAPSHOT,
@@ -92,6 +136,10 @@ export interface HealthDeps {
   crankPubkey: PublicKey;
   feePayerPubkey: PublicKey;
   db: DbPool | null;
+  /** Task 7: `CRANK_ENABLED` env, default `true` — see this file's header comment. */
+  crankEnabled: boolean;
+  /** Task 7: getter (not a value) so `/healthz` always reads `marketWatch.ts`'s live `lastMarketChangeAt` rather than a snapshot captured at router-construction time. Undefined only in tests that don't care about this field. */
+  getSchedulerActive?: () => boolean | null;
   /** Task 5: getter (not a value) so `/healthz` always reads the indexer's live counters rather than a snapshot captured at router-construction time. */
   getIndexerSnapshot?: () => IndexerSnapshot;
   /** Task 6: async getter (a Postgres query) for today's sponsor spend/count — undefined when sponsoring is disabled. */
@@ -136,7 +184,17 @@ export function healthRouter(deps: HealthDeps): Router {
     }
 
     const sponsor = deps.getSponsorSnapshot ? await deps.getSponsorSnapshot().catch(() => undefined) : undefined;
-    const payload = buildHealthPayload(deps.state, now, cache.crankSol, cache.feePayerSol, dbStatus, deps.getIndexerSnapshot?.(), sponsor);
+    const payload = buildHealthPayload(
+      deps.state,
+      now,
+      cache.crankSol,
+      cache.feePayerSol,
+      dbStatus,
+      deps.getIndexerSnapshot?.(),
+      sponsor,
+      deps.crankEnabled,
+      deps.getSchedulerActive?.() ?? null,
+    );
     res.status(payload.ok ? 200 : 503).json(payload);
   });
 

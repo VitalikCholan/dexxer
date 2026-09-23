@@ -279,3 +279,67 @@ owner (~0.65M). Тобто **справді нульовий owner і після
 оригінальному task-6-звіті); ручний прогін 0-SOL онбордингу перенесено в Task 11. Наскрізна
 верифікація логіки виконана натомість через `tests/er`-скрипт з реальним TEE/relayer
 (деталі — task-6-звіт, розділ "Fix round 1").
+
+## Task 7: Scheduler `i64::MAX` на devnet — застосовано, і нова знахідка (ліквідації без relayer — FAIL)
+
+Повний звіт: `.superpowers/sdd/2026-09-22-week4-mvp-polish/task-7-report.md`. Тех-борг №18
+(§7.1) закривається **частково**: `i64::MAX`-планувальник — робочий mark-backstop, але не
+ліквідаційний backstop (нова архітектурна знахідка, не гіпотеза).
+
+**`scripts/admin/schedule-eternal.ts`** (новий, аналог `schedule-crank.ts` з `iterations =
+9223372036854775807`): `Config.scheduler_signer` вже дорівнював `crank_signer_pda(admin)`
+(з тижня 2, `set_scheduler_signer` не знадобився), `schedule_crank` над тим самим детермінованим
+`task_id -8632762600545312817` — **прийнято з першої спроби**, sig
+`2rF82FDokgMurrZTNqvG9DkDjXZh3tjvoczEZw7tG79XH1Go4984McYeg2C7c2bGT8n6EntsNfX8WiXE8FDQy3ER`.
+Вбудований 60-секундний пруф: 11 семплів `Market.mark`/`mark_slot`, 11 різних слотів
+(`339119462 → 339125562`), монотонно.
+
+**M-G (relayer crank вимкнено через новий `CRANK_ENABLED`, default `true`):**
+
+| Крок | Дія | Результат |
+| --- | --- | --- |
+| 1 | `railway variable set CRANK_ENABLED=false` + редеплой (`db16e79e…`) | `/healthz.crankEnabled:false` |
+| 2 | поллінг `/healthz` ~70 с | `tick` стояв на `0` (relayer-петля не стартувала), `schedulerActive:true` безперервно — **PASS `scheduler ticks without relayer`** |
+| 3 | `05-crank-liquidation.ts` (свіжий трейдер, ~9.09× long, `set_params(mmr_bps=9500)`, поллінг `liq_ticks` 90×1 с) | `liq_ticks` плаский `0` усі 90 семплів — **FAIL `scheduler liquidates without relayer`** |
+| 4 | `railway variable set CRANK_ENABLED=true` + редеплой (`47ff81f6…`) | `crankEnabled:true`, `schedulerActive:null` (задумано — не атрибутовано, поки власний crank теж увімкнений), `tick` знову росте |
+
+**Крок 3 — root cause архітектурна, не таймінгова.** `ScheduleCrank`
+(`programs/dexxer_core/src/instructions/crank.rs`) реєструє заплановану `crank_tick`-задачу
+з **фіксованим** набором акаунтів, без `remaining_accounts` — список акаунтів Magic Actions
+задачі не можна поповнювати кандидатами ліквідації на кожен тік, він застигає в момент
+`schedule_crank`. Код прямо документує це в коментарі до `ScheduleCrank`: «carries NO
+remaining_accounts (liquidation candidates are supplied by the fallback script's own
+`crank_tick` calls, not by the scheduler)». Отже запланований тік завжди виконується з нулем
+кандидатів `[Position, UserAccount]` — рухає лише `Market.mark`/EMA, ніколи не оцінює й не
+ліквідовує жодну позицію, скільки б не чекати. Підтверджено емпірично: `Position.liq_ticks`
+(мав би зрости на будь-якому тіку, що взагалі оцінив цю позицію, задовго до 2-тікового
+гістерезису) лишався рівно `0` усі 90 секунд поллінгу, попри позицію, форсовану на ~19× понад
+95%-й `mmr_bps`. Позицію безпечно відновлено (`set_params`-відкат, sig `39riRACXRoA8Bi…`,
+`restoredOk: true`) — лишається нешкідливим тестовим сміттям, як інші стари позиції в
+`docs/deployments.md`.
+
+**Наслідок для дизайну:** §2.5.2's формулювання «падіння Railway → ліквідації йдуть у TEE самі»
+було хибним припущенням — виправлено в спеці (§2.5.2, §7.1 №18). `i64::MAX`-планувальник —
+чистий mark/EMA-backstop (закриває №18 у цій частині), ліквідаційний backstop без зовнішнього
+процесу лишається нереалізованим (потребує або реєстру кандидатів у програмі, яку планувальник
+міг би прочитати сам, або підтримки `remaining_accounts` у Magic Actions — пост-MVP, §2.4.5).
+
+**Relayer (`services/relayer`):** новий env `CRANK_ENABLED` (default `true`) — `false` пропускає
+`startCrank` цілком; `/healthz.ok` більше не залежить від стейлнесу тіку, коли crank навмисно
+вимкнений (`ok = !crankEnabled || !stale`). Новий `src/marketWatch.ts` — неавтентифіковане
+читання публічного `Market` на ER (байтове порівняння акаунта раз на 2 с), незалежне від
+`cfg.crank`'s TEE-токена; керує `getSchedulerActive`/`computeSchedulerActive` (`health.ts`):
+`null`, доки `CRANK_ENABLED=true` (не атрибутовано — і relayer, і scheduler можуть рухати
+`Market`); `true`/`false` (вікно 10 с) лише коли `CRANK_ENABLED=false`. 8 нових unit-тестів
+(`computeSchedulerActive` + `crankEnabled`'s ефект на `ok`), `services/relayer` **60/60**
+(було 52), `tsc --noEmit` чисто в `services/relayer` і `scripts`.
+
+**Баланси:** `devnet-admin` `0.2507278 → 0.4007278` (дозарядка +0.15 SOL з `payer`, sig
+`3Lby7PHhrYwpD7yFgcfT8q1XHYqK9NZY1ujbje9n7BobVaeo6jSH1zKodydpmqMsPXFW1boxjR3vqmUNDbZpU1dt`)
+`→ 0.3507228 SOL` (після `schedule_crank` + 2× `set_params`). `payer`
+`5.221662297 → 5.071657297 SOL`. Railway `crank`/`fee_payer` баланси не змінились за час
+вимірювання (`0.1`/`0.202817912 SOL`).
+
+Доки оновлено: `docs/deployments.md` (новий розділ «Scheduler (Task 7)»), spec §7.1 №18,
+spec §2.5.2, `CLAUDE.md`'s рядок про планувальник — усі узгоджено відображають «застосовано,
+mark-backstop так, ліквідаційний backstop ні».

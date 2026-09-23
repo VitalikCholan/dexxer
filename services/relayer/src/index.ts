@@ -33,7 +33,7 @@
 import express from "express";
 import { Connection } from "@solana/web3.js";
 import { createPool, getMeta, migrate, setMeta } from "./db.js";
-import { healthRouter } from "./health.js";
+import { computeSchedulerActive, healthRouter } from "./health.js";
 import { shutdown } from "./shutdown.js";
 import type { RelayerConfig, RelayerState } from "./crank.js";
 import { attachWs, indexerRouter } from "./indexer/http.js";
@@ -53,6 +53,8 @@ if ((process.env.DEXXER_NET ?? "local") === "devnet") {
 const { keypairFromEnv } = await import("./keys.js");
 const { startCrank, requestStop } = await import("./crank.js");
 const { NET, BASE, ER, ER_WS } = await import("../../../tests/er/lib/env.js");
+const { pdas } = await import("../../../tests/er/lib/program.js");
+const { startMarketWatch } = await import("./marketWatch.js");
 
 const cfg: RelayerConfig = {
   net: NET,
@@ -70,6 +72,11 @@ const cfg: RelayerConfig = {
   databaseUrl: process.env.DATABASE_URL,
 };
 const sponsorDailyBudgetSol = Number(process.env.SPONSOR_DAILY_SOL ?? DEFAULT_DAILY_BUDGET_SOL);
+// Task 7: default true so this is a no-op change for every existing
+// deployment — set `CRANK_ENABLED=false` only to measure the MagicBlock
+// scheduler's own `crank_tick` (schedule-eternal.ts) as the SOLE thing
+// keeping Market ticking, without this relayer's own 1s loop competing.
+const crankEnabled = process.env.CRANK_ENABLED !== "false";
 
 const state: RelayerState = { lastTickAt: null, lastCommitAt: null, tick: 0, errors: [] };
 
@@ -149,6 +156,17 @@ if (cfg.sponsorEnabled && !pool) {
   console.log(`sponsor: /sponsor enabled (daily budget ${sponsorDailyBudgetSol} SOL)`);
 }
 
+// Task 7: watches the public `Market` account (unauthenticated ER read, see
+// marketWatch.ts's header comment) regardless of `crankEnabled` — this is
+// what lets `/healthz` prove the scheduler is ticking `Market` on its own
+// when `CRANK_ENABLED=false`.
+let lastMarketChangeAt: number | null = null;
+const marketPda = pdas.market();
+const stopMarketWatch = startMarketWatch(cfg.erRpc, marketPda, (now) => {
+  lastMarketChangeAt = now;
+});
+console.log(`marketWatch: watching ${marketPda.toBase58()} on ${cfg.erRpc} (unauthenticated, public read)`);
+
 app.use(
   healthRouter({
     state,
@@ -156,6 +174,8 @@ app.use(
     crankPubkey: cfg.crank.publicKey,
     feePayerPubkey: cfg.feePayer.publicKey,
     db: pool,
+    crankEnabled,
+    getSchedulerActive: () => computeSchedulerActive(crankEnabled, lastMarketChangeAt, Date.now()),
     getIndexerSnapshot: () => ({
       ...indexerStats,
       wsClients: wsHub?.clientCount() ?? 0,
@@ -165,15 +185,24 @@ app.use(
   }),
 );
 
+// Task 7: `CRANK_ENABLED=false` skips the crank loop entirely — used only
+// to measure the scheduler as the sole source of `crank_tick`s (see
+// marketWatch.ts above). `crankDone` resolves immediately in that case so
+// `shutdown()` never waits on a loop that was never started.
+if (!crankEnabled) {
+  console.log("crank: CRANK_ENABLED=false — crank loop NOT started (scheduler-only mode, see docs/deployments.md Task 7)");
+}
 // Kept as a reference (not just `.catch()`ed and discarded): `shutdown()`
 // below awaits this to know the loop has actually stopped. `.catch()` here
 // makes `crankDone` itself never reject — a crash still logs/records into
 // `state.errors` exactly as before, it just also resolves so shutdown never
 // hangs on a promise that rejected instead of resolving.
-const crankDone: Promise<void> = startCrank(cfg, state).catch((e) => {
-  console.error("relayer: crank loop crashed", e);
-  state.errors.push(String(e instanceof Error ? e.message : e));
-});
+const crankDone: Promise<void> = crankEnabled
+  ? startCrank(cfg, state).catch((e) => {
+      console.error("relayer: crank loop crashed", e);
+      state.errors.push(String(e instanceof Error ? e.message : e));
+    })
+  : Promise.resolve();
 
 let shuttingDown = false;
 function handleSignal(signal: string): void {
@@ -181,6 +210,7 @@ function handleSignal(signal: string): void {
   shuttingDown = true;
   stopIndexer?.();
   wsHub?.close();
+  stopMarketWatch();
   void shutdown(signal, {
     requestStop,
     crankDone,
