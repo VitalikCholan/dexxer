@@ -18,7 +18,10 @@ export function Input({ label, value, onChangeText, suffix, hint, onMax, placeho
   const { colors, space, radius, control } = useTheme()
   const labelStyle = useTextStyle('micro')
   const valueStyle = useTextStyle('bodyStrong', { mono: true })
-  const suffixStyle = useTextStyle('body')
+  // Caption-sized suffix so a six-character amount (e.g. `116.54`) still fits
+  // next to `dUSDC` + `MAX` in a half-width ticket field — with `body` the
+  // TextInput overflowed and Android scrolled the leading digits out of view.
+  const suffixStyle = useTextStyle('caption')
   const hintStyle = useTextStyle('caption')
 
   return (
@@ -33,8 +36,8 @@ export function Input({ label, value, onChangeText, suffix, hint, onMax, placeho
           backgroundColor: colors.surface,
           flexDirection: 'row',
           alignItems: 'center',
-          paddingHorizontal: space.md,
-          gap: space.sm,
+          paddingHorizontal: space.sm,
+          gap: space.xs,
         }}
       >
         <TextInput
@@ -43,7 +46,8 @@ export function Input({ label, value, onChangeText, suffix, hint, onMax, placeho
           placeholder={placeholder}
           placeholderTextColor={colors.textTertiary}
           keyboardType={keyboardType ?? 'decimal-pad'}
-          style={[valueStyle, { flex: 1, color: colors.textPrimary, minHeight: control.minHitTarget }]}
+          numberOfLines={1}
+          style={[valueStyle, { flex: 1, minWidth: 0, color: colors.textPrimary, minHeight: control.minHitTarget }]}
         />
         {suffix ? <Text style={[suffixStyle, { color: colors.textSecondary }]}>{suffix}</Text> : null}
         {onMax ? (
