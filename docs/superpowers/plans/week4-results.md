@@ -300,7 +300,7 @@ owner (~0.65M). Тобто **справді нульовий owner і після
 | --- | --- | --- |
 | 1 | `railway variable set CRANK_ENABLED=false` + редеплой (`db16e79e…`) | `/healthz.crankEnabled:false` |
 | 2 | поллінг `/healthz` ~70 с | `tick` стояв на `0` (relayer-петля не стартувала), `schedulerActive:true` безперервно — **PASS `scheduler ticks without relayer`** |
-| 3 | `05-crank-liquidation.ts` (свіжий трейдер, ~9.09× long, `set_params(mmr_bps=9500)`, поллінг `liq_ticks` 90×1 с) | `liq_ticks` плаский `0` усі 90 семплів — **FAIL `scheduler liquidates without relayer`** |
+| 3 | `05-crank-liquidation.ts` (свіжий трейдер, ~9.09× long, `set_params(mmr_bps=9500, imr_bps=9600)`, поллінг `liq_ticks` 90×1 с) | `liq_ticks` плаский `0` усі 90 семплів — **FAIL `scheduler liquidates without relayer`** |
 | 4 | `railway variable set CRANK_ENABLED=true` + редеплой (`47ff81f6…`) | `crankEnabled:true`, `schedulerActive:null` (задумано — не атрибутовано, поки власний crank теж увімкнений), `tick` знову росте |
 
 **Крок 3 — root cause архітектурна, не таймінгова.** `ScheduleCrank`
@@ -317,6 +317,18 @@ remaining_accounts (liquidation candidates are supplied by the fallback script's
 95%-й `mmr_bps`. Позицію безпечно відновлено (`set_params`-відкат, sig `39riRACXRoA8Bi…`,
 `restoredOk: true`) — лишається нешкідливим тестовим сміттям, як інші стари позиції в
 `docs/deployments.md`.
+
+**Field-for-field звірка (fix round 1, декодовано з Borsh-даних обох `set_params` tx напряму,
+`solana confirm -v`, і перевірено live-читанням `Market` через `teeConn(crank)` після задачі):**
+
+| Поле | До | Форсовано (`234nfZt…`) | Відновлено (`39riRACX…`) | Live зараз |
+| --- | --- | --- | --- | --- |
+| `imr_bps` | `1000` | `9600` | `1000` | `1000` |
+| `mmr_bps` | `500` | `9500` | `500` | `500` |
+
+Решта 13 полів `MarketParams` незмінні на всіх чотирьох колонках (`set_params` завжди пише
+повний struct; форсована й відкатна tx кожна передала копію оригіналу з різницею лише у двох
+полях вище). Повна таблиця — `docs/deployments.md`'s «Scheduler (Task 7)» розділ.
 
 **Наслідок для дизайну:** §2.5.2's формулювання «падіння Railway → ліквідації йдуть у TEE самі»
 було хибним припущенням — виправлено в спеці (§2.5.2, §7.1 №18). `i64::MAX`-планувальник —
