@@ -23,6 +23,11 @@ const PLOT_H = HEIGHT - TIME_H
 // up as the "119.28" tick getting cut off on the emulator. Insetting the
 // whole price→y mapping keeps every tick's label fully inside the canvas.
 const AXIS_INSET = 8
+// Minimum horizontal room per candle. The relayer returns up to 300 candles per
+// timeframe; on a ~330px plot that collapses 1m/5m into 1px slivers, so the
+// chart shows only the newest candles that fit at this density (15m already
+// has fewer candles and looked right — this makes 1m/5m match it).
+const MIN_STEP_PX = 6
 const FONT = 'IBM Plex Mono, monospace'
 // Candle o/h/l/c arrive 1e6-scaled, the same raw unit as `mark`
 // (services/relayer/src/indexer/prices.ts's `price1e6`) — never rendered
@@ -55,7 +60,7 @@ export function PriceChart({ tf, markUsd }: { tf: '1m' | '5m' | '15m'; markUsd: 
 }
 
 function Chart({
-  data,
+  data: all,
   markUsd,
   width,
   colors,
@@ -66,6 +71,7 @@ function Chart({
   colors: Colors
 }) {
   const plotWidth = Math.max(0, width - AXIS_W)
+  const data = all.slice(-Math.max(2, Math.floor(plotWidth / MIN_STEP_PX)))
 
   const lows = data.map((c) => dollars(c.l))
   const highs = data.map((c) => dollars(c.h))
