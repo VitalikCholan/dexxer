@@ -1,0 +1,56 @@
+// app/src/features/account/ExitSheet.tsx
+//
+// Task 10: `undelegate_user` confirmation — the checklist mirrors the
+// program's own preconditions (`08-undelegate.ts`'s devnet reference: no
+// open position, empty DisclosureQueue, free_margin == 0 && locked_margin
+// == 0) so the user sees why the button is disabled before tapping it.
+import { Text, View } from 'react-native'
+import { useTheme } from '@/src/theme'
+import { useTextStyle } from '@/src/ui/styles'
+import { Sheet } from '@/src/ui/Sheet'
+import { Button } from '@/src/ui/Button'
+
+export interface ExitChecklist {
+  noOpenPosition: boolean
+  historyQueueEmpty: boolean
+  balanceWithdrawn: boolean
+}
+
+export interface ExitSheetProps {
+  open: boolean
+  onClose: () => void
+  checklist: ExitChecklist
+  busy: boolean
+  onConfirm: () => Promise<void>
+}
+
+function ChecklistRow({ ok, label }: { ok: boolean; label: string }) {
+  const { colors } = useTheme()
+  const body = useTextStyle('body')
+  return (
+    <View style={{ flexDirection: 'row', gap: 8, alignItems: 'center' }}>
+      <Text style={{ color: ok ? colors.long : colors.textTertiary }}>{ok ? '✓' : '○'}</Text>
+      <Text style={[body, { color: ok ? colors.textPrimary : colors.textSecondary }]}>{label}</Text>
+    </View>
+  )
+}
+
+export function ExitSheet({ open, onClose, checklist, busy, onConfirm }: ExitSheetProps) {
+  const { colors } = useTheme()
+  const caption = useTextStyle('caption')
+  const ready = checklist.noOpenPosition && checklist.historyQueueEmpty && checklist.balanceWithdrawn
+
+  return (
+    <Sheet open={open} onClose={onClose} title="Exit private account">
+      <ChecklistRow ok={checklist.noOpenPosition} label="No open position" />
+      <ChecklistRow ok={checklist.historyQueueEmpty} label="History queue empty" />
+      <ChecklistRow ok={checklist.balanceWithdrawn} label="Balance withdrawn" />
+      <Text style={[caption, { color: colors.textSecondary }]}>
+        Your accounts return to L1 with private fields erased.
+      </Text>
+      <Button variant="destructive" disabled={!ready || busy} onPress={() => void onConfirm()}>
+        {busy ? 'Confirm in wallet…' : 'Exit private account'}
+      </Button>
+    </Sheet>
+  )
+}

@@ -71,7 +71,7 @@
           }
         },
         {
-          "name": "pool",
+          "name": "pool_live",
           "writable": true,
           "pda": {
             "seeds": [
@@ -81,13 +81,18 @@
                   112,
                   111,
                   111,
-                  108
+                  108,
+                  95,
+                  108,
+                  105,
+                  118,
+                  101
                 ]
               },
               {
                 "kind": "account",
-                "path": "pool.mint",
-                "account": "Pool"
+                "path": "pool_live.mint",
+                "account": "PoolLive"
               }
             ]
           }
@@ -274,7 +279,7 @@
           }
         },
         {
-          "name": "pool",
+          "name": "pool_live",
           "writable": true,
           "pda": {
             "seeds": [
@@ -284,13 +289,18 @@
                   112,
                   111,
                   111,
-                  108
+                  108,
+                  95,
+                  108,
+                  105,
+                  118,
+                  101
                 ]
               },
               {
                 "kind": "account",
-                "path": "pool.mint",
-                "account": "Pool"
+                "path": "pool_live.mint",
+                "account": "PoolLive"
               }
             ]
           }
@@ -411,6 +421,32 @@
                 "kind": "account",
                 "path": "pool.mint",
                 "account": "Pool"
+              }
+            ]
+          }
+        },
+        {
+          "name": "pool_live",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  111,
+                  111,
+                  108,
+                  95,
+                  108,
+                  105,
+                  118,
+                  101
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "pool_live.mint",
+                "account": "PoolLive"
               }
             ]
           }
@@ -602,7 +638,7 @@
           }
         },
         {
-          "name": "pool",
+          "name": "pool_live",
           "writable": true,
           "pda": {
             "seeds": [
@@ -612,13 +648,18 @@
                   112,
                   111,
                   111,
-                  108
+                  108,
+                  95,
+                  108,
+                  105,
+                  118,
+                  101
                 ]
               },
               {
                 "kind": "account",
-                "path": "pool.mint",
-                "account": "Pool"
+                "path": "pool_live.mint",
+                "account": "PoolLive"
               }
             ]
           }
@@ -672,7 +713,6 @@
         },
         {
           "name": "pool",
-          "writable": true,
           "pda": {
             "seeds": [
               {
@@ -682,6 +722,33 @@
                   111,
                   111,
                   108
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "pool.mint",
+                "account": "Pool"
+              }
+            ]
+          }
+        },
+        {
+          "name": "pool_live",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  111,
+                  111,
+                  108,
+                  95,
+                  108,
+                  105,
+                  118,
+                  101
                 ]
               },
               {
@@ -780,7 +847,7 @@
           }
         },
         {
-          "name": "pool",
+          "name": "pool_live",
           "writable": true,
           "pda": {
             "seeds": [
@@ -790,13 +857,18 @@
                   112,
                   111,
                   111,
-                  108
+                  108,
+                  95,
+                  108,
+                  105,
+                  118,
+                  101
                 ]
               },
               {
                 "kind": "account",
-                "path": "pool.mint",
-                "account": "Pool"
+                "path": "pool_live.mint",
+                "account": "PoolLive"
               }
             ]
           }
@@ -1994,6 +2066,220 @@
       "args": []
     },
     {
+      "name": "delegate_pool_live",
+      "discriminator": [
+        171,
+        239,
+        110,
+        155,
+        167,
+        4,
+        122,
+        218
+      ],
+      "accounts": [
+        {
+          "name": "admin",
+          "writable": true,
+          "signer": true,
+          "relations": [
+            "config"
+          ]
+        },
+        {
+          "name": "config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "dusdc_mint"
+        },
+        {
+          "name": "buffer_pool_live",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  98,
+                  117,
+                  102,
+                  102,
+                  101,
+                  114
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "pool_live"
+              }
+            ],
+            "program": {
+              "kind": "const",
+              "value": [
+                223,
+                85,
+                190,
+                214,
+                89,
+                228,
+                134,
+                229,
+                234,
+                112,
+                104,
+                71,
+                32,
+                40,
+                234,
+                129,
+                244,
+                98,
+                123,
+                132,
+                56,
+                50,
+                114,
+                160,
+                100,
+                93,
+                67,
+                94,
+                154,
+                81,
+                107,
+                72
+              ]
+            }
+          }
+        },
+        {
+          "name": "delegation_record_pool_live",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  100,
+                  101,
+                  108,
+                  101,
+                  103,
+                  97,
+                  116,
+                  105,
+                  111,
+                  110
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "pool_live"
+              }
+            ],
+            "program": {
+              "kind": "account",
+              "path": "delegation_program"
+            }
+          }
+        },
+        {
+          "name": "delegation_metadata_pool_live",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  100,
+                  101,
+                  108,
+                  101,
+                  103,
+                  97,
+                  116,
+                  105,
+                  111,
+                  110,
+                  45,
+                  109,
+                  101,
+                  116,
+                  97,
+                  100,
+                  97,
+                  116,
+                  97
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "pool_live"
+              }
+            ],
+            "program": {
+              "kind": "account",
+              "path": "delegation_program"
+            }
+          }
+        },
+        {
+          "name": "pool_live",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  111,
+                  111,
+                  108,
+                  95,
+                  108,
+                  105,
+                  118,
+                  101
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "dusdc_mint"
+              }
+            ]
+          }
+        },
+        {
+          "name": "owner_program",
+          "address": "G2okX5Bae4CxfK8vzso1Ecc96QUv7E3P4YvxaZnaYXoV"
+        },
+        {
+          "name": "delegation_program",
+          "address": "DELeGGvXpWV2fqJUhqcF5ZSYMS4JTLjteaAMARRSaeSh"
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": []
+    },
+    {
       "name": "delegate_user",
       "discriminator": [
         237,
@@ -2556,6 +2842,11 @@
           "signer": true
         },
         {
+          "name": "payer",
+          "writable": true,
+          "signer": true
+        },
+        {
           "name": "config",
           "pda": {
             "seeds": [
@@ -2814,7 +3105,7 @@
           }
         },
         {
-          "name": "pool",
+          "name": "pool_live",
           "writable": true,
           "pda": {
             "seeds": [
@@ -2824,13 +3115,18 @@
                   112,
                   111,
                   111,
-                  108
+                  108,
+                  95,
+                  108,
+                  105,
+                  118,
+                  101
                 ]
               },
               {
                 "kind": "account",
-                "path": "pool.mint",
-                "account": "Pool"
+                "path": "pool_live.mint",
+                "account": "PoolLive"
               }
             ]
           }
@@ -3265,6 +3561,244 @@
           "type": "string"
         }
       ]
+    },
+    {
+      "name": "init_market_permissions",
+      "discriminator": [
+        154,
+        93,
+        104,
+        155,
+        49,
+        14,
+        46,
+        240
+      ],
+      "accounts": [
+        {
+          "name": "admin",
+          "signer": true,
+          "relations": [
+            "config"
+          ]
+        },
+        {
+          "name": "config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "market",
+          "relations": [
+            "market_risk"
+          ]
+        },
+        {
+          "name": "market_risk",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  114,
+                  105,
+                  115,
+                  107
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "market"
+              }
+            ]
+          }
+        },
+        {
+          "name": "pool_live",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  111,
+                  111,
+                  108,
+                  95,
+                  108,
+                  105,
+                  118,
+                  101
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "pool_live.mint",
+                "account": "PoolLive"
+              }
+            ]
+          }
+        },
+        {
+          "name": "risk_permission",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  101,
+                  114,
+                  109,
+                  105,
+                  115,
+                  115,
+                  105,
+                  111,
+                  110,
+                  58
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "market_risk"
+              }
+            ],
+            "program": {
+              "kind": "const",
+              "value": [
+                136,
+                161,
+                10,
+                196,
+                33,
+                152,
+                1,
+                214,
+                246,
+                106,
+                29,
+                60,
+                6,
+                152,
+                192,
+                102,
+                169,
+                175,
+                212,
+                217,
+                180,
+                252,
+                231,
+                71,
+                151,
+                141,
+                209,
+                5,
+                168,
+                212,
+                103,
+                82
+              ]
+            }
+          }
+        },
+        {
+          "name": "pool_live_permission",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  101,
+                  114,
+                  109,
+                  105,
+                  115,
+                  115,
+                  105,
+                  111,
+                  110,
+                  58
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "pool_live"
+              }
+            ],
+            "program": {
+              "kind": "const",
+              "value": [
+                136,
+                161,
+                10,
+                196,
+                33,
+                152,
+                1,
+                214,
+                246,
+                106,
+                29,
+                60,
+                6,
+                152,
+                192,
+                102,
+                169,
+                175,
+                212,
+                217,
+                180,
+                252,
+                231,
+                71,
+                151,
+                141,
+                209,
+                5,
+                168,
+                212,
+                103,
+                82
+              ]
+            }
+          }
+        },
+        {
+          "name": "permission_program",
+          "address": "ACLseoPoyC3cBqoUtkbjZ4aDrkurZW86v19pXz2XQnp1"
+        },
+        {
+          "name": "ephemeral_vault",
+          "writable": true,
+          "address": "MagicVau1t999999999999999999999999999999999"
+        },
+        {
+          "name": "magic_program",
+          "address": "Magic11111111111111111111111111111111111111"
+        }
+      ],
+      "args": []
     },
     {
       "name": "init_permissions",
@@ -3762,6 +4296,109 @@
       "args": []
     },
     {
+      "name": "init_pool_live",
+      "discriminator": [
+        42,
+        3,
+        136,
+        120,
+        159,
+        136,
+        240,
+        200
+      ],
+      "accounts": [
+        {
+          "name": "admin",
+          "writable": true,
+          "signer": true,
+          "relations": [
+            "config"
+          ]
+        },
+        {
+          "name": "config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "pool",
+          "docs": [
+            "migration has `Pool` already delegated (owned by the Delegation",
+            "Program) by the time this runs, so a typed `Account<'info, Pool>`'s",
+            "owner check would reject it with `AccountOwnedByWrongProgram` (week",
+            "4, Task 3). Deserialized manually instead (`Pool::try_deserialize`,",
+            "discriminator-checked, owner-unchecked; `mint` validated below), and",
+            "seeded from `config.dusdc_mint` rather than a self-referential",
+            "`pool.mint` (matches `DelegatePoolLive`'s seed pattern)."
+          ],
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  111,
+                  111,
+                  108
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "config.dusdc_mint",
+                "account": "Config"
+              }
+            ]
+          }
+        },
+        {
+          "name": "pool_live",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  111,
+                  111,
+                  108,
+                  95,
+                  108,
+                  105,
+                  118,
+                  101
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "config.dusdc_mint",
+                "account": "Config"
+              }
+            ]
+          }
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": []
+    },
+    {
       "name": "init_user",
       "discriminator": [
         14,
@@ -3776,6 +4413,11 @@
       "accounts": [
         {
           "name": "owner",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "payer",
           "writable": true,
           "signer": true
         },
@@ -4068,7 +4710,7 @@
           }
         },
         {
-          "name": "pool",
+          "name": "pool_live",
           "writable": true,
           "pda": {
             "seeds": [
@@ -4078,13 +4720,18 @@
                   112,
                   111,
                   111,
-                  108
+                  108,
+                  95,
+                  108,
+                  105,
+                  118,
+                  101
                 ]
               },
               {
                 "kind": "account",
-                "path": "pool.mint",
-                "account": "Pool"
+                "path": "pool_live.mint",
+                "account": "PoolLive"
               }
             ]
           }
@@ -4383,7 +5030,7 @@
           }
         },
         {
-          "name": "pool",
+          "name": "pool_live",
           "writable": true,
           "pda": {
             "seeds": [
@@ -4393,13 +5040,18 @@
                   112,
                   111,
                   111,
-                  108
+                  108,
+                  95,
+                  108,
+                  105,
+                  118,
+                  101
                 ]
               },
               {
                 "kind": "account",
-                "path": "pool.mint",
-                "account": "Pool"
+                "path": "pool_live.mint",
+                "account": "PoolLive"
               }
             ]
           }
@@ -4496,6 +5148,33 @@
                 "kind": "account",
                 "path": "pool.mint",
                 "account": "Pool"
+              }
+            ]
+          }
+        },
+        {
+          "name": "pool_live",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  111,
+                  111,
+                  108,
+                  95,
+                  108,
+                  105,
+                  118,
+                  101
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "pool_live.mint",
+                "account": "PoolLive"
               }
             ]
           }
@@ -5481,7 +6160,6 @@
         },
         {
           "name": "pool",
-          "writable": true,
           "pda": {
             "seeds": [
               {
@@ -5491,6 +6169,33 @@
                   111,
                   111,
                   108
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "pool.mint",
+                "account": "Pool"
+              }
+            ]
+          }
+        },
+        {
+          "name": "pool_live",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  111,
+                  111,
+                  108,
+                  95,
+                  108,
+                  105,
+                  118,
+                  101
                 ]
               },
               {
@@ -5876,6 +6581,19 @@
       ]
     },
     {
+      "name": "PoolLive",
+      "discriminator": [
+        210,
+        12,
+        76,
+        129,
+        15,
+        204,
+        162,
+        49
+      ]
+    },
+    {
       "name": "Position",
       "discriminator": [
         170,
@@ -6102,6 +6820,11 @@
       "code": 6039,
       "name": "TooManyActions",
       "msg": "too many actions in one commit bundle"
+    },
+    {
+      "code": 6040,
+      "name": "PoolLiveMismatch",
+      "msg": "PoolLive mint does not match Pool mint"
     }
   ],
   "types": [
@@ -6883,6 +7606,54 @@
           },
           {
             "name": "last_commit_slot",
+            "type": "u64"
+          },
+          {
+            "name": "bump",
+            "type": "u8"
+          }
+        ]
+      }
+    },
+    {
+      "name": "PoolLive",
+      "docs": [
+        "Live pool counters. Delegated, permissioned `[crank, admin]`, NEVER committed (spec §2.5.1, risk #24).",
+        "Every trading/money instruction writes here; the public `Pool` is a rounded snapshot written only by `commit_aggregate`."
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "version",
+            "type": "u8"
+          },
+          {
+            "name": "mint",
+            "type": "pubkey"
+          },
+          {
+            "name": "capital_total",
+            "type": "u64"
+          },
+          {
+            "name": "protocol_liquidity",
+            "type": "u64"
+          },
+          {
+            "name": "locked_total",
+            "type": "u64"
+          },
+          {
+            "name": "fees_accrued",
+            "type": "u64"
+          },
+          {
+            "name": "insurance",
+            "type": "u64"
+          },
+          {
+            "name": "bad_debt_total",
             "type": "u64"
           },
           {

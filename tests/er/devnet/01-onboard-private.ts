@@ -133,6 +133,7 @@ async function main() {
     .faucetInit(new BN(DEPOSIT.toString()))
     .accounts({
       owner: owner.publicKey,
+      payer: owner.publicKey,
       config,
       faucet: faucetPda,
       dusdcMint: boot.mint,
@@ -149,7 +150,7 @@ async function main() {
   const exitSalt = new Uint8Array(randomBytes(32));
   const initUserSig = await core.methods
     .initUser(Array.from(exitSalt))
-    .accounts({ owner: owner.publicKey, config, market, userAccount, position, disclosureQueue, systemProgram: SystemProgram.programId })
+    .accounts({ owner: owner.publicKey, payer: owner.publicKey, config, market, userAccount, position, disclosureQueue, systemProgram: SystemProgram.programId })
     .rpc();
   console.log("init_user", initUserSig);
 
@@ -264,7 +265,7 @@ async function main() {
       config,
       market,
       marketRisk,
-      pool: boot.pool,
+      poolLive: boot.poolLive,
       userAccount,
       position,
       feed: boot.feed,

@@ -10,6 +10,8 @@ import { View } from 'react-native'
 import { useTrackLocations } from '@/hooks/use-track-locations'
 import { AppSplashController } from '@/components/app-splash-controller'
 import { useAuth } from '@/components/auth/auth-provider'
+import { ThemeProvider, colors } from '@/src/theme'
+import { ToastHost } from '@/src/ui/Toast'
 
 SplashScreen.preventAutoHideAsync()
 
@@ -42,12 +44,15 @@ export default function RootLayout() {
   }
 
   return (
-    <View style={{ flex: 1 }} onLayout={onLayoutRootView}>
-      <AppProviders>
-        <AppSplashController />
-        <RootNavigator />
-        <StatusBar style="auto" />
-      </AppProviders>
+    <View style={{ flex: 1, backgroundColor: colors.bg }} onLayout={onLayoutRootView}>
+      <ThemeProvider>
+        <AppProviders>
+          <AppSplashController />
+          <RootNavigator />
+          <StatusBar style="auto" />
+        </AppProviders>
+        <ToastHost />
+      </ThemeProvider>
       <PortalHost />
     </View>
   )

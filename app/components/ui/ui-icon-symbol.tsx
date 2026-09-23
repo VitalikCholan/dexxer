@@ -16,6 +16,8 @@ const MAPPING = {
   'arrow.left.arrow.right': 'swap-horiz',
   'chart.line.uptrend.xyaxis': 'show-chart',
   'clock.arrow.circlepath': 'history',
+  'chart.bar.fill': 'bar-chart',
+  'list.bullet.rectangle.fill': 'receipt-long',
 } as const satisfies Record<string, ComponentProps<typeof MaterialIcons>['name']>
 
 export type UiIconSymbolName = keyof typeof MAPPING

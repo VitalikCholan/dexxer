@@ -1,45 +1,33 @@
 // app/src/features/onboard/useOnboarding.ts
 //
-// State machine driving Task 7's onboarding screen:
+// State machine driving the onboarding screen:
 //   NotOnboarded -> Funded -> Initialized -> Delegated -> Credited ->
 //   Permissioned -> SessionSet
 //
-// Mirrors `tests/er/devnet/01-onboard-private.ts` / `tests/er/lib/trader.ts`
+// Task 6 (week 4): `advance()` runs `runBatchedOnboarding`
+// (`batchOnboarding.ts`) — faucet_init (+ATA-create if missing) + init_user
+// + delegateSpl + delegate_user collected into up to two sponsored L1
+// transactions, and init_permissions + set_session (+ the session fee
+// top-up) collected into one sponsored ER transaction, all signed in ONE
+// `mwa.signTransactions([...])` call. `credit_deposit` (crediting
+// `free_margin`) is deliberately NOT part of the batch — see
+// `batchOnboarding.ts`'s `runDevDeposit` and Task 10's real Deposit screen.
+//
+// The original step-by-step flow (`runFlow` below, one MWA prompt per
+// instruction/small group) is kept intact behind `LEGACY_ONBOARDING` for
+// quick rollback/debugging — set it to `true` to go back to it. Mirrors
+// `tests/er/devnet/01-onboard-private.ts` / `tests/er/lib/trader.ts`
 // (`onboardTrader`) step-for-step — same instructions, same accounts, same
 // order — with every owner-signed step routed through Mobile Wallet Adapter
-// instead of a local `Keypair`:
-//   L1 steps (faucet_init, init_user, delegateSpl, delegate_user)
-//     -> MWA `signTransactions` (sign-only), then this app submits on
-//        `baseConn` — the reference fakewallet's own send path
-//        (`SendTransactionsUseCase`) rejects multi-ix txs like `delegateSpl`
-//        with "payloads invalid for signing" (see `sendL1` note below)
-//   ER steps (credit_deposit, init_permissions, set_session)
-//     -> MWA `signTransactions`, then this app sends the signed tx on the
-//        TEE connection and polls `getSignatureStatuses` itself — mirrors
-//        `tests/er/lib/env.ts`'s `sendAndConfirmIx`/`confirmSignature`
-//        (the ER validator's confirmation websocket is unreliable, per that
-//        file's header comment)
+// instead of a local `Keypair`.
 //
-// Every step checks on-chain state first and skips if already done
-// (idempotent, like `onboardTrader`), so `advance()` (the screen's single
-// "Continue" action) is safe to call again after a partial failure — a
-// re-tap resumes from wherever onboarding actually broke, and running it
-// again on an already-onboarded wallet is a fast no-op all the way through.
+// This file (fix round 1, finding E) is now just the hook wrapper: React
+// state, `buildCtx`, and `runFlow`. The batch pipeline itself
+// (`collectBatchLegs`/`runBatchedOnboarding`/`BatchLeg`) and the shared
+// send/confirm primitives (`sendL1`/`sendErOwner`/`confirmOnConn`/
+// `waitDelegated`) live in `batchOnboarding.ts`.
 import { useCallback, useState } from 'react'
-import {
-  Connection,
-  PublicKey,
-  SystemProgram,
-  Transaction,
-  type TransactionInstruction,
-  type Keypair,
-} from '@solana/web3.js'
-import { BN } from '@coral-xyz/anchor'
-import {
-  createAssociatedTokenAccountIdempotentInstruction,
-  getAssociatedTokenAddressSync,
-  TOKEN_PROGRAM_ID,
-} from '@solana/spl-token'
+import { PublicKey, SystemProgram, type TransactionInstruction } from '@solana/web3.js'
 import {
   DELEGATION_PROGRAM_ID,
   EPHEMERAL_VAULT_ID,
@@ -48,6 +36,12 @@ import {
   delegateSpl,
   permissionPdaFromAccount,
 } from '@magicblock-labs/ephemeral-rollups-sdk'
+import { BN } from '@coral-xyz/anchor'
+import {
+  createAssociatedTokenAccountIdempotentInstruction,
+  getAssociatedTokenAddressSync,
+  TOKEN_PROGRAM_ID,
+} from '@solana/spl-token'
 import { useMobileWallet } from '@wallet-ui/react-native-web3js'
 import { toPublicKey } from '@/src/spikes/mwa'
 import { baseConn, ER_VALIDATOR } from '@/src/lib/solana'
@@ -67,125 +61,29 @@ import {
   sessionTopUpIx,
   SESSION_LAMPORTS,
 } from '@/src/lib/session'
+import {
+  DEPOSIT,
+  errText,
+  IDLE_BATCH_PROGRESS,
+  runBatchedOnboarding,
+  runDevDeposit,
+  sendErOwner,
+  sendL1,
+  SESSION_ACTIONS,
+  SESSION_EXPIRY_SECS,
+  waitDelegated,
+  type BatchProgress,
+  type Mwa,
+  type OnboardCtx,
+  type OnboardState,
+} from './batchOnboarding'
 
-export type OnboardState =
-  'Disconnected' | 'NotOnboarded' | 'Funded' | 'Initialized' | 'Delegated' | 'Credited' | 'Permissioned' | 'SessionSet'
+export type { BatchPhase, BatchProgress, OnboardState } from './batchOnboarding'
 
-/** Faucet/deposit amount — 1,000 dUSDC (6 decimals), same as `tests/er/devnet/01-onboard-private.ts`. */
-const DEPOSIT = 1_000_000_000n
-const SESSION_EXPIRY_SECS = 3600
-const SESSION_ACTIONS = 20
+/** Set `true` to fall back to the original one-prompt-per-step flow (`runFlow`) — see file header. */
+const LEGACY_ONBOARDING = false
 
-function errText(e: unknown): string {
-  const err = e as { message?: string }
-  return err?.message ?? String(e)
-}
-
-// L1 send: sign via MWA (sign-only), then submit ourselves on `baseConn`.
-// We deliberately do NOT use the wallet's `signAndSendTransactions`: the
-// reference fakewallet's `SendTransactionsUseCase` throws
-// `InvalidTransactionsException` (JSON-RPC code -2, "payloads invalid for
-// signing") on multi-instruction transactions such as `delegateSpl` (3 eSPL
-// ixs) — reproduced on-device 21.09, while single-ix `faucet_init`/`init_user`
-// sent fine. The transaction itself is valid (owner-only signer, ~590 B). Own
-// submission to `rpc.magicblock.app/devnet` — the RPC that actually holds the
-// eSPL/dUSDC accounts — mirrors `sendErOwner` and sidesteps the wallet's send
-// path entirely. A fresh blockhash is fetched immediately before signing to
-// keep the MWA round-trip inside its validity window.
-async function sendL1(
-  owner: PublicKey,
-  ixs: TransactionInstruction[],
-  signTransactions: (tx: Transaction) => Promise<Transaction>,
-): Promise<string> {
-  const tx = new Transaction().add(...ixs)
-  tx.feePayer = owner
-  tx.recentBlockhash = (await baseConn.getLatestBlockhash()).blockhash
-  const signed = await signTransactions(tx)
-  const sig = await baseConn.sendRawTransaction(signed.serialize(), { skipPreflight: true })
-  await confirmOnConn(baseConn, sig)
-  return sig
-}
-
-// Poll `getSignatureStatuses` instead of `Connection.confirmTransaction` — found
-// on-device (task-7 emulator verification) that `rpc.magicblock.app/devnet`'s
-// websocket doesn't reliably deliver `signatureSubscribe` notifications
-// (`Tried to call a JSON-RPC method 'signatureSubscribe' but the socket was
-// not 'CONNECTING' or 'OPEN'`, retried forever), hanging `confirmTransaction`
-// indefinitely even though the L1 transaction had already landed. Same root
-// cause/fix as `tests/er/lib/env.ts`'s `confirmSignature` (documented there
-// for the ER validator specifically) — this app hits it on the BASE
-// connection too, so both `sendL1` and `sendErOwner` below poll instead.
-async function confirmOnConn(conn: Connection, sig: string, tries = 100, delayMs = 150): Promise<void> {
-  for (let i = 0; i < tries; i++) {
-    const { value } = await conn.getSignatureStatuses([sig])
-    const status = value[0]
-    if (status) {
-      if (status.err) throw new Error(`tx ${sig} failed: ${JSON.stringify(status.err)}`)
-      if (status.confirmationStatus === 'confirmed' || status.confirmationStatus === 'finalized') return
-    }
-    await new Promise((r) => setTimeout(r, delayMs))
-  }
-  throw new Error(`confirm timeout waiting for ${sig}`)
-}
-
-// --- ER send: owner-signed via MWA (ER blockhash — sign then send ourselves, mirrors Check 8). ---
-async function sendErOwner(
-  conn: Connection,
-  owner: PublicKey,
-  ixs: TransactionInstruction[],
-  signTransactions: (tx: Transaction) => Promise<Transaction>,
-): Promise<string> {
-  const tx = new Transaction().add(...ixs)
-  tx.feePayer = owner
-  tx.recentBlockhash = (await conn.getLatestBlockhash()).blockhash
-  const signed = await signTransactions(tx)
-  const sig = await conn.sendRawTransaction(signed.serialize(), { skipPreflight: true })
-  await confirmOnConn(conn, sig)
-  return sig
-}
-
-async function waitDelegated(
-  pubkey: PublicKey,
-  label: string,
-  appendLog: (s: string) => void,
-  tries = 60,
-  delayMs = 500,
-): Promise<void> {
-  for (let i = 0; i < tries; i++) {
-    const info = await baseConn.getAccountInfo(pubkey, 'confirmed')
-    if (info && info.owner.equals(DELEGATION_PROGRAM_ID)) {
-      appendLog(`${label} delegated`)
-      return
-    }
-    await new Promise((r) => setTimeout(r, delayMs))
-  }
-  throw new Error(`timeout waiting for ${label} (${pubkey.toBase58()}) to be delegated`)
-}
-
-interface OnboardCtx {
-  owner: PublicKey
-  config: PublicKey
-  mint: PublicKey
-  market: PublicKey
-  userAccount: PublicKey
-  position: PublicKey
-  disclosureQueue: PublicKey
-  faucetPda: PublicKey
-  mintAuth: PublicKey
-  pool: PublicKey
-  poolAta: PublicKey
-  ownerAta: PublicKey
-  session: Keypair
-  exitSalt: Uint8Array
-}
-
-interface Mwa {
-  signAndSendTransaction: (tx: Transaction, minContextSlot: number) => Promise<string>
-  signTransactions: (tx: Transaction) => Promise<Transaction>
-  getConnection: (owner: PublicKey) => Promise<Connection>
-}
-
-/** Runs the whole remaining onboarding pipeline from `ctx`'s current on-chain state through `SessionSet`. */
+/** Runs the whole remaining onboarding pipeline from `ctx`'s current on-chain state through `SessionSet`. Legacy path — see `LEGACY_ONBOARDING`. */
 async function runFlow(
   ctx: OnboardCtx,
   mwa: Mwa,
@@ -203,6 +101,7 @@ async function runFlow(
     faucetPda,
     mintAuth,
     pool,
+    poolLive,
     poolAta,
     ownerAta,
     session,
@@ -221,6 +120,7 @@ async function runFlow(
         .faucetInit(new BN(DEPOSIT.toString()))
         .accounts({
           owner,
+          payer: owner,
           config,
           faucet: faucetPda,
           dusdcMint: mint,
@@ -244,6 +144,7 @@ async function runFlow(
       .initUser(Array.from(exitSalt))
       .accounts({
         owner,
+        payer: owner,
         config,
         market,
         userAccount,
@@ -316,7 +217,7 @@ async function runFlow(
   if (freeMargin === 0n) {
     const ix = await coreEr.methods
       .creditDeposit(new BN(DEPOSIT.toString()))
-      .accounts({ owner, userAccount, pool, ownerAta, vaultAta: poolAta, tokenProgram: TOKEN_PROGRAM_ID })
+      .accounts({ owner, userAccount, pool, poolLive, ownerAta, vaultAta: poolAta, tokenProgram: TOKEN_PROGRAM_ID })
       .instruction()
     appendLog(`credit_deposit ${await sendErOwner(ownerTee, owner, [ix], mwa.signTransactions)}`)
   } else {
@@ -387,9 +288,7 @@ async function runFlow(
   // === fund session's own ER fee balance (base-layer transfer — see session.ts header comment) ===
   const sessionBalance = await baseConn.getBalance(session.publicKey, 'confirmed')
   if (sessionBalance < SESSION_LAMPORTS / 2) {
-    appendLog(
-      `fund session ${await sendL1(owner, [sessionTopUpIx(owner, session.publicKey)], mwa.signTransactions)}`,
-    )
+    appendLog(`fund session ${await sendL1(owner, [sessionTopUpIx(owner, session.publicKey)], mwa.signTransactions)}`)
   } else {
     appendLog('session lamports: already funded, skipped')
   }
@@ -422,10 +321,14 @@ export interface UseOnboarding {
   busy: boolean
   log: string[]
   error: string | null
+  /** Task 6: `Collecting -> Signing -> Submitting(i/n) -> Done | Failed(step)` — only meaningful while `LEGACY_ONBOARDING` is false. */
+  batchProgress: BatchProgress
   connectWallet: () => Promise<void>
   refresh: () => Promise<void>
   /** Runs onboarding forward from wherever it currently stands, all the way to `SessionSet` (or the first failure). */
   advance: () => Promise<void>
+  /** Task 6: standalone "Deposit (dev)" action — `credit_deposit` alone, not part of the batch. See `batchOnboarding.ts`'s `runDevDeposit`. */
+  runDeposit: () => Promise<void>
 }
 
 export function useOnboarding(): UseOnboarding {
@@ -436,8 +339,10 @@ export function useOnboarding(): UseOnboarding {
   const [log, setLog] = useState<string[]>([])
   const [error, setError] = useState<string | null>(null)
   const [sessionPubkey, setSessionPubkey] = useState<PublicKey | null>(null)
+  const [batchProgress, setBatchProgress] = useState<BatchProgress>(IDLE_BATCH_PROGRESS)
 
   const owner = account ? toPublicKey(account.address) : null
+  const mwa: Mwa = { signAndSendTransaction, signTransactions, getConnection }
 
   const appendLog = useCallback((s: string) => setLog((prev) => [...prev, s]), [])
 
@@ -469,6 +374,43 @@ export function useOnboarding(): UseOnboarding {
     }
   }, [owner])
 
+  const buildCtx = useCallback(async (o: PublicKey): Promise<OnboardCtx> => {
+    const config = pdas.config()
+    const configInfo = await baseConn.getAccountInfo(config, 'confirmed')
+    if (!configInfo) throw new Error('Config PDA not found — protocol not bootstrapped on this devnet deployment')
+    const mint = readConfigDusdcMint(configInfo.data)
+    const market = pdas.market()
+    const userAccount = pdas.userAccount(o)
+    const position = pdas.position(o, market)
+    const disclosureQueue = pdas.disclosureQueue(o)
+    const faucetPda = pdas.faucet(o)
+    const mintAuth = pdas.mintAuth()
+    const pool = pdas.pool(mint)
+    const poolLive = pdas.poolLive(mint)
+    const poolAta = pdas.poolAta(mint)
+    const ownerAta = getAssociatedTokenAddressSync(mint, o)
+    const session = await getOrCreateSessionKeypair(o)
+    setSessionPubkey(session.publicKey)
+    const exitSalt = await getOrCreateExitSalt(o)
+    return {
+      owner: o,
+      config,
+      mint,
+      market,
+      userAccount,
+      position,
+      disclosureQueue,
+      faucetPda,
+      mintAuth,
+      pool,
+      poolLive,
+      poolAta,
+      ownerAta,
+      session,
+      exitSalt,
+    }
+  }, [])
+
   const advance = useCallback(async () => {
     if (!owner) {
       await connectWallet()
@@ -477,46 +419,46 @@ export function useOnboarding(): UseOnboarding {
     setBusy(true)
     setError(null)
     try {
-      const config = pdas.config()
-      const configInfo = await baseConn.getAccountInfo(config, 'confirmed')
-      if (!configInfo) throw new Error('Config PDA not found — protocol not bootstrapped on this devnet deployment')
-      const mint = readConfigDusdcMint(configInfo.data)
-      const market = pdas.market()
-      const userAccount = pdas.userAccount(owner)
-      const position = pdas.position(owner, market)
-      const disclosureQueue = pdas.disclosureQueue(owner)
-      const faucetPda = pdas.faucet(owner)
-      const mintAuth = pdas.mintAuth()
-      const pool = pdas.pool(mint)
-      const poolAta = pdas.poolAta(mint)
-      const ownerAta = getAssociatedTokenAddressSync(mint, owner)
-      const session = await getOrCreateSessionKeypair(owner)
-      setSessionPubkey(session.publicKey)
-      const exitSalt = await getOrCreateExitSalt(owner)
-
-      const ctx: OnboardCtx = {
-        owner,
-        config,
-        mint,
-        market,
-        userAccount,
-        position,
-        disclosureQueue,
-        faucetPda,
-        mintAuth,
-        pool,
-        poolAta,
-        ownerAta,
-        session,
-        exitSalt,
+      const ctx = await buildCtx(owner)
+      if (LEGACY_ONBOARDING) {
+        await runFlow(ctx, mwa, appendLog, setState)
+      } else {
+        await runBatchedOnboarding(ctx, mwa, appendLog, setState, setBatchProgress)
       }
-      await runFlow(ctx, { signAndSendTransaction, signTransactions, getConnection }, appendLog, setState)
     } catch (e) {
       setError(errText(e))
     } finally {
       setBusy(false)
     }
-  }, [owner, connectWallet, signAndSendTransaction, signTransactions, getConnection, appendLog])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [owner, connectWallet, buildCtx, appendLog, signAndSendTransaction, signTransactions, getConnection])
 
-  return { owner, session: sessionPubkey, state, busy, log, error, connectWallet, refresh, advance }
+  const runDeposit = useCallback(async () => {
+    if (!owner) return
+    setBusy(true)
+    setError(null)
+    try {
+      const ctx = await buildCtx(owner)
+      await runDevDeposit(ctx, mwa, appendLog, setState)
+    } catch (e) {
+      setError(errText(e))
+    } finally {
+      setBusy(false)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [owner, buildCtx, appendLog, signTransactions, getConnection])
+
+  return {
+    owner,
+    session: sessionPubkey,
+    state,
+    busy,
+    log,
+    error,
+    batchProgress,
+    connectWallet,
+    refresh,
+    advance,
+    runDeposit,
+  }
 }

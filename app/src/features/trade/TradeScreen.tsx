@@ -1,226 +1,180 @@
 // app/src/features/trade/TradeScreen.tsx
 //
-// Task 8: side/size/margin form, Open button, Close button when a position
-// is open. The entire point of the demo: Open/Close are signed by the
-// SESSION key loaded from `expo-secure-store` (`useTradeSession`) and sent
-// straight to the TEE connection — no MWA prompt, unlike every owner-signed
-// step in onboarding.
-//
-// Limit price is auto-set to index ± 1%, side-aware
-// (`programs/dexxer_core/src/instructions/trade.rs`'s `open_position`:
-// `Side::Long => require(price <= limit_price)`, `Side::Short => require(price
-// >= limit_price)` — so Long needs a limit at/above mark, Short at/below),
-// read fresh right before building the tx rather than off a possibly-stale
-// polled value.
-import { useCallback, useEffect, useState } from 'react'
-import { Pressable, ScrollView, Text, TextInput, View } from 'react-native'
+// Task 10: full Trade screen per design — header (mark + 24h change + Pyth
+// Lazer freshness badge), PriceChart (1m/5m/15m), TradeTicket (Open
+// Long/Short — session-signed, no MWA prompt), stale-oracle and
+// session-expired banners. Close/Increase/Decrease moved to the Positions
+// screen (Task 10) — this screen only opens.
+import { useCallback, useMemo, useState } from 'react'
+import { router } from 'expo-router'
+import { ScrollView, Text, View } from 'react-native'
 import { AppPage } from '@/components/app-page'
+import { useTheme } from '@/src/theme'
+import { useTextStyle } from '@/src/ui/styles'
+import { Segment } from '@/src/ui/Segment'
+import { Badge } from '@/src/ui/Badge'
+import { Button } from '@/src/ui/Button'
+import { Skeleton } from '@/src/ui/Skeleton'
+import { showToast } from '@/src/ui/Toast'
+import { useLiveAccount } from '@/src/lib/live'
+import { useCandles, useIndexerConnected, useMark } from '@/src/lib/indexer'
 import {
-  closePosition,
+  decodeMarket,
+  decodePosition,
+  decodeUserAccount,
   describeTxError,
   openPosition,
   readMarket,
-  readPosition,
-  type DecodedPosition,
+  type SideName,
 } from '@/src/lib/program'
+import { PriceChart } from './PriceChart'
+import { TradeHeader } from './TradeHeader'
+import { TradeTicket, type MarketParams } from './TradeTicket'
 import { useTradeSession } from './useTradeSession'
+import { useOnboardingGate } from '../onboard/useOnboardingGate'
 
-type Side = 'long' | 'short'
-
-function fmtUsd(microUsd: number): string {
-  return (microUsd / 1_000_000).toFixed(2)
-}
+type Tf = '1m' | '5m' | '15m'
 
 export function TradeScreen() {
-  const { owner, session, conn, accounts, loading, error: sessionError } = useTradeSession()
+  const { colors, space } = useTheme()
+  const caption = useTextStyle('caption')
 
-  const [side, setSide] = useState<Side>('long')
-  const [sizeSol, setSizeSol] = useState('0.1')
-  const [marginUsd, setMarginUsd] = useState('20')
-  const [mark, setMark] = useState<bigint | null>(null)
-  const [position, setPosition] = useState<DecodedPosition | null>(null)
+  const { session, conn, accounts, loading, error: sessionError } = useTradeSession()
+  const gate = useOnboardingGate()
+  const [tf, setTf] = useState<Tf>('1m')
   const [busy, setBusy] = useState(false)
-  const [error, setError] = useState<string | null>(null)
-  const [lastSig, setLastSig] = useState<string | null>(null)
 
-  const refresh = useCallback(async () => {
-    if (!conn || !accounts) return
-    try {
-      const [pos, mkt] = await Promise.all([readPosition(conn, accounts.position), readMarket(conn, accounts.market)])
-      setPosition(pos)
-      setMark(mkt?.mark ?? null)
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e))
-    }
-  }, [conn, accounts])
+  const positionLive = useLiveAccount(conn, accounts?.position ?? null, decodePosition)
+  const marketLive = useLiveAccount(conn, accounts?.market ?? null, decodeMarket)
+  const userLive = useLiveAccount(conn, accounts?.userAccount ?? null, decodeUserAccount)
+  const mark = useMark()
+  const change24h = useCandles('15m', 96)
+  const indexerConnected = useIndexerConnected()
 
-  useEffect(() => {
-    // `refresh` only sets state from its own async continuation (after
-    // awaiting the account reads) — a legitimate "poll an external system,
-    // setState from the callback" effect, not a synchronous setState.
-    // eslint-disable-next-line react-hooks/set-state-in-effect
-    void refresh()
-    const timer = setInterval(refresh, 2000)
-    return () => clearInterval(timer)
-  }, [refresh])
+  const hasOpenPosition = positionLive.value?.state === 'Open'
+  const marketMark = marketLive.value?.mark ?? null
+  const markUsd = mark.data?.price ?? marketMark
+  const markUsdNum = markUsd !== null ? Number(markUsd) / 1e6 : null
 
-  const hasOpenPosition = position?.state === 'Open'
+  // Single source of truth for "is the oracle good enough to trade on" — the
+  // freshness dot, the paused banner, and the Open button's `disabled` all
+  // derive from this ONE predicate (fix round 1: previously the dot alone
+  // also gated on `indexerConnected`/loading, while the banner and
+  // `disabled` only checked `stale === true` — a disconnected or still-
+  // loading feed showed a yellow dot with no banner and a still-enabled
+  // Open button).
+  const oracle = useMemo((): { ok: boolean; reason: 'loading' | 'stale' | 'disconnected' | null } => {
+    if (mark.isLoading || mark.data === undefined) return { ok: false, reason: 'loading' }
+    if (mark.data.stale) return { ok: false, reason: 'stale' }
+    if (!indexerConnected) return { ok: false, reason: 'disconnected' }
+    return { ok: true, reason: null }
+  }, [mark.isLoading, mark.data, indexerConnected])
+  const tradingPaused = !oracle.ok
+  const dotColor = oracle.ok ? colors.long : colors.warning
 
-  const handleOpen = useCallback(async () => {
-    if (!conn || !session || !accounts) return
-    setBusy(true)
-    setError(null)
-    try {
-      const mkt = await readMarket(conn, accounts.market)
-      if (!mkt || mkt.mark === 0n) throw new Error('Market has no mark price yet')
-      const markUsd = Number(mkt.mark) / 1_000_000
-      const limitUsd = side === 'long' ? markUsd * 1.01 : markUsd * 0.99
-      const sig = await openPosition(conn, session, accounts, side, Number(sizeSol), Number(marginUsd), limitUsd)
-      setLastSig(sig)
-      await refresh()
-    } catch (e) {
-      setError(describeTxError(e))
-    } finally {
-      setBusy(false)
-    }
-  }, [conn, session, accounts, side, sizeSol, marginUsd, refresh])
+  const pctChange = (() => {
+    const c = change24h.data
+    if (!c || c.length < 2) return null
+    const first = c[0].c
+    const last = c[c.length - 1].c
+    return first === 0 ? null : ((last - first) / first) * 100
+  })()
 
-  const handleClose = useCallback(async () => {
-    if (!conn || !session || !accounts) return
-    setBusy(true)
-    setError(null)
-    try {
-      const sig = await closePosition(conn, session, accounts)
-      setLastSig(sig)
-      await refresh()
-    } catch (e) {
-      setError(describeTxError(e))
-    } finally {
-      setBusy(false)
-    }
-  }, [conn, session, accounts, refresh])
+  // Wall-clock read during render: only needs to be approximately right
+  // (re-evaluated on every push/re-render, not a ticking clock) — same class
+  // of intentional impure-during-render read the codebase already accepts
+  // elsewhere via a justified lint escape hatch.
+  // eslint-disable-next-line react-hooks/purity
+  const now = Math.floor(Date.now() / 1000)
+  const sessionExpired =
+    userLive.value !== null && userLive.value.sessionExpiry > 0n && userLive.value.sessionExpiry < BigInt(now)
 
-  const markUsd = mark !== null ? Number(mark) / 1_000_000 : null
-  const previewLimitUsd = markUsd !== null ? (side === 'long' ? markUsd * 1.01 : markUsd * 0.99) : null
+  const marketParams: MarketParams | null = marketLive.value
+    ? {
+        imrBps: BigInt(marketLive.value.imrBps),
+        mmrBps: BigInt(marketLive.value.mmrBps),
+        openFeeBps: BigInt(marketLive.value.openFeeBps),
+      }
+    : null
+
+  const handleOpen = useCallback(
+    async (side: SideName, sizeSol: number, marginUsd: number, limitUsd: number) => {
+      if (!conn || !session || !accounts) return
+      setBusy(true)
+      try {
+        const mkt = await readMarket(conn, accounts.market)
+        if (!mkt || mkt.mark === 0n) throw new Error('Market has no mark price yet')
+        await openPosition(conn, session, accounts, side === 'Long' ? 'long' : 'short', sizeSol, marginUsd, limitUsd)
+        showToast({ tone: 'success', text: `Opened ${side} ${sizeSol} SOL` })
+      } catch (e) {
+        showToast({ tone: 'danger', text: describeTxError(e) })
+      } finally {
+        setBusy(false)
+      }
+    },
+    [conn, session, accounts],
+  )
 
   return (
     <AppPage>
-      <ScrollView contentContainerStyle={{ gap: 16, paddingVertical: 16 }}>
-        <Text style={{ fontSize: 20, fontWeight: '700' }}>Trade — SOL-PERP</Text>
+      <ScrollView contentContainerStyle={{ gap: space.lg, paddingVertical: space.lg }}>
+        <TradeHeader markUsdNum={markUsdNum} pctChange={pctChange} dotColor={dotColor} />
 
-        <View style={{ gap: 4 }}>
-          <Text style={{ fontWeight: '600' }}>Owner</Text>
-          <Text selectable>{owner ? owner.toBase58() : 'not connected (connect on Onboard tab)'}</Text>
+        <View style={{ gap: space.sm }}>
+          <PriceChart tf={tf} markUsd={markUsdNum} />
+          <Segment
+            compact
+            value={tf}
+            onChange={setTf}
+            options={[
+              { value: '1m', label: '1m' },
+              { value: '5m', label: '5m' },
+              { value: '15m', label: '15m' },
+            ]}
+          />
         </View>
 
-        <View style={{ gap: 4 }}>
-          <Text style={{ fontWeight: '600' }}>Session key (signs below, no wallet prompt)</Text>
-          <Text selectable>
-            {session ? session.publicKey.toBase58() : loading ? 'loading…' : 'not set — finish onboarding first'}
-          </Text>
-        </View>
-
-        <View style={{ gap: 4 }}>
-          <Text style={{ fontWeight: '600' }}>Mark</Text>
-          <Text>{markUsd !== null ? `$${markUsd.toFixed(4)}` : '—'}</Text>
-        </View>
-
-        {sessionError || error ? (
-          <Text selectable style={{ color: '#ef4444' }}>
-            {sessionError ?? error}
+        {oracle.reason === 'loading' ? (
+          <Skeleton lines={1} />
+        ) : oracle.reason === 'stale' ? (
+          <Badge tone="warning">Oracle price is stale — trading paused</Badge>
+        ) : oracle.reason === 'disconnected' ? (
+          <Badge tone="warning">Price feed disconnected — trading paused</Badge>
+        ) : null}
+        {gate.status === 'needs_setup' ? (
+          <View style={{ gap: space.sm }}>
+            <Badge tone="warning">Private account not set up on this device</Badge>
+            <Button variant="secondary" onPress={() => router.push('/onboard')}>
+              Set up private account
+            </Button>
+          </View>
+        ) : sessionExpired ? (
+          <View style={{ gap: space.sm }}>
+            <Badge tone="danger">Session expired</Badge>
+            <Button variant="secondary" onPress={() => router.push('/onboard')}>
+              Re-authorize session
+            </Button>
+          </View>
+        ) : null}
+        {gate.status === 'needs_setup' ? null : sessionError || positionLive.error || marketLive.error ? (
+          <Text style={[caption, { color: colors.short }]}>
+            {sessionError ?? positionLive.error ?? marketLive.error}
           </Text>
         ) : null}
 
-        {hasOpenPosition ? (
-          <View style={{ gap: 8 }}>
-            <Text style={{ fontWeight: '600' }}>Open position</Text>
-            <Text>
-              {position!.side} {(Number(position!.size) / 1_000_000_000).toFixed(4)} SOL @ $
-              {fmtUsd(Number(position!.entry))}
-            </Text>
-            <Pressable
-              onPress={() => void handleClose()}
-              disabled={busy || !session}
-              style={{
-                backgroundColor: busy ? '#9993' : '#ef4444',
-                borderRadius: 8,
-                padding: 12,
-                alignItems: 'center',
-              }}
-            >
-              <Text style={{ color: 'white', fontWeight: '700' }}>{busy ? 'Working…' : 'Close'}</Text>
-            </Pressable>
-          </View>
+        {loading ? (
+          <Skeleton lines={4} />
         ) : (
-          <View style={{ gap: 12 }}>
-            <View style={{ flexDirection: 'row', gap: 8 }}>
-              {(['long', 'short'] as Side[]).map((s) => (
-                <Pressable
-                  key={s}
-                  onPress={() => setSide(s)}
-                  style={{
-                    flex: 1,
-                    borderRadius: 8,
-                    padding: 10,
-                    alignItems: 'center',
-                    backgroundColor: side === s ? (s === 'long' ? '#22c55e' : '#ef4444') : '#3333',
-                  }}
-                >
-                  <Text style={{ color: side === s ? 'white' : undefined, fontWeight: '700' }}>
-                    {s === 'long' ? 'Long' : 'Short'}
-                  </Text>
-                </Pressable>
-              ))}
-            </View>
-
-            <View style={{ gap: 4 }}>
-              <Text style={{ fontWeight: '600' }}>Size (SOL)</Text>
-              <TextInput
-                value={sizeSol}
-                onChangeText={setSizeSol}
-                keyboardType="decimal-pad"
-                style={{ borderWidth: 1, borderColor: '#3335', borderRadius: 8, padding: 10 }}
-              />
-            </View>
-
-            <View style={{ gap: 4 }}>
-              <Text style={{ fontWeight: '600' }}>Margin (dUSDC)</Text>
-              <TextInput
-                value={marginUsd}
-                onChangeText={setMarginUsd}
-                keyboardType="decimal-pad"
-                style={{ borderWidth: 1, borderColor: '#3335', borderRadius: 8, padding: 10 }}
-              />
-            </View>
-
-            <Text style={{ opacity: 0.7, fontSize: 12 }}>
-              Limit auto-set to mark {side === 'long' ? '× 1.01' : '× 0.99'}
-              {previewLimitUsd !== null ? ` (~$${previewLimitUsd.toFixed(4)})` : ''}
-            </Text>
-
-            <Pressable
-              onPress={() => void handleOpen()}
-              disabled={busy || !session || !conn}
-              style={{
-                backgroundColor: busy || !session ? '#9993' : '#3b82f6',
-                borderRadius: 8,
-                padding: 12,
-                alignItems: 'center',
-              }}
-            >
-              <Text style={{ color: 'white', fontWeight: '700' }}>{busy ? 'Working…' : 'Open'}</Text>
-            </Pressable>
-          </View>
+          <TradeTicket
+            markUsd={markUsd}
+            market={marketParams}
+            freeMarginUsd={userLive.value?.freeMargin ?? null}
+            hasOpenPosition={hasOpenPosition}
+            busy={busy}
+            disabled={tradingPaused || sessionExpired || !session}
+            onOpen={handleOpen}
+          />
         )}
-
-        {lastSig ? (
-          <View style={{ gap: 4 }}>
-            <Text style={{ fontWeight: '600' }}>Last signature</Text>
-            <Text selectable style={{ fontSize: 12 }}>
-              {lastSig}
-            </Text>
-          </View>
-        ) : null}
       </ScrollView>
     </AppPage>
   )

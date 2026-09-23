@@ -13,8 +13,10 @@ pub struct Settlement {
     pub bad_debt: u64,
 }
 
-/// Effective OI cap: explicit cap from market, or 30% of pool capital if cap is 0
-pub fn effective_oi_cap(market: &Market, pool: &Pool) -> Result<u64> {
+/// Effective OI cap: explicit cap from market, or 30% of pool capital if cap is 0.
+/// Reads `PoolLive` (week-4 Task 1): OI checks must see real-time capital, not the
+/// step-rounded `Pool` snapshot `commit_aggregate` publishes every 5 minutes.
+pub fn effective_oi_cap(market: &Market, pool: &PoolLive) -> Result<u64> {
     if market.oi_cap > 0 {
         Ok(market.oi_cap)
     } else {
@@ -31,7 +33,7 @@ pub fn effective_oi_cap(market: &Market, pool: &Pool) -> Result<u64> {
 pub fn check_open(
     market: &Market,
     risk: &MarketRisk,
-    pool: &Pool,
+    pool: &PoolLive,
     side: Side,
     size: u64,
     margin: u64,
@@ -138,8 +140,10 @@ pub fn liquidatable_now(pos: &Position, market: &Market, mark: u64) -> Result<bo
 
 /// Settle position into pool: release locked margin, move PnL and fees.
 /// Pool is the counterparty: user profit comes out of protocol_liquidity (pool loss).
+/// Writes `PoolLive` (week-4 Task 1) — the public `Pool` is a rounded snapshot,
+/// written only by `commit_aggregate`.
 pub fn settle_into_pool(
-    pool: &mut Pool,
+    pool: &mut PoolLive,
     margin: u64,
     s: &Settlement,
     liquidation: bool,
@@ -230,18 +234,16 @@ mod tests {
         }
     }
 
-    fn pool(cap: u64) -> Pool {
-        Pool {
+    fn pool(cap: u64) -> PoolLive {
+        PoolLive {
             version: 1,
             mint: Pubkey::default(),
-            vault_ata: Pubkey::default(),
             capital_total: cap,
             protocol_liquidity: cap,
             locked_total: 0,
             fees_accrued: 0,
             insurance: 0,
             bad_debt_total: 0,
-            last_commit_slot: 0,
             bump: 0,
         }
     }
@@ -338,7 +340,7 @@ mod tests {
         assert_eq!((s.to_user, s.fee_taken, s.bad_debt), (0, 0, 30));
     }
 
-    fn locked(mut p: Pool, m: u64) -> Pool {
+    fn locked(mut p: PoolLive, m: u64) -> PoolLive {
         p.locked_total = m;
         p
     }

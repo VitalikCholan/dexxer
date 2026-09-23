@@ -47,6 +47,12 @@ pub struct CommitAggregate<'info> {
     pub payer: Signer<'info>,
     #[account(mut, seeds = [POOL_SEED, pool.mint.as_ref()], bump = pool.bump)]
     pub pool: Box<Account<'info, Pool>>,
+    // week-4 Task 1: the private live counters this call snapshots into `pool`
+    // above (step-rounded). Read-only — `snapshot_into` only reads `self`.
+    // NEVER included in `.commit(&[...])` below: `PoolLive` must stay off L1.
+    #[account(seeds = [POOL_LIVE_SEED, pool_live.mint.as_ref()], bump = pool_live.bump,
+        constraint = pool_live.mint == pool.mint @ DexxerError::PoolLiveMismatch)]
+    pub pool_live: Account<'info, PoolLive>,
     // `zero_copy` (controller ruling 5) — AccountLoader, not Account/Box.
     #[account(mut, seeds = [BALANCES_ROOT_SEED], bump = balances_root.load()?.bump)]
     pub balances_root: AccountLoader<'info, BalancesRoot>,
@@ -183,8 +189,12 @@ fn process_disclosure_queue_candidate<'info>(
 
 pub fn commit_aggregate<'info>(ctx: Context<'info, CommitAggregate<'info>>) -> Result<()> {
     let clock = Clock::get()?;
-    // Set before the commit CPI so the committed bytes carry this slot.
-    ctx.accounts.pool.last_commit_slot = clock.slot;
+    // Step-rounded snapshot (week-4 Task 1), set before the commit CPI so the
+    // committed bytes carry it: assets down, liabilities up, `last_commit_slot`
+    // stamped inside `snapshot_into`.
+    ctx.accounts
+        .pool_live
+        .snapshot_into(&mut ctx.accounts.pool, clock.slot)?;
 
     let mut actions: Vec<CallHandler> = Vec::new();
     let system_program = anchor_lang::system_program::ID;

@@ -155,11 +155,20 @@ pub mod dexxer_core {
     pub fn delegate_pool(ctx: Context<DelegatePool>) -> Result<()> {
         admin::delegate_pool(ctx)
     }
+    pub fn init_pool_live(ctx: Context<InitPoolLive>) -> Result<()> {
+        pool_live::init_pool_live(ctx)
+    }
+    pub fn delegate_pool_live(ctx: Context<DelegatePoolLive>) -> Result<()> {
+        pool_live::delegate_pool_live(ctx)
+    }
     pub fn delegate_user(ctx: Context<DelegateUser>) -> Result<()> {
         user::delegate_user(ctx)
     }
     pub fn init_permissions(ctx: Context<InitPermissions>) -> Result<()> {
         user::init_permissions(ctx)
+    }
+    pub fn init_market_permissions(ctx: Context<InitMarketPermissions>) -> Result<()> {
+        user::init_market_permissions(ctx)
     }
     pub fn undelegate_user(ctx: Context<UndelegateUser>) -> Result<()> {
         user::undelegate_user(ctx)

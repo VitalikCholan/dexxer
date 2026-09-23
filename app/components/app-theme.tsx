@@ -1,20 +1,31 @@
 import { PropsWithChildren } from 'react'
-import { DarkTheme as AppThemeDark, DefaultTheme as AppThemeLight, ThemeProvider } from 'expo-router'
-import { useColorScheme } from 'react-native'
+import { DarkTheme, ThemeProvider } from 'expo-router'
+import { colors as tokens } from '@/src/theme/tokens'
+
+// Dark-only by design (docs/design/tokens.json — "390×844 · DARK ONLY").
+// Previously picked DefaultTheme (light) when the OS was in light mode,
+// which is what made the legacy screens render white — this component now
+// always resolves to a dark navigation theme built from design tokens.
+const appDarkTheme = {
+  ...DarkTheme,
+  colors: {
+    ...DarkTheme.colors,
+    background: tokens.bg,
+    card: tokens.surface,
+    text: tokens.textPrimary,
+    primary: tokens.accent,
+    border: tokens.border,
+  },
+}
 
 export function useAppTheme() {
-  const colorScheme = useColorScheme()
-  const isDark = colorScheme === 'dark'
-  const theme = isDark ? AppThemeDark : AppThemeLight
   return {
-    colorScheme,
-    isDark,
-    theme,
+    colorScheme: 'dark' as const,
+    isDark: true,
+    theme: appDarkTheme,
   }
 }
 
 export function AppTheme({ children }: PropsWithChildren) {
-  const { theme } = useAppTheme()
-
-  return <ThemeProvider value={theme}>{children}</ThemeProvider>
+  return <ThemeProvider value={appDarkTheme}>{children}</ThemeProvider>
 }

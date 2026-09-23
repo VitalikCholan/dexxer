@@ -92,7 +92,7 @@ export async function creditDeposit(boot: Bootstrapped, t: Pick<Trader, "kp" | "
   const core = dexxerCoreProgram(conn, t.kp);
   const ix = await core.methods
     .creditDeposit(new BN(amount.toString()))
-    .accounts({ owner: t.kp.publicKey, userAccount: t.userAccount, pool: boot.pool, ownerAta: t.userAta, vaultAta: boot.poolAta, tokenProgram: TOKEN_PROGRAM_ID })
+    .accounts({ owner: t.kp.publicKey, userAccount: t.userAccount, pool: boot.pool, poolLive: boot.poolLive, ownerAta: t.userAta, vaultAta: boot.poolAta, tokenProgram: TOKEN_PROGRAM_ID })
     .instruction();
   return sendAndConfirmIx(conn, t.kp, ix);
 }
@@ -191,6 +191,7 @@ export async function onboardTrader(
       .faucetInit(new BN(deposit.toString()))
       .accounts({
         owner: kp.publicKey,
+        payer: kp.publicKey,
         config,
         faucet: faucetPda,
         dusdcMint: boot.mint,
@@ -219,7 +220,7 @@ export async function onboardTrader(
   if (!userAccountInfoPre) {
     const sig = await core.methods
       .initUser(Array.from(exitSalt))
-      .accounts({ owner: kp.publicKey, config, market, userAccount, position, disclosureQueue, systemProgram: SystemProgram.programId })
+      .accounts({ owner: kp.publicKey, payer: kp.publicKey, config, market, userAccount, position, disclosureQueue, systemProgram: SystemProgram.programId })
       .rpc();
     sigs.initUser = sig;
     console.log(`init_user (${name})`, sig);
@@ -332,7 +333,7 @@ export async function openPosition(
       config: pdas.config(),
       market,
       marketRisk: pdas.marketRisk(market),
-      pool: boot.pool,
+      poolLive: boot.poolLive,
       userAccount: t.userAccount,
       position: t.position,
       feed: boot.feed,
@@ -363,7 +364,7 @@ export async function closePosition(boot: Bootstrapped, t: Trader, limitUsdPrice
       config: pdas.config(),
       market,
       marketRisk: pdas.marketRisk(market),
-      pool: boot.pool,
+      poolLive: boot.poolLive,
       userAccount: t.userAccount,
       position: t.position,
       feed: boot.feed,

@@ -34,10 +34,12 @@ async function main() {
   const coreEr = dexxerCoreProgram(erConn, boot.admin);
   const poolAtaBalBoot = await erConn.getTokenAccountBalance(boot.poolAta, "confirmed");
   assert(poolAtaBalBoot.value.amount === "10000000000", `ER poolAta balance == 10_000e6 (got ${poolAtaBalBoot.value.amount})`);
-  const poolStateBoot = await accountNs(coreEr).pool.fetch(boot.pool);
+  // week-4 Task 1: credit_deposit writes PoolLive now, not the public Pool
+  // snapshot (only commit_aggregate writes that) — assert on the live counters.
+  const poolStateBoot = await accountNs(coreEr).poolLive.fetch(boot.poolLive);
   assert(
     poolStateBoot.capitalTotal.toString() === "10000000000" && poolStateBoot.protocolLiquidity.toString() === "10000000000",
-    `ER Pool.capital_total == protocol_liquidity == 10_000e6 (got ${poolStateBoot.capitalTotal.toString()}/${poolStateBoot.protocolLiquidity.toString()})`,
+    `ER PoolLive.capital_total == protocol_liquidity == 10_000e6 (got ${poolStateBoot.capitalTotal.toString()}/${poolStateBoot.protocolLiquidity.toString()})`,
   );
 
   console.log("=== onboard user (L1 setup + credit_deposit on ER) ===");
@@ -50,8 +52,8 @@ async function main() {
     `ER UserAccount.free_margin == 1_000e6 (got ${userAccountState.freeMargin.toString()})`,
   );
 
-  const poolStateAfter = await accountNs(coreEr).pool.fetch(boot.pool);
-  assert(poolStateAfter.capitalTotal.toString() === "11000000000", `ER Pool.capital_total == 11_000e6 (got ${poolStateAfter.capitalTotal.toString()})`);
+  const poolStateAfter = await accountNs(coreEr).poolLive.fetch(boot.poolLive);
+  assert(poolStateAfter.capitalTotal.toString() === "11000000000", `ER PoolLive.capital_total == 11_000e6 (got ${poolStateAfter.capitalTotal.toString()})`);
 
   const poolAtaBalAfter = await erConn.getTokenAccountBalance(boot.poolAta, "confirmed");
   assert(poolAtaBalAfter.value.amount === "11000000000", `ER poolAta balance == 11_000e6 (got ${poolAtaBalAfter.value.amount})`);

@@ -109,6 +109,20 @@ pub fn init_fee_escrow(admin: &Pubkey) -> Instruction {
         data: ix::InitFeeEscrow {}.data(),
     }
 }
+pub fn init_pool_live(admin: &Pubkey, mint: &Pubkey) -> Instruction {
+    let p = pdas::pool(mint);
+    Instruction {
+        program_id: prog(),
+        accounts: vec![
+            s(admin),
+            r(&pdas::config()),
+            r(&p),
+            w(&pdas::pool_live(mint)),
+            r(&SYSTEM),
+        ],
+        data: ix::InitPoolLive {}.data(),
+    }
+}
 pub fn init_balances_root(admin: &Pubkey) -> Instruction {
     Instruction {
         program_id: prog(),
@@ -119,6 +133,29 @@ pub fn init_balances_root(admin: &Pubkey) -> Instruction {
             r(&SYSTEM),
         ],
         data: ix::InitBalancesRoot {}.data(),
+    }
+}
+/// `init_market_permissions` (admin, ER): make `MarketRisk` and `PoolLive`
+/// permissioned `[crank, admin]` in one call (week-4 Task 2, risk #24). Same
+/// permission/vault/magic accounts as `init_permissions`; no-op on LiteSVM
+/// since no permission program is deployed here (`permission_program`
+/// resolves to an empty, non-executable PDA).
+pub fn init_market_permissions(admin: &Pubkey, wd: &World) -> Instruction {
+    Instruction {
+        program_id: prog(),
+        accounts: vec![
+            rs(admin),
+            r(&wd.config),
+            r(&wd.market),
+            w(&wd.risk),
+            w(&wd.pool_live),
+            w(&pdas::permission(&wd.risk)),
+            w(&pdas::permission(&wd.pool_live)),
+            r(&pdas::permission_program()),
+            w(&pdas::ephemeral_vault()),
+            r(&pdas::magic_program()),
+        ],
+        data: ix::InitMarketPermissions {}.data(),
     }
 }
 pub fn set_params(
@@ -169,6 +206,7 @@ pub fn seed_pool(admin: &Pubkey, wd: &World, amount: u64) -> Instruction {
             rs(admin),
             r(&wd.config),
             w(&wd.pool),
+            w(&wd.pool_live),
             w(&ata(admin, &wd.mint)),
             w(&wd.pool_ata),
             r(&TOKEN),
@@ -181,6 +219,7 @@ pub fn faucet_init(owner: &Pubkey, wd: &World, amount: u64) -> Instruction {
         program_id: prog(),
         accounts: vec![
             s(owner),
+            s(owner), // payer (fix round 1, task 6 controller ruling): owner self-pays in tests
             r(&wd.config),
             w(&pdas::faucet(owner)),
             w(&wd.mint),
@@ -212,6 +251,7 @@ pub fn init_user(owner: &Pubkey, wd: &World, exit_salt: [u8; 32]) -> Instruction
         program_id: prog(),
         accounts: vec![
             s(owner),
+            s(owner), // payer (fix round 1, task 6 controller ruling): owner self-pays in tests
             r(&wd.config),
             r(&wd.market),
             w(&pdas::user(owner)),
@@ -337,7 +377,7 @@ pub fn crank_tick(crank: &Pubkey, wd: &World, candidates: &[&Trader]) -> Instruc
         r(&wd.config),
         w(&wd.market),
         w(&wd.risk),
-        w(&wd.pool),
+        w(&wd.pool_live),
         r(&wd.feed),
     ];
     for t in candidates {
@@ -356,7 +396,8 @@ pub fn credit_deposit(signer: &Pubkey, t: &Trader, wd: &World, amount: u64) -> I
         accounts: vec![
             rs(signer),
             w(&t.user),
-            w(&wd.pool),
+            r(&wd.pool),
+            w(&wd.pool_live),
             w(&ata(signer, &wd.mint)),
             w(&wd.pool_ata),
             r(&TOKEN),
@@ -373,7 +414,8 @@ pub fn withdraw(signer: &Pubkey, t: &Trader, wd: &World, amount: u64) -> Instruc
         accounts: vec![
             rs(signer),
             w(&t.user),
-            w(&wd.pool),
+            r(&wd.pool),
+            w(&wd.pool_live),
             w(&ata(signer, &wd.mint)),
             w(&wd.pool_ata),
             r(&TOKEN),
@@ -394,6 +436,7 @@ pub fn commit_aggregate(payer: &Pubkey, wd: &World, extra: &[AccountMeta]) -> In
         r(&wd.config),
         rs(payer),
         w(&wd.pool),
+        r(&wd.pool_live),
         w(&wd.balances_root),
         w(&wd.fee_escrow),
         w(&wd.magic_fee_vault),

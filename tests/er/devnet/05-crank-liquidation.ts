@@ -138,12 +138,12 @@ async function main() {
   await getOrCreateAssociatedTokenAccount(baseConn, owner, boot.mint, owner.publicKey);
   const faucetSig = await core.methods
     .faucetInit(new BN(DEPOSIT.toString()))
-    .accounts({ owner: owner.publicKey, config, faucet: faucetPda, dusdcMint: boot.mint, mintAuth, ownerAta, systemProgram: SystemProgram.programId, tokenProgram: TOKEN_PROGRAM_ID })
+    .accounts({ owner: owner.publicKey, payer: owner.publicKey, config, faucet: faucetPda, dusdcMint: boot.mint, mintAuth, ownerAta, systemProgram: SystemProgram.programId, tokenProgram: TOKEN_PROGRAM_ID })
     .rpc();
   const exitSalt = new Uint8Array(randomBytes(32));
   const initUserSig = await core.methods
     .initUser(Array.from(exitSalt))
-    .accounts({ owner: owner.publicKey, config, market, userAccount, position, disclosureQueue, systemProgram: SystemProgram.programId })
+    .accounts({ owner: owner.publicKey, payer: owner.publicKey, config, market, userAccount, position, disclosureQueue, systemProgram: SystemProgram.programId })
     .rpc();
   console.log("faucet_init", faucetSig, "init_user", initUserSig);
 
@@ -226,7 +226,7 @@ async function main() {
   const coreSessionEr = dexxerCoreProgram(sessionConn, session);
   const openIx = await coreSessionEr.methods
     .openPosition({ long: {} }, new BN(sizeLamports.toString()), new BN(marginUsd.toString()), new BN(U64_MAX.toString()))
-    .accounts({ signer: session.publicKey, config, market, marketRisk, pool: boot.pool, userAccount, position, feed: boot.feed })
+    .accounts({ signer: session.publicKey, config, market, marketRisk, poolLive: boot.poolLive, userAccount, position, feed: boot.feed })
     .instruction();
   const openSig = await sendAndConfirmIx(sessionConn, session, openIx);
   console.log("open_position (session-signed)", openSig);

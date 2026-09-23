@@ -26,16 +26,39 @@ import {
   permissionPdaFromAccount,
 } from "@magicblock-labs/ephemeral-rollups-sdk";
 
-const IDL_DIR = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "target", "idl");
+// Task 4 (week 4, services/relayer): overridable so the relayer's Docker
+// image — built from a fresh git checkout, where `target/idl/` (gitignored,
+// `anchor build` output) does not exist — can point this at the one IDL
+// asset actually committed to git, `app/src/idl/dexxer_core.json` (kept in
+// sync with `target/idl/dexxer_core.json` by CI's `cmp` step). Default is
+// unchanged for every existing caller (tests/er, scripts, app scripts run
+// from a full local checkout with `target/idl/` present).
+const IDL_DIR = process.env.DEXXER_IDL_DIR ?? resolve(dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "target", "idl");
 
 function loadIdl(name: string): Idl {
   return JSON.parse(readFileSync(resolve(IDL_DIR, `${name}.json`), "utf8"));
 }
 
+/**
+ * `mock_oracle.json` is NOT committed to git (target/idl/ is fully
+ * gitignored) and is local/LiteSVM-only — the relayer's minimal
+ * `DEXXER_IDL_DIR` (see above) never has it, since the relayer runs
+ * exclusively against `DEXXER_NET=devnet`'s real Pricing Oracle and never
+ * calls `mockOracleProgram()`/`pdas.feed()`. Tolerate its absence here
+ * instead of crashing this module's import for every caller.
+ */
+function loadIdlOptional(name: string): Idl | null {
+  try {
+    return loadIdl(name);
+  } catch {
+    return null;
+  }
+}
+
 export const DEXXER_CORE_IDL = loadIdl("dexxer_core");
-export const MOCK_ORACLE_IDL = loadIdl("mock_oracle");
+export const MOCK_ORACLE_IDL = loadIdlOptional("mock_oracle");
 export const DEXXER_CORE_PROGRAM_ID = new PublicKey((DEXXER_CORE_IDL as { address: string }).address);
-export const MOCK_ORACLE_PROGRAM_ID = new PublicKey((MOCK_ORACLE_IDL as { address: string }).address);
+export const MOCK_ORACLE_PROGRAM_ID = MOCK_ORACLE_IDL ? new PublicKey((MOCK_ORACLE_IDL as { address: string }).address) : PublicKey.default;
 
 // Task 14 (crank-fallback): base58 `getProgramAccounts` memcmp filter value
 // for the 8-byte Anchor discriminator of the `Position` account, computed
@@ -48,6 +71,10 @@ export const POSITION_DISC = bs58.encode(new BorshAccountsCoder(DEXXER_CORE_IDL)
 // `UserAccount`.
 export const DQ_DISC = bs58.encode(new BorshAccountsCoder(DEXXER_CORE_IDL).accountDiscriminator("DisclosureQueue"));
 export const USER_DISC = bs58.encode(new BorshAccountsCoder(DEXXER_CORE_IDL).accountDiscriminator("UserAccount"));
+// Task 5 (services/relayer indexer): same idea, for the public `Disclosure`
+// account gPA discovery filter (`getProgramAccounts`/`onProgramAccountChange`
+// memcmp on offset 0).
+export const DISCLOSURE_DISC = bs58.encode(new BorshAccountsCoder(DEXXER_CORE_IDL).accountDiscriminator("Disclosure"));
 
 export function anchorProvider(conn: Connection, wallet: Keypair): AnchorProvider {
   return new AnchorProvider(conn, new Wallet(wallet), { commitment: "confirmed", skipPreflight: true });
@@ -64,6 +91,7 @@ export function dexxerCoreProgram(conn: Connection, wallet: Keypair): Program {
 }
 
 export function mockOracleProgram(conn: Connection, wallet: Keypair): Program {
+  if (!MOCK_ORACLE_IDL) throw new Error("mock_oracle.json not found in IDL_DIR (local/LiteSVM-dev only — see loadIdlOptional above)");
   return new Program(MOCK_ORACLE_IDL, anchorProvider(conn, wallet));
 }
 
@@ -84,6 +112,8 @@ const DQ_SEED = Buffer.from("dq");
 const FAUCET_SEED = Buffer.from("faucet");
 const MINT_AUTH_SEED = Buffer.from("mint_auth");
 const FEE_ESCROW_SEED = Buffer.from("fee_escrow");
+// Week 4 (Task 1): private live pool counters — see programs/dexxer_core/src/state/pool_live.rs.
+const POOL_LIVE_SEED = Buffer.from("pool_live");
 // Week 3 (Task 7): programs/dexxer_core/src/state/mod.rs seeds/consts.
 const COMMIT_SEED = Buffer.from("commit");
 const DISCLOSURE_SEED = Buffer.from("disclosure");
@@ -122,6 +152,8 @@ export const pdas = {
   market: () => pda([MARKET_SEED, SOL_SYMBOL], DEXXER_CORE_PROGRAM_ID),
   marketRisk: (market: PublicKey) => pda([RISK_SEED, market.toBuffer()], DEXXER_CORE_PROGRAM_ID),
   pool: (mint: PublicKey) => pda([POOL_SEED, mint.toBuffer()], DEXXER_CORE_PROGRAM_ID),
+  /** Private live pool counters (week 4, Task 1) — every trading/money instruction writes here; `pool` above is a step-rounded snapshot written only by `commit_aggregate`. */
+  poolLive: (mint: PublicKey) => pda([POOL_LIVE_SEED, mint.toBuffer()], DEXXER_CORE_PROGRAM_ID),
   poolAta: (mint: PublicKey) => {
     const pool = pdas.pool(mint);
     return pda(

@@ -116,6 +116,9 @@ async function main() {
           config,
           payer: feePayer.publicKey,
           pool: boot.pool,
+          // week-4 Task 1: `CommitAggregate` reads `PoolLive` (read-only) to
+          // publish the step-rounded `Pool` snapshot.
+          poolLive: boot.poolLive,
           // Task 5 added `balances_root` to `CommitAggregate` (commit.rs) —
           // required by the IDL since then; this script predates that change
           // (task-7 fix round 1, week 3).

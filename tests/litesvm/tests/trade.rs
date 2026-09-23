@@ -51,7 +51,7 @@ fn open_long_10x_locks_margin_and_fee() {
     let u: UserAccount = h.account(&t.user);
     assert_eq!(u.free_margin, 1_000_000_000 - M150 - 900_000); // open fee 6 bps of 1500 $ = 0.9 $
     assert_eq!(u.locked_margin, M150);
-    let pool: Pool = h.account(&w.pool);
+    let pool: PoolLive = h.account(&w.pool_live);
     assert_eq!(pool.locked_total, M150);
     assert_eq!(pool.fees_accrued, 900_000);
     let r: MarketRisk = h.account(&w.risk);
@@ -287,7 +287,7 @@ fn close_with_profit_pays_from_protocol_liquidity() {
     assert_eq!(rec.reason, CloseReason::User);
     assert_eq!(rec.exit, 165_000_000);
     assert_eq!(rec.reveal_after_slot, rec.closed_slot + 100);
-    let pool: Pool = h.account(&w.pool);
+    let pool: PoolLive = h.account(&w.pool_live);
     assert_eq!(pool.protocol_liquidity, SEED_AMOUNT - 150_000_000);
     assert_eq!(pool.fees_accrued, 900_000 + 990_000);
     assert_eq!(pool.locked_total, 0);
@@ -338,7 +338,7 @@ fn close_short_with_loss_keeps_pool_whole() {
         h.account::<UserAccount>(&t.user).free_margin,
         1_000_000_000 - M150 - 900_000 + 49_040_000
     );
-    let pool: Pool = h.account(&w.pool);
+    let pool: PoolLive = h.account(&w.pool_live);
     assert_eq!(pool.protocol_liquidity, SEED_AMOUNT + 100_000_000);
     assert_invariant(&h, &w, &[&t]);
 }

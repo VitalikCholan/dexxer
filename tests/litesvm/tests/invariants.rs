@@ -373,7 +373,7 @@ fn random_sequences_keep_pool_invariants() {
         "only {trade_attempts} trade attempts in 300 steps"
     );
     assert!(liquidated > 0, "no liquidation occurred in 300 steps");
-    let pool: Pool = h.account(&w.pool);
+    let pool: PoolLive = h.account(&w.pool_live);
     println!(
         "final: protocol_liquidity {} fees {} insurance {} bad_debt {}",
         pool.protocol_liquidity, pool.fees_accrued, pool.insurance, pool.bad_debt_total

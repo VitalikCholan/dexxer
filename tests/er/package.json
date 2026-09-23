@@ -5,6 +5,7 @@
   "scripts": {
     "q1": "tsx q1-deposit.ts",
     "q2": "tsx q2-permissions.ts",
+    "devnet:bootstrap": "DEXXER_NET=devnet tsx ../../scripts/admin/devnet-bootstrap.ts",
     "devnet:measure": "DEXXER_NET=devnet tsx devnet/00-measure.ts",
     "devnet:onboard": "DEXXER_NET=devnet tsx devnet/01-onboard-private.ts",
     "devnet:leak": "DEXXER_NET=devnet tsx devnet/02-leak-test.ts",
@@ -15,6 +16,7 @@
     "devnet:disclosure": "DEXXER_NET=devnet tsx devnet/06-commitment-reveal.ts",
     "devnet:root": "DEXXER_NET=devnet tsx devnet/07-balances-root.ts",
     "devnet:undelegate": "DEXXER_NET=devnet tsx devnet/08-undelegate.ts",
+    "devnet:snapshot": "DEXXER_NET=devnet tsx devnet/09-pool-snapshot.ts",
     "selftest:hashes": "tsx lib/hashes.selftest.ts"
   },
   "dependencies": {
@@ -23,7 +25,8 @@
     "@solana/spl-token": "^0.4.14",
     "@solana/web3.js": "^1.98.0",
     "bs58": "^4.0.1",
-    "tweetnacl": "^1.0.3"
+    "tweetnacl": "^1.0.3",
+    "@noble/hashes": "1.8.0"
   },
-  "devDependencies": { "tsx": "^4.19.0", "typescript": "^5.6.0", "@noble/hashes": "1.8.0" }
+  "devDependencies": { "tsx": "^4.19.0", "typescript": "^5.6.0" }
 }

@@ -25,3 +25,12 @@ export const TEE_WS = TEE_RPC.replace(/^https/, 'wss')
  * (this is the TEE validator's own key, not a program-derived signer).
  */
 export const ER_VALIDATOR = new PublicKey('MTEWGuqxUpYZGFJQcp8tLN7x5v9BSeoFHYWQQ3n3xzo')
+
+/**
+ * Task 6 (week 4): the relayer's own domain — `services/relayer`, holding
+ * `fee_payer` (see repo CLAUDE.md's privacy rule: crank + fee_payer only,
+ * never owner/session tokens). `EXPO_PUBLIC_*` so it's baked into the dev
+ * build the same way any other `expo-constants`-style env var would be;
+ * unset in normal dev, so this falls back to the live Railway deployment.
+ */
+export const RELAYER_URL = process.env.EXPO_PUBLIC_RELAYER_URL ?? 'https://relayer-production-1ae7.up.railway.app'

@@ -89,11 +89,18 @@ fn mint_with_limit<'info>(
 pub struct FaucetInit<'info> {
     #[account(mut)]
     pub owner: Signer<'info>,
+    // Fix round 1 (week 4, task 6 controller ruling): sponsored-rent onboarding —
+    // `fee_payer` (relayer) fronts the `Faucet` PDA's rent instead of `owner`, so a
+    // genuinely 0-SOL owner can still complete onboarding through `POST /sponsor`.
+    // `owner` remains the sole signer/authority everywhere else (`has_one`, seeds,
+    // `token::authority`) — only the rent-paying account changes.
+    #[account(mut)]
+    pub payer: Signer<'info>,
     #[account(seeds = [CONFIG_SEED], bump = config.bump, has_one = dusdc_mint)]
     pub config: Account<'info, Config>,
     #[account(
         init,
-        payer = owner,
+        payer = payer,
         space = 8 + Faucet::INIT_SPACE,
         seeds = [FAUCET_SEED, owner.key().as_ref()],
         bump
@@ -165,6 +172,12 @@ pub fn faucet_mint(ctx: Context<FaucetMint>, amount: u64) -> Result<()> {
 pub struct InitUser<'info> {
     #[account(mut)]
     pub owner: Signer<'info>,
+    // Fix round 1 (week 4, task 6 controller ruling): `fee_payer` fronts the
+    // rent for `UserAccount`/`Position`/`DisclosureQueue` and the three
+    // per-PDA `EphemeralPermission` prefund transfers below, instead of
+    // `owner` — see `FaucetInit`'s `payer` field for the same rationale.
+    #[account(mut)]
+    pub payer: Signer<'info>,
     #[account(seeds = [CONFIG_SEED], bump = config.bump)]
     pub config: Account<'info, Config>,
     // `UncheckedAccount`, not `Account<'info, Market>` (task-13 finding on
@@ -182,7 +195,7 @@ pub struct InitUser<'info> {
     pub market: UncheckedAccount<'info>,
     #[account(
         init,
-        payer = owner,
+        payer = payer,
         space = 8 + UserAccount::INIT_SPACE,
         seeds = [USER_SEED, owner.key().as_ref()],
         bump
@@ -190,7 +203,7 @@ pub struct InitUser<'info> {
     pub user_account: Account<'info, UserAccount>,
     #[account(
         init,
-        payer = owner,
+        payer = payer,
         space = 8 + Position::INIT_SPACE,
         seeds = [POSITION_SEED, owner.key().as_ref(), market.key().as_ref()],
         bump
@@ -200,7 +213,7 @@ pub struct InitUser<'info> {
     // (~4 KB limit) if kept inline alongside the other init'd accounts here.
     #[account(
         init,
-        payer = owner,
+        payer = payer,
         space = 8 + DisclosureQueue::INIT_SPACE,
         seeds = [DQ_SEED, owner.key().as_ref()],
         bump
@@ -238,7 +251,7 @@ pub fn init_user(ctx: Context<InitUser>, exit_salt: [u8; 32]) -> Result<()> {
             CpiContext::new(
                 ctx.accounts.system_program.key(),
                 Transfer {
-                    from: ctx.accounts.owner.to_account_info(),
+                    from: ctx.accounts.payer.to_account_info(),
                     to,
                 },
             ),
@@ -351,8 +364,14 @@ pub struct CreditDeposit<'info> {
     pub owner: Signer<'info>,
     #[account(mut, seeds = [USER_SEED, owner.key().as_ref()], bump = user_account.bump, has_one = owner @ DexxerError::Unauthorized)]
     pub user_account: Account<'info, UserAccount>,
-    #[account(mut, seeds = [POOL_SEED, pool.mint.as_ref()], bump = pool.bump, has_one = vault_ata)]
+    // NOT `mut` (week-4 Task 1): `Pool` is only written by `init_pool`/`seed_pool`/
+    // `commit_aggregate` now — kept here read-only, purely for `vault_ata`'s
+    // `has_one` check and `mint`.
+    #[account(seeds = [POOL_SEED, pool.mint.as_ref()], bump = pool.bump, has_one = vault_ata)]
     pub pool: Account<'info, Pool>,
+    // Live pool counters — the actual write target for this deposit.
+    #[account(mut, seeds = [POOL_LIVE_SEED, pool.mint.as_ref()], bump = pool_live.bump)]
+    pub pool_live: Account<'info, PoolLive>,
     #[account(mut, token::mint = pool.mint, token::authority = owner)]
     pub owner_ata: Account<'info, TokenAccount>,
     #[account(mut)]
@@ -373,7 +392,7 @@ pub fn credit_deposit(ctx: Context<CreditDeposit>, amount: u64) -> Result<()> {
         .free_margin
         .checked_add(amount)
         .ok_or(DexxerError::MathOverflow)?;
-    let p = &mut ctx.accounts.pool;
+    let p = &mut ctx.accounts.pool_live;
     p.capital_total = p
         .capital_total
         .checked_add(amount)
@@ -417,8 +436,15 @@ pub struct Withdraw<'info> {
     pub owner: Signer<'info>,
     #[account(mut, seeds = [USER_SEED, owner.key().as_ref()], bump = user_account.bump, has_one = owner @ DexxerError::Unauthorized)]
     pub user_account: Account<'info, UserAccount>,
-    #[account(mut, seeds = [POOL_SEED, pool.mint.as_ref()], bump = pool.bump, has_one = vault_ata)]
+    // NOT `mut` (week-4 Task 1, same reasoning as `CreditDeposit.pool`): only the
+    // vault-authority signing seeds and `has_one = vault_ata`/`mint` are read here.
+    #[account(seeds = [POOL_SEED, pool.mint.as_ref()], bump = pool.bump, has_one = vault_ata)]
     pub pool: Account<'info, Pool>,
+    // Boxed (same reason as `config` below): this context is already at the SBF
+    // stack-frame limit — adding `pool_live` unboxed overflowed it by 8 bytes
+    // (`anchor build` autofixer finding, week-4 Task 1).
+    #[account(mut, seeds = [POOL_LIVE_SEED, pool.mint.as_ref()], bump = pool_live.bump)]
+    pub pool_live: Box<Account<'info, PoolLive>>,
     #[account(mut, token::mint = pool.mint, token::authority = owner)]
     pub owner_ata: Account<'info, TokenAccount>,
     #[account(mut)]
@@ -453,13 +479,13 @@ pub fn withdraw(ctx: Context<Withdraw>, amount: u64) -> Result<()> {
         .checked_sub(amount)
         .ok_or(DexxerError::MathOverflow)?;
     u.last_withdraw_slot = clock.slot;
-    let p = &mut ctx.accounts.pool;
-    p.capital_total = p
+    let live = &mut ctx.accounts.pool_live;
+    live.capital_total = live
         .capital_total
         .checked_sub(amount)
         .ok_or(DexxerError::MathOverflow)?;
-    let mint = p.mint;
-    let pool_bump = p.bump;
+    let mint = ctx.accounts.pool.mint;
+    let pool_bump = ctx.accounts.pool.bump;
     transfer_signed_by_pool(
         &ctx.accounts.token_program,
         &ctx.accounts.vault_ata,
@@ -627,6 +653,118 @@ pub fn init_permissions(ctx: Context<InitPermissions>) -> Result<()> {
         // members instead of re-creating, which the Magic program rejects on
         // an already-initialized account (`invalid account data for
         // instruction`).
+        if perm.owner == &PERMISSION_PROGRAM_ID {
+            UpdateEphemeralPermissionCpi {
+                payer: acc.clone(),
+                permissioned_account: acc.clone(),
+                permission: perm.clone(),
+                vault: ctx.accounts.ephemeral_vault.to_account_info(),
+                magic_program: ctx.accounts.magic_program.to_account_info(),
+                permission_program: ctx.accounts.permission_program.to_account_info(),
+                authority: acc.clone(),
+                authority_is_signer: false, // PDA signs via the seeds below
+                args,
+            }
+            .invoke_signed(&[seeds.as_slice()])?;
+        } else {
+            CreateEphemeralPermissionCpi {
+                payer: acc.clone(),
+                permissioned_account: acc.clone(),
+                permission: perm.clone(),
+                vault: ctx.accounts.ephemeral_vault.to_account_info(),
+                magic_program: ctx.accounts.magic_program.to_account_info(),
+                permission_program: ctx.accounts.permission_program.to_account_info(),
+                args,
+            }
+            .invoke_signed(&[seeds.as_slice()])?;
+        }
+    }
+    Ok(())
+}
+
+// Week-4 Task 2 (risk #24): `MarketRisk`/`PoolLive` are delegated to the ER
+// but were never made permissioned — anyone with an ER connection can read
+// them. Same Create/Update CPI pattern as `InitPermissions` above, but for
+// the two market-scoped private aggregates instead of the three per-user
+// PDAs, and with `build_admin_members` (crank OWNER_FLAGS, admin
+// VIEWER_FLAGS — neither account has a single trader-owner). NOTE: this file
+// is already large; kept here per the week-4 plan's placement (right after
+// `InitPermissions`) rather than a new file.
+#[derive(Accounts)]
+pub struct InitMarketPermissions<'info> {
+    // The permissioned account self-funds its permission rent (as
+    // `InitPermissions`); on an already-delegated PDA with no rent surplus
+    // this fails `InsufficientFundsForRent`. Caller must top it up first via
+    // the eSPL delegated-lamports transfer (`lamportsDelegatedTransferIx`,
+    // see `admin.ts`'s `fundMarketPermissions`); in-tx funding from the fee
+    // payer/raw SystemProgram/lamport moves is rejected by the ER (week 4, Task 3).
+    pub admin: Signer<'info>,
+    #[account(seeds = [CONFIG_SEED], bump = config.bump, has_one = admin @ DexxerError::Unauthorized)]
+    pub config: Box<Account<'info, Config>>,
+    #[account(seeds = [MARKET_SEED, &market.symbol], bump = market.bump)]
+    pub market: Box<Account<'info, Market>>,
+    #[account(mut, seeds = [RISK_SEED, market.key().as_ref()], bump = market_risk.bump, has_one = market)]
+    pub market_risk: Box<Account<'info, MarketRisk>>,
+    // Self-referential seed (mirrors `CommitAggregate`/`Trade`'s `pool_live`
+    // field): this context carries no separate `Pool` account to read the
+    // mint from.
+    #[account(mut, seeds = [POOL_LIVE_SEED, pool_live.mint.as_ref()], bump = pool_live.bump)]
+    pub pool_live: Box<Account<'info, PoolLive>>,
+    /// CHECK: permission PDA of `market_risk`, under the permission program
+    #[account(mut, seeds = [PERMISSION_SEED, market_risk.key().as_ref()], bump, seeds::program = PERMISSION_PROGRAM_ID)]
+    pub risk_permission: UncheckedAccount<'info>,
+    /// CHECK: permission PDA of `pool_live`
+    #[account(mut, seeds = [PERMISSION_SEED, pool_live.key().as_ref()], bump, seeds::program = PERMISSION_PROGRAM_ID)]
+    pub pool_live_permission: UncheckedAccount<'info>,
+    /// CHECK:
+    #[account(address = PERMISSION_PROGRAM_ID)]
+    pub permission_program: UncheckedAccount<'info>,
+    /// CHECK:
+    #[account(mut, address = EPHEMERAL_VAULT_ID)]
+    pub ephemeral_vault: UncheckedAccount<'info>,
+    /// CHECK:
+    #[account(address = MAGIC_PROGRAM_ID)]
+    pub magic_program: UncheckedAccount<'info>,
+}
+pub fn init_market_permissions(ctx: Context<InitMarketPermissions>) -> Result<()> {
+    // LiteSVM and the L1 base layer have no permission program deployed — a
+    // no-op here keeps the admin bootstrap call idempotent locally and on
+    // devnet regardless of whether it has run before (same executable-gate
+    // style as `commit.rs`'s `magic_program.executable` guard).
+    if !ctx.accounts.permission_program.to_account_info().executable {
+        return Ok(());
+    }
+    let members = build_admin_members(ctx.accounts.config.crank, ctx.accounts.config.admin);
+    let m = ctx.accounts.market.key();
+    let mint = ctx.accounts.pool_live.mint;
+    let rb = [ctx.accounts.market_risk.bump];
+    let lb = [ctx.accounts.pool_live.bump];
+    let pairs: [(AccountInfo, AccountInfo, Vec<&[u8]>); 2] = [
+        (
+            ctx.accounts.market_risk.to_account_info(),
+            ctx.accounts.risk_permission.to_account_info(),
+            vec![RISK_SEED, m.as_ref(), &rb],
+        ),
+        (
+            ctx.accounts.pool_live.to_account_info(),
+            ctx.accounts.pool_live_permission.to_account_info(),
+            vec![POOL_LIVE_SEED, mint.as_ref(), &lb],
+        ),
+    ];
+
+    for (acc, perm, seeds) in pairs.iter() {
+        let args = EphemeralMembersArgs {
+            is_private: true,
+            members: members.clone(),
+        };
+        // Same "owned by the permission program already?" signal as
+        // `InitPermissions` above (a freshly created `EphemeralPermission`
+        // has 0 lamports, so ownership — not `lamports() > 0` — is what
+        // detects "already exists"). `payer: acc.clone()`, self-funded
+        // (matches `InitPermissions`) — the caller must ensure both
+        // accounts carry rent surplus before calling this instruction (see
+        // `InitMarketPermissions`'s doc comment and `admin.ts`'s
+        // `fundMarketPermissions`).
         if perm.owner == &PERMISSION_PROGRAM_ID {
             UpdateEphemeralPermissionCpi {
                 payer: acc.clone(),

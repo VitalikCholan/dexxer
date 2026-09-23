@@ -81,6 +81,7 @@ jobs:
             tests/er/package-lock.json
             scripts/package-lock.json
             app/package-lock.json
+            services/relayer/package-lock.json
 
       - name: tests/er
         run: |
@@ -89,6 +90,20 @@ jobs:
           npx tsc --noEmit
           npm run selftest:hashes
 
+      - name: services/relayer
+        env:
+          DEXXER_IDL_DIR: ${{ github.workspace }}/app/src/idl
+        run: |
+          cd services/relayer
+          npm ci
+          npx tsc --noEmit
+          npm test
+
+      # Belt-and-braces: runs after services/relayer so a relayer node_modules
+      # is already installed by the time this step's independence from it
+      # gets exercised (scripts/crank-fallback/index.ts spawns the relayer as
+      # a child process, it does not import its TypeScript — see that file's
+      # header comment).
       - name: scripts
         run: |
           cd scripts

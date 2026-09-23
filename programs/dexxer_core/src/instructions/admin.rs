@@ -239,6 +239,14 @@ pub struct SeedPool<'info> {
     pub config: Account<'info, Config>,
     #[account(mut, seeds = [POOL_SEED, pool.mint.as_ref()], bump = pool.bump, has_one = vault_ata)]
     pub pool: Account<'info, Pool>,
+    // Controller ruling (week-4 Task 1 fix round 1, supersedes the original
+    // Pool-only decision): a post-devnet-migration `seed_pool` top-up (plausible
+    // during week-4 demos, when trader PnL has drained liquidity) must raise
+    // both records, or `PoolLive.capital_total == vault` breaks immediately.
+    // `Pool` here is the L1-visible seed record; `PoolLive` is the live ledger.
+    #[account(mut, seeds = [POOL_LIVE_SEED, pool_live.mint.as_ref()], bump = pool_live.bump,
+        constraint = pool_live.mint == pool.mint @ DexxerError::PoolLiveMismatch)]
+    pub pool_live: Account<'info, PoolLive>,
     #[account(mut, token::mint = pool.mint, token::authority = admin)]
     pub admin_ata: Account<'info, TokenAccount>,
     #[account(mut)]
@@ -260,6 +268,15 @@ pub fn seed_pool(ctx: Context<SeedPool>, amount: u64) -> Result<()> {
         .checked_add(amount)
         .ok_or(DexxerError::MathOverflow)?;
     p.protocol_liquidity = p
+        .protocol_liquidity
+        .checked_add(amount)
+        .ok_or(DexxerError::MathOverflow)?;
+    let live = &mut ctx.accounts.pool_live;
+    live.capital_total = live
+        .capital_total
+        .checked_add(amount)
+        .ok_or(DexxerError::MathOverflow)?;
+    live.protocol_liquidity = live
         .protocol_liquidity
         .checked_add(amount)
         .ok_or(DexxerError::MathOverflow)?;

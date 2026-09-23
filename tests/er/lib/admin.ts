@@ -24,6 +24,7 @@
 // faucet+seed_pool+delegate_pool block is identical between the two
 // profiles, so it is factored into `seedAndDelegatePool` below and shared.
 
+import { randomBytes } from "crypto";
 import { BN, type Program } from "@coral-xyz/anchor";
 import {
   Keypair,
@@ -35,8 +36,17 @@ import {
   sendAndConfirmTransaction,
 } from "@solana/web3.js";
 import { getOrCreateAssociatedTokenAccount, TOKEN_PROGRAM_ID, ASSOCIATED_TOKEN_PROGRAM_ID } from "@solana/spl-token";
-import { createTopUpEscrowInstruction, delegateSpl, escrowPdaFromEscrowAuthority } from "@magicblock-labs/ephemeral-rollups-sdk";
-import { NET, ORACLE, airdrop, baseConn, ER_VALIDATOR, loadOrCreateKey, waitDelegated } from "./env.js";
+import {
+  createTopUpEscrowInstruction,
+  delegateSpl,
+  escrowPdaFromEscrowAuthority,
+  EPHEMERAL_VAULT_ID,
+  lamportsDelegatedTransferIx,
+  MAGIC_PROGRAM_ID,
+  PERMISSION_PROGRAM_ID,
+  permissionPdaFromAccount,
+} from "@magicblock-labs/ephemeral-rollups-sdk";
+import { NET, ORACLE, airdrop, baseConn, ER_VALIDATOR, loadOrCreateKey, sendAndConfirmIx, teeConn, waitDelegated } from "./env.js";
 import { crankSignerPda } from "./crank-signer.js";
 import {
   ACTION_ESCROW_INDEX,
@@ -90,6 +100,8 @@ export interface Bootstrapped {
   marketRisk: PublicKey;
   pool: PublicKey;
   poolAta: PublicKey;
+  /** Private live pool counters (week 4, Task 1) — see `pdas.poolLive`. Both `bootstrap()`/`bootstrapDevnet()` now init+delegate it (`initAndDelegatePoolLive`, Task 3, week 4); `bootstrapDevnet()` additionally makes it (+`marketRisk`) permissioned `[crank, admin]` via `init_market_permissions` (Task 3 migration step 10). */
+  poolLive: PublicKey;
   feed: PublicKey;
   /** `commit_aggregate`'s delegated CPI-payer PDA (Task 5 fix round 1 — see admin.rs `FeeEscrow`). */
   feeEscrow: PublicKey;
@@ -162,6 +174,7 @@ async function seedAndDelegatePool(
         .faucetInit(new BN(POOL_SEED_AMOUNT.toString()))
         .accounts({
           owner: admin.publicKey,
+          payer: admin.publicKey,
           config,
           faucet: faucetPda,
           dusdcMint: mint,
@@ -196,6 +209,9 @@ async function seedAndDelegatePool(
         admin: admin.publicKey,
         config,
         pool,
+        // Controller ruling (week-4 Task 1 fix round 1): seed_pool now writes
+        // both Pool and PoolLive, so this call needs pool_live too.
+        poolLive: pdas.poolLive(mint),
         adminAta: adminAta.address,
         vaultAta: poolAta,
         tokenProgram: TOKEN_PROGRAM_ID,
@@ -348,6 +364,190 @@ async function initAndDelegateBalancesRoot(core: Program, admin: Keypair, config
     console.log("delegate_balances_root: already delegated, skipped");
   }
   return balancesRoot;
+}
+
+/**
+ * Week 4 (Task 3, migration steps 8-9): create + delegate the `PoolLive` PDA
+ * that every trading/money instruction now writes (Task 1) — same
+ * idempotent init-then-delegate shape as `initAndDelegateFeeEscrow`/
+ * `initAndDelegateBalancesRoot` above. `init_pool_live` copies its starting
+ * counters from `Pool`'s current on-chain state — on a fresh env that's
+ * zero (must run BEFORE `seedAndDelegatePool`'s `seed_pool` call, which now
+ * hard-requires `pool_live` to exist as an Anchor account constraint — see
+ * `SeedPool` in admin.rs); on devnet, `Pool` is already seeded from weeks
+ * 1-3, so this copies its current non-zero counters (the migration case).
+ * Both base-layer (L1) instructions, like `init_pool`/`delegate_pool`.
+ * Idempotent: skips `init_pool_live` if the PDA already exists, skips
+ * `delegate_pool_live` if already delegated.
+ */
+async function initAndDelegatePoolLive(
+  core: Program,
+  admin: Keypair,
+  config: PublicKey,
+  pool: PublicKey,
+  mint: PublicKey,
+  sigs: Record<string, string>,
+): Promise<PublicKey> {
+  const poolLive = pdas.poolLive(mint);
+  const info = await baseConn.getAccountInfo(poolLive, "confirmed");
+  if (!info) {
+    const sig = await core.methods
+      .initPoolLive()
+      .accounts({ admin: admin.publicKey, config, pool, poolLive, systemProgram: SystemProgram.programId })
+      .rpc();
+    sigs.initPoolLive = sig;
+    console.log("init_pool_live", sig);
+  } else {
+    console.log("init_pool_live: exists, skipped");
+  }
+  const infoNow = info ?? (await baseConn.getAccountInfo(poolLive, "confirmed"));
+  if (!infoNow || !infoNow.owner.equals(DELEGATION_PROGRAM_ID)) {
+    const t = delegationTriple(poolLive, DEXXER_CORE_PROGRAM_ID);
+    const sig = await core.methods
+      .delegatePoolLive()
+      .accounts({
+        admin: admin.publicKey,
+        config,
+        dusdcMint: mint,
+        bufferPoolLive: t.buffer,
+        delegationRecordPoolLive: t.record,
+        delegationMetadataPoolLive: t.metadata,
+        poolLive,
+        ownerProgram: DEXXER_CORE_PROGRAM_ID,
+        delegationProgram: DELEGATION_PROGRAM_ID,
+        systemProgram: SystemProgram.programId,
+      })
+      .rpc();
+    sigs.delegatePoolLive = sig;
+    console.log("delegate_pool_live", sig);
+    await waitDelegated(baseConn, poolLive, "pool_live");
+  } else {
+    console.log("delegate_pool_live: already delegated, skipped");
+  }
+  return poolLive;
+}
+
+/** Rent for a ~200-byte `EphemeralPermission` account is ≈1.5–2.5M lamports on this ER; 5M gives headroom. */
+const MIN_PERMISSION_SURPLUS = 5_000_000;
+
+/**
+ * Week 4 (Task 3 fix round 1): `init_market_permissions` needs
+ * `market_risk`/`pool_live` to self-fund their new `EphemeralPermission`
+ * account's rent (matching `InitPermissions`'s pattern), but on this
+ * devnet neither PDA carries any lamport surplus above its own
+ * rent-exempt minimum, so that self-funding CPI fails with
+ * `InsufficientFundsForRent` (fully investigated in fix round 0 — see
+ * `instructions/user.rs`'s `InitMarketPermissions` doc comment for the
+ * ruled-out in-transaction mechanisms). The sanctioned fix: top up each
+ * PDA on the base layer via the eSPL sponsored delegated-lamports
+ * transfer (`lamportsDelegatedTransferIx`, already used by
+ * `scripts/admin/fund-fee-payer.ts` for `FeeEscrow`) — it requires the
+ * destination to already be delegated, which both `market_risk` (week 1)
+ * and `pool_live` (`initAndDelegatePoolLive`, just above) are by the time
+ * this runs. Idempotent: skips a PDA whose ER balance already meets
+ * `MIN_PERMISSION_SURPLUS`.
+ */
+async function fundMarketPermissions(admin: Keypair, marketRisk: PublicKey, poolLive: PublicKey, sigs: Record<string, string>): Promise<void> {
+  const conn = await teeConn(admin);
+  const targets: [string, PublicKey][] = [
+    ["marketRisk", marketRisk],
+    ["poolLive", poolLive],
+  ];
+  for (const [label, dest] of targets) {
+    const before = await conn.getBalance(dest, "confirmed");
+    if (before >= MIN_PERMISSION_SURPLUS) {
+      console.log(`fund_market_permissions: ${label} already has surplus (${before} lamports), skipped`);
+      continue;
+    }
+    const salt = randomBytes(32);
+    const ix = lamportsDelegatedTransferIx(admin.publicKey, dest, BigInt(MIN_PERMISSION_SURPLUS), salt);
+    const sig = await sendAndConfirmTransaction(baseConn, new Transaction().add(ix), [admin], { commitment: "confirmed" });
+    sigs[`fundMarketPermissions.${label}`] = sig;
+    console.log(`lamportsDelegatedTransferIx(${label})`, sig, "amount", MIN_PERMISSION_SURPLUS, "salt", Buffer.from(salt).toString("hex"));
+
+    const deadline = Date.now() + 60_000;
+    let after = before;
+    while (Date.now() < deadline) {
+      after = await conn.getBalance(dest, "confirmed");
+      if (after >= MIN_PERMISSION_SURPLUS) break;
+      await new Promise((r) => setTimeout(r, 2_000));
+    }
+    console.log(`fund_market_permissions: ${label} ER balance ${before} -> ${after} lamports`);
+    if (after < MIN_PERMISSION_SURPLUS) {
+      throw new Error(`fund_market_permissions: ${label} ER balance still ${after} < ${MIN_PERMISSION_SURPLUS} lamports after 60s (sig ${sig})`);
+    }
+  }
+}
+
+/**
+ * Week 4 (Task 3, migration step 10, devnet only): make `MarketRisk` and
+ * `PoolLive` permissioned `[crank(owner), admin(viewer)]` in one ER call —
+ * `init_market_permissions` (Task 2), closing risk #24 (public-in-ER
+ * market/pool aggregates — see CLAUDE.md's Architecture note). Signed by
+ * `admin` (per the program's `has_one = admin` check) via its own owner-TEE
+ * token — matches the original brief. Caller must run
+ * `fundMarketPermissions` first (see above) so the self-funding CPI inside
+ * this instruction has rent to spend; the instruction itself no longer
+ * tolerates a per-account CPI failure (fix round 1 — see
+ * `instructions/user.rs`), so a real failure here throws.
+ */
+async function initMarketPermissions(
+  admin: Keypair,
+  config: PublicKey,
+  market: PublicKey,
+  marketRisk: PublicKey,
+  poolLive: PublicKey,
+  sigs: Record<string, string>,
+): Promise<{ riskPermissioned: boolean; poolLivePermissioned: boolean }> {
+  const conn = await teeConn(admin);
+  const riskPermission = permissionPdaFromAccount(marketRisk);
+  const poolLivePermission = permissionPdaFromAccount(poolLive);
+  const [riskPermInfoBefore, poolLivePermInfoBefore] = await Promise.all([
+    conn.getAccountInfo(riskPermission, "confirmed"),
+    conn.getAccountInfo(poolLivePermission, "confirmed"),
+  ]);
+  const alreadyDone =
+    riskPermInfoBefore !== null &&
+    riskPermInfoBefore.owner.equals(PERMISSION_PROGRAM_ID) &&
+    poolLivePermInfoBefore !== null &&
+    poolLivePermInfoBefore.owner.equals(PERMISSION_PROGRAM_ID);
+  if (alreadyDone) {
+    console.log("init_market_permissions: risk_permission/pool_live_permission exist, skipped");
+    return { riskPermissioned: true, poolLivePermissioned: true };
+  }
+  const core = dexxerCoreProgram(conn, admin);
+  const ix = await core.methods
+    .initMarketPermissions()
+    .accounts({
+      admin: admin.publicKey,
+      config,
+      market,
+      marketRisk,
+      poolLive,
+      riskPermission,
+      poolLivePermission,
+      permissionProgram: PERMISSION_PROGRAM_ID,
+      ephemeralVault: EPHEMERAL_VAULT_ID,
+      magicProgram: MAGIC_PROGRAM_ID,
+    })
+    .instruction();
+  const sig = await sendAndConfirmIx(conn, admin, ix);
+  sigs.initMarketPermissions = sig;
+  console.log("init_market_permissions", sig);
+  // Fix round 1: the instruction now propagates every CPI error with `?`
+  // (matching `init_permissions`) instead of tolerating a per-account
+  // failure, so a landed `sig` already means both CPIs succeeded on-chain.
+  // This post-call ownership check is the caller's own positive
+  // confirmation of that (not a defense against silent tolerance) — it's
+  // what `bootstrapDevnet()` throws on if either flag comes back false.
+  const [riskPermInfoAfter, poolLivePermInfoAfter] = await Promise.all([
+    conn.getAccountInfo(riskPermission, "confirmed"),
+    conn.getAccountInfo(poolLivePermission, "confirmed"),
+  ]);
+  const riskPermissioned = riskPermInfoAfter !== null && riskPermInfoAfter.owner.equals(PERMISSION_PROGRAM_ID);
+  const poolLivePermissioned = poolLivePermInfoAfter !== null && poolLivePermInfoAfter.owner.equals(PERMISSION_PROGRAM_ID);
+  console.log(`init_market_permissions outcome: marketRisk permissioned=${riskPermissioned}, poolLive permissioned=${poolLivePermissioned}`);
+  return { riskPermissioned, poolLivePermissioned };
 }
 
 const ACTION_ESCROW_TOP_UP_LAMPORTS = 0.05 * LAMPORTS_PER_SOL;
@@ -561,13 +761,17 @@ export async function bootstrap(): Promise<Bootstrapped> {
     console.log("delegate_market: already delegated, skipped");
   }
 
+  // --- init + delegate PoolLive (Task 0/1 week 4): must run BEFORE
+  // seed_pool below, which now hard-requires pool_live to exist. ---
+  await initAndDelegatePoolLive(core, admin, config, pool, mint, sigs);
+
   // --- admin dUSDC ATA + faucet + seed_pool + delegate_pool (L1, before delegating the pool) ---
   await seedAndDelegatePool(core, admin, config, mintAuth, mint, pool, poolAta, sigs);
 
   // --- init + delegate the fee-escrow PDA (Task 5 fix round 1) ---
   const feeEscrow = await initAndDelegateFeeEscrow(core, admin, config, sigs);
 
-  return { admin, mint, market, marketRisk, pool, poolAta, feed, feeEscrow, sigs };
+  return { admin, mint, market, marketRisk, pool, poolAta, poolLive: pdas.poolLive(mint), feed, feeEscrow, sigs };
 }
 
 export async function bootstrapDevnet(): Promise<BootstrappedDevnet> {
@@ -720,6 +924,15 @@ export async function bootstrapDevnet(): Promise<BootstrappedDevnet> {
     console.log("delegate_market: already delegated, skipped");
   }
 
+  // --- init + delegate PoolLive (Task 0/1 week 4): must run BEFORE
+  // seed_pool below, which hard-requires pool_live to exist as an Anchor
+  // account constraint (see `SeedPool` in admin.rs) — matches `bootstrap()`'s
+  // order. On a fresh devnet this is load-bearing (fix wave, 23.09.2026):
+  // `seed_pool` would fail outright without it. On an already-migrated
+  // devnet (weeks 1-3 state), `init_pool_live` just copies Pool's current
+  // non-zero counters and the later `seed_pool` call is a no-op. ---
+  const poolLive = await initAndDelegatePoolLive(core, admin, config, pool, mint, sigs);
+
   // --- admin dUSDC ATA + faucet + seed_pool + delegate_pool (shared with `bootstrap()`) ---
   await seedAndDelegatePool(core, admin, config, mintAuth, mint, pool, poolAta, sigs);
 
@@ -730,5 +943,24 @@ export async function bootstrapDevnet(): Promise<BootstrappedDevnet> {
   const balancesRoot = await initAndDelegateBalancesRoot(core, admin, config, sigs);
   const actionEscrow = await topUpActionEscrow(admin, feePayer, sigs);
 
-  return { admin, mint, market, marketRisk, pool, poolAta, feed, feeEscrow, sigs, feePayer, balancesRoot, actionEscrow };
+  // --- PoolLive migration (Task 3, steps 9-10): make MarketRisk + PoolLive
+  // (already init+delegated above) permissioned [crank, admin] on the ER
+  // (risk #24). Fix round 1: top up both PDAs' ER rent surplus first (see
+  // `fundMarketPermissions`'s doc comment), then `init_market_permissions`
+  // must succeed — no tolerance here, bootstrap must not silently leave
+  // risk #24 open. Fix round 2: the tx landing is not sufficient proof —
+  // `initMarketPermissions`'s own post-call ownership check can come back
+  // false for one account even when the transaction itself didn't throw
+  // (e.g. a partially-applied state some future Rust change might allow),
+  // so check its returned flags here too rather than only relying on the
+  // instruction to throw.
+  await fundMarketPermissions(admin, marketRisk, poolLive, sigs);
+  const marketPerm = await initMarketPermissions(admin, config, market, marketRisk, poolLive, sigs);
+  if (!marketPerm.riskPermissioned || !marketPerm.poolLivePermissioned) {
+    throw new Error(
+      `init_market_permissions: landed but did not permission everything — marketRisk permissioned=${marketPerm.riskPermissioned}, poolLive permissioned=${marketPerm.poolLivePermissioned}`,
+    );
+  }
+
+  return { admin, mint, market, marketRisk, pool, poolAta, poolLive, feed, feeEscrow, sigs, feePayer, balancesRoot, actionEscrow };
 }

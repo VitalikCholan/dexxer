@@ -62,7 +62,7 @@ export function useTradeSession(): TradeSession {
       try {
         const sessionKp = await getSessionKeypair(owner!)
         if (!sessionKp) {
-          throw new Error('No session key on this device yet — finish onboarding first (Onboard tab)')
+          throw new Error('No session key on this device yet — finish onboarding first')
         }
         const configPda = pdas.config()
         const configInfo = await baseConn.getAccountInfo(configPda, 'confirmed')
@@ -76,7 +76,7 @@ export function useTradeSession(): TradeSession {
           config: configPda,
           market: marketPda,
           marketRisk: pdas.marketRisk(marketPda),
-          pool: pdas.pool(mint),
+          poolLive: pdas.poolLive(mint),
           userAccount: pdas.userAccount(owner!),
           position: pdas.position(owner!, marketPda),
           feed: pdas.feedUnder(oracleProgram),

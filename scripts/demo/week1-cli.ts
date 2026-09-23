@@ -171,7 +171,9 @@ async function main() {
     );
 
     console.log("=== 6. invariant from ER state ===");
-    const pool = await accountNs(coreEr).pool.fetch(boot.pool);
+    // week-4 Task 1: trading writes PoolLive now, not the public Pool
+    // snapshot (only commit_aggregate publishes that) — read the live counters.
+    const pool = await accountNs(coreEr).poolLive.fetch(boot.poolLive);
     const userA = await accountNs(coreEr).userAccount.fetch(A.userAccount);
     const userB = await accountNs(coreEr).userAccount.fetch(B.userAccount);
     // Same formula as tests/litesvm/src/lib.rs's assert_invariant: sum of

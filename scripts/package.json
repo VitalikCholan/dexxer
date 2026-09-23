@@ -3,8 +3,9 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "crank": "tsx crank-fallback/index.ts",
-    "week1": "tsx demo/week1-cli.ts"
+    "crank": "npm --prefix ../services/relayer run start",
+    "week1": "tsx demo/week1-cli.ts",
+    "admin:schedule-eternal": "tsx admin/schedule-eternal.ts"
   },
   "dependencies": {
     "@coral-xyz/anchor": "0.32.1",
