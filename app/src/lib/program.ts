@@ -204,19 +204,49 @@ export async function readPosition(conn: Connection, position: PublicKey): Promi
 }
 
 /**
- * `Market.mark` offset: disc(8) + version(1) + symbol(8) + feed(32) +
- * max_lev_bps(4) + imr_bps(4) + mmr_bps(4) + open_fee_bps(2) + close_fee_bps(2) +
- * liq_fee_bps(2) + oi_cap(8) + max_position(8) + min_size(8) + max_staleness_secs(8) +
- * max_conf_bps(2) + max_deviation_bps(2).
+ * `Market` field offsets (`programs/dexxer_core/src/state/market.rs`,
+ * verified 23-Sep-2026), decomposed one field at a time (not a single
+ * collapsed sum) so Task 10's ticket-math fields (`imr_bps`/`mmr_bps`/
+ * `open_fee_bps`) can each get their own named offset:
+ * disc(8) + version(1) + symbol(8) + feed(32) + max_lev_bps(4) + imr_bps(4)
+ * + mmr_bps(4) + open_fee_bps(2) + close_fee_bps(2) + liq_fee_bps(2) +
+ * oi_cap(8) + max_position(8) + min_size(8) + max_staleness_secs(8) +
+ * max_conf_bps(2) + max_deviation_bps(2) -> mark.
  */
-const MARKET_MARK_OFFSET = DISCRIMINATOR_LEN + 1 + 8 + 32 + 4 + 4 + 4 + 2 + 2 + 2 + 8 + 8 + 8 + 8 + 2 + 2
+const MARKET_FEED_OFFSET = DISCRIMINATOR_LEN + 1 + 8
+const MARKET_MAX_LEV_BPS_OFFSET = MARKET_FEED_OFFSET + 32
+const MARKET_IMR_BPS_OFFSET = MARKET_MAX_LEV_BPS_OFFSET + 4
+const MARKET_MMR_BPS_OFFSET = MARKET_IMR_BPS_OFFSET + 4
+const MARKET_OPEN_FEE_BPS_OFFSET = MARKET_MMR_BPS_OFFSET + 4
+const MARKET_CLOSE_FEE_BPS_OFFSET = MARKET_OPEN_FEE_BPS_OFFSET + 2
+const MARKET_LIQ_FEE_BPS_OFFSET = MARKET_CLOSE_FEE_BPS_OFFSET + 2
+const MARKET_OI_CAP_OFFSET = MARKET_LIQ_FEE_BPS_OFFSET + 2
+const MARKET_MAX_POSITION_OFFSET = MARKET_OI_CAP_OFFSET + 8
+const MARKET_MIN_SIZE_OFFSET = MARKET_MAX_POSITION_OFFSET + 8
+const MARKET_MAX_STALENESS_SECS_OFFSET = MARKET_MIN_SIZE_OFFSET + 8
+const MARKET_MAX_CONF_BPS_OFFSET = MARKET_MAX_STALENESS_SECS_OFFSET + 8
+const MARKET_MAX_DEVIATION_BPS_OFFSET = MARKET_MAX_CONF_BPS_OFFSET + 2
+const MARKET_MARK_OFFSET = MARKET_MAX_DEVIATION_BPS_OFFSET + 2
 
 export interface DecodedMarket {
   mark: bigint
+  /** Task 10: ticket-math params (`app/src/lib/math.ts`'s `fee`/`liqPrice`/`requiredMargin`) — bps values fit comfortably in `number`. */
+  maxLevBps: number
+  imrBps: number
+  mmrBps: number
+  openFeeBps: number
+  closeFeeBps: number
 }
 
 export function decodeMarket(data: Buffer): DecodedMarket {
-  return { mark: data.readBigUInt64LE(MARKET_MARK_OFFSET) }
+  return {
+    mark: data.readBigUInt64LE(MARKET_MARK_OFFSET),
+    maxLevBps: data.readUInt32LE(MARKET_MAX_LEV_BPS_OFFSET),
+    imrBps: data.readUInt32LE(MARKET_IMR_BPS_OFFSET),
+    mmrBps: data.readUInt32LE(MARKET_MMR_BPS_OFFSET),
+    openFeeBps: data.readUInt16LE(MARKET_OPEN_FEE_BPS_OFFSET),
+    closeFeeBps: data.readUInt16LE(MARKET_CLOSE_FEE_BPS_OFFSET),
+  }
 }
 
 /** Read+decode `Market` off `conn`. `null` if the account doesn't exist. */
@@ -341,6 +371,53 @@ export async function closePosition(
   return sendSessionTx(conn, session, [ix])
 }
 
+/**
+ * `increase_position` on the ER, signed ONLY by `session` (Task 10 —
+ * Positions screen's "Increase" sheet). Same `Trade` context/limit-price
+ * direction as `open_position` (Long: price <= limit; Short: price >=
+ * limit) — `programs/dexxer_core/src/instructions/trade.rs`.
+ */
+export async function increasePosition(
+  conn: Connection,
+  session: Keypair,
+  accounts: TradeAccounts,
+  addSizeSol: number,
+  addMarginUsd: number,
+  limitUsdPrice: number,
+): Promise<string> {
+  const core = dexxerCoreProgram(conn, session.publicKey)
+  const ix = await core.methods
+    .increasePosition(
+      new BN(solSize(addSizeSol).toString()),
+      new BN(usdAmount(addMarginUsd).toString()),
+      new BN(usdAmount(limitUsdPrice).toString()),
+    )
+    .accounts({ signer: session.publicKey, ...accounts })
+    .instruction()
+  return sendSessionTx(conn, session, [ix])
+}
+
+/**
+ * `decrease_position` on the ER, signed ONLY by `session` (Task 10 —
+ * Positions screen's "Decrease" sheet). Limit-price direction is the
+ * OPPOSITE of open/increase (Long: price >= limit; Short: price <= limit —
+ * same direction as `close_position`, `trade.rs`).
+ */
+export async function decreasePosition(
+  conn: Connection,
+  session: Keypair,
+  accounts: TradeAccounts,
+  closeSizeSol: number,
+  limitUsdPrice: number,
+): Promise<string> {
+  const core = dexxerCoreProgram(conn, session.publicKey)
+  const ix = await core.methods
+    .decreasePosition(new BN(solSize(closeSizeSol).toString()), new BN(usdAmount(limitUsdPrice).toString()))
+    .accounts({ signer: session.publicKey, ...accounts })
+    .instruction()
+  return sendSessionTx(conn, session, [ix])
+}
+
 // --- known error codes (programs/dexxer_core/src/errors.rs) -> short messages ---
 //
 // Anchor's `#[error_code]` numbers variants from 6000, in declared order;
@@ -422,6 +499,45 @@ const USER_ACCOUNT_EXIT_SALT_OFFSET =
 
 export function readUserAccountExitSalt(data: Buffer): Uint8Array {
   return Uint8Array.from(data.subarray(USER_ACCOUNT_EXIT_SALT_OFFSET, USER_ACCOUNT_EXIT_SALT_OFFSET + 32))
+}
+
+/**
+ * Task 10: `UserAccount.session_expiry` (i64 — signed, unlike every other
+ * field this file reads off `UserAccount`) and `.locked_margin`, plus a
+ * `decodeUserAccount` aggregate for the Account/Trade screens (Available =
+ * `free_margin`, Locked = `locked_margin`, "session active/expired" =
+ * `session_expiry` vs. wall-clock `now`). Offsets: `session_expiry` sits
+ * right after `session_key`(32); `locked_margin` right after `free_margin`(8)
+ * — both already fixed-offset per the block above.
+ */
+const USER_ACCOUNT_SESSION_EXPIRY_OFFSET = USER_ACCOUNT_SESSION_KEY_OFFSET + 32
+const USER_ACCOUNT_LOCKED_MARGIN_OFFSET = USER_ACCOUNT_FREE_MARGIN_OFFSET + 8
+
+export function readUserAccountSessionExpiry(data: Buffer): bigint {
+  return data.readBigInt64LE(USER_ACCOUNT_SESSION_EXPIRY_OFFSET)
+}
+
+export function readUserAccountLockedMargin(data: Buffer): bigint {
+  return data.readBigUInt64LE(USER_ACCOUNT_LOCKED_MARGIN_OFFSET)
+}
+
+export interface DecodedUserAccount {
+  sessionKey: PublicKey
+  /** Unix seconds — compare against `Math.floor(Date.now() / 1000)`. */
+  sessionExpiry: bigint
+  freeMargin: bigint
+  lockedMargin: bigint
+  exitSalt: Uint8Array
+}
+
+export function decodeUserAccount(data: Buffer): DecodedUserAccount {
+  return {
+    sessionKey: readUserAccountSessionKey(data),
+    sessionExpiry: readUserAccountSessionExpiry(data),
+    freeMargin: readUserAccountFreeMargin(data),
+    lockedMargin: readUserAccountLockedMargin(data),
+    exitSalt: readUserAccountExitSalt(data),
+  }
 }
 
 /**
