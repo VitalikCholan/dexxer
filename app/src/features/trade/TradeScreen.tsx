@@ -38,8 +38,8 @@ function fmtUsd(n: number): string {
 }
 
 export function TradeScreen() {
-  const { colors, space } = useTheme()
-  const title = useTextStyle('title', { mono: true })
+  const { colors, space, radius } = useTheme()
+  const display = useTextStyle('display', { mono: true })
   const body = useTextStyle('body')
   const caption = useTextStyle('caption')
 
@@ -57,6 +57,7 @@ export function TradeScreen() {
   const hasOpenPosition = positionLive.value?.state === 'Open'
   const marketMark = marketLive.value?.mark ?? null
   const markUsd = mark.data?.price ?? marketMark
+  const markUsdNum = markUsd !== null ? Number(markUsd) / 1e6 : null
 
   // Single source of truth for "is the oracle good enough to trade on" — the
   // freshness dot, the paused banner, and the Open button's `disabled` all
@@ -120,35 +121,51 @@ export function TradeScreen() {
   return (
     <AppPage>
       <ScrollView contentContainerStyle={{ gap: space.lg, paddingVertical: space.lg }}>
-        <View style={{ gap: space.xs }}>
-          <Text style={[body, { color: colors.textSecondary }]}>SOL-PERP</Text>
-          <View style={{ flexDirection: 'row', alignItems: 'baseline', gap: space.sm }}>
-            <Text style={[title, { color: colors.textPrimary }]}>
-              {markUsd !== null ? `$${fmtUsd(Number(markUsd) / 1e6)}` : '—'}
+        <View style={{ flexDirection: 'row', alignItems: 'flex-end', justifyContent: 'space-between', gap: space.md }}>
+          <View style={{ gap: space.xs }}>
+            <Text style={[caption, { color: colors.textSecondary }]}>SOL-PERP</Text>
+            <Text style={[display, { color: colors.textPrimary }]}>
+              {markUsdNum !== null ? `$${fmtUsd(markUsdNum)}` : '—'}
             </Text>
+          </View>
+          <View style={{ alignItems: 'flex-end', gap: space.sm }}>
             {pctChange !== null ? (
               <Text style={[body, { color: pctChange >= 0 ? colors.long : colors.short }]}>
                 {pctChange >= 0 ? '+' : ''}
                 {pctChange.toFixed(1)}%
               </Text>
             ) : null}
-          </View>
-          <View style={{ flexDirection: 'row', alignItems: 'center', gap: space.xs }}>
-            <View style={{ width: 6, height: 6, borderRadius: 3, backgroundColor: dotColor }} />
-            <Text style={[caption, { color: colors.textTertiary }]}>Oracle · Pyth Lazer</Text>
+            <View
+              style={{
+                flexDirection: 'row',
+                alignItems: 'center',
+                gap: space.xs,
+                paddingHorizontal: space.sm,
+                paddingVertical: space.xs,
+                borderWidth: 1,
+                borderColor: colors.border,
+                borderRadius: radius.pill,
+              }}
+            >
+              <View style={{ width: 6, height: 6, borderRadius: 3, backgroundColor: dotColor }} />
+              <Text style={[caption, { color: colors.textSecondary }]}>Pyth Lazer</Text>
+            </View>
           </View>
         </View>
 
-        <Segment
-          value={tf}
-          onChange={setTf}
-          options={[
-            { value: '1m', label: '1m' },
-            { value: '5m', label: '5m' },
-            { value: '15m', label: '15m' },
-          ]}
-        />
-        <PriceChart tf={tf} />
+        <View style={{ gap: space.sm }}>
+          <PriceChart tf={tf} markUsd={markUsdNum} />
+          <Segment
+            compact
+            value={tf}
+            onChange={setTf}
+            options={[
+              { value: '1m', label: '1m' },
+              { value: '5m', label: '5m' },
+              { value: '15m', label: '15m' },
+            ]}
+          />
+        </View>
 
         {oracle.reason === 'loading' ? (
           <Skeleton lines={1} />

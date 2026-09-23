@@ -120,16 +120,22 @@ export function TradeTicket({
           { value: 'short', label: 'Short' },
         ]}
       />
-      <Input label="Size" value={sizeSol} onChangeText={setSizeSol} suffix="SOL" keyboardType="decimal-pad" />
-      <Input
-        label="Margin"
-        value={marginUsd}
-        onChangeText={setMarginUsd}
-        suffix="dUSDC"
-        keyboardType="decimal-pad"
-        hint={`Available: ${availableUsd} dUSDC`}
-        onMax={freeMarginUsd !== null ? () => setMarginUsd(usd(freeMarginUsd)) : undefined}
-      />
+      <View style={{ flexDirection: 'row', gap: space.md }}>
+        <View style={{ flex: 1 }}>
+          <Input label="Size" value={sizeSol} onChangeText={setSizeSol} suffix="SOL" keyboardType="decimal-pad" />
+        </View>
+        <View style={{ flex: 1 }}>
+          <Input
+            label="Margin"
+            value={marginUsd}
+            onChangeText={setMarginUsd}
+            suffix="dUSDC"
+            keyboardType="decimal-pad"
+            onMax={freeMarginUsd !== null ? () => setMarginUsd(usd(freeMarginUsd)) : undefined}
+          />
+        </View>
+      </View>
+      <Text style={[caption, { color: colors.textTertiary }]}>Available: {availableUsd} dUSDC</Text>
       <LeverageSlider value={leverage} onChange={setLeverage} />
       <View style={{ gap: space.xs }}>
         <Row label="Entry ≈" value={markUsd !== null ? `$${usd(markUsd)}` : '—'} />
