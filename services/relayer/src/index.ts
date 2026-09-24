@@ -31,7 +31,9 @@
 // (Same pattern scripts/crank-fallback/index.ts used before this move.)
 
 import express from "express";
-import { Connection } from "@solana/web3.js";
+import { Connection, PublicKey } from "@solana/web3.js";
+
+type PublicKeyT = InstanceType<typeof PublicKey>;
 import { createPool, getMeta, migrate, setMeta } from "./db.js";
 import { computeSchedulerActive, healthRouter } from "./health.js";
 import { shutdown } from "./shutdown.js";
@@ -53,7 +55,7 @@ if ((process.env.DEXXER_NET ?? "local") === "devnet") {
 const { keypairFromEnv } = await import("./keys.js");
 const { COMMIT_INTERVAL_TICKS, COMMIT_MAX_ACTIONS, startCrank, requestStop } = await import("./crank.js");
 const { NET, BASE, ER, ER_WS } = await import("../../../tests/er/lib/env.js");
-const { pdas } = await import("../../../tests/er/lib/program.js");
+const { accountNs, dexxerCoreProgram, pdas } = await import("../../../tests/er/lib/program.js");
 const { startMarketWatch } = await import("./marketWatch.js");
 
 const cfg: RelayerConfig = {
@@ -144,16 +146,29 @@ if (cfg.sponsorEnabled && !pool) {
   console.warn("sponsor: SPONSOR_ENABLED=true but no DATABASE_URL — /sponsor disabled (needs Postgres for the rate-limit store)");
 } else if (cfg.sponsorEnabled && pool) {
   const store = pgSponsorStore(pool);
+  // Week-5 final review M2: the only mint a sponsored ATA may be created for.
+  // Read once at boot from the public base `Config` (no secret involved, same
+  // source crank.ts uses for the `Pool` PDAs). If this read fails the endpoint
+  // still starts, but every ATA instruction is then rejected (fail-closed in
+  // `checkPositions`) — a loud, recoverable state, not a silent drain hole.
+  let dusdcMint: PublicKeyT | undefined;
+  try {
+    const cfgAcc = await accountNs(dexxerCoreProgram(baseConn, cfg.feePayer)).config.fetch(pdas.config());
+    dusdcMint = cfgAcc.dusdcMint as PublicKeyT;
+  } catch (e) {
+    console.error("sponsor: could not read Config.dusdcMint from base — ATA sponsoring will be refused", String(e));
+  }
   app.use(
     sponsorRouter({
       feePayer: cfg.feePayer,
       store,
       estimateLamports: simulateCostEstimator(baseConn, cfg.feePayer),
       dailyBudgetSol: sponsorDailyBudgetSol,
+      dusdcMint,
     }),
   );
   getSponsorHealthSnapshot = sponsorSnapshot(store);
-  console.log(`sponsor: /sponsor enabled (daily budget ${sponsorDailyBudgetSol} SOL)`);
+  console.log(`sponsor: /sponsor enabled (daily budget ${sponsorDailyBudgetSol} SOL, dUSDC mint ${dusdcMint ? dusdcMint.toBase58() : "UNKNOWN — ATA refused"})`);
 }
 
 // Task 7: watches the public `Market` account (unauthenticated ER read, see

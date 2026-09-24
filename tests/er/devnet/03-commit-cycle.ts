@@ -111,7 +111,7 @@ async function main() {
     const escrowBefore = await feePayerConn.getBalance(boot.feeEscrow, "confirmed").catch(() => -1);
     try {
       const ix = await core.methods
-        .commitAggregate()
+        .commitAggregate(4)
         .accounts({
           config,
           payer: feePayer.publicKey,

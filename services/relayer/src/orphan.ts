@@ -59,7 +59,18 @@ export interface OrphanQueueRow {
 export interface OrphanCycleDeps {
   /** ER, crank token: every decodable `DisclosureQueue` in the rollup. */
   listQueues(): Promise<OrphanQueueRow[]>;
-  /** ER, crank token: the owner's `UserAccount` as the ER serves it — `null` when absent or undecodable. */
+  /**
+   * ER, crank token: the owner's `UserAccount` as the ER serves it.
+   *
+   * CONTRACT (week-5 final review M5 — the rationale used to live only in the
+   * implementation's catch block): `null` means "not there" — absent, empty,
+   * or owned by another program, which is the signal `close_orphan_queue`
+   * accepts as "this owner is gone". An UNDECODABLE account is NOT that: it
+   * reports `{exited: false}`, i.e. "treat as live, leave the queue alone",
+   * because an unknown byte layout is an unknown layout and not a proven
+   * exit. Closing a queue on that guess is unrecoverable; leaving it costs
+   * rent. Implementations must keep that asymmetry.
+   */
   readErUserAccount(owner: PublicKey): Promise<{ exited: boolean } | null>;
   /** ER, crank: `close_orphan_queue`. Returns the signature. */
   closeOrphanQueue(row: OrphanQueueRow): Promise<string>;

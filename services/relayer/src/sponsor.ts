@@ -205,6 +205,13 @@ if (CORE_DISCRIMINATORS.size !== CORE_WHITELIST.size) {
 interface IxShape {
   payerIdx?: number;
   ownerIdx?: number;
+  /**
+   * Week-5 final review M2: an account position that must hold the configured
+   * dUSDC mint. Only the ATA shape uses it — without it an owner could have
+   * `fee_payer` fund an ATA for an ARBITRARY mint and then close it to reclaim
+   * the rent, a free (if `SPONSOR_DAILY_SOL`-bounded) per-day drain.
+   */
+  mintIdx?: number;
 }
 
 const CORE_SHAPES: Record<string, IxShape> = {
@@ -232,9 +239,11 @@ const ESPL_SHAPES: Map<number, IxShape & { label: string }> = new Map([
  * since week-5 Task 5 (it was owner-funded before; the ATA rent is one of
  * the two costs the 0-SOL onboarding goal takes off the owner). `owner`@2
  * must still be the signing owner, which is what stops this from funding a
- * stranger's ATA on a whitelisted owner's signature.
+ * stranger's ATA on a whitelisted owner's signature — and `mint`@3 must be the
+ * configured dUSDC mint (week-5 final review M2), which is what stops it from
+ * funding an ATA for an arbitrary mint the owner can then close for the rent.
  */
-const ATA_SHAPE: IxShape = { payerIdx: 0, ownerIdx: 2 };
+const ATA_SHAPE: IxShape = { payerIdx: 0, ownerIdx: 2, mintIdx: 3 };
 
 interface IxCheck {
   ok: boolean;
@@ -249,7 +258,7 @@ interface IxCheck {
  * other position, including implicitly (when `shape.payerIdx` is
  * `undefined`, `feePayer` must not appear anywhere in this instruction).
  */
-function checkPositions(ix: TransactionInstruction, shape: IxShape, feePayer: PublicKey, owner: PublicKey, label: string): string | null {
+function checkPositions(ix: TransactionInstruction, shape: IxShape, feePayer: PublicKey, owner: PublicKey, label: string, dusdcMint?: PublicKey): string | null {
   if (shape.payerIdx !== undefined) {
     const k = ix.keys[shape.payerIdx];
     if (!k || !k.pubkey.equals(feePayer)) return `${label}: account index ${shape.payerIdx} (payer) must be fee_payer`;
@@ -257,6 +266,16 @@ function checkPositions(ix: TransactionInstruction, shape: IxShape, feePayer: Pu
   if (shape.ownerIdx !== undefined) {
     const k = ix.keys[shape.ownerIdx];
     if (!k || !k.pubkey.equals(owner)) return `${label}: account index ${shape.ownerIdx} (owner) must be the tx's owner signer`;
+  }
+  // Week-5 final review M2. A missing `dusdcMint` (a caller that could not
+  // resolve `Config.dusdcMint`) FAILS CLOSED: a shape that names a mint
+  // position is rejected rather than waved through unchecked.
+  if (shape.mintIdx !== undefined) {
+    if (!dusdcMint) return `${label}: the relayer has no configured dUSDC mint to validate account index ${shape.mintIdx} against`;
+    const k = ix.keys[shape.mintIdx];
+    if (!k || !k.pubkey.equals(dusdcMint)) {
+      return `${label}: account index ${shape.mintIdx} (mint) must be the configured dUSDC mint ${dusdcMint.toBase58()}`;
+    }
   }
   for (let i = 0; i < ix.keys.length; i++) {
     if (i === shape.payerIdx) continue;
@@ -267,7 +286,7 @@ function checkPositions(ix: TransactionInstruction, shape: IxShape, feePayer: Pu
   return null;
 }
 
-function checkInstruction(ix: TransactionInstruction, feePayer: PublicKey, owner: PublicKey): IxCheck {
+function checkInstruction(ix: TransactionInstruction, feePayer: PublicKey, owner: PublicKey, dusdcMint?: PublicKey): IxCheck {
   if (ix.programId.equals(DEXXER_CORE_PROGRAM_ID)) {
     if (ix.data.length < 8) return { ok: false, reason: `dexxer_core instruction too short (${ix.data.length} bytes, need >=8 for a discriminator)` };
     const disc = Buffer.from(ix.data.subarray(0, 8)).toString("hex");
@@ -290,7 +309,7 @@ function checkInstruction(ix: TransactionInstruction, feePayer: PublicKey, owner
     if (!(ix.data.length === 1 && ix.data[0] === 1)) {
       return { ok: false, reason: "only the ATA program's CreateIdempotent (data=[1]) instruction is whitelisted" };
     }
-    const posErr = checkPositions(ix, ATA_SHAPE, feePayer, owner, "ata:create_idempotent");
+    const posErr = checkPositions(ix, ATA_SHAPE, feePayer, owner, "ata:create_idempotent", dusdcMint);
     if (posErr) return { ok: false, reason: posErr };
     return { ok: true, label: "ata:create_idempotent" };
   }
@@ -309,7 +328,7 @@ export type WhitelistCheck = { ok: true; owner: PublicKey; labels: string[] } | 
  * "Versioned messages must be deserialized with VersionedMessage.deserialize()"
  * before a `Transaction` object — and thus this function — is ever reached.
  */
-export function checkWhitelist(tx: Transaction, feePayer: PublicKey): WhitelistCheck {
+export function checkWhitelist(tx: Transaction, feePayer: PublicKey, dusdcMint?: PublicKey): WhitelistCheck {
   if (!tx.feePayer || !tx.feePayer.equals(feePayer)) {
     return { ok: false, error: `tx.feePayer must equal the relayer's fee_payer (${feePayer.toBase58()})` };
   }
@@ -350,7 +369,7 @@ export function checkWhitelist(tx: Transaction, feePayer: PublicKey): WhitelistC
   for (let i = 0; i < tx.instructions.length; i++) {
     const ix = tx.instructions[i];
 
-    const check = checkInstruction(ix, feePayer, owner);
+    const check = checkInstruction(ix, feePayer, owner, dusdcMint);
     if (!check.ok) {
       return { ok: false, error: `instruction ${i}: ${check.reason}` };
     }
@@ -484,6 +503,8 @@ export interface SponsorDeps {
   feePayer: Keypair;
   store: SponsorStore;
   estimateLamports: CostEstimator;
+  /** Configured dUSDC mint (`Config.dusdcMint`, read from base at boot) — the only mint a sponsored ATA may be created for (week-5 final review M2). */
+  dusdcMint?: PublicKey;
   dailyBudgetSol?: number;
   /** Injectable clock, defaults to `Date.now` — tests pin it. */
   now?: () => number;
@@ -522,7 +543,7 @@ export function sponsorRouter(deps: SponsorDeps): Router {
       return;
     }
 
-    const check = checkWhitelist(tx, deps.feePayer.publicKey);
+    const check = checkWhitelist(tx, deps.feePayer.publicKey, deps.dusdcMint);
     if (!check.ok) {
       res.status(400).json({ error: check.error });
       return;

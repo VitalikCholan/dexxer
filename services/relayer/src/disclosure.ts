@@ -34,25 +34,29 @@
 // quiet window still lands `runRootCycle`'s freshly computed root on L1. The
 // program's own `actions.is_empty()` branch already handles that case.
 //
-// CANDIDATE SELECTION: each queue is added while the running action estimate
-// is under `COMMIT_MAX_ACTIONS` (env, default 4 — see below). The estimate is
-// only a hint — the program clamps every candidate to the budget actually
-// left (`pending_commitments`/`due_reveals`'s `room`), so an over-estimate
-// costs a deferred action, never a failed bundle BY ITSELF.
+// CANDIDATE SELECTION: `COMMIT_MAX_ACTIONS` (env, default 4, clamped to
+// `[1, MAX_ACTIONS_PER_COMMIT]`) does TWO things, and both matter:
+//   1. it is passed to the program as `commit_aggregate(max_actions)` — the
+//      real per-bundle action budget, clamped on-chain to the same range; and
+//   2. it bounds which queues are selected here (`selectCandidates`), so the
+//      client's estimate matches what the program will actually schedule.
 //
-// Week-5 Task 7 measured that the MagicBlock bridge enforces its own,
-// separate action cap UNDER the program's `MAX_ACTIONS_PER_COMMIT` (8, raised
-// from 4 in week-5 Task 1) for the real `write_commitment`/`write_disclosure`
-// action shape: a live Railway cycle against a devnet backlog that included a
-// full `DisclosureQueue` ring (8 pending actions) failed every cycle with
-// `Custom 2684354562` (0xA0000002 — the same bridge error week 3's M-C
-// measured at 28 PASS / 29 FAIL with a cheap 5-account spike action; the real
-// actions are heavier per-action, so the cap in action-count terms is lower).
-// `COMMIT_MAX_ACTIONS` (env, default 4, clamped to `[1, MAX_ACTIONS_PER_COMMIT]`)
-// caps the client-side budget independently of the program's hard ceiling, so
-// this can be tuned on Railway without a program redeploy once the real cap
-// is measured. `MAX_ACTIONS_PER_COMMIT` (8) stays the outer clamp — the
-// program itself will never schedule more than that regardless of env.
+// Week-5 Task 7 measured that the MagicBlock bridge enforces its own action
+// cap UNDER the program's `MAX_ACTIONS_PER_COMMIT` (8, raised from 4 in week-5
+// Task 1) for the real `write_commitment`/`write_disclosure` action shape:
+// **8 real actions = `Custom 2684354562` (0xA0000002) FAIL, 4 = PASS**.
+// (Week 3's M-C figure of 28 PASS / 29 FAIL was taken with a cheap 5-account
+// spike action and does not describe this shape.)
+//
+// UNTIL the week-5 final review (C1) `commit_aggregate` took NO argument: the
+// per-queue budget was the program constant, so a SINGLE queue with enough
+// pending records always emitted up to 8 actions no matter what this env var
+// said — and 8 is the measured FAIL. That, and nothing more mysterious, is the
+// whole mechanism of the "poisoned queue" defect below: a queue that
+// accumulated >= 5 pending actions could never be committed again, which made
+// its owner's position neither closable (`QueueFull`) nor liquidatable.
+// `max_actions` is what fixes it, and it is what makes the halve-and-retry
+// below real for a single queue (it halves the ARG, not just the queue set).
 //
 // Fix round 1 (same measurement, controller review): oldest-debt-first
 // selection means a queue that ALWAYS fails (a "poisoned" queue — see below)
@@ -61,7 +65,9 @@
 // queue. This is a LIVE OUTAGE of automatic draining, not just wasted
 // retries: the measured `HgvCy4r2…` queue (owner `devnet-overflow`'s
 // `DsTSr…`, week-5 Task 7) failed the bridge's own cap at every tested
-// budget from 8 down to 1, and every other queue behind it (including
+// CLIENT-SIDE budget from 8 down to 1 — which, per C1 above, never changed
+// what the program emitted for it (always up to 8) — and every other queue
+// behind it (including
 // week-5 Task 7's own M-I wallets) would have starved forever without the
 // quarantine below — M-I only drained because Task 7 issued a manual,
 // out-of-band `commit_aggregate` that targeted those queues directly,
@@ -82,23 +88,20 @@
 // requiring two more failures. A successful bundle clears a queue's
 // failure/quarantine state entirely (`recordCycleSuccess`).
 //
-// Root cause: CHECKED against the controller's risk-#26 hypothesis (a
-// `write_commitment` silently dropped by the bridge while `commitment_written`
-// had already flipped in-ER, leaving `WriteDisclosure` reading a `Commitment`
-// PDA that never landed) and that hypothesis is NOT what's happening here —
-// direct on-chain check (fix round 1) of `HgvCy4r2…`'s 6 "due" records: all 6
+// ROOT CAUSE — KNOWN (week-5 final review C1), no longer "unresolved". It is
+// the program-side budget described above: `HgvCy4r2…` held 6 due + 2
+// uncommitted records = 8 pending actions, the program emitted all 8 for it
+// every cycle regardless of `COMMIT_MAX_ACTIONS`, and 8 real actions is the
+// measured bridge FAIL. The earlier risk-#26 hypothesis (a `write_commitment`
+// silently dropped by the bridge while `commitment_written` had already
+// flipped in-ER) was checked directly on chain and REFUTED: all 6 due records
 // have `commitmentWritten=true` in the ER AND their `Commitment` PDA exists on
-// base (6/6), and none of their `Disclosure` PDAs exist yet (0/6, so it's not
-// an `init`-on-an-existing-account conflict either). The remaining 2 records
-// are plain not-yet-committed (`commitmentWritten=false`), unrelated to the
-// stuck 6. So the `write_disclosure` actions for this queue are being
-// rejected by the bridge for a reason that is NOT "the Commitment PDA is
-// missing" — most likely a genuine per-action size/CU limit on the real
-// `WriteDisclosure` Magic Action (it carries the full `ClosedRecord` payload
-// plus reads `Commitment`) that this specific record shape exceeds, or
-// bridge-side congestion at the time of testing; NOT confirmed either way.
-// This is unresolved going into week 6 — quarantine below stops it from
-// blocking every other queue, it does not and cannot unstick this trader.
+// base (6/6), and none of their `Disclosure` PDAs exist yet (0/6) — so it was
+// never a missing-`Commitment` or `init`-conflict problem. With `max_actions`
+// passed through, this queue drains at 4 actions per bundle (proved on devnet
+// after upgrade #3 — see week5-results.md). The quarantine below stays as
+// defence in depth for any genuinely poisoned queue; it is no longer the only
+// answer to this one.
 
 import { randomBytes } from "crypto";
 import { PublicKey } from "@solana/web3.js";
@@ -124,13 +127,12 @@ import {
 const BRIDGE_ACTION_CAP_CODE = "2684354562";
 
 /**
- * How many post-commit actions to REQUEST per `commit_aggregate` bundle.
- * Default 4 — see the CANDIDATE SELECTION comment above for the measurement
- * behind that default. Clamped to `[1, MAX_ACTIONS_PER_COMMIT]`: the program
- * itself (`state/mod.rs`) never schedules more than `MAX_ACTIONS_PER_COMMIT`
- * (8) actions in one bundle regardless of this env var, so a value above it
- * would be silently capped on-chain anyway — clamping here just keeps the
- * relayer's own logs/estimates honest about what can actually happen.
+ * Per-bundle post-commit action budget. Passed to the program as
+ * `commit_aggregate(max_actions)` (so it really bounds what ONE queue emits)
+ * AND used to bound queue selection here. Default 4 — the measured-PASS value
+ * on the real action shape; 8 is a measured FAIL (see CANDIDATE SELECTION
+ * above). Clamped to `[1, MAX_ACTIONS_PER_COMMIT]`, the same clamp the program
+ * applies, so the relayer's logs/estimates match what lands on chain.
  */
 // Exported for test/disclosure.test.ts (pure, no network).
 export function parseCommitMaxActions(raw: string | undefined): number {
@@ -247,7 +249,11 @@ export interface DisclosureCtx {
    * `sendCommitAggregate` below when omitted, so production wiring
    * (crank.ts) never has to set this.
    */
-  sendCommitAggregate?: (ctx: DisclosureCtx, remainingKeys: PublicKey[]) => Promise<string>;
+  sendCommitAggregate?: (
+    ctx: DisclosureCtx,
+    remainingKeys: PublicKey[],
+    maxActions: number,
+  ) => Promise<string>;
   /**
    * Fix round 1: cross-cycle quarantine state — see `QuarantineState`'s
    * comment. Defaults to a fresh (memory-less) state when omitted, which is
@@ -366,11 +372,20 @@ export function isBridgeActionCapError(e: unknown): boolean {
   return String(e instanceof Error ? e.message : e).includes(BRIDGE_ACTION_CAP_CODE);
 }
 
-/** Builds and sends one `commit_aggregate` call with the given `DisclosureQueue` keys as `remaining_accounts`. */
-async function sendCommitAggregate(ctx: DisclosureCtx, remainingKeys: PublicKey[]): Promise<string> {
+/**
+ * Builds and sends one `commit_aggregate` call with the given `DisclosureQueue`
+ * keys as `remaining_accounts` and `maxActions` as the PROGRAM-side per-bundle
+ * action budget (week-5 final review C1 — without the argument the program
+ * emitted up to `MAX_ACTIONS_PER_COMMIT` per queue whatever the client asked).
+ */
+async function sendCommitAggregate(
+  ctx: DisclosureCtx,
+  remainingKeys: PublicKey[],
+  maxActions: number = COMMIT_MAX_ACTIONS,
+): Promise<string> {
   const config = await accountNs(ctx.feePayerProg).config.fetch(pdas.config());
   const ix = await ctx.feePayerProg.methods
-    .commitAggregate()
+    .commitAggregate(maxActions)
     .accounts({
       config: pdas.config(),
       payer: ctx.feePayer.publicKey,
@@ -479,7 +494,7 @@ export async function runDisclosureCycle(ctx: DisclosureCtx): Promise<void> {
   // fires). `remaining_accounts` is simply empty in that case.
   const totalActions = candidates.reduce((n, c) => n + c.actions, 0);
   try {
-    const sig = await send(ctx, candidates.map((c) => c.key));
+    const sig = await send(ctx, candidates.map((c) => c.key), COMMIT_MAX_ACTIONS);
     console.log(`commit_aggregate: sig=${sig} actions=${totalActions} queues=${candidates.length}`);
     if (candidates.length > 0) recordCycleSuccess(quarantine, candidates.map((c) => c.key));
     return;
@@ -488,22 +503,24 @@ export async function runDisclosureCycle(ctx: DisclosureCtx): Promise<void> {
 
     // Week-5 Task 7: on the bridge's own action-cap rejection (0xA0000002,
     // measured — see the CANDIDATE SELECTION comment above), halve the
-    // ACTION BUDGET (not the queue count — measured, a single full-ring
-    // queue can alone exceed the bridge cap, so dropping whole queues would
-    // never shrink that one bundle) and re-run `selectCandidates` over the
-    // same `pendingQueues` (still oldest-debt-first, still quarantine-aware),
-    // then retry once. A bundle that still overshoots the bridge's real cap
-    // this way makes partial progress instead of falling straight through to
-    // a bare 0-action commit. One halving, not a loop: a second failure just
-    // falls through to the bare retry below — the next cycle re-evaluates
-    // everything from scratch (and this failure is now on record — see the
-    // quarantine calls below).
+    // ACTION BUDGET — and since the week-5 final review (C1) that means
+    // halving BOTH levers: the `max_actions` ARGUMENT handed to the program
+    // (which is what actually shrinks a single full-ring queue's bundle; the
+    // queue count alone never could) and the `selectCandidates` budget, re-run
+    // over the same `pendingQueues` (still oldest-debt-first, still
+    // quarantine-aware). Then retry once. A bundle that still overshoots the
+    // bridge's real cap this way makes partial progress instead of falling
+    // straight through to a bare 0-action commit. One halving, not a loop: a
+    // second failure just falls through to the bare retry below — the next
+    // cycle re-evaluates everything from scratch (and this failure is now on
+    // record — see the quarantine calls below).
     if (isBridgeActionCapError(e)) {
       if (totalActions > 1) {
-        const halved = selectCandidates(pendingQueues, Math.floor(totalActions / 2), quarantine, cycle);
+        const halvedBudget = Math.max(1, Math.floor(totalActions / 2));
+        const halved = selectCandidates(pendingQueues, halvedBudget, quarantine, cycle);
         const halvedActions = halved.reduce((n, c) => n + c.actions, 0);
         try {
-          const sig = await send(ctx, halved.map((c) => c.key));
+          const sig = await send(ctx, halved.map((c) => c.key), halvedBudget);
           console.log(`commit_aggregate: halved retry sig=${sig} actions=${halvedActions} queues=${halved.length} (from actions=${totalActions} queues=${candidates.length})`);
           if (halved.length > 0) recordCycleSuccess(quarantine, halved.map((c) => c.key));
           return;
@@ -536,7 +553,7 @@ export async function runDisclosureCycle(ctx: DisclosureCtx): Promise<void> {
     // the candidates are simply re-evaluated next cycle.
     if (candidates.length > 0) {
       try {
-        const sig = await send(ctx, []);
+        const sig = await send(ctx, [], COMMIT_MAX_ACTIONS);
         console.log(`commit_aggregate: retry without candidates sig=${sig} actions=0`);
       } catch (e3) {
         console.error("commit_aggregate retry (no candidates) failed:", String(e3));

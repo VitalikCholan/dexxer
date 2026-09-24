@@ -41,6 +41,13 @@ import {
 import { dexxerCoreProgram, DEXXER_CORE_PROGRAM_ID } from "../../../tests/er/lib/program.js";
 
 const FAKE_BLOCKHASH = Keypair.generate().publicKey.toBase58();
+/**
+ * The relayer's configured dUSDC mint (`Config.dusdcMint`, read from base at
+ * boot in index.ts). Week-5 final review M2: `checkWhitelist` now pins the ATA
+ * shape's `mint`@3 to it, so every test that builds a SPONSORABLE ATA must use
+ * this mint, and passing it is what the production wiring does.
+ */
+const DUSDC_MINT = Keypair.generate().publicKey;
 
 function fakeStore(overrides: Partial<SponsorStore> = {}): SponsorStore {
   const taken = new Set<string>();
@@ -178,48 +185,6 @@ async function buildDelegateSplTx(owner: Keypair, feePayer: PublicKey, payer: Pu
   return tx;
 }
 
-async function buildInitPermissionsIx(owner: PublicKey): Promise<TransactionInstruction> {
-  const core = coreProgram(Keypair.generate());
-  return core.methods
-    .initPermissions()
-    .accounts({
-      owner,
-      config: CONFIG,
-      market: Keypair.generate().publicKey,
-      userAccount: Keypair.generate().publicKey,
-      position: Keypair.generate().publicKey,
-      disclosureQueue: Keypair.generate().publicKey,
-      userPermission: Keypair.generate().publicKey,
-      positionPermission: Keypair.generate().publicKey,
-      dqPermission: Keypair.generate().publicKey,
-      permissionProgram: Keypair.generate().publicKey,
-      ephemeralVault: Keypair.generate().publicKey,
-      magicProgram: Keypair.generate().publicKey,
-    })
-    .instruction();
-}
-
-async function buildSetSessionIx(owner: PublicKey, sessionKey: PublicKey): Promise<TransactionInstruction> {
-  const core = coreProgram(Keypair.generate());
-  return core.methods
-    .setSession(sessionKey, new BN(0), 20)
-    .accounts({
-      owner,
-      config: CONFIG,
-      market: Keypair.generate().publicKey,
-      userAccount: Keypair.generate().publicKey,
-      position: Keypair.generate().publicKey,
-      disclosureQueue: Keypair.generate().publicKey,
-      userPermission: Keypair.generate().publicKey,
-      positionPermission: Keypair.generate().publicKey,
-      dqPermission: Keypair.generate().publicKey,
-      permissionProgram: Keypair.generate().publicKey,
-      ephemeralVault: Keypair.generate().publicKey,
-      magicProgram: Keypair.generate().publicKey,
-    })
-    .instruction();
-}
-
 async function send(url: string, tx: Transaction): Promise<Response> {
   return fetch(`${url}/sponsor`, {
     method: "POST",
@@ -244,7 +209,7 @@ test("checkWhitelist: rejects a foreign programId", async () => {
   );
   tx.partialSign(owner);
 
-  const result = checkWhitelist(tx, feePayer.publicKey);
+  const result = checkWhitelist(tx, feePayer.publicKey, DUSDC_MINT);
   assert.equal(result.ok, false);
   if (!result.ok) assert.match(result.error, /not in whitelist/);
 });
@@ -257,7 +222,7 @@ test("checkWhitelist: rejects a tx the owner never signed", async () => {
   // reserved the slot via `_compile()` but was never actually signed).
   tx.signatures = tx.signatures.map((s) => (s.publicKey.equals(owner.publicKey) ? { ...s, signature: null } : s));
 
-  const result = checkWhitelist(tx, feePayer.publicKey);
+  const result = checkWhitelist(tx, feePayer.publicKey, DUSDC_MINT);
   assert.equal(result.ok, false);
   if (!result.ok) assert.match(result.error, /not signed/);
 });
@@ -268,7 +233,7 @@ test("checkWhitelist: rejects tx.feePayer that does not match the relayer's fee_
   const someoneElse = Keypair.generate();
   const tx = await buildInitUserTx(owner, someoneElse.publicKey);
 
-  const result = checkWhitelist(tx, feePayer.publicKey);
+  const result = checkWhitelist(tx, feePayer.publicKey, DUSDC_MINT);
   assert.equal(result.ok, false);
   if (!result.ok) assert.match(result.error, /feePayer/);
 });
@@ -279,7 +244,7 @@ test("checkWhitelist: rejects a tx whose fee_payer signature slot is already fil
   const tx = await buildInitUserTx(owner, feePayer.publicKey);
   tx.partialSign(feePayer); // simulate a replay of an already-sponsored tx
 
-  const result = checkWhitelist(tx, feePayer.publicKey);
+  const result = checkWhitelist(tx, feePayer.publicKey, DUSDC_MINT);
   assert.equal(result.ok, false);
   if (!result.ok) assert.match(result.error, /already filled/);
 });
@@ -289,7 +254,7 @@ test("checkWhitelist: accepts a whitelisted init_user tx (payer=fee_payer) and i
   const feePayer = Keypair.generate();
   const tx = await buildInitUserTx(owner, feePayer.publicKey);
 
-  const result = checkWhitelist(tx, feePayer.publicKey);
+  const result = checkWhitelist(tx, feePayer.publicKey, DUSDC_MINT);
   assert.equal(result.ok, true);
   if (result.ok) {
     assert.equal(result.owner.toBase58(), owner.publicKey.toBase58());
@@ -317,7 +282,7 @@ test("checkWhitelist: rejects init_user whose payer is not fee_payer", async () 
   tx.add(tamperedIx);
   tx.partialSign(owner);
 
-  const result = checkWhitelist(tx, feePayer.publicKey);
+  const result = checkWhitelist(tx, feePayer.publicKey, DUSDC_MINT);
   assert.equal(result.ok, false);
   if (!result.ok) assert.match(result.error, /payer\) must be fee_payer/);
 });
@@ -335,7 +300,7 @@ test("checkWhitelist: rejects fee_payer's pubkey smuggled into an instruction's 
   tx.add(await buildFaucetInitIx(feePayer.publicKey, feePayer.publicKey));
   tx.partialSign(owner);
 
-  const result = checkWhitelist(tx, feePayer.publicKey);
+  const result = checkWhitelist(tx, feePayer.publicKey, DUSDC_MINT);
   assert.equal(result.ok, false);
   if (!result.ok) assert.match(result.error, /owner\) must be the tx's owner signer/);
 });
@@ -355,7 +320,7 @@ test("checkWhitelist: rejects fee_payer's pubkey in an ATA CreateIdempotent paye
   tx.add(createAssociatedTokenAccountIdempotentInstruction(feePayer.publicKey, victimAta, victim, mint));
   tx.partialSign(attacker);
 
-  const result = checkWhitelist(tx, feePayer.publicKey);
+  const result = checkWhitelist(tx, feePayer.publicKey, DUSDC_MINT);
   assert.equal(result.ok, false);
   if (!result.ok) assert.match(result.error, /ata:create_idempotent/);
 });
@@ -370,7 +335,7 @@ test("checkWhitelist: rejects a duplicate init_user in the same tx", async () =>
   tx.add(ix, ix);
   tx.partialSign(owner);
 
-  const result = checkWhitelist(tx, feePayer.publicKey);
+  const result = checkWhitelist(tx, feePayer.publicKey, DUSDC_MINT);
   assert.equal(result.ok, false);
   if (!result.ok) assert.match(result.error, /duplicate/);
 });
@@ -382,7 +347,7 @@ test("checkWhitelist: accepts the delegateSpl(payer:fee_payer, idempotent:false,
   assert.equal(tx.instructions.length, 3);
   assert.ok(tx.instructions.every((ix) => ix.programId.equals(EPHEMERAL_SPL_TOKEN_PROGRAM_ID)));
 
-  const result = checkWhitelist(tx, feePayer.publicKey);
+  const result = checkWhitelist(tx, feePayer.publicKey, DUSDC_MINT);
   assert.equal(result.ok, true);
   if (result.ok) {
     assert.equal(result.owner.toBase58(), owner.publicKey.toBase58());
@@ -402,14 +367,13 @@ test("checkWhitelist: a LONE fee_payer-paid ATA has no owner signer and is rejec
   // signature (the accept case two tests below).
   const owner = Keypair.generate();
   const feePayer = Keypair.generate();
-  const mint = Keypair.generate().publicKey;
-  const ownerAta = getAssociatedTokenAddressSync(mint, owner.publicKey);
+  const ownerAta = getAssociatedTokenAddressSync(DUSDC_MINT, owner.publicKey);
   const tx = new Transaction();
   tx.feePayer = feePayer.publicKey;
   tx.recentBlockhash = FAKE_BLOCKHASH;
-  tx.add(createAssociatedTokenAccountIdempotentInstruction(feePayer.publicKey, ownerAta, owner.publicKey, mint));
+  tx.add(createAssociatedTokenAccountIdempotentInstruction(feePayer.publicKey, ownerAta, owner.publicKey, DUSDC_MINT));
 
-  const result = checkWhitelist(tx, feePayer.publicKey);
+  const result = checkWhitelist(tx, feePayer.publicKey, DUSDC_MINT);
   assert.equal(result.ok, false);
   if (!result.ok) assert.match(result.error, /owner signer/);
 });
@@ -427,7 +391,7 @@ test("checkWhitelist: rejects any SystemProgram instruction", async () => {
   tx.add(SystemProgram.transfer({ fromPubkey: feePayer.publicKey, toPubkey: owner.publicKey, lamports: 1 }));
   tx.partialSign(owner);
 
-  const result = checkWhitelist(tx, feePayer.publicKey);
+  const result = checkWhitelist(tx, feePayer.publicKey, DUSDC_MINT);
   assert.equal(result.ok, false);
   if (!result.ok) assert.match(result.error, /not in whitelist/);
 });
@@ -444,7 +408,7 @@ test("checkWhitelist: accepts init_user_reuse_queue (payer=fee_payer)", async ()
   tx.add(await buildInitUserReuseQueueIx(owner.publicKey, feePayer.publicKey));
   tx.partialSign(owner);
 
-  const result = checkWhitelist(tx, feePayer.publicKey);
+  const result = checkWhitelist(tx, feePayer.publicKey, DUSDC_MINT);
   assert.equal(result.ok, true);
   if (result.ok) assert.deepEqual(result.labels, ["dexxer_core:init_user_reuse_queue"]);
 });
@@ -464,7 +428,7 @@ test("checkWhitelist: rejects delegate_user whose payer is not fee_payer", async
   tx.add(new TransactionInstruction({ programId: validIx.programId, keys, data: validIx.data }));
   tx.partialSign(owner);
 
-  const result = checkWhitelist(tx, feePayer.publicKey);
+  const result = checkWhitelist(tx, feePayer.publicKey, DUSDC_MINT);
   assert.equal(result.ok, false);
   if (!result.ok) assert.match(result.error, /delegate_user: account index 1 \(payer\) must be fee_payer/);
 });
@@ -472,7 +436,7 @@ test("checkWhitelist: rejects delegate_user whose payer is not fee_payer", async
 test("checkWhitelist: accepts the whole L1a leg — ATA + faucet_init + init_user, all fee_payer-paid", async () => {
   const owner = Keypair.generate();
   const feePayer = Keypair.generate();
-  const mint = Keypair.generate().publicKey;
+  const mint = DUSDC_MINT;
   const ownerAta = getAssociatedTokenAddressSync(mint, owner.publicKey);
   const tx = new Transaction();
   tx.feePayer = feePayer.publicKey;
@@ -482,7 +446,7 @@ test("checkWhitelist: accepts the whole L1a leg — ATA + faucet_init + init_use
   tx.add((await buildInitUserTx(owner, feePayer.publicKey)).instructions[0]);
   tx.partialSign(owner);
 
-  const result = checkWhitelist(tx, feePayer.publicKey);
+  const result = checkWhitelist(tx, feePayer.publicKey, DUSDC_MINT);
   assert.equal(result.ok, true);
   if (result.ok) {
     assert.deepEqual(result.labels, ["ata:create_idempotent", "dexxer_core:faucet_init", "dexxer_core:init_user"]);
@@ -501,7 +465,7 @@ test("checkWhitelist: accepts the whole L1b leg — delegateSpl + delegate_user,
   full.add(...tx.instructions, await buildDelegateUserIx(owner.publicKey, feePayer.publicKey));
   full.partialSign(owner);
 
-  const result = checkWhitelist(full, feePayer.publicKey);
+  const result = checkWhitelist(full, feePayer.publicKey, DUSDC_MINT);
   assert.equal(result.ok, true);
   if (result.ok) {
     assert.deepEqual(result.labels, [
@@ -511,6 +475,50 @@ test("checkWhitelist: accepts the whole L1b leg — delegateSpl + delegate_user,
       "dexxer_core:delegate_user",
     ]);
   }
+});
+
+// Week-5 final review M2: without `mint`@3 pinned, an owner could get
+// `fee_payer` to fund an ATA for an ARBITRARY mint and then close it to
+// reclaim the rent — a repeatable (if `SPONSOR_DAILY_SOL`-bounded) drain.
+test("checkWhitelist: rejects a fee_payer-paid ATA for a mint that is not the configured dUSDC mint", async () => {
+  const owner = Keypair.generate();
+  const feePayer = Keypair.generate();
+  const foreignMint = Keypair.generate().publicKey;
+  const ownerAta = getAssociatedTokenAddressSync(foreignMint, owner.publicKey);
+  const tx = new Transaction();
+  tx.feePayer = feePayer.publicKey;
+  tx.recentBlockhash = FAKE_BLOCKHASH;
+  tx.add(createAssociatedTokenAccountIdempotentInstruction(feePayer.publicKey, ownerAta, owner.publicKey, foreignMint));
+  // An owner-signed instruction alongside it, so the tx gets past the
+  // owner-signer resolution and actually reaches the mint check.
+  tx.add((await buildInitUserTx(owner, feePayer.publicKey)).instructions[0]);
+  tx.partialSign(owner);
+
+  const result = checkWhitelist(tx, feePayer.publicKey, DUSDC_MINT);
+  assert.equal(result.ok, false);
+  if (!result.ok) {
+    assert.equal(
+      result.error,
+      `instruction 0: ata:create_idempotent: account index 3 (mint) must be the configured dUSDC mint ${DUSDC_MINT.toBase58()}`,
+    );
+  }
+});
+
+// A caller with no configured mint fails CLOSED rather than skipping the check.
+test("checkWhitelist: rejects a sponsored ATA when the relayer has no configured dUSDC mint", async () => {
+  const owner = Keypair.generate();
+  const feePayer = Keypair.generate();
+  const ownerAta = getAssociatedTokenAddressSync(DUSDC_MINT, owner.publicKey);
+  const tx = new Transaction();
+  tx.feePayer = feePayer.publicKey;
+  tx.recentBlockhash = FAKE_BLOCKHASH;
+  tx.add(createAssociatedTokenAccountIdempotentInstruction(feePayer.publicKey, ownerAta, owner.publicKey, DUSDC_MINT));
+  tx.add((await buildInitUserTx(owner, feePayer.publicKey)).instructions[0]);
+  tx.partialSign(owner);
+
+  const result = checkWhitelist(tx, feePayer.publicKey);
+  assert.equal(result.ok, false);
+  if (!result.ok) assert.match(result.error, /no configured dUSDC mint/);
 });
 
 test("checkWhitelist: rejects the ATA program's non-idempotent Create instruction", async () => {
@@ -526,7 +534,7 @@ test("checkWhitelist: rejects the ATA program's non-idempotent Create instructio
   tx.add(nonIdempotent);
   tx.partialSign(owner);
 
-  const result = checkWhitelist(tx, feePayer.publicKey);
+  const result = checkWhitelist(tx, feePayer.publicKey, DUSDC_MINT);
   assert.equal(result.ok, false);
   if (!result.ok) assert.match(result.error, /CreateIdempotent/);
 });
@@ -541,7 +549,7 @@ async function withServer(
   dailyBudgetSol = DEFAULT_DAILY_BUDGET_SOL,
 ): Promise<void> {
   const app = express();
-  app.use(sponsorRouter({ feePayer, store, estimateLamports, dailyBudgetSol }));
+  app.use(sponsorRouter({ feePayer, store, estimateLamports, dailyBudgetSol, dusdcMint: DUSDC_MINT }));
   const server = app.listen(0);
   await new Promise<void>((resolve) => server.once("listening", resolve));
   const { port } = server.address() as AddressInfo;
