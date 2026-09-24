@@ -13,9 +13,9 @@
 // `pickSignature`) — normalized here before it reaches `getAuthToken`.
 import { Connection, PublicKey } from '@solana/web3.js'
 import { getAuthToken } from '@magicblock-labs/ephemeral-rollups-sdk'
-import { useMobileWallet } from '@wallet-ui/react-native-web3js'
 import { pickSignature } from '../spikes/mwa'
 import { TEE_RPC, TEE_WS } from './solana'
+import { useMwaSigning } from './mwaAuth'
 
 interface CachedTeeConn {
   conn: Connection
@@ -50,9 +50,13 @@ export async function teeConnectionFor(owner: PublicKey, signMessage: SignMessag
  * `useTeeConnection()`: `getConnection(owner)` returns (and caches) a TEE
  * `Connection` authenticated as `owner`, via MWA `signMessages` +
  * `pickSignature`. One MWA prompt per fresh/expired token, not per call.
+ * `signMessages` here is `useMwaSigning()`'s retry-wrapped version (a
+ * `reauthorize` rejection self-heals with one fresh `authorize` prompt
+ * instead of surfacing as `-1 authorization request failed` — see
+ * `mwaAuth.ts`'s "Phantom reauthorize bug" section).
  */
 export function useTeeConnection() {
-  const { signMessages } = useMobileWallet()
+  const { signMessages } = useMwaSigning()
   async function getConnection(owner: PublicKey): Promise<Connection> {
     return teeConnectionFor(owner, async (message) => {
       const signed = await signMessages(message) // MWA bottom sheet

@@ -51,6 +51,7 @@
     "@react-native-clipboard/clipboard": "^1.16.3",
     "@rn-primitives/dropdown-menu": "^1.5.2",
     "@rn-primitives/portal": "^1.5.3",
+    "@solana-mobile/mobile-wallet-adapter-protocol": "^2.3.0",
     "@solana-mobile/mobile-wallet-adapter-protocol-web3js": "^2.3.0",
     "@solana/spl-token": "^0.4.15",
     "@solana/web3.js": "^1.99.0",

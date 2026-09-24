@@ -61,9 +61,16 @@
 // `identity` object, read fresh from `useMobileWallet()` at each call site
 // (never imported directly here — this file only hashes whatever `Identity`
 // shape a caller hands it).
+import { useCallback, useMemo } from 'react'
+import type { Transaction } from '@solana/web3.js'
 import AsyncStorage from '@react-native-async-storage/async-storage'
 import { sha256 } from '@noble/hashes/sha2'
 import { transact } from '@solana-mobile/mobile-wallet-adapter-protocol-web3js'
+import {
+  SolanaMobileWalletAdapterProtocolError,
+  SolanaMobileWalletAdapterProtocolErrorCode,
+} from '@solana-mobile/mobile-wallet-adapter-protocol'
+import { useMobileWallet } from '@wallet-ui/react-native-web3js'
 
 /** Structural subset of MWA's `AppIdentity` this file needs — avoids pulling in the full protocol package just for a type. */
 export interface Identity {
@@ -140,9 +147,88 @@ async function deauthorizeToken(token: string): Promise<void> {
   }
 }
 
-/** Minimal shape this file needs off `useMobileWallet()`'s `store` — avoids importing the library's full `AuthorizationStore` type just to read the current auth token back. */
+/** Minimal shape this file needs off `useMobileWallet()`'s `store` — avoids importing the library's full `AuthorizationStore` type just to read/clear the current auth token. `persist(null)` is the library's own `deauthorizeSessions()` body (a local cache clear, no on-wallet `deauthorize` call — see file header) and is what `withAuthRetry`'s `clearAuthorization` uses to drop wallet-ui's cached token alongside this file's own. */
 export interface AuthStoreLike {
   fetch: () => Promise<{ authToken?: string } | null>
+  /** Only ever called with `null` here (clear) — narrower than the library's real `(auth: WalletAuthorization | null) => Promise<void>`, which a wider `unknown` param would reject as incompatible. */
+  persist: (auth: null) => Promise<void>
+}
+
+// --- Phantom reauthorize bug: retry-once-with-fresh-authorize -------------
+//
+// Week 5 live Phantom smoke test: after SIWS connect, the app's first
+// `mwa.signTransactions([...])` call replays the stored `auth_token` via
+// `wallet.authorize({auth_token, chain, identity})` (wallet-ui's
+// `authorizeSession`, `index.native.mjs` ~line 200) — the JSON-RPC
+// `reauthorize`. Phantom answers `code=-1 "authorization request failed"`
+// and closes the session (the reference fakewallet never rejects a
+// reauthorize, so week 4-5 never hit this).
+//
+// wallet-ui DOES have a retry for exactly this
+// (`error instanceof SolanaMobileWalletAdapterProtocolError && error.code
+// === ERROR_AUTHORIZATION_FAILED` -> re-`authorize` without the token), but
+// it never fires on React Native. Upstream bug, not ours:
+// `@solana-mobile/mobile-wallet-adapter-protocol`'s
+// `lib/cjs/index.native.js` (~line 300) builds the wallet proxy as
+// `try { return SolanaMobileWalletAdapter.invoke(method, params) } catch (e)
+// { return handleError(e) }` — `invoke` returns a Promise and this is
+// missing an `await`, so a rejection never reaches the local `catch`; it
+// propagates as the RAW React Native native-module error instead
+// (`e.code === 'JSON_RPC_ERROR'`, `e.userInfo.jsonRpcErrorCode === -1`,
+// `e.message === 'authorization request failed'`). wallet-ui's `instanceof
+// SolanaMobileWalletAdapterProtocolError` check fails against that raw
+// shape, so its retry never runs, and the error propagates up to
+// `transact`'s own outer `catch (e) { return handleError(e) }` — only THERE
+// does it get converted to a `SolanaMobileWalletAdapterProtocolError(0, -1,
+// msg)`, one level too late for wallet-ui's inner retry to see it.
+//
+// `isAuthorizationFailure`/`withAuthRetry` below recover on our side: catch
+// either shape (raw RN error or the converted protocol error, plus a
+// string-message fallback for anything that got wrapped again in between),
+// clear BOTH this file's own token and wallet-ui's persisted one, and run
+// the signing/messaging call exactly once more — the retry then has no
+// stored token at all, so wallet-ui/Phantom does a fresh `authorize`
+// (one prompt) instead of a `reauthorize`.
+
+/**
+ * True when `e` is some shape of "wallet rejected `reauthorize`"
+ * (MWA protocol code -1, `ERROR_AUTHORIZATION_FAILED`) — see the section
+ * header above for why this needs to match multiple shapes of the same
+ * underlying error.
+ */
+export function isAuthorizationFailure(e: unknown): boolean {
+  if (!e || typeof e !== 'object') return false
+  const err = e as { code?: unknown; message?: unknown; userInfo?: { jsonRpcErrorCode?: unknown } }
+  if (err.code === -1) return true
+  if (err.code === 'JSON_RPC_ERROR' && err.userInfo?.jsonRpcErrorCode === -1) return true
+  if (
+    e instanceof SolanaMobileWalletAdapterProtocolError &&
+    e.code === SolanaMobileWalletAdapterProtocolErrorCode.ERROR_AUTHORIZATION_FAILED
+  ) {
+    return true
+  }
+  if (typeof err.message === 'string' && err.message.includes('authorization request failed')) return true
+  return false
+}
+
+/**
+ * Runs `run()`; on an {@link isAuthorizationFailure} error, clears the
+ * stored authorization (`opts.clearAuthorization`) and runs it exactly once
+ * more — the retried call then authorizes fresh instead of reauthorizing.
+ * Any other error, or a second failure, propagates as-is (no infinite
+ * retry).
+ */
+export async function withAuthRetry<T>(
+  run: () => Promise<T>,
+  opts: { clearAuthorization: () => Promise<void> },
+): Promise<T> {
+  try {
+    return await run()
+  } catch (e) {
+    if (!isAuthorizationFailure(e)) throw e
+    await opts.clearAuthorization()
+    return await run()
+  }
 }
 
 /**
@@ -154,6 +240,11 @@ export interface AuthStoreLike {
  * `connect()`/`disconnect()` don't already do this. Always ends by
  * persisting the (possibly unchanged) `{token, identityHash}` pair this
  * device now holds, so the next call's comparison is accurate.
+ *
+ * `connect` itself runs through `withAuthRetry`: a stale token on connect
+ * (the wallet rejects `reauthorize`, same -1 as the signing path — see
+ * "Phantom reauthorize bug" above) self-heals the same way, instead of
+ * surfacing as a connect failure.
  */
 export async function ensureAuthorized<T>(
   identity: Identity,
@@ -167,7 +258,12 @@ export async function ensureAuthorized<T>(
     await clearAuthToken()
   }
 
-  const account = await connect()
+  const account = await withAuthRetry(connect, {
+    clearAuthorization: async () => {
+      await clearAuthToken()
+      await store.persist(null)
+    },
+  })
 
   const auth = await store.fetch()
   if (auth?.authToken) {
@@ -191,6 +287,38 @@ export async function disconnect(mwaDisconnect: () => Promise<void>, store: Auth
   }
   await mwaDisconnect()
   await clearAuthToken()
+}
+
+/**
+ * Drop-in replacement for `useMobileWallet()`'s raw `signTransactions`/
+ * `signMessages` — both wrapped in {@link withAuthRetry} so a wallet's
+ * `reauthorize` rejection (Phantom `-1`, see "Phantom reauthorize bug"
+ * above) self-heals with one extra `authorize` prompt instead of surfacing
+ * to the caller as `-1 authorization request failed`. Every real (non-spike)
+ * signing/messaging call site should use this instead of destructuring
+ * `signTransactions`/`signMessages` straight off `useMobileWallet()`.
+ */
+export function useMwaSigning() {
+  const { signTransactions: rawSignTransactions, signMessages: rawSignMessages, store } = useMobileWallet()
+
+  const clearAuthorization = useCallback(async () => {
+    await clearAuthToken()
+    await store.persist(null)
+  }, [store])
+
+  const signTransactions = useCallback(
+    <K extends Transaction | Transaction[]>(tx: K): Promise<K> =>
+      withAuthRetry(() => rawSignTransactions(tx), { clearAuthorization }),
+    [rawSignTransactions, clearAuthorization],
+  )
+
+  const signMessages = useCallback(
+    <K extends Uint8Array | Uint8Array[]>(message: K): Promise<K> =>
+      withAuthRetry(() => rawSignMessages(message), { clearAuthorization }),
+    [rawSignMessages, clearAuthorization],
+  )
+
+  return useMemo(() => ({ signTransactions, signMessages }), [signTransactions, signMessages])
 }
 
 /**
@@ -223,11 +351,52 @@ export function assertIdentityHashSelfCheck(): void {
   }
 }
 
+/**
+ * Self-check for {@link isAuthorizationFailure}: the three error shapes the
+ * "Phantom reauthorize bug" section above documents must all read as an
+ * authorization failure, and an unrelated error must not. Throws on
+ * mismatch.
+ */
+export function assertIsAuthorizationFailureSelfCheck(): void {
+  const rawJsonRpc = {
+    code: 'JSON_RPC_ERROR',
+    userInfo: { jsonRpcErrorCode: -1 },
+    message: 'authorization request failed',
+  }
+  if (!isAuthorizationFailure(rawJsonRpc)) {
+    throw new Error('assertIsAuthorizationFailureSelfCheck: raw RN JSON_RPC_ERROR shape must read as an auth failure')
+  }
+  const converted = new SolanaMobileWalletAdapterProtocolError(
+    0,
+    SolanaMobileWalletAdapterProtocolErrorCode.ERROR_AUTHORIZATION_FAILED,
+    'authorization request failed',
+  )
+  if (!isAuthorizationFailure(converted)) {
+    throw new Error(
+      'assertIsAuthorizationFailureSelfCheck: converted SolanaMobileWalletAdapterProtocolError must read as an auth failure',
+    )
+  }
+  const messageOnly = new Error('authorization request failed')
+  if (!isAuthorizationFailure(messageOnly)) {
+    throw new Error('assertIsAuthorizationFailureSelfCheck: message-only fallback must read as an auth failure')
+  }
+  const unrelated = new Error('network request failed')
+  if (isAuthorizationFailure(unrelated)) {
+    throw new Error('assertIsAuthorizationFailureSelfCheck: an unrelated error must not read as an auth failure')
+  }
+}
+
 if (__DEV__) {
   try {
     assertIdentityHashSelfCheck()
     console.log('[dexxer] assertIdentityHashSelfCheck: identityHash OK')
   } catch (e) {
     console.error('[dexxer] assertIdentityHashSelfCheck FAILED', e)
+  }
+  try {
+    assertIsAuthorizationFailureSelfCheck()
+    console.log('[dexxer] assertIsAuthorizationFailureSelfCheck: isAuthorizationFailure OK')
+  } catch (e) {
+    console.error('[dexxer] assertIsAuthorizationFailureSelfCheck FAILED', e)
   }
 }

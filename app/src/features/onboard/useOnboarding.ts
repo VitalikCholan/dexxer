@@ -36,7 +36,7 @@ import { useTeeConnection } from '@/src/lib/er'
 import { readConfigDusdcMint } from '@/src/lib/program'
 import { pdas } from '@/src/lib/pdas'
 import { getOrCreateExitSalt, getOrCreateSessionKeypair, getSessionKeypair } from '@/src/lib/session'
-import { ensureAuthorized } from '@/src/lib/mwaAuth'
+import { ensureAuthorized, useMwaSigning } from '@/src/lib/mwaAuth'
 import {
   IDLE_BATCH_PROGRESS,
   runBatchedOnboarding,
@@ -87,7 +87,8 @@ export interface UseOnboarding {
 }
 
 export function useOnboarding(): UseOnboarding {
-  const { account, connect, identity, store, signAndSendTransaction, signTransactions } = useMobileWallet()
+  const { account, connect, identity, store, signAndSendTransaction } = useMobileWallet()
+  const { signTransactions } = useMwaSigning()
   const { getConnection } = useTeeConnection()
   const [state, setState] = useState<OnboardState>('Disconnected')
   const [busy, setBusy] = useState(false)
@@ -97,6 +98,8 @@ export function useOnboarding(): UseOnboarding {
   const [batchProgress, setBatchProgress] = useState<BatchProgress>(IDLE_BATCH_PROGRESS)
 
   const owner = account ? toPublicKey(account.address) : null
+  // `signTransactions` here is `useMwaSigning()`'s retry-wrapped version, not
+  // the raw hook's — see `mwaAuth.ts`'s "Phantom reauthorize bug" section.
   const mwa: Mwa = { signAndSendTransaction, signTransactions, getConnection }
 
   const appendLog = useCallback((s: string) => setLog((prev) => [...prev, s]), [])
