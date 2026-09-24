@@ -1099,7 +1099,7 @@ init_user, sponsored, 0 SOL) для **нового** ключа як замін�
    за власним вердиктом скрипта, хоча M-H своєю метою досяг (post-hoc підтверджено), а M-J's
    overflow-recovery — ні (черга й досі стоїть). Наступного разу — або довший бюджет, або
    окрема post-hoc перевірка як зроблено тут.
-6. **M-K** — не виконано агентом (правило), чек-лист вище чекає на користувача.
+6. **M-K** — виконано 24.09 у другій половині дня на живих fakewallet і Phantom — див. розділ «M-K — живі гаманці» нижче.
 
 ---
 
@@ -1190,3 +1190,59 @@ Relayer 100 → **102** (два нові — M2, нижче). Unit — **61**, �
 | M5 | Мертві хелпери `buildInitPermissionsIx`/`buildSetSessionIx` видалено; контракт `readErUserAccount` (`null` = «нема», undecodable = `{exited:false}` = «вважати живим») задокументований на інтерфейсі, не лише в catch | `services/relayer/{test/sponsor.test.ts,src/orphan.ts}` |
 | M6 | `delegate_user`'s ручний `try_deserialize` — пояснено, чому явна перевірка власника не потрібна (адресу виводить `#[delegate]`-макрос із seeds) | `instructions/user.rs` |
 | I1/I3/I4 | Код не змінювався — заведені як ризики #37/#38/#39 у спеці §7.1 + політичний рядок біля `close_exited_user` у §4.2 | spec |
+
+---
+
+## M-K — живі гаманці (24.09.2026, друга половина дня)
+
+Ручний прогін із користувачем на двох AVD (`local_phone`/fakewallet, `phantom_phone`/Phantom);
+агент вів логи й фіксив по ходу. Усе — хотфікси на гілці `week5-reliability` (PR #6), relayer
+редеплоєно з кожним. Ранбук середовища — `docs/emulator-runbook.md`.
+
+### Результати чек-листа
+
+| # | Пункт | Результат |
+| --- | --- | --- |
+| 1 | DNS в AVD | FAIL без проксі (Cloudflare/AAAA-хости) → Mac-проксі `scripts/emu-proxy.js` + `settings put global http_proxy`; гаманці треба перезапускати після виставлення |
+| 3 | SIWS показує «Dexxer» | PASS |
+| 4 | Онбординг-батч одним екраном | PASS (Phantom показує 2 L1-tx в одному промпті; ER-леґ окремо, як задумано) |
+| 5 | ER-леґ на TEE-blockhash | PASS |
+| — | Deposit → Long → Close → History → Revealed | PASS на fakewallet (4 угоди, усі Revealed у Ledger без адреси трейдера); Deposit PASS на Phantom |
+| — | Exit | не проганяли (демо-стан збережено) |
+
+### Знайдені й закриті дефекти (у порядку появи)
+
+| # | Дефект | Корінь | Фікс |
+| --- | --- | --- | --- |
+| 1 | Phantom `-1` на `reauthorize` | dApp identity не верифікована через Digital Asset Links | `921a1cb`/`b942c31`/`381f2c6` ретрай свіжим `authorize` в одній raw-сесії, 800 мс teardown |
+| 2 | wallet-ui-ретрай не спрацьовує на RN | `mobile-wallet-adapter-protocol@2.3.0`: `return invoke()` без `await` → відхилення минає `handleError` | `d66715f` patch-package; апстрім PR solana-mobile/mobile-wallet-adapter#1680 з регресійним тестом |
+| 3 | `/sponsor` 400 на Phantom-tx | Phantom дописує ComputeBudget-інструкції | `3f9d17f` whitelist CB, price ≤ 500000 µL |
+| 4 | Deposit мовчки губиться на fakewallet («confirm timeout») | 0-SOL гаманець після спонсорованого онбордингу, а `faucet_mint` платив сам | `a221dbe` `faucet_mint` у whitelist `/sponsor`, `sendL1Sponsored` |
+| 5 | Другий підпис у потоці → `-1`, потім підпис **чужим ключем** `5Ahk…` | fakewallet ротує токен на кожному reauthorize; wallet-ui тримає старий у closure; fresh authorize у fakewallet створює новий акаунт | `00b88b8` `reauthorizeFresh`: спершу актуальний токен зі store, відмова при зміні акаунта |
+| 6 | Phantom вимагає промпт на кожну сесію | нема `assetlinks.json` | `9cc5bfc` relayer віддає `/.well-known/assetlinks.json`, identity.uri = origin relayer-а |
+| 7 | DAL усе одно «verification failed» | верифікатор solana-mobile порівнює `Content-Type` **точно** з `application/json`, Express дописував charset | `7c1b78f` |
+| 8 | Phantom «Failed to simulate / Confirm (unsafe)» | Phantom не симулює tx з порожнім підписом fee_payer; обходу з боку Phantom нема (phantom/docs#209) | `7b2272e` self-funded L1-леги при SOL ≥ 0.05 (онбординг) / ≥ 0.001 (депозит) |
+| 9 | Кожна L1-tx з Phantom → «confirm timeout» | **Alpenglow**: blockhash живе ~25 с (148 блоків @ ~6/с, виміряно на обох RPC), промпт Phantom ~38 с (429-бекоф його fee-оцінки) | `c49bb2d` перевірка після підпису (недостатньо) → `c4a422f` **durable nonces** |
+| 10 | Nonce-tx теж губиться | Phantom дописує CB **перед** `AdvanceNonce` (phantom/docs#91) | `c4a422f`: власні CB одразу після advance → Phantom повертає `[advance, CB, CB, ix]` |
+| 11 | Власник не може створити nonce-акаунт | та сама повільність гаманця | `c4a422f`: relayer `POST /nonce` створює 2 акаунти/власника (authority = owner), rate-limit/бюджет `/sponsor` |
+
+### Виміряні числа
+
+| Що | Значення |
+| --- | --- |
+| Вікно blockhash devnet (24.09) | ~25 с; `rpc.magicblock.app/devnet` і `api.devnet.solana.com` однаково; 62 слоти/10 с |
+| Промпт Phantom на devnet (підпис → закриття сесії) | 34, 38, 55, 39, 38, 37, 38, 41, 33 с (9 вимірів) |
+| Промпт fakewallet | < 1 с |
+| Фінальний депозит Phantom на nonce | промпт 33 с, tx `4KgbN1…` долетіла, ix0 = `AdvanceNonceAccount`, комісія 5600 лампортів |
+| DAL-верифікація fakewallet | ~0.4–0.6 с через проксі (ліміт верифікатора 1 с) |
+| Тести | relayer 102 → 121; unit/LiteSVM без змін (61/89) |
+
+### Відкрите після M-K (у тиждень 6)
+
+1. `/sponsor` ліміт 6/год/власник тепер ділиться з `/nonce` — розвести.
+2. Після депозиту, що впав на другому кроці, 100 dUSDC лишаються на L1-ATA (2 такі на `5Ahk…`) — ідемпотентний `credit_deposit` або перевірка ATA перед мінтом.
+3. «No session key on this device yet» після онбордингу до перезапуску апки — гейт не інвалідує кеш.
+4. Тост «ws error: undefined» від WS relayer-а — шум.
+5. Release-збірка: `ASSETLINKS_SHA256_FINGERPRINTS` на власний сертифікат (зараз debug-keystore).
+6. Cost-estimator `/sponsor` симулює зі свіжим blockhash → для nonce-tx повертає лише flat fee (ренту не рахує).
+7. Exit на живому гаманці не проганяли.
