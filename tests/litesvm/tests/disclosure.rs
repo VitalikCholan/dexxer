@@ -255,7 +255,7 @@ fn commit_aggregate_rejects_position_candidate() {
     let t = open_then_close(&mut h, &w);
     let extra = vec![AccountMeta::new(t.position, false)];
     let r = h.send(
-        &[ixs::commit_aggregate(&w.fee_payer.pubkey(), &w, &extra)],
+        &[ixs::commit_aggregate(&w.fee_payer.pubkey(), &w, &extra, 8)],
         &[&w.fee_payer],
     );
     assert_custom_error(&r, 6000 + DexxerError::InvalidCandidate as u32);
@@ -272,7 +272,7 @@ fn commit_aggregate_rejects_foreign_remaining_account() {
     // Program-owned but neither `Position` nor `DisclosureQueue`.
     let extra = vec![AccountMeta::new(w.market, false)];
     let r = h.send(
-        &[ixs::commit_aggregate(&w.fee_payer.pubkey(), &w, &extra)],
+        &[ixs::commit_aggregate(&w.fee_payer.pubkey(), &w, &extra, 8)],
         &[&w.fee_payer],
     );
     assert_custom_error(&r, 6000 + DexxerError::InvalidCandidate as u32);
@@ -420,7 +420,7 @@ fn commit_aggregate_emits_commitment_and_disclosure_in_one_bundle_at_delay_zero(
     let extra = vec![AccountMeta::new(t.dq, false)];
     let meta = h
         .send(
-            &[ixs::commit_aggregate(&w.fee_payer.pubkey(), &w, &extra)],
+            &[ixs::commit_aggregate(&w.fee_payer.pubkey(), &w, &extra, 8)],
             &[&w.fee_payer],
         )
         .unwrap();
@@ -450,7 +450,7 @@ fn due_reveals_skips_uncommitted() {
     let extra = vec![AccountMeta::new(t.dq, false)];
     let meta = h
         .send(
-            &[ixs::commit_aggregate(&w.fee_payer.pubkey(), &w, &extra)],
+            &[ixs::commit_aggregate(&w.fee_payer.pubkey(), &w, &extra, 8)],
             &[&w.fee_payer],
         )
         .unwrap();
@@ -512,7 +512,7 @@ fn commitments_from_two_traders_do_not_collide() {
         AccountMeta::new(t2.dq, false),
     ];
     h.send(
-        &[ixs::commit_aggregate(&w.fee_payer.pubkey(), &w, &extra)],
+        &[ixs::commit_aggregate(&w.fee_payer.pubkey(), &w, &extra, 8)],
         &[&w.fee_payer],
     )
     .unwrap();

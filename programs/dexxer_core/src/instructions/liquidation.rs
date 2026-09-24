@@ -197,14 +197,17 @@ pub fn liquidation_check(mut ctx: Context<LiquidationCheck>) -> Result<()> {
     let clock = Clock::get()?;
     let a = &mut ctx.accounts;
 
-    // Authorization. The cheap comparisons come first; the derived
-    // `crank_signer_pda(fee_escrow)` — the identity a SCHEDULED tick actually
-    // carries — costs two `find_program_address` calls and is only reached
-    // when the signer is not one of the two configured crank keys.
+    // Authorization (week-5 final review M3). The SCHEDULED identity is checked
+    // FIRST because it is the normal path: almost every tick here arrives from
+    // the per-position scheduled task, signed by `liq_crank_signer`. Comparing
+    // the two cheap `Config` fields first only meant paying two
+    // `find_program_address` calls after two comparisons that never match.
+    // `Config.scheduler_signer` (the MARKET-schedule identity) is deliberately
+    // NOT accepted: it has no business on a per-position liquidation path, and
+    // `ScheduleCrank` registers the market task without `remaining_accounts`
+    // anyway, so it can never legitimately reach this instruction.
     let signer = a.crank.key();
-    let authorized = signer == a.config.crank
-        || signer == a.config.scheduler_signer
-        || signer == liq_crank_signer(&fee_escrow_pda());
+    let authorized = signer == liq_crank_signer(&fee_escrow_pda()) || signer == a.config.crank;
     require!(authorized, DexxerError::Unauthorized);
 
     // A task keeps ticking after its position closes (nothing cancels it from

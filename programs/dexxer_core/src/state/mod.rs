@@ -45,11 +45,17 @@ pub const SNAPSHOT_STEP: u64 = 100_000_000;
 pub const ROOT_LEAVES: usize = 64;
 /// UserAccounts per `set_balances_root` call (tx size / CU budget).
 pub const ROOT_BATCH: usize = 16;
-/// Post-commit actions per `commit_aggregate` bundle. Raised to 8 in week-5 Task 1: a single
-/// `DisclosureQueue` can now need up to `DQ_CAPACITY` commitments plus the same number of
-/// reveals, and a budget of 4 would stall a full ring. Still far under the bridge cap M-C
-/// measured at 28 PASS / 29 FAIL on a fresh account with a 5-account spike action (week 3,
-/// Task 1); the real write_commitment/write_disclosure shape is heavier and was not re-probed.
+/// HARD program ceiling on post-commit actions per `commit_aggregate` bundle — NOT the number
+/// a bundle actually carries. The per-bundle count is chosen by the caller via
+/// `commit_aggregate(max_actions)`, clamped here to `[1, MAX_ACTIONS_PER_COMMIT]` (week-5
+/// final review C1), so the safe number is tunable from the relayer's `COMMIT_MAX_ACTIONS`
+/// env without a program redeploy.
+///
+/// Measured truth on the REAL `write_commitment`/`write_disclosure` action shape (week 5,
+/// Task 7, live devnet-tee): **8 real actions = bridge `0xA0000002` FAIL, 4 = PASS**. Week 3's
+/// M-C figure (28 PASS / 29 FAIL) was taken with a cheap 5-account spike action and does NOT
+/// describe this shape — the real actions are far heavier per action. Raising this constant
+/// without re-measuring would hand a client a budget the bridge rejects.
 pub const MAX_ACTIONS_PER_COMMIT: usize = 8;
 /// `ActionArgs::new` default escrow index (magic-actions.md).
 pub const ACTION_ESCROW_INDEX: u8 = 255;

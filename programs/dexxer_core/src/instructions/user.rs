@@ -554,6 +554,10 @@ pub fn delegate_user(ctx: Context<DelegateUser>) -> Result<()> {
     // `try_deserialize` is valid (and fails on its own with
     // `AccountDidNotDeserialize` for a short legacy v1 account). Scoped so the
     // data borrow is released before the delegation CPI reassigns the owner.
+    // No explicit `owner == crate::ID` check is needed even though this is a
+    // raw deserialize: the address is PDA-derived by the `#[delegate]` macro's
+    // `seeds = [USER_SEED, owner.key()]` constraint, so no foreign-owned
+    // account can occupy this slot and be read as a `UserAccount`.
     {
         let data = ctx.accounts.user_account.try_borrow_data()?;
         let u = UserAccount::try_deserialize(&mut &data[..])?;
@@ -1244,6 +1248,13 @@ pub fn close_orphan_queue(ctx: Context<CloseOrphanQueue>) -> Result<()> {
 // `fee_payer`, not the departed owner: the owner has exited and may never sign
 // again, and it is the protocol that fronted this rent in the first place
 // (`init_user`'s sponsored `payer`).
+//
+// POLICY (spec §4.2, risk #39): this is unconditional, and it is correct only
+// for accounts whose rent the sponsor actually paid (week 4 onwards). An
+// account created before sponsored rent existed was paid for by its OWNER, and
+// this hands that rent to the protocol. Accepted for devnet; the fix (store the
+// rent payer on `UserAccount` while the layout is versioned anyway, and refund
+// it) is week-6 work.
 #[derive(Accounts)]
 pub struct CloseExitedUser<'info> {
     #[account(mut, constraint = fee_payer.key() == config.fee_payer @ DexxerError::Unauthorized)]
@@ -1328,8 +1339,14 @@ pub fn init_user_reuse_queue(ctx: Context<InitUserReuseQueue>, exit_salt: [u8; 3
     u.version = USER_ACCOUNT_VERSION;
     u.exited = false;
     u.exit_salt = exit_salt;
-    // `nonce` is deliberately NOT touched: it numbers this owner's closed
-    // records and feeds their salts, so it must only ever move forward.
+    // `nonce` is deliberately NOT touched HERE — but note it does NOT survive an
+    // exit: `undelegate_user`'s scrub sets `nonce = 0`, so a reused account
+    // restarts its numbering from 0 (week-5 final review M1 corrected the
+    // earlier "must only ever move forward" claim, which was false). That is
+    // safe because a record's salt is `keccak(owner, nonce, slot)` and the
+    // SLOT always moves forward: a repeated `(owner, nonce)` pair after an exit
+    // lands on a different slot, so the commitment hashes cannot collide with
+    // the pre-exit ones.
     // `session_key`/`session_expiry`/`actions_left`/`last_withdraw_slot` were
     // already zeroed by the exit's scrub; re-issuing a session key is
     // `set_session`'s job, exactly as after a fresh `init_user`.

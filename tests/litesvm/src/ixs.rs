@@ -463,7 +463,16 @@ pub fn withdraw(signer: &Pubkey, t: &Trader, wd: &World, amount: u64) -> Instruc
 /// `payer` must equal `Config.fee_payer` (`w.fee_payer` in tests). `extra` is any
 /// mix of `Position`/`DisclosureQueue` accounts appended after the fixed accounts —
 /// `commit_aggregate` reads them from `remaining_accounts`.
-pub fn commit_aggregate(payer: &Pubkey, wd: &World, extra: &[AccountMeta]) -> Instruction {
+///
+/// `max_actions` is the caller's per-bundle action budget (week-5 final review
+/// C1), clamped on-chain to `[1, MAX_ACTIONS_PER_COMMIT]`. Tests that assert the
+/// pre-argument behaviour pass `MAX_ACTIONS_PER_COMMIT` (8).
+pub fn commit_aggregate(
+    payer: &Pubkey,
+    wd: &World,
+    extra: &[AccountMeta],
+    max_actions: u8,
+) -> Instruction {
     let mut accounts = vec![
         r(&wd.config),
         rs(payer),
@@ -479,7 +488,7 @@ pub fn commit_aggregate(payer: &Pubkey, wd: &World, extra: &[AccountMeta]) -> In
     Instruction {
         program_id: prog(),
         accounts,
-        data: ix::CommitAggregate {}.data(),
+        data: ix::CommitAggregate { max_actions }.data(),
     }
 }
 /// Shared account layout for a direct (non-Magic-Action) call to `write_commitment`:

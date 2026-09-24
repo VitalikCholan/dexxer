@@ -88,7 +88,7 @@ fn due_record_popped_not_due_record_preserved() {
     let dq_pda = seed_dq(&mut h, owner, &[due, not_due]);
     let extra = vec![AccountMeta::new(dq_pda, false)];
     h.send(
-        &[ixs::commit_aggregate(&w.fee_payer.pubkey(), &w, &extra)],
+        &[ixs::commit_aggregate(&w.fee_payer.pubkey(), &w, &extra, 8)],
         &[&w.fee_payer],
     )
     .unwrap();
@@ -113,7 +113,7 @@ fn not_due_record_survives_untouched() {
     let dq_pda = seed_dq(&mut h, owner, &[not_due]);
     let extra = vec![AccountMeta::new(dq_pda, false)];
     h.send(
-        &[ixs::commit_aggregate(&w.fee_payer.pubkey(), &w, &extra)],
+        &[ixs::commit_aggregate(&w.fee_payer.pubkey(), &w, &extra, 8)],
         &[&w.fee_payer],
     )
     .unwrap();
@@ -141,7 +141,7 @@ fn commitments_and_reveals_share_the_action_budget() {
     let extra = vec![AccountMeta::new(dq_pda, false)];
     let meta = h
         .send(
-            &[ixs::commit_aggregate(&w.fee_payer.pubkey(), &w, &extra)],
+            &[ixs::commit_aggregate(&w.fee_payer.pubkey(), &w, &extra, 8)],
             &[&w.fee_payer],
         )
         .unwrap();
@@ -212,7 +212,7 @@ fn second_commit_on_an_already_written_record_is_a_noop() {
     let extra = vec![AccountMeta::new(t.dq, false)];
     let meta = h
         .send(
-            &[ixs::commit_aggregate(&w.fee_payer.pubkey(), &w, &extra)],
+            &[ixs::commit_aggregate(&w.fee_payer.pubkey(), &w, &extra, 8)],
             &[&w.fee_payer],
         )
         .unwrap();
@@ -222,7 +222,7 @@ fn second_commit_on_an_already_written_record_is_a_noop() {
 
     let meta = h
         .send(
-            &[ixs::commit_aggregate(&w.fee_payer.pubkey(), &w, &extra)],
+            &[ixs::commit_aggregate(&w.fee_payer.pubkey(), &w, &extra, 8)],
             &[&w.fee_payer],
         )
         .unwrap();
@@ -236,4 +236,100 @@ fn second_commit_on_an_already_written_record_is_a_noop() {
     assert_eq!(dq.records[0].nonce, r1.nonce);
     assert!(dq.records[0].commitment_written, "flag stays true");
     assert_invariant(&h, &w, &[&t]);
+}
+
+/// Helper for the budget test below: send one `commit_aggregate` over `dq_pda`
+/// with the given `max_actions` and return the `actions=N` the program logged.
+fn commit_with_budget(h: &mut Harness, w: &World, dq_pda: Pubkey, max_actions: u8) -> usize {
+    let extra = vec![AccountMeta::new(dq_pda, false)];
+    let meta = h
+        .send(
+            &[ixs::commit_aggregate(
+                &w.fee_payer.pubkey(),
+                w,
+                &extra,
+                max_actions,
+            )],
+            &[&w.fee_payer],
+        )
+        .unwrap();
+    let line = meta
+        .logs
+        .iter()
+        .find_map(|l| l.split("actions=").nth(1).map(str::to_string))
+        .unwrap_or_else(|| panic!("no actions= log, logs: {:?}", meta.logs));
+    line.trim().parse().unwrap()
+}
+
+// Week-5 final review C1 (RED first): before `commit_aggregate` took a
+// `max_actions` argument, `room` came straight off `MAX_ACTIONS_PER_COMMIT`, so
+// a SINGLE queue with a full ring always emitted up to 8 actions no matter what
+// the client asked for. 8 real actions is a measured bridge `0xA0000002` FAIL
+// (week 5, Task 7) and 4 is a measured PASS — which made a full ring
+// permanently undrainable, and with it a position neither closable
+// (`QueueFull`) nor liquidatable. The client-chosen budget is what unsticks it.
+//
+// One queue, 5 uncommitted records, all due at delay 0 = 10 potential actions.
+// `max_actions = 4` must yield exactly 4 — and because commitments are
+// scheduled BEFORE reveals (`WriteDisclosure` reads the `Commitment` the
+// matching `WriteCommitment` creates), all 4 go to commitments and nothing is
+// popped this bundle. A second call then drains: 1 remaining commitment + 3
+// reveals.
+#[test]
+fn single_queue_never_exceeds_requested_budget() {
+    let mut h = Harness::new();
+    let w = World::bootstrap(&mut h);
+    let owner = Pubkey::new_unique();
+    let recs: Vec<ClosedRecord> = (200u64..205).map(|n| record(n, 0, false)).collect();
+    let dq_pda = seed_dq(&mut h, owner, &recs);
+
+    assert_eq!(
+        commit_with_budget(&mut h, &w, dq_pda, 4),
+        4,
+        "one queue must respect the REQUESTED budget, not MAX_ACTIONS_PER_COMMIT"
+    );
+    let dq: DisclosureQueue = h.account(&dq_pda);
+    assert_eq!(
+        dq.records[..dq.len as usize]
+            .iter()
+            .filter(|r| r.commitment_written)
+            .count(),
+        4,
+        "commitments first: the whole budget went to commitments"
+    );
+    assert_eq!(dq.len as usize, 5, "no reveal fit in this bundle");
+
+    // Second call at the same budget drains: the 5th commitment plus 3 reveals.
+    assert_eq!(commit_with_budget(&mut h, &w, dq_pda, 4), 4);
+    let dq: DisclosureQueue = h.account(&dq_pda);
+    assert_eq!(dq.len, 2, "a second bundle really drains the ring");
+
+    // Third call finishes it — the ring is no longer permanently stuck.
+    assert_eq!(commit_with_budget(&mut h, &w, dq_pda, 4), 2);
+    assert_eq!(h.account::<DisclosureQueue>(&dq_pda).len, 0);
+}
+
+// The clamp itself: `0` means "one action", not "no actions" (a caller that
+// wants a bare Pool+BalancesRoot commit passes no remaining_accounts at all),
+// and anything above the program's hard ceiling is capped at
+// `MAX_ACTIONS_PER_COMMIT` rather than accepted.
+#[test]
+fn max_actions_is_clamped_to_one_and_to_the_program_cap() {
+    let mut h = Harness::new();
+    let w = World::bootstrap(&mut h);
+    let recs: Vec<ClosedRecord> = (300u64..305).map(|n| record(n, 0, false)).collect();
+
+    let low = seed_dq(&mut h, Pubkey::new_unique(), &recs);
+    assert_eq!(
+        commit_with_budget(&mut h, &w, low, 0),
+        1,
+        "0 clamps UP to 1"
+    );
+
+    let high = seed_dq(&mut h, Pubkey::new_unique(), &recs);
+    assert_eq!(
+        commit_with_budget(&mut h, &w, high, 200),
+        MAX_ACTIONS_PER_COMMIT,
+        "an over-large request is capped at the program ceiling"
+    );
 }

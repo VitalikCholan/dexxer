@@ -101,6 +101,14 @@ fn process_disclosure_queue_candidate<'info>(
     config_key: Pubkey,
     payer: &AccountInfo<'info>,
     system_program: Pubkey,
+    // Caller-chosen per-bundle action budget, already clamped to
+    // `[1, MAX_ACTIONS_PER_COMMIT]` by `commit_aggregate` (week-5 final review
+    // C1). Before this argument existed `room` came straight off the constant,
+    // so a SINGLE queue with a full ring always emitted up to 8 actions no
+    // matter what the client asked for — and 8 real actions is a measured
+    // bridge `0xA0000002` FAIL, which is what made a full ring permanently
+    // undrainable (and therefore a position neither closable nor liquidatable).
+    budget: usize,
     actions: &mut Vec<CallHandler<'info>>,
 ) -> Result<()> {
     let mut dq = DisclosureQueue::try_deserialize(&mut &ai.try_borrow_data()?[..])?;
@@ -108,7 +116,7 @@ fn process_disclosure_queue_candidate<'info>(
     require!(ai.key() == exp, DexxerError::InvalidCandidate);
 
     // (1) commitments first — see the ordering comment above.
-    let room = MAX_ACTIONS_PER_COMMIT.saturating_sub(actions.len());
+    let room = budget.saturating_sub(actions.len());
     for (nonce, hash) in pending_commitments(&mut dq, room)? {
         // Hash-seeded (ruling 9): `nonce` is per-user, `hash` is globally unique.
         let (commitment, _) = Pubkey::find_program_address(&[COMMIT_SEED, &hash], &crate::ID);
@@ -136,7 +144,7 @@ fn process_disclosure_queue_candidate<'info>(
     }
 
     // (2) then reveals, out of whatever budget the commitments left.
-    let room = MAX_ACTIONS_PER_COMMIT.saturating_sub(actions.len());
+    let room = budget.saturating_sub(actions.len());
     for (args, salt) in due_reveals(&mut dq, slot, room)? {
         // Hash-seeded (ruling 9), same hash as WriteDisclosure recomputes from (args, salt).
         let hash = commitment_hash(&args, &salt);
@@ -169,13 +177,25 @@ fn process_disclosure_queue_candidate<'info>(
         });
     }
     // No explicit budget check: both loops above draw from `room`, which is
-    // `MAX_ACTIONS_PER_COMMIT` minus what earlier candidates already took, so
-    // `actions.len()` cannot exceed the cap by construction.
+    // `budget` minus what earlier candidates already took, so `actions.len()`
+    // cannot exceed the requested budget (itself <= `MAX_ACTIONS_PER_COMMIT`)
+    // by construction — for one candidate as much as for many.
     dq.try_serialize(&mut &mut ai.try_borrow_mut_data()?[..])?;
     Ok(())
 }
 
-pub fn commit_aggregate<'info>(ctx: Context<'info, CommitAggregate<'info>>) -> Result<()> {
+/// `max_actions` is the caller's per-bundle post-commit action budget, clamped
+/// here to `[1, MAX_ACTIONS_PER_COMMIT]`: `MAX_ACTIONS_PER_COMMIT` stays the
+/// program's hard ceiling, but the count that actually goes into one bundle is
+/// now chosen by the client (the relayer's `COMMIT_MAX_ACTIONS` env, week-5
+/// final review C1) so the measured-safe number can be tuned without a redeploy.
+/// `0` clamps UP to 1 rather than meaning "no actions": a caller that wants a
+/// bare `Pool`+`BalancesRoot` commit passes no `remaining_accounts` at all.
+pub fn commit_aggregate<'info>(
+    ctx: Context<'info, CommitAggregate<'info>>,
+    max_actions: u8,
+) -> Result<()> {
+    let budget = max_actions.clamp(1, MAX_ACTIONS_PER_COMMIT as u8) as usize;
     let clock = Clock::get()?;
     // Step-rounded snapshot (week-4 Task 1), set before the commit CPI so the
     // committed bytes carry it: assets down, liabilities up, `last_commit_slot`
@@ -211,6 +231,7 @@ pub fn commit_aggregate<'info>(ctx: Context<'info, CommitAggregate<'info>>) -> R
             config_key,
             &payer_ai,
             system_program,
+            budget,
             &mut actions,
         )?;
     }

@@ -984,7 +984,12 @@
           "address": "Magic11111111111111111111111111111111111111"
         }
       ],
-      "args": []
+      "args": [
+        {
+          "name": "max_actions",
+          "type": "u8"
+        }
+      ]
     },
     {
       "name": "commit_market",

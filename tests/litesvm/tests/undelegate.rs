@@ -156,6 +156,7 @@ fn drained_orphan(h: &mut Harness, w: &World) -> Trader {
             &w.fee_payer.pubkey(),
             w,
             &[AccountMeta::new(t.dq, false)],
+            8,
         )],
         &[&w.fee_payer],
     )
@@ -189,6 +190,7 @@ fn close_orphan_queue_requires_empty_queue_and_exited_user() {
             &w.fee_payer.pubkey(),
             &w,
             &[AccountMeta::new(t.dq, false)],
+            8,
         )],
         &[&w.fee_payer],
     )
@@ -288,6 +290,7 @@ fn init_user_reuse_queue_reactivates() {
             &w.fee_payer.pubkey(),
             &w,
             &[AccountMeta::new(t.dq, false)],
+            8,
         )],
         &[&w.fee_payer],
     )

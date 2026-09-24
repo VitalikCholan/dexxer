@@ -160,13 +160,16 @@ fn liquidation_check_rejects_non_scheduler_signer() {
     );
 }
 
-/// `open_position` registers the position's task; re-opening after a close
-/// registers it again under the same `task_id` (the scheduler treats that as
-/// an update — week-5 Task 0, measurement 1/3). LiteSVM has no Magic program,
-/// so both the schedule and the cancel CPIs are skipped by the
-/// `magic_program.executable` gate — which is exactly what these logs assert.
+/// What this test can and cannot prove (week-5 final review M4, renamed from
+/// `open_registers_task_idempotently`): LiteSVM has no Magic program, so
+/// `open_position`'s schedule CPI and `close_position`'s cancel CPI are both
+/// SKIPPED by the `magic_program.executable` gate. All that is verified here is
+/// that each path REACHES that gate and that a re-open after a close works —
+/// NOT that a re-registration under the same `task_id` is treated as an update
+/// by the scheduler. That idempotency is a devnet measurement (week-5 Task 0,
+/// measurement 1/3), unverifiable in this harness.
 #[test]
-fn open_registers_task_idempotently() {
+fn open_skips_task_registration_without_magic_program() {
     let mut h = Harness::new();
     let w = World::bootstrap(&mut h);
     h.warp(100, NOW);
@@ -189,7 +192,9 @@ fn open_registers_task_idempotently() {
         .unwrap();
     assert!(
         meta.logs.iter().any(|l| l.contains("liq task: skipped")),
-        "open must reach the scheduler gate, logs: {:?}",
+        "open must REACH the scheduler gate — LiteSVM has no Magic program, so \
+         this proves the path is taken, NOT that the registration is \
+         idempotent (devnet-only measurement), logs: {:?}",
         meta.logs
     );
 
@@ -198,12 +203,14 @@ fn open_registers_task_idempotently() {
         .unwrap();
     assert!(
         meta.logs.iter().any(|l| l.contains("liq task: skipped")),
-        "close must reach the cancel gate, logs: {:?}",
+        "close must REACH the cancel gate — skipped here, so the cancel CPI \
+         itself is not exercised, logs: {:?}",
         meta.logs
     );
 
-    // Second open: same position PDA, therefore the same `task_id` — a
-    // re-registration, not a conflict.
+    // Second open: same position PDA, therefore the same `task_id`. Here this
+    // only shows the re-open succeeds; whether the scheduler treats the
+    // re-registration as an update is the devnet measurement above.
     h.send(
         &[ixs::open_position(
             &t.kp.pubkey(),
