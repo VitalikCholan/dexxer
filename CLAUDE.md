@@ -30,6 +30,7 @@
 - docs/superpowers/plans/week3-results.md — виміряні результати тижня 3 (Tasks 0–10, M-A…M-E, рулінги 1–10, LiteSVM-траєкторія 39→65, вартість комітів, відкрите для тижня 4)
 - docs/superpowers/plans/2026-09-23-week5-reliability.md — план тижня 5 (надійність без relayer-а: ліквідації з планувальника, reveal за один цикл, exit із боргом розкриття, 0-SOL онбординг; дизайн — spec §2.6)
 - docs/superpowers/plans/week5-results.md — виміряні результати тижня 5 (Tasks 0–7, M-G′/M-H/M-J/M-I, рулінги, LiteSVM-траєкторія 71→87, unit 55→61, relayer 61→100, вартість двох апгрейдів, відкрите для тижня 6)
+- docs/superpowers/plans/week6-backlog.md — бек-лог тижня 6 (узгоджено 24.09: ризики #37–39, ліквідація при повному кільці, економіка комітів/дій, #27 SIWS-гейт, міграція лейауту, MWA identity verification для Phantom)
 
 ## Правила
 - Anchor 1.0.2, Solana 3.1.9, Rust 1.89, `ephemeral-rollups-sdk` 0.16.2 (`anchor`, `access-control`), TS SDK 0.17, `@solana/web3.js` v1 (не kit)
