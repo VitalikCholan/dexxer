@@ -176,7 +176,11 @@ per-sample гарду: повторні виклики в одному слот�
 (TEE-permission гейтить лише читання, не інклюзію tx) тепер несе й `liquidation_check`;
 `close_orphan_queue` — crank-only, залежність від живучості релеєра; `listBaseOwners` — O(n)-скан
 бази; історія міграції v1-лейауту відсутня як окрема інструкція; #27 (SIWS-гейт на `/sponsor`) —
-далі в тиждень 6.
+далі в тиждень 6; **живий Phantom-смок (24.09.2026, фікс-раунд 2):** Phantom відхиляє
+`reauthorize` для будь-якого неверифікованого dApp-identity (Digital Asset Links на
+`identity.uri`) — клієнт тепер робить свіжий `authorize` в одній сесії замість реюзу токена
+(`app/src/lib/mwaAuth.ts`'s `reauthorizeFresh`), але постійний фікс — хостити `assetlinks.json`
+на власному домені, далі в тиждень 6.
 
 ---
 

@@ -62,15 +62,23 @@
 // (never imported directly here — this file only hashes whatever `Identity`
 // shape a caller hands it).
 import { useCallback, useMemo } from 'react'
-import type { Transaction } from '@solana/web3.js'
+import { PublicKey, type Transaction } from '@solana/web3.js'
 import AsyncStorage from '@react-native-async-storage/async-storage'
 import { sha256 } from '@noble/hashes/sha2'
-import { transact } from '@solana-mobile/mobile-wallet-adapter-protocol-web3js'
+import { transact, type Web3MobileWallet } from '@solana-mobile/mobile-wallet-adapter-protocol-web3js'
 import {
   SolanaMobileWalletAdapterProtocolError,
   SolanaMobileWalletAdapterProtocolErrorCode,
+  type AuthorizationResult,
+  type Chain,
 } from '@solana-mobile/mobile-wallet-adapter-protocol'
-import { useMobileWallet } from '@wallet-ui/react-native-web3js'
+import {
+  useMobileWallet,
+  toUint8Array,
+  type Account as WalletUiAccount,
+  type AuthorizationStore,
+  type WalletAuthorization,
+} from '@wallet-ui/react-native-web3js'
 
 /** Structural subset of MWA's `AppIdentity` this file needs — avoids pulling in the full protocol package just for a type. */
 export interface Identity {
@@ -182,13 +190,48 @@ export interface AuthStoreLike {
 // does it get converted to a `SolanaMobileWalletAdapterProtocolError(0, -1,
 // msg)`, one level too late for wallet-ui's inner retry to see it.
 //
-// `isAuthorizationFailure`/`withAuthRetry` below recover on our side: catch
-// either shape (raw RN error or the converted protocol error, plus a
-// string-message fallback for anything that got wrapped again in between),
-// clear BOTH this file's own token and wallet-ui's persisted one, and run
-// the signing/messaging call exactly once more — the retry then has no
-// stored token at all, so wallet-ui/Phantom does a fresh `authorize`
-// (one prompt) instead of a `reauthorize`.
+// `isAuthorizationFailure` below recognizes either shape (raw RN error or
+// the converted protocol error, plus a string-message fallback for anything
+// that got wrapped again in between). `withAuthRetry` (clear-then-retry) and
+// `reauthorizeFresh` (fresh-authorize-in-one-session, no clear) below are
+// the two different recovery strategies built on top of it — see "fix round
+// 2" right below for why there are two.
+//
+// --- Fix round 2 (24.09.2026 live Phantom retest): WHY it always rejects ---
+//
+// Phantom's own log names the real reason, independent of the RN
+// missing-`await` bug above: `Declining sol_mwa_reauthorize: dApp identity
+// is not verified (mwaIdentityVerified !== true)`. Phantom only honours
+// `reauthorize` for dApps it has verified via Digital Asset Links at
+// `identity.uri` — for an unverified identity (this app, until we host
+// `assetlinks.json` on our own domain) EVERY `reauthorize` is rejected,
+// unconditionally, forever, not just on a stale/expired token. So the fix
+// round 1 retry (`withAuthRetry`: catch the -1, `store.persist(null)`,
+// re-run the SAME call) was necessary but landed on the wrong strategy for
+// the SIGNING path: clearing the store empties `accounts`, and
+// `auth-provider.tsx`'s root gate (`isAuthenticated: accounts.length > 0`,
+// `app/_layout.tsx`) reads an empty `accounts` as "disconnected" and
+// navigates to `/sign-in` — observed live on commit 921a1cb: reauthorize
+// -1 -> store cleared -> root gate bounces to `/sign-in` mid-onboarding ->
+// the retried sign call never lands because the screen that was calling it
+// is gone.
+//
+// `reauthorizeFresh` below is the fix: it never clears the store. It runs a
+// genuinely fresh `wallet.authorize({identity, chain})` (no `auth_token` —
+// a true `authorize`, which Phantom does NOT gate on identity verification,
+// only `reauthorize` is refused) and the actual signing/messaging call
+// INSIDE THE SAME raw `transact()` session, then persists the new
+// authorization over the old one directly — `accounts` is never empty at
+// any point observers can see it. The user sees one extra `authorize`
+// prompt before the sign/message prompt every time a signing session starts
+// (until Digital Asset Links verification is live), instead of a silent
+// failure or a navigation bounce.
+//
+// `withAuthRetry` (clear-then-retry) is kept for `ensureAuthorized`'s
+// connect/SIWS path only — there is no "already connected" screen to fall
+// out of when `connect`/`signIn` themselves are what the user is currently
+// waiting on, so clearing first is safe there and simpler than replicating
+// `reauthorizeFresh` for a plain authorize with no extra `op`.
 
 /**
  * True when `e` is some shape of "wallet rejected `reauthorize`"
@@ -289,33 +332,131 @@ export async function disconnect(mwaDisconnect: () => Promise<void>, store: Auth
   await clearAuthToken()
 }
 
+/** Replica of wallet-ui's internal, unexported `ellipsify` (`get-account-from-authorized-account.ts`) — only used as the label fallback below, so a replicated `WalletAuthorization` matches the library's own output field-for-field. */
+function ellipsifyAddress(str: string, len = 4, delimiter = '..'): string {
+  const limit = len * 2 + delimiter.length
+  return str.length > limit ? str.slice(0, len) + delimiter + str.slice(-len) : str
+}
+
+/**
+ * Replica of wallet-ui's internal, unexported `getAccountFromAuthorizedAccount`
+ * — decodes one raw protocol `Account` (base64 `address`) into wallet-ui's
+ * own `Account` shape (a real `PublicKey`). Neither this nor
+ * `getAuthorizationFromAuthorizationResult` below is exported by the
+ * library (confirmed reading `index.native.mjs`'s export list) — replicated
+ * here so `reauthorizeFresh`'s `store.persist(...)` writes the exact shape
+ * the library itself would have written.
+ */
+function accountFromAuthorizedAccount(account: AuthorizationResult['accounts'][number]): WalletUiAccount {
+  const address = new PublicKey(toUint8Array(account.address))
+  return {
+    address,
+    addressBase64: account.address,
+    icon: account.icon as WalletUiAccount['icon'],
+    label: account.label ?? ellipsifyAddress(address.toString()),
+    publicKey: address,
+  }
+}
+
+/**
+ * Replica of wallet-ui's internal, unexported `getAuthorizationFromAuthorizationResult`
+ * — same account-carryover rule (keep the previously selected account if
+ * it's still in the newly authorized set, otherwise fall back to the first
+ * account), so a fresh authorize never silently switches the active
+ * account out from under the caller.
+ */
+function authorizationFromResult(
+  result: AuthorizationResult,
+  previouslySelectedAccount: WalletUiAccount | undefined,
+): WalletAuthorization {
+  const accounts = result.accounts.map(accountFromAuthorizedAccount)
+  const stillAuthorized =
+    previouslySelectedAccount != null &&
+    result.accounts.some(({ address }) => address === previouslySelectedAccount.addressBase64)
+  return {
+    accounts,
+    authToken: result.auth_token,
+    selectedAccount: stillAuthorized ? previouslySelectedAccount! : accounts[0],
+  }
+}
+
+/**
+ * Phantom refuses `reauthorize` for unverified dApp identities (Digital
+ * Asset Links at `identity.uri`); until we host `assetlinks.json` on our
+ * own domain, each signing session re-authorizes with a prompt instead of
+ * silently reusing the cached token. This runs that fresh `authorize` (no
+ * `auth_token`) and `op(wallet, account)` in ONE raw `transact()` session —
+ * one extra prompt, never two separate sessions — and persists the result
+ * into wallet-ui's `store` without ever clearing it first (see "fix round
+ * 2" above for why clearing first broke onboarding on live Phantom).
+ */
+async function reauthorizeFresh<T>(
+  chain: Chain,
+  identity: Identity,
+  store: AuthorizationStore,
+  op: (wallet: Web3MobileWallet, account: WalletUiAccount) => Promise<T>,
+): Promise<T> {
+  const previouslySelectedAccount = (await store.fetch())?.selectedAccount
+  const { authorization, result } = await transact(async (wallet) => {
+    const authResult = await wallet.authorize({ identity, chain })
+    const authorization = authorizationFromResult(authResult, previouslySelectedAccount)
+    const result = await op(wallet, authorization.selectedAccount)
+    return { authorization, result }
+  })
+  await store.persist(authorization)
+  await saveAuthToken({ token: authorization.authToken, identityHash: identityHash(identity) })
+  return result
+}
+
 /**
  * Drop-in replacement for `useMobileWallet()`'s raw `signTransactions`/
- * `signMessages` — both wrapped in {@link withAuthRetry} so a wallet's
- * `reauthorize` rejection (Phantom `-1`, see "Phantom reauthorize bug"
- * above) self-heals with one extra `authorize` prompt instead of surfacing
- * to the caller as `-1 authorization request failed`. Every real (non-spike)
- * signing/messaging call site should use this instead of destructuring
- * `signTransactions`/`signMessages` straight off `useMobileWallet()`.
+ * `signMessages`: tries the raw hook call first (cheap — reuses the cached
+ * token when the wallet still accepts `reauthorize`), and on
+ * {@link isAuthorizationFailure} falls back to {@link reauthorizeFresh}
+ * exactly once (no further retry — a second failure propagates as-is).
+ * Every real (non-spike) signing/messaging call site should use this
+ * instead of destructuring `signTransactions`/`signMessages` straight off
+ * `useMobileWallet()`.
  */
 export function useMwaSigning() {
-  const { signTransactions: rawSignTransactions, signMessages: rawSignMessages, store } = useMobileWallet()
-
-  const clearAuthorization = useCallback(async () => {
-    await clearAuthToken()
-    await store.persist(null)
-  }, [store])
+  const {
+    chain,
+    identity,
+    signTransactions: rawSignTransactions,
+    signMessages: rawSignMessages,
+    store,
+  } = useMobileWallet()
 
   const signTransactions = useCallback(
-    <K extends Transaction | Transaction[]>(tx: K): Promise<K> =>
-      withAuthRetry(() => rawSignTransactions(tx), { clearAuthorization }),
-    [rawSignTransactions, clearAuthorization],
+    async <K extends Transaction | Transaction[]>(tx: K): Promise<K> => {
+      try {
+        return await rawSignTransactions(tx)
+      } catch (e) {
+        if (!isAuthorizationFailure(e)) throw e
+        const txs = (Array.isArray(tx) ? tx : [tx]) as Transaction[]
+        const signed = await reauthorizeFresh(chain, identity, store, (wallet) =>
+          wallet.signTransactions({ transactions: txs }),
+        )
+        return (Array.isArray(tx) ? signed : signed[0]) as K
+      }
+    },
+    [rawSignTransactions, chain, identity, store],
   )
 
   const signMessages = useCallback(
-    <K extends Uint8Array | Uint8Array[]>(message: K): Promise<K> =>
-      withAuthRetry(() => rawSignMessages(message), { clearAuthorization }),
-    [rawSignMessages, clearAuthorization],
+    async <K extends Uint8Array | Uint8Array[]>(message: K): Promise<K> => {
+      try {
+        return await rawSignMessages(message)
+      } catch (e) {
+        if (!isAuthorizationFailure(e)) throw e
+        const payloads = (Array.isArray(message) ? message : [message]) as Uint8Array[]
+        const signed = await reauthorizeFresh(chain, identity, store, (wallet, account) =>
+          wallet.signMessages({ addresses: payloads.map(() => account.addressBase64), payloads }),
+        )
+        return (Array.isArray(message) ? signed : signed[0]) as K
+      }
+    },
+    [rawSignMessages, chain, identity, store],
   )
 
   return useMemo(() => ({ signTransactions, signMessages }), [signTransactions, signMessages])

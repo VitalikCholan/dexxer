@@ -38,7 +38,12 @@ function useSignInMutation() {
   const { signIn, identity, store } = useMobileWallet()
 
   return useMutation({
-    mutationFn: async () => await ensureAuthorized(identity, () => signIn({ uri: AppConfig.uri }), store),
+    // Fix round 2 (24.09.2026): `uri`/`domain` must describe the same dApp
+    // identity as MWA's own `identity.uri` (`app-providers.tsx`) — a
+    // mismatched SIWS uri was still the template placeholder
+    // `https://example.com` (logcat: `sign_in_payload: {"uri":"..."}`).
+    mutationFn: async () =>
+      await ensureAuthorized(identity, () => signIn({ uri: AppConfig.uri, domain: 'github.com' }), store),
   })
 }
 
