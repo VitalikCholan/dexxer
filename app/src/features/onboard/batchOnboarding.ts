@@ -149,15 +149,40 @@ export function errText(e: unknown): string {
 // sent fine. Own submission to `rpc.magicblock.app/devnet` — the RPC that
 // actually holds the eSPL/dUSDC accounts — mirrors `sendErOwner` and
 // sidesteps the wallet's send path entirely.
+/**
+ * Builds `ixs` on a fresh blockhash, has the wallet sign, then checks the
+ * blockhash is STILL valid — a wallet prompt can take longer than a devnet
+ * blockhash lives (measured with Phantom 24.09: 38 s and 55 s per prompt while
+ * the user reads "Advanced"; a tx sent after that is silently dropped and only
+ * surfaces as "confirm timeout"). Re-signs up to `attempts` times.
+ */
+export async function signWithLiveBlockhash(
+  conn: Connection,
+  feePayer: PublicKey,
+  ixs: TransactionInstruction[],
+  sign: (tx: Transaction) => Promise<Transaction>,
+  appendLog?: (s: string) => void,
+  attempts = 3,
+): Promise<Transaction> {
+  for (let attempt = 1; attempt <= attempts; attempt++) {
+    const tx = new Transaction().add(...ixs)
+    tx.feePayer = feePayer
+    tx.recentBlockhash = (await conn.getLatestBlockhash()).blockhash
+    const signed = await sign(tx)
+    const bh = signed.recentBlockhash
+    const stillValid = bh ? (await conn.isBlockhashValid(bh, { commitment: 'confirmed' })).value : false
+    if (stillValid) return signed
+    appendLog?.(`blockhash expired while the wallet was signing (attempt ${attempt}/${attempts}) — re-signing`)
+  }
+  throw new Error('blockhash kept expiring while the wallet was signing — retry and confirm in the wallet sooner')
+}
+
 export async function sendL1(
   owner: PublicKey,
   ixs: TransactionInstruction[],
   signTransactions: (tx: Transaction) => Promise<Transaction>,
 ): Promise<string> {
-  const tx = new Transaction().add(...ixs)
-  tx.feePayer = owner
-  tx.recentBlockhash = (await baseConn.getLatestBlockhash()).blockhash
-  const signed = await signTransactions(tx)
+  const signed = await signWithLiveBlockhash(baseConn, owner, ixs, signTransactions)
   const sig = await baseConn.sendRawTransaction(signed.serialize(), { skipPreflight: true })
   await confirmOnConn(baseConn, sig)
   return sig
@@ -179,10 +204,7 @@ export async function sendL1Sponsored(
 ): Promise<string> {
   const configInfo = await baseConn.getAccountInfo(config, 'confirmed')
   if (!configInfo) throw new Error('Config PDA not found — protocol not bootstrapped on this devnet deployment')
-  const tx = new Transaction().add(...ixs)
-  tx.feePayer = readConfigFeePayer(configInfo.data)
-  tx.recentBlockhash = (await baseConn.getLatestBlockhash()).blockhash
-  const signed = await signTransactions(tx)
+  const signed = await signWithLiveBlockhash(baseConn, readConfigFeePayer(configInfo.data), ixs, signTransactions)
   const sponsored = await sponsorTx(signed)
   const sig = await baseConn.sendRawTransaction(sponsored.serialize(), { skipPreflight: true })
   if (__DEV__) console.log(`[dexxer] sendL1Sponsored: sent ${sig} (feePayer ${sponsored.feePayer?.toBase58()})`)
@@ -630,11 +652,14 @@ export async function runBatchedOnboarding(
       const stillValid = bh ? (await leg.conn.isBlockhashValid(bh, { commitment: 'confirmed' })).value : false
       if (!stillValid) {
         appendLog(`re-sign leg ${i + 1} (blockhash expired)`)
-        const fresh = new Transaction().add(...leg.ixs)
-        fresh.feePayer = leg.feePayer
-        fresh.recentBlockhash = (await leg.conn.getLatestBlockhash()).blockhash
-        const [reSigned] = await mwa.signTransactions([fresh])
-        toSend = reSigned
+        // Re-checked AFTER signing too — Phantom prompts measured at 38–55 s each (24.09).
+        toSend = await signWithLiveBlockhash(
+          leg.conn,
+          leg.feePayer,
+          leg.ixs,
+          async (tx) => (await mwa.signTransactions([tx]))[0],
+          appendLog,
+        )
       }
 
       if (leg.sponsor) {
@@ -645,7 +670,9 @@ export async function runBatchedOnboarding(
           throw new Error(`${leg.label}: ${msg}`)
         }
       }
-      const sig = await leg.conn.sendRawTransaction(toSend.serialize(), { skipPreflight: true })
+      const raw = toSend.serialize()
+      if (__DEV__) console.log(`[dexxer] leg ${leg.label}: feePayer=${toSend.feePayer?.toBase58()} ixs=${toSend.instructions.length} bytes=${raw.length} tx=${raw.toString('base64')}`)
+      const sig = await leg.conn.sendRawTransaction(raw, { skipPreflight: true })
       await confirmOnConn(leg.conn, sig)
       appendLog(`${leg.label} ${sig}`)
       // `delegate_user`'s three accounts don't appear as delegated on L1
