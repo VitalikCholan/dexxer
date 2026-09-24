@@ -88,8 +88,10 @@ const EMPTY_INDEXER_SNAPSHOT: IndexerSnapshot = {
 export interface SponsorHealthSnapshot {
   today_sol: number;
   count_today: number;
+  /** `SPONSOR_MAX_CU_PRICE_MICROLAMPORTS` (fix: wallet-prepended ComputeBudget ixs, Phantom smoke 24.09) — the ceiling enforced on a sponsored `SetComputeUnitPrice`, 0 when sponsoring is disabled. */
+  maxCuPriceMicroLamports: number;
 }
-const EMPTY_SPONSOR_SNAPSHOT: SponsorHealthSnapshot = { today_sol: 0, count_today: 0 };
+const EMPTY_SPONSOR_SNAPSHOT: SponsorHealthSnapshot = { today_sol: 0, count_today: 0, maxCuPriceMicroLamports: 0 };
 
 export interface HealthPayload {
   ok: boolean;

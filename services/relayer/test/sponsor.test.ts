@@ -23,7 +23,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import express from "express";
 import type { AddressInfo } from "node:net";
-import { Keypair, PublicKey, SystemProgram, Transaction, TransactionInstruction } from "@solana/web3.js";
+import { ComputeBudgetProgram, Keypair, PublicKey, SystemProgram, Transaction, TransactionInstruction } from "@solana/web3.js";
 import { BN } from "@coral-xyz/anchor";
 import { delegateSpl, EPHEMERAL_SPL_TOKEN_PROGRAM_ID } from "@magicblock-labs/ephemeral-rollups-sdk";
 import { createAssociatedTokenAccountIdempotentInstruction, getAssociatedTokenAddressSync, TOKEN_PROGRAM_ID } from "@solana/spl-token";
@@ -31,6 +31,7 @@ import bs58 from "bs58";
 import {
   checkWhitelist,
   DEFAULT_DAILY_BUDGET_SOL,
+  DEFAULT_SPONSOR_MAX_CU_PRICE_MICROLAMPORTS,
   MAX_SPONSOR_CALLS_PER_OWNER_WINDOW,
   RATE_LIMIT_MS,
   sponsorRouter,
@@ -537,6 +538,83 @@ test("checkWhitelist: rejects the ATA program's non-idempotent Create instructio
   const result = checkWhitelist(tx, feePayer.publicKey, DUSDC_MINT);
   assert.equal(result.ok, false);
   if (!result.ok) assert.match(result.error, /CreateIdempotent/);
+});
+
+// --- ComputeBudget (fix: live Phantom smoke 24.09 — Phantom prepends these to legacy txs) ---
+
+test("checkWhitelist: accepts an L1a batch with Phantom-prepended SetComputeUnitLimit + SetComputeUnitPrice", async () => {
+  const owner = Keypair.generate();
+  const feePayer = Keypair.generate();
+  const mint = DUSDC_MINT;
+  const ownerAta = getAssociatedTokenAddressSync(mint, owner.publicKey);
+  const tx = new Transaction();
+  tx.feePayer = feePayer.publicKey;
+  tx.recentBlockhash = FAKE_BLOCKHASH;
+  tx.add(ComputeBudgetProgram.setComputeUnitLimit({ units: 200_000 }));
+  tx.add(ComputeBudgetProgram.setComputeUnitPrice({ microLamports: 1_000 }));
+  tx.add(createAssociatedTokenAccountIdempotentInstruction(feePayer.publicKey, ownerAta, owner.publicKey, mint));
+  tx.add(await buildFaucetInitIx(owner.publicKey, feePayer.publicKey));
+  tx.add((await buildInitUserTx(owner, feePayer.publicKey)).instructions[0]);
+  tx.partialSign(owner);
+
+  const result = checkWhitelist(tx, feePayer.publicKey, DUSDC_MINT);
+  assert.equal(result.ok, true);
+  if (result.ok) {
+    assert.deepEqual(result.labels, [
+      "computebudget:set_compute_unit_limit",
+      "computebudget:set_compute_unit_price",
+      "ata:create_idempotent",
+      "dexxer_core:faucet_init",
+      "dexxer_core:init_user",
+    ]);
+  }
+});
+
+test("checkWhitelist: rejects a SetComputeUnitPrice above SPONSOR_MAX_CU_PRICE_MICROLAMPORTS", async () => {
+  const owner = Keypair.generate();
+  const feePayer = Keypair.generate();
+  const tx = new Transaction();
+  tx.feePayer = feePayer.publicKey;
+  tx.recentBlockhash = FAKE_BLOCKHASH;
+  tx.add(ComputeBudgetProgram.setComputeUnitPrice({ microLamports: 600_000 }));
+  tx.add((await buildInitUserTx(owner, feePayer.publicKey)).instructions[0]);
+  tx.partialSign(owner);
+
+  const result = checkWhitelist(tx, feePayer.publicKey, DUSDC_MINT, DEFAULT_SPONSOR_MAX_CU_PRICE_MICROLAMPORTS);
+  assert.equal(result.ok, false);
+  if (!result.ok) {
+    assert.equal(
+      result.error,
+      `instruction 0: ComputeBudget SetComputeUnitPrice 600000 µL exceeds SPONSOR_MAX_CU_PRICE_MICROLAMPORTS ${DEFAULT_SPONSOR_MAX_CU_PRICE_MICROLAMPORTS}`,
+    );
+  }
+});
+
+test("checkWhitelist: rejects RequestHeapFrame (not in the small accepted ComputeBudget surface)", async () => {
+  const owner = Keypair.generate();
+  const feePayer = Keypair.generate();
+  const tx = new Transaction();
+  tx.feePayer = feePayer.publicKey;
+  tx.recentBlockhash = FAKE_BLOCKHASH;
+  tx.add(ComputeBudgetProgram.requestHeapFrame({ bytes: 32 * 1024 }));
+  tx.add((await buildInitUserTx(owner, feePayer.publicKey)).instructions[0]);
+  tx.partialSign(owner);
+
+  const result = checkWhitelist(tx, feePayer.publicKey, DUSDC_MINT);
+  assert.equal(result.ok, false);
+  if (!result.ok) assert.match(result.error, /ComputeBudget instruction variant 1 not in whitelist/);
+});
+
+test("checkWhitelist: rejects a tx made ENTIRELY of ComputeBudget instructions", async () => {
+  const feePayer = Keypair.generate();
+  const tx = new Transaction();
+  tx.feePayer = feePayer.publicKey;
+  tx.recentBlockhash = FAKE_BLOCKHASH;
+  tx.add(ComputeBudgetProgram.setComputeUnitLimit({ units: 200_000 }));
+  tx.add(ComputeBudgetProgram.setComputeUnitPrice({ microLamports: 1_000 }));
+
+  const result = checkWhitelist(tx, feePayer.publicKey, DUSDC_MINT);
+  assert.equal(result.ok, false);
 });
 
 // --- router (express server, in-memory store/estimator) ---

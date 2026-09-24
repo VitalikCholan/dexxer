@@ -170,11 +170,25 @@ signer. Each instruction shape may appear at most once per sponsored tx.
 | eSPL | `transferToVaultIx` (prefix `2`) | 5 | — | pure token transfer (owner's dUSDC -> vault), no payer account |
 | eSPL | `delegateEphemeralAtaIx` (prefix `4`) | — | 0 | no owner account; `fee_payer` fronts delegation-record rent |
 | ATA program | `CreateIdempotent` (data `[1]`) | 2 | 0 | week-5 Task 5: FEE_PAYER-funded (was owner-funded); `owner`@2 must be the signing owner, which is what stops it funding a stranger's ATA |
+| ComputeBudget | `SetComputeUnitLimit` (data[0]=2) | — | — | fix (Phantom smoke 24.09): accepted for any value — no accounts, cannot cost `fee_payer` more than the tx's own CU budget |
+| ComputeBudget | `SetComputeUnitPrice` (data[0]=3) | — | — | accepted only up to `SPONSOR_MAX_CU_PRICE_MICROLAMPORTS` (default `500000`); any other ComputeBudget variant (`RequestHeapFrame`, `SetLoadedAccountsDataSizeLimit`, ...) is rejected |
 | SystemProgram | anything | — | — | rejected outright — `fee_payer` never moves lamports through this endpoint |
 
 Any other `programId`/discriminator/opcode is rejected outright; the
 non-idempotent ATA `Create` and any other SystemProgram instruction are
-never whitelisted.
+never whitelisted. A transaction made ENTIRELY of ComputeBudget
+instructions is rejected too — at least one dexxer_core/eSPL/ATA
+instruction is required.
+
+Fix (live Phantom smoke, 24.09): the endpoint's 400 for the L1a onboarding
+batch was Phantom prepending `SetComputeUnitLimit`/`SetComputeUnitPrice` to
+the legacy transaction it signed — standard wallet behaviour the fakewallet
+test harness never exercised, since it doesn't prepend ComputeBudget
+instructions. ComputeBudget carries no accounts, so there's nothing to
+smuggle a foreign pubkey into; only `SetComputeUnitPrice`'s microLamports
+figure can cost `fee_payer` more (a per-CU priority-fee multiplier), which
+is why it alone is capped. `/healthz`'s `sponsor` field now also reports
+`maxCuPriceMicroLamports`.
 
 ### Rate limit + budget (fix round 1, findings C + post-verification)
 
@@ -192,8 +206,9 @@ original "1 per owner per 60 min" ceiling could never complete one. A
 reservation that later fails the daily-budget check (`SPONSOR_DAILY_SOL`,
 rolling 24h across all owners) is released (`SponsorStore.release`) so that
 slot isn't burned for a request that was never actually sponsored.
-`/healthz`'s `sponsor` field (`{ today_sol, count_today }`) reports the
-rolling 24h spend (finalized rows only).
+`/healthz`'s `sponsor` field (`{ today_sol, count_today, maxCuPriceMicroLamports }`)
+reports the rolling 24h spend (finalized rows only) plus the currently
+enforced ComputeBudget `SetComputeUnitPrice` ceiling.
 
 ## Env vars
 
@@ -211,6 +226,7 @@ rolling 24h spend (finalized rows only).
 | `INDEXER_ENABLED` | no (default `false`) | Task 5: starts the public-data indexer (see above) — needs `DATABASE_URL`, disabled with a warning if it's unset |
 | `SPONSOR_ENABLED` | no (default `false`) | Task 6: starts `POST /sponsor` (see below) — needs `DATABASE_URL`, disabled with a warning if it's unset |
 | `SPONSOR_DAILY_SOL` | no (default `0.5`) | rolling 24h cap on sponsored lamports across all owners |
+| `SPONSOR_MAX_CU_PRICE_MICROLAMPORTS` | no (default `500000`) | fix (Phantom smoke 24.09): ceiling on a wallet-prepended ComputeBudget `SetComputeUnitPrice` this endpoint will co-sign. At the 1.4M CU transaction max the default caps the sponsor-paid priority fee at 700 000 lamports ≈ 0.0007 SOL/tx. `SetComputeUnitLimit` has no such cap — it cannot cost `fee_payer` more than the tx's own CU budget. Reported by `/healthz`'s `sponsor.maxCuPriceMicroLamports` |
 
 Never commit key values. Encode a local keyfile for Railway with:
 

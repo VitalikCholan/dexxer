@@ -41,7 +41,14 @@ import type { RelayerConfig, RelayerState } from "./crank.js";
 import { attachWs, indexerRouter } from "./indexer/http.js";
 import type { IndexerStats } from "./indexer/accounts.js";
 import { ORACLE_STALE_MS, isStale } from "./indexer/prices.js";
-import { DEFAULT_DAILY_BUDGET_SOL, pgSponsorStore, simulateCostEstimator, sponsorRouter, sponsorSnapshot } from "./sponsor.js";
+import {
+  DEFAULT_DAILY_BUDGET_SOL,
+  DEFAULT_SPONSOR_MAX_CU_PRICE_MICROLAMPORTS,
+  pgSponsorStore,
+  simulateCostEstimator,
+  sponsorRouter,
+  sponsorSnapshot,
+} from "./sponsor.js";
 
 if ((process.env.DEXXER_NET ?? "local") === "devnet") {
   process.env.BASE_RPC ??= "https://rpc.magicblock.app/devnet";
@@ -74,6 +81,9 @@ const cfg: RelayerConfig = {
   databaseUrl: process.env.DATABASE_URL,
 };
 const sponsorDailyBudgetSol = Number(process.env.SPONSOR_DAILY_SOL ?? DEFAULT_DAILY_BUDGET_SOL);
+// Fix (live Phantom smoke, 24.09): Phantom prepends ComputeBudget ixs to
+// legacy transactions it signs — see sponsor.ts's DEFAULT_SPONSOR_MAX_CU_PRICE_MICROLAMPORTS doc comment for the bound this caps.
+const sponsorMaxCuPriceMicroLamports = Number(process.env.SPONSOR_MAX_CU_PRICE_MICROLAMPORTS ?? DEFAULT_SPONSOR_MAX_CU_PRICE_MICROLAMPORTS);
 // Task 7: default true so this is a no-op change for every existing
 // deployment — set `CRANK_ENABLED=false` only to measure the MagicBlock
 // scheduler's own `crank_tick` (schedule-eternal.ts) as the SOLE thing
@@ -141,7 +151,7 @@ const baseConn = new Connection(cfg.baseRpc, "confirmed");
 // Task 6: `/sponsor` — fee_payer co-signs whitelisted onboarding txs (see
 // sponsor.ts's header comment). Needs Postgres for the rate-limit/budget
 // store, same gating pattern as the indexer above.
-let getSponsorHealthSnapshot: (() => Promise<{ today_sol: number; count_today: number }>) | undefined;
+let getSponsorHealthSnapshot: (() => Promise<{ today_sol: number; count_today: number; maxCuPriceMicroLamports: number }>) | undefined;
 if (cfg.sponsorEnabled && !pool) {
   console.warn("sponsor: SPONSOR_ENABLED=true but no DATABASE_URL — /sponsor disabled (needs Postgres for the rate-limit store)");
 } else if (cfg.sponsorEnabled && pool) {
@@ -165,10 +175,13 @@ if (cfg.sponsorEnabled && !pool) {
       estimateLamports: simulateCostEstimator(baseConn, cfg.feePayer),
       dailyBudgetSol: sponsorDailyBudgetSol,
       dusdcMint,
+      maxCuPriceMicroLamports: sponsorMaxCuPriceMicroLamports,
     }),
   );
-  getSponsorHealthSnapshot = sponsorSnapshot(store);
-  console.log(`sponsor: /sponsor enabled (daily budget ${sponsorDailyBudgetSol} SOL, dUSDC mint ${dusdcMint ? dusdcMint.toBase58() : "UNKNOWN — ATA refused"})`);
+  getSponsorHealthSnapshot = sponsorSnapshot(store, sponsorMaxCuPriceMicroLamports);
+  console.log(
+    `sponsor: /sponsor enabled (daily budget ${sponsorDailyBudgetSol} SOL, dUSDC mint ${dusdcMint ? dusdcMint.toBase58() : "UNKNOWN — ATA refused"}, max CU price ${sponsorMaxCuPriceMicroLamports} µL)`,
+  );
 }
 
 // Task 7: watches the public `Market` account (unauthenticated ER read, see

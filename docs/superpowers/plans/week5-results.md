@@ -1056,6 +1056,18 @@ init_user, sponsored, 0 SOL) для **нового** ключа як замін�
    Phantom показує помилку про застарілий blockhash, це регресія.
 6. Результат (PASS/нюанси кожного пункту) — дописати сюди або в окремий feedback-файл пам'яті.
 
+**M-K (Phantom, 24.09) — живий прогін, три знахідки:**
+
+1. **Phantom відмовляє `reauthorize` для неверифікованої ідентичності dApp** — застосунок
+   ретраїть свіжим `authorize` (хотфікси `921a1cb`/`b942c31`/`381f2c6`).
+2. **Гонка teardown у Phantom** — застосунок чекає завершення MWA-сценарію гаманця
+   (~800 мс затримка) перед свіжою `authorize`-сесією, інакше websocket association падає.
+3. **Phantom підставляє ComputeBudget-інструкції перед підписом legacy-транзакції** —
+   `POST /sponsor` відхиляв L1a-онбординг-батч 400-кою (`programId ComputeBudget111...
+   not in whitelist`); whitelist розширено на `SetComputeUnitLimit`
+   (будь-яке значення)/`SetComputeUnitPrice` (≤ `SPONSOR_MAX_CU_PRICE_MICROLAMPORTS`, дефолт
+   500000 µL) — див. `services/relayer/src/sponsor.ts`.
+
 ### Відкрите після Task 7
 
 1. ~~**Черга `HgvCy4r2W5W3q4JmkEDYCQ3rSXbNNXMAypdb9zYuVHEY` (власник `devnet-overflow`'s

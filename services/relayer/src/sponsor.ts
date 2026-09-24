@@ -93,6 +93,20 @@
 // endpoint, so no instruction can drain it beyond the rent and fees the
 // whitelisted shapes above imply.
 //
+// ComputeBudget (fix, live Phantom smoke 24.09): Phantom prepends
+// `SetComputeUnitLimit`/`SetComputeUnitPrice` to legacy transactions it
+// signs — the old whitelist rejected `ComputeBudget111111111111111111111111111111`
+// outright with 400, which fakewallet (no ComputeBudget prefix) never
+// exercised. These instructions carry no accounts, so there is nothing to
+// smuggle a foreign pubkey into: `SetComputeUnitLimit` is accepted for any
+// value (it cannot cost `fee_payer` more than the tx's own CU budget
+// already implies), `SetComputeUnitPrice` only up to
+// `SPONSOR_MAX_CU_PRICE_MICROLAMPORTS` (env, default
+// `DEFAULT_SPONSOR_MAX_CU_PRICE_MICROLAMPORTS = 500_000`), and every other
+// variant is rejected. A transaction made ENTIRELY of ComputeBudget
+// instructions is still rejected (`hasSponsorableIx` in `checkWhitelist`) —
+// see `checkComputeBudgetInstruction`.
+//
 // --- Signature checks --------------------------------------------------
 //
 // `tx.feePayer` must already equal `cfg.feePayer.publicKey`. `fee_payer`'s
@@ -148,7 +162,7 @@
 
 import express from "express";
 import type { Router } from "express";
-import { PublicKey, Transaction } from "@solana/web3.js";
+import { ComputeBudgetProgram, PublicKey, Transaction } from "@solana/web3.js";
 import type { Connection, Keypair, TransactionInstruction } from "@solana/web3.js";
 import bs58 from "bs58";
 import { EPHEMERAL_SPL_TOKEN_PROGRAM_ID } from "@magicblock-labs/ephemeral-rollups-sdk";
@@ -174,6 +188,18 @@ export const RATE_LIMIT_MS = 60 * 60 * 1000; // 60 min
 export const MAX_SPONSOR_CALLS_PER_OWNER_WINDOW = 6;
 export const DAY_MS = 24 * 60 * 60 * 1000;
 export const DEFAULT_DAILY_BUDGET_SOL = 0.5;
+/**
+ * Live Phantom smoke (24.09, L1a onboarding batch): Phantom prepends
+ * ComputeBudget instructions (`SetComputeUnitLimit`/`SetComputeUnitPrice`)
+ * to legacy transactions it signs — a standard wallet behaviour the
+ * fakewallet test harness never exercised. `SetComputeUnitPrice`'s
+ * microLamports figure is the only ComputeBudget field that can cost
+ * `fee_payer` more (it's a per-CU priority-fee multiplier); at the 1.4M CU
+ * transaction max, this default caps the sponsor-paid priority fee at
+ * 700_000 lamports ≈ 0.0007 SOL per tx — bounded, `fee_payer` pays priority
+ * fees for sponsored txs same as it pays the flat network fee.
+ */
+export const DEFAULT_SPONSOR_MAX_CU_PRICE_MICROLAMPORTS = 500_000;
 
 // --- whitelist -----------------------------------------------------------
 
@@ -245,10 +271,56 @@ const ESPL_SHAPES: Map<number, IxShape & { label: string }> = new Map([
  */
 const ATA_SHAPE: IxShape = { payerIdx: 0, ownerIdx: 2, mintIdx: 3 };
 
+const COMPUTE_BUDGET_PROGRAM_ID = ComputeBudgetProgram.programId;
+
 interface IxCheck {
   ok: boolean;
   label?: string;
   reason?: string;
+}
+
+/**
+ * ComputeBudget instructions carry no accounts at all, so the
+ * payer/owner-position checks `checkPositions` runs for every other
+ * whitelisted shape don't apply here — there is nothing to smuggle a foreign
+ * pubkey into. `SetComputeUnitLimit` (variant 2) is accepted unconditionally:
+ * it cannot make `fee_payer` pay more than the transaction's own compute
+ * budget already implies. `SetComputeUnitPrice` (variant 3) is accepted only
+ * up to `maxCuPriceMicroLamports` (`SPONSOR_MAX_CU_PRICE_MICROLAMPORTS`,
+ * default `DEFAULT_SPONSOR_MAX_CU_PRICE_MICROLAMPORTS`) — this is the one
+ * ComputeBudget field that scales what `fee_payer` actually pays. Every
+ * other variant (`RequestHeapFrame`=1, `SetLoadedAccountsDataSizeLimit`=4,
+ * the deprecated `RequestUnits`=0) is rejected to keep the accepted surface
+ * small.
+ */
+function checkComputeBudgetInstruction(ix: TransactionInstruction, maxCuPriceMicroLamports: number): IxCheck {
+  if (ix.keys.length !== 0) {
+    return { ok: false, reason: "ComputeBudget instruction must not reference any accounts" };
+  }
+  if (ix.data.length < 1) {
+    return { ok: false, reason: "ComputeBudget instruction has no variant byte" };
+  }
+  const variant = ix.data[0];
+  if (variant === 2) {
+    return { ok: true, label: "computebudget:set_compute_unit_limit" };
+  }
+  if (variant === 3) {
+    if (ix.data.length < 9) {
+      return { ok: false, reason: "ComputeBudget SetComputeUnitPrice instruction data too short (need 8 bytes for u64 microLamports)" };
+    }
+    const microLamports = ix.data.readBigUInt64LE(1);
+    if (microLamports > BigInt(maxCuPriceMicroLamports)) {
+      return {
+        ok: false,
+        reason: `ComputeBudget SetComputeUnitPrice ${microLamports} µL exceeds SPONSOR_MAX_CU_PRICE_MICROLAMPORTS ${maxCuPriceMicroLamports}`,
+      };
+    }
+    return { ok: true, label: "computebudget:set_compute_unit_price" };
+  }
+  return {
+    ok: false,
+    reason: `ComputeBudget instruction variant ${variant} not in whitelist {2 (SetComputeUnitLimit), 3 (SetComputeUnitPrice)}`,
+  };
 }
 
 /**
@@ -286,7 +358,13 @@ function checkPositions(ix: TransactionInstruction, shape: IxShape, feePayer: Pu
   return null;
 }
 
-function checkInstruction(ix: TransactionInstruction, feePayer: PublicKey, owner: PublicKey, dusdcMint?: PublicKey): IxCheck {
+function checkInstruction(
+  ix: TransactionInstruction,
+  feePayer: PublicKey,
+  owner: PublicKey,
+  dusdcMint?: PublicKey,
+  maxCuPriceMicroLamports: number = DEFAULT_SPONSOR_MAX_CU_PRICE_MICROLAMPORTS,
+): IxCheck {
   if (ix.programId.equals(DEXXER_CORE_PROGRAM_ID)) {
     if (ix.data.length < 8) return { ok: false, reason: `dexxer_core instruction too short (${ix.data.length} bytes, need >=8 for a discriminator)` };
     const disc = Buffer.from(ix.data.subarray(0, 8)).toString("hex");
@@ -313,7 +391,10 @@ function checkInstruction(ix: TransactionInstruction, feePayer: PublicKey, owner
     if (posErr) return { ok: false, reason: posErr };
     return { ok: true, label: "ata:create_idempotent" };
   }
-  return { ok: false, reason: `programId ${ix.programId.toBase58()} not in whitelist {dexxer_core, eSPL, ATA}` };
+  if (ix.programId.equals(COMPUTE_BUDGET_PROGRAM_ID)) {
+    return checkComputeBudgetInstruction(ix, maxCuPriceMicroLamports);
+  }
+  return { ok: false, reason: `programId ${ix.programId.toBase58()} not in whitelist {dexxer_core, eSPL, ATA, ComputeBudget(limit/price≤cap)}` };
 }
 
 export type WhitelistCheck = { ok: true; owner: PublicKey; labels: string[] } | { ok: false; error: string };
@@ -328,7 +409,12 @@ export type WhitelistCheck = { ok: true; owner: PublicKey; labels: string[] } | 
  * "Versioned messages must be deserialized with VersionedMessage.deserialize()"
  * before a `Transaction` object — and thus this function — is ever reached.
  */
-export function checkWhitelist(tx: Transaction, feePayer: PublicKey, dusdcMint?: PublicKey): WhitelistCheck {
+export function checkWhitelist(
+  tx: Transaction,
+  feePayer: PublicKey,
+  dusdcMint?: PublicKey,
+  maxCuPriceMicroLamports: number = DEFAULT_SPONSOR_MAX_CU_PRICE_MICROLAMPORTS,
+): WhitelistCheck {
   if (!tx.feePayer || !tx.feePayer.equals(feePayer)) {
     return { ok: false, error: `tx.feePayer must equal the relayer's fee_payer (${feePayer.toBase58()})` };
   }
@@ -365,11 +451,16 @@ export function checkWhitelist(tx: Transaction, feePayer: PublicKey, dusdcMint?:
 
   const labels: string[] = [];
   const seenLabels = new Set<string>();
+  // Point 1 (checkInstruction loop note): ComputeBudget instructions have no
+  // accounts, so their positional-role checks are a no-op by construction —
+  // this flag is what stops a tx made ENTIRELY of ComputeBudget ixs (no
+  // dexxer_core/eSPL/ATA instruction at all) from being sponsored.
+  let hasSponsorableIx = false;
 
   for (let i = 0; i < tx.instructions.length; i++) {
     const ix = tx.instructions[i];
 
-    const check = checkInstruction(ix, feePayer, owner, dusdcMint);
+    const check = checkInstruction(ix, feePayer, owner, dusdcMint, maxCuPriceMicroLamports);
     if (!check.ok) {
       return { ok: false, error: `instruction ${i}: ${check.reason}` };
     }
@@ -379,6 +470,11 @@ export function checkWhitelist(tx: Transaction, feePayer: PublicKey, dusdcMint?:
     }
     seenLabels.add(label);
     labels.push(label);
+    if (!label.startsWith("computebudget:")) hasSponsorableIx = true;
+  }
+
+  if (!hasSponsorableIx) {
+    return { ok: false, error: "transaction contains no whitelisted dexxer_core/eSPL/ATA instruction — ComputeBudget instructions alone are not sponsorable" };
   }
 
   return { ok: true, owner, labels };
@@ -506,6 +602,8 @@ export interface SponsorDeps {
   /** Configured dUSDC mint (`Config.dusdcMint`, read from base at boot) — the only mint a sponsored ATA may be created for (week-5 final review M2). */
   dusdcMint?: PublicKey;
   dailyBudgetSol?: number;
+  /** `SPONSOR_MAX_CU_PRICE_MICROLAMPORTS` env, default `DEFAULT_SPONSOR_MAX_CU_PRICE_MICROLAMPORTS` — the ceiling `checkWhitelist` enforces on a wallet-prepended `SetComputeUnitPrice`. */
+  maxCuPriceMicroLamports?: number;
   /** Injectable clock, defaults to `Date.now` — tests pin it. */
   now?: () => number;
 }
@@ -513,19 +611,26 @@ export interface SponsorDeps {
 export interface SponsorSnapshot {
   today_sol: number;
   count_today: number;
+  /** The ceiling currently enforced on a sponsored `SetComputeUnitPrice` — static config, not a store query, but reported alongside the spend snapshot for `/healthz`. */
+  maxCuPriceMicroLamports: number;
 }
 
 /** Used by `/healthz` (index.ts) to report today's sponsor spend without duplicating the store query logic. */
-export function sponsorSnapshot(store: SponsorStore, now: () => number = Date.now): () => Promise<SponsorSnapshot> {
+export function sponsorSnapshot(
+  store: SponsorStore,
+  maxCuPriceMicroLamports: number = DEFAULT_SPONSOR_MAX_CU_PRICE_MICROLAMPORTS,
+  now: () => number = Date.now,
+): () => Promise<SponsorSnapshot> {
   return async () => {
     const spent = await store.spentSince(now() - DAY_MS);
-    return { today_sol: spent.lamports / 1e9, count_today: spent.count };
+    return { today_sol: spent.lamports / 1e9, count_today: spent.count, maxCuPriceMicroLamports };
   };
 }
 
 export function sponsorRouter(deps: SponsorDeps): Router {
   const router = express.Router();
   const dailyBudgetLamports = Math.round((deps.dailyBudgetSol ?? DEFAULT_DAILY_BUDGET_SOL) * 1e9);
+  const maxCuPriceMicroLamports = deps.maxCuPriceMicroLamports ?? DEFAULT_SPONSOR_MAX_CU_PRICE_MICROLAMPORTS;
   const now = deps.now ?? Date.now;
 
   router.post("/sponsor", express.json(), async (req, res) => {
@@ -543,7 +648,7 @@ export function sponsorRouter(deps: SponsorDeps): Router {
       return;
     }
 
-    const check = checkWhitelist(tx, deps.feePayer.publicKey, deps.dusdcMint);
+    const check = checkWhitelist(tx, deps.feePayer.publicKey, deps.dusdcMint, maxCuPriceMicroLamports);
     if (!check.ok) {
       res.status(400).json({ error: check.error });
       return;
