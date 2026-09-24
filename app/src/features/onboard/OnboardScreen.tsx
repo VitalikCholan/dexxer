@@ -98,7 +98,7 @@ export function OnboardScreen() {
           {busy ? 'Confirming…' : failedStep ? 'Retry' : 'Confirm in wallet'}
         </Button>
         <Text style={[caption, { color: colors.textSecondary, textAlign: 'center' }]}>
-          No SOL needed — account rent is sponsored
+          No SOL needed — rent is sponsored for empty wallets; a wallet holding SOL pays its own (≈0.03 SOL)
         </Text>
       </ScrollView>
     </AppPage>

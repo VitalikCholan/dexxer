@@ -109,6 +109,7 @@ import {
 } from '@/src/lib/program'
 import { delegationTriple } from '@/src/lib/pdas'
 import { sponsorTx, SponsorError } from '@/src/lib/sponsor'
+import { SELF_FUND_ONBOARDING_MIN_LAMPORTS, canSelfFund } from '@/src/lib/selfFund'
 
 export type OnboardState =
   'Disconnected' | 'NotOnboarded' | 'Funded' | 'Initialized' | 'Delegated' | 'Credited' | 'Permissioned' | 'SessionSet'
@@ -308,7 +309,7 @@ export interface BatchLeg {
   ixs: TransactionInstruction[]
   conn: Connection
   feePayer: PublicKey
-  /** The two L1 legs go through `/sponsor` (fee_payer co-signs, findings A.1/A.2); the ER leg and the session top-up don't — see file header, Finding A.3 (attempted, reverted). */
+  /** The two L1 legs go through `/sponsor` (fee_payer co-signs, findings A.1/A.2) UNLESS the owner self-funds (`selfFund.ts`, 24.09: Phantom simulation); the ER leg never does — see file header, Finding A.3 (attempted, reverted). */
   sponsor: boolean
   /** `OnboardState` to report once this leg lands. */
   onLanded: OnboardState[]
@@ -416,7 +417,7 @@ export async function collectBatchLegs(
       ixs: l1a,
       conn: baseConn,
       feePayer: feePayerPubkey,
-      sponsor: true,
+      sponsor: !feePayerPubkey.equals(owner),
       onLanded: ['Funded', 'Initialized'],
     })
 
@@ -476,7 +477,7 @@ export async function collectBatchLegs(
       ixs: l1b,
       conn: baseConn,
       feePayer: feePayerPubkey,
-      sponsor: true,
+      sponsor: !feePayerPubkey.equals(owner),
       onLanded: ['Delegated'],
     })
 
@@ -584,7 +585,12 @@ export async function runBatchedOnboarding(
   onProgress({ phase: 'Collecting', step: null, i: 0, n: 0 })
   const configInfo = await baseConn.getAccountInfo(ctx.config, 'confirmed')
   if (!configInfo) throw new Error('Config PDA not found — protocol not bootstrapped on this devnet deployment')
-  const feePayerPubkey = readConfigFeePayer(configInfo.data)
+  // Self-funded when the owner holds enough SOL (Phantom cannot simulate a
+  // sponsored tx whose fee_payer signature is still empty — see selfFund.ts);
+  // sponsored otherwise. `feePayerPubkey` below is whoever pays: owner or relayer.
+  const selfFund = await canSelfFund(ctx.owner, SELF_FUND_ONBOARDING_MIN_LAMPORTS)
+  const feePayerPubkey = selfFund ? ctx.owner : readConfigFeePayer(configInfo.data)
+  appendLog(selfFund ? 'L1 legs: self-funded (owner pays rent + fees)' : 'L1 legs: sponsored by the relayer fee_payer')
 
   const legs = await collectBatchLegs(ctx, mwa, feePayerPubkey, appendLog)
   if (legs.length === 0) {
