@@ -41,6 +41,7 @@ import type { RelayerConfig, RelayerState } from "./crank.js";
 import { attachWs, indexerRouter } from "./indexer/http.js";
 import type { IndexerStats } from "./indexer/accounts.js";
 import { ORACLE_STALE_MS, isStale } from "./indexer/prices.js";
+import { DEFAULT_ASSETLINKS_PACKAGE, assetlinksRouter, parseFingerprintsEnv } from "./assetlinks.js";
 import {
   DEFAULT_DAILY_BUDGET_SOL,
   DEFAULT_SPONSOR_MAX_CU_PRICE_MICROLAMPORTS,
@@ -116,6 +117,14 @@ if (pool) {
 }
 
 const app = express();
+// Digital Asset Links for MWA identity verification (see assetlinks.ts).
+// Mounted first: static, key-free, must answer even if every loop below is off.
+app.use(
+  assetlinksRouter({
+    packageName: process.env.ASSETLINKS_PACKAGE ?? DEFAULT_ASSETLINKS_PACKAGE,
+    fingerprints: parseFingerprintsEnv(process.env.ASSETLINKS_SHA256_FINGERPRINTS),
+  }),
+);
 
 const server = app.listen(cfg.port, () => {
   console.log(`relayer: listening on :${cfg.port} net=${cfg.net}`);

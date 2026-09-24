@@ -228,6 +228,8 @@ enforced ComputeBudget `SetComputeUnitPrice` ceiling.
 | `SPONSOR_ENABLED` | no (default `false`) | Task 6: starts `POST /sponsor` (see below) — needs `DATABASE_URL`, disabled with a warning if it's unset |
 | `SPONSOR_DAILY_SOL` | no (default `0.5`) | rolling 24h cap on sponsored lamports across all owners |
 | `SPONSOR_MAX_CU_PRICE_MICROLAMPORTS` | no (default `500000`) | fix (Phantom smoke 24.09): ceiling on a wallet-prepended ComputeBudget `SetComputeUnitPrice` this endpoint will co-sign. At the 1.4M CU transaction max the default caps the sponsor-paid priority fee at 700 000 lamports ≈ 0.0007 SOL/tx. `SetComputeUnitLimit` has no such cap — it cannot cost `fee_payer` more than the tx's own CU budget. Reported by `/healthz`'s `sponsor.maxCuPriceMicroLamports` |
+| `ASSETLINKS_PACKAGE` | no (default `com.dexxer.app`) | Android package name published in `GET /.well-known/assetlinks.json` (MWA identity verification, 24.09) |
+| `ASSETLINKS_SHA256_FINGERPRINTS` | no (default: Android debug keystore cert of the dev-client) | comma-separated SHA-256 signing-cert fingerprints for that statement; a release build MUST set its own (`keytool -list -v -keystore <ks> -alias <alias>` → `SHA256:`). Boot fails on a malformed value |
 
 Never commit key values. Encode a local keyfile for Railway with:
 
@@ -271,6 +273,27 @@ npm test        # node:test — keypairFromEnv b58 round-trip, health-payload st
                  # (the whole decision table, with injected readers — no network)
                  # Needs DEXXER_IDL_DIR=$PWD/../../app/src/idl (as CI sets it).
 npx tsc --noEmit
+```
+
+## Digital Asset Links — `GET /.well-known/assetlinks.json`
+
+MWA-гаманці (Phantom, Seeker Vault, fakewallet) перевіряють identity dApp-а за
+Digital Asset Links: беруть host з `identity.uri`, тягнуть
+`https://<host>/.well-known/assetlinks.json` і звіряють **пакет, що реально
+викликав** (з Android binder, не з запиту) та його підписний сертифікат з
+`android_app`-таргетом із relation `delegate_permission/common.handle_all_urls`
+(`solana-mobile/digital-asset-links-android`, `AndroidAppPackageVerifier`;
+лише `https`). Без цього Phantom відхиляє `reauthorize` (`-1`) і кожна сесія
+коштує зайвий промпт (виміряно 24.09, live Phantom smoke).
+
+Relayer уже має публічний HTTPS-домен, який знає апка (`RELAYER_URL`), тому
+статмент віддає він (`src/assetlinks.ts`); апка ставить `identity.uri` на цей
+origin (`EXPO_PUBLIC_IDENTITY_URI`, дефолт — origin `RELAYER_URL`). Ендпоінт
+статичний, без ключів і без читання чейну. Перевірка формату Google-ом:
+
+```bash
+curl -s https://<host>/.well-known/assetlinks.json
+curl -s "https://digitalassetlinks.googleapis.com/v1/statements:list?source.web.site=https://<host>&relation=delegate_permission/common.handle_all_urls"
 ```
 
 ## Docker / Railway

@@ -1,4 +1,5 @@
 import { clusterApiUrl } from '@solana/web3.js'
+import { IDENTITY_URI } from '@/src/lib/solana'
 import { Cluster } from '@/components/cluster/cluster'
 import { ClusterNetwork } from '@/components/cluster/cluster-network'
 
@@ -10,7 +11,7 @@ export class AppConfig {
   // the actual MWA identity uri (`components/app-providers.tsx`'s
   // `identity.uri`). SIWS's `uri`/`domain` should describe the same dApp
   // identity `authorize`/`reauthorize` already does.
-  static uri = 'https://github.com/VitalikCholan/dexxer'
+  static uri = IDENTITY_URI
   static clusters: Cluster[] = [
     {
       id: 'solana:devnet',

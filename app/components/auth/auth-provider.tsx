@@ -1,3 +1,4 @@
+import { IDENTITY_DOMAIN } from '@/src/lib/solana'
 import { createContext, type PropsWithChildren, use, useMemo } from 'react'
 import { SignInOutput, useMobileWallet } from '@wallet-ui/react-native-web3js'
 import { AppConfig } from '@/constants/app-config'
@@ -43,7 +44,7 @@ function useSignInMutation() {
     // mismatched SIWS uri was still the template placeholder
     // `https://example.com` (logcat: `sign_in_payload: {"uri":"..."}`).
     mutationFn: async () =>
-      await ensureAuthorized(identity, () => signIn({ uri: AppConfig.uri, domain: 'github.com' }), store),
+      await ensureAuthorized(identity, () => signIn({ uri: AppConfig.uri, domain: IDENTITY_DOMAIN }), store),
   })
 }
 
