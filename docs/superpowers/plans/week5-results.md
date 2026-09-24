@@ -35,7 +35,10 @@
   `close_position`/повному `decrease_position`/`undelegate_user` (cancel невідомого id —
   безпечний no-op, виміряно); `DelegateUser.payer`; дефолт `liq_hysteresis_ticks` 2 → 3; нові
   помилки `LiquidationTaskFailed 6041`, `NotExited 6042`, `QueueStillPending 6043`. LiteSVM
-  71 → 87, unit 55 → 61.
+  71 → 87, unit 55 → 61 (`cargo test -p dexxer_core 2>&1 | grep "test result"` → `61 passed`,
+  fix round 1 re-verified; grep для літерального `#[test]` знаходить лише 60 — 61-й тест
+  живе всередині `proptest! { ... }`-блоку в `math.rs`, макрос генерує `#[test]`-обгортку, яка
+  не містить літерального атрибута в джерелі, тож текстовий grep його не бачить).
 - **Relayer** (`services/relayer`, живий на Railway): disclosure-цикл queue-first (найстарший
   борг першим, з rotation), `COMMIT_INTERVAL_TICKS` (env, живе значення `60`),
   `COMMIT_MAX_ACTIONS` (env, живе значення `4` — місток відхиляє реальні 8 дій, виміряно),

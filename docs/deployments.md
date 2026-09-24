@@ -256,25 +256,36 @@ max_deviation_bps 200, ema_alpha_bps 3000, liq_hysteresis_ticks 3, max_stale_tic
 `UserAccount`, для однієї з чотирьох ключа в репозиторії немає. Постійне зміщення на `Market`:
 `oi_long = 448 252 365`, `PoolLive.locked_total = 80 000 000`.
 
-## Devnet-скрипти — індекс (week 4–5, `tests/er/devnet/`)
+## Devnet-скрипти — індекс (`tests/er/devnet/`)
 
-Нумерація наскрізна для гілки; `05`–`09` — регресія (week 4), `10`–`15` — нові інструменти й виміри
-week 5 (нумерація `10`–`12` зайнята операційними/міграційними скриптами Task 4/5, `13`–`15` — виміри
-Task 7 брифу `week5-reliability.md`).
+Перебудовано з `ls tests/er/devnet/` + `tests/er/package.json`'s `devnet:*` скриптів (fix round 1
+Task 8 — попередня версія цієї таблиці мала неправильну назву файлу `06` і хибно писала, що `07`
+не існує; обидва виправлено). Нумерація наскрізна для гілки, вбудована у самі назви файлів, не
+week-межі: `00`–`04` — тиждень 2 (Task 5, приватний онбординг/leak-test/commit/withdraw), `05` —
+тиждень 2 (Task 6, ліквідація), `06`–`08` — тиждень 3 (Task 8, M-B/M-E/M-A), `09` — тиждень 4
+(Task 3, M-F), `10`–`15` — тиждень 5 (`10`–`12` — операційні/міграційні скрипти Task 4/5, `13`–`15`
+— виміри Task 7 брифу `week5-reliability.md`).
 
-| # | Скрипт | `npm run` | Що робить |
+| # | Файл | `npm run` | Що робить |
 | --- | --- | --- | --- |
-| 05 | `05-crank-liquidation.ts` | `devnet:liquidation` | Regression: open → форсована ліквідація → `set_params`-відкат |
-| 06 | `06-disclosure.ts` | `devnet:disclosure` | Regression: close → commit → reveal на L1, хеш звіряється |
-| 07 | — | — | Замінено `09` (pool-snapshot) week 4 |
-| 08 | `08-undelegate.ts` | `devnet:undelegate` | Regression: drain → withdraw → `undelegate_user` |
-| 09 | `09-pool-snapshot.ts` | `devnet:snapshot` | Regression: `Pool`/`PoolLive`-огрублення, permission-чек |
-| 10 | `10-set-params.ts` | `devnet:setparams -- KEY=VALUE` | Читає живий `Market`, накладає названі поля, шле `set_params` (не тре MARKET_DEFAULTS наосліп) |
-| 11 | `11-liq-task-migration.ts` | `devnet:liqtask` | Виміри (a)/(b)/(c) Task 4: cancel невідомого `task_id`, реєстрація `liquidation_check` в `open_position`, вихід з боргом розкриття (рантайм-вимір `close_orphan_queue`) |
-| 12 | `12-close-orphan.ts` | `devnet:orphan` | Доказ фіксу апгрейду #2 — `close_orphan_queue` на реальній осиротілій черзі, лишеній Task 4 |
-| 13 | `13-liquidation-check.ts` | `devnet:liqcheck` | **M-G′**: ліквідація без relayer-а (`CRANK_ENABLED=false`, лише планувальник у TEE) |
-| 14 | `14-close-reopen.ts` | `devnet:reopen` | **M-H**/**M-J**: one-cycle reveal (`set_disclosure_delay(0)`), close→reopen негайно, `QueueFull` на 9-му закритті |
-| 15 | `15-exit-debt.ts` | `devnet:exitdebt` | **M-I**: онбординг/торгівля/exit на 0-SOL гаманцях, janitor-реклейм, re-onboard, `init_user_reuse_queue`-гонка |
+| 00 | `00-measure.ts` | `devnet:measure` | Bootstrap-обгортка: виставляє `process.env.*` під профіль `devnet` до динамічного `await import("./run.js")` (інакше `.env`'s localhost-адреси мовчки перемагають, CLAUDE.md); сама логіка виміру — в `run.ts` |
+| — | `run.ts` | (немає власного `npm run` — імпортується з `00-measure.ts`) | Тіло виміру, яке `00` імпортує: тиждень-2 Task 1, вимірювання M1–M4 |
+| 01 | `01-onboard-private.ts` | `devnet:onboard` | Тиждень 2, Task 5, скрипт 1/4: повна приватна послідовність онбордингу на реальному devnet + `devnet-tee.magicblock.app`, на `dexxer_core` |
+| 02 | `02-leak-test.ts` | `devnet:leak` | Тиждень 2, Task 5, скрипт 2/4: level-4 leak test spec §6.4 (запускається одразу після `01`, читає його `.keys/devnet-run-latest.json`) |
+| 03 | `03-commit-cycle.ts` | `devnet:commit` | Тиждень 2, Task 5, скрипт 3/4: `commit_aggregate` ×12, ≥5 с між викликами, підписано `Config.fee_payer` через TEE-з'єднання — доводить, що fee-vault-scoped шлях перетинає M3's ліміт 10 простих комітів |
+| 04 | `04-withdraw.ts` | `devnet:withdraw` | Тиждень 2, Task 5, скрипт 4/4: `withdraw(300e6)` на ER, потім клієнтський L1-леґ — `undelegateIx` → поллінг base ATA |
+| — | `w3-measure.ts` | `devnet:w3measure` | Тиждень 3, Task 1: оркестратор для M-A/M-C/M-D — сама логіка живе в spike-директоріях (`spikes/01-private-counter-tee/w3-ma.ts`, `spikes/06-magic-action/w3-mc.ts`, `spikes/05-crank-tee/w3-md.ts`), цей файл лише шеллить `npx tsx` з `spikes/` |
+| 05 | `05-crank-liquidation.ts` | `devnet:liquidation` | Тиждень 2, Task 6, перевірка (c): наскрізна ліквідація через `crank-fallback`-скрипт на devnet-tee — фреш-трейдер, ~10x лонг, `set_params(mmr_bps)` робить позицію ліквідовною, поллінг `Position.liq_ticks`/`state`. Тиждень 5: те саме, як регресія 05 |
+| 06 | `06-commitment-reveal.ts` | `devnet:disclosure` | Тиждень 3, Task 8, скрипт 1/3 (**M-B**): повний цикл commitment → reveal на реальному devnet, друга позиція на тому самому трейдері (доводить «одна позиція за прогін» знято). Тиждень 5, Task 1: оновлено під queue-first close (commitment/disclosure з `DisclosureQueue`, не з `Position`) |
+| 07 | `07-balances-root.ts` | `devnet:root` | Тиждень 3, Task 8, скрипт 2/3 (**M-E**): цикл `BalancesRoot` + раунд-тріп коміту на реальному devnet, плюс 12x-вимір вартості `commit_aggregate` тепер, коли кожен комміт несе ДВА акаунти (`Pool` і `BalancesRoot`) |
+| 08 | `08-undelegate.ts` | `devnet:undelegate` | Тиждень 3, Task 8, скрипт 3/3 (**M-A** на `dexxer_core`): повний вихід трейдера з `06` — закрити другу позицію, спорожнити чергу розкриття, вивести маржу, `undelegate_user`, поллінг бази до скрабу всіх трьох PDA |
+| 09 | `09-pool-snapshot.ts` | `devnet:snapshot` | Тиждень 4, Task 3 (**M-F**): приватний робочий агрегат (`PoolLive`) проти публічного огрубленого знімка (`Pool`) наскрізно на реальному devnet, після міграції `PoolLive` |
+| 10 | `10-set-params.ts` | `devnet:setparams -- KEY=VALUE` | Тиждень 5, Task 4 (міграція): патчить окремі поля `MarketParams` на делегованому `Market`, не чіпаючи решту (наївний виклик з `MARKET_DEFAULTS` мовчки скинув би `max_conf_bps` на 50 і зламав торгівлю) |
+| 11 | `11-liq-task-migration.ts` | `devnet:liqtask` | Тиждень 5, Task 4, виміри (a)/(b)/(c): cancel невідомого `task_id`, реєстрація `liquidation_check` в `open_position` (`task_context == position`, дубльований ключ), вихід із боргом розкриття (рантайм-вимір `close_orphan_queue`) |
+| 12 | `12-close-orphan.ts` | `devnet:orphan` | Тиждень 5, Task 5, частина A, доказ: другий апгрейд програми лагодить сигнал сирітства, який читає `close_orphan_queue` (на реальній осиротілій черзі, лишеній Task 4) |
+| 13 | `13-liquidation-check.ts` | `devnet:liqcheck` | Тиждень 5, Task 7 (**M-G′**): ліквідація БЕЗ relayer-а, лише планувальник у TEE (`CRANK_ENABLED=false`, `liquidation_check` тіка́є незалежно від `crank_tick` relayer-а) |
+| 14 | `14-close-reopen.ts` | `devnet:reopen` | Тиждень 5, Task 7 (**M-H**/**M-J**): `set_disclosure_delay(0)` + живий `COMMIT_INTERVAL_TICKS=60` → Close→L1-`Disclosure`-час; той самий слот close→open негайно; 8 циклів заповнюють кільце, 9-те закриття — `QueueFull` |
+| 15 | `15-exit-debt.ts` | `devnet:exitdebt` | Тиждень 5, Task 7 (**M-I**): гаманець із 0 SOL усе життя, онбординг лише через `POST /sponsor`, торгує раз, виходить із боргом розкриття (`undelegate_user` при `dq.len > 0`), спостерігається до кінця через автоматичне відновлення relayer-а (disclosure-цикл → `close_orphan_queue` → `close_exited_user`) |
 
 `tests/er/lib/admin.ts::setDisclosureDelay` — спільний білдер для `set_disclosure_delay`,
 використаний скриптами 13–15.
