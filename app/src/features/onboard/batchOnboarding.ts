@@ -162,6 +162,32 @@ export async function sendL1(
   return sig
 }
 
+/**
+ * Like `sendL1`, but `fee_payer` pays: the owner signs with `tx.feePayer =
+ * Config.fee_payer`, the relayer's `POST /sponsor` adds its signature, then
+ * we send. Needed for any L1 leg a 0-SOL-onboarded owner runs after
+ * onboarding — live fakewallet smoke (24.09, M-K) found Deposit's owner-paid
+ * `faucet_mint` silently dropped ("confirm timeout"): the owner had 0 SOL for
+ * the network fee. Throws `SponsorError` verbatim when the relayer rejects.
+ */
+export async function sendL1Sponsored(
+  owner: PublicKey,
+  config: PublicKey,
+  ixs: TransactionInstruction[],
+  signTransactions: (tx: Transaction) => Promise<Transaction>,
+): Promise<string> {
+  const configInfo = await baseConn.getAccountInfo(config, 'confirmed')
+  if (!configInfo) throw new Error('Config PDA not found — protocol not bootstrapped on this devnet deployment')
+  const tx = new Transaction().add(...ixs)
+  tx.feePayer = readConfigFeePayer(configInfo.data)
+  tx.recentBlockhash = (await baseConn.getLatestBlockhash()).blockhash
+  const signed = await signTransactions(tx)
+  const sponsored = await sponsorTx(signed)
+  const sig = await baseConn.sendRawTransaction(sponsored.serialize(), { skipPreflight: true })
+  await confirmOnConn(baseConn, sig)
+  return sig
+}
+
 // Poll `getSignatureStatuses` instead of `Connection.confirmTransaction` — found
 // on-device (task-7 emulator verification) that `rpc.magicblock.app/devnet`'s
 // websocket doesn't reliably deliver `signatureSubscribe` notifications

@@ -71,6 +71,7 @@ export function AccountScreen() {
       showToast({ tone: 'success', text: `${label} confirmed` })
       setSheet(null)
     } catch (e) {
+      console.error(`[dexxer] ${label} failed:`, e)
       showToast({ tone: 'danger', text: describeTxError(e) })
     } finally {
       setBusy(false)

@@ -203,7 +203,7 @@ export const DEFAULT_SPONSOR_MAX_CU_PRICE_MICROLAMPORTS = 500_000;
 
 // --- whitelist -----------------------------------------------------------
 
-const CORE_WHITELIST = new Set(["faucet_init", "init_user", "init_user_reuse_queue", "delegate_user"]);
+const CORE_WHITELIST = new Set(["faucet_init", "init_user", "init_user_reuse_queue", "delegate_user", "faucet_mint"]);
 
 interface CoreIx {
   name: string;
@@ -248,6 +248,14 @@ const CORE_SHAPES: Record<string, IxShape> = {
   init_user_reuse_queue: { ownerIdx: 0, payerIdx: 1 },
   // Week-5 Task 3 (P1): `DelegateUser` gained `payer: Signer` at index 1.
   delegate_user: { ownerIdx: 0, payerIdx: 1 },
+  // Live fakewallet smoke (24.09, week-5 M-K): a 0-SOL-onboarded owner has
+  // no SOL to pay `faucet_mint`'s network fee, so the app's owner-paid
+  // Deposit L1 leg was silently dropped (`skipPreflight`, "confirm timeout").
+  // `FaucetMint` has no `payer` account — the mint costs no rent, only the
+  // flat network fee — so the shape pins `owner`@0 and (via `checkPositions`'
+  // implicit rule) forbids `fee_payer` anywhere in the instruction. The mint
+  // and mint authority are `has_one`/seed-checked on-chain against `Config`.
+  faucet_mint: { ownerIdx: 0 },
 };
 if (Object.keys(CORE_SHAPES).length !== CORE_WHITELIST.size) {
   throw new Error("sponsor: CORE_SHAPES is out of sync with CORE_WHITELIST");

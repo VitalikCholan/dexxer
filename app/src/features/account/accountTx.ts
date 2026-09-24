@@ -21,7 +21,7 @@ import {
 import { baseConn, ER_VALIDATOR } from '@/src/lib/solana'
 import { dexxerCoreProgram, readConfigDusdcMint, usdAmount } from '@/src/lib/program'
 import { pdas } from '@/src/lib/pdas'
-import { sendErOwner, sendL1, type Mwa } from '../onboard/batchOnboarding'
+import { sendErOwner, sendL1Sponsored, type Mwa } from '../onboard/batchOnboarding'
 
 export interface AccountPdas {
   owner: PublicKey
@@ -83,7 +83,9 @@ export async function depositTx(
       tokenProgram: TOKEN_PROGRAM_ID,
     })
     .instruction()
-  const mintSig = await sendL1(p.owner, [mintIx], mwa.signTransactions)
+  // fee_payer-sponsored: a 0-SOL-onboarded owner cannot pay the network fee
+  // (live fakewallet smoke 24.09 — owner-paid leg was silently dropped).
+  const mintSig = await sendL1Sponsored(p.owner, p.config, [mintIx], mwa.signTransactions)
 
   const ownerTee = await mwa.getConnection(p.owner)
   const coreEr = dexxerCoreProgram(ownerTee, p.owner)

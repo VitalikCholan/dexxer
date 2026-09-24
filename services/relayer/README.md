@@ -166,6 +166,7 @@ signer. Each instruction shape may appear at most once per sponsored tx.
 | dexxer_core | `init_user` | 0 | 1 | `fee_payer` fronts `UserAccount`/`Position`/`DisclosureQueue` rent |
 | dexxer_core | `init_user_reuse_queue` | 0 | 1 | week-5 Task 2: the returning owner, whose queue outlived their exit |
 | dexxer_core | `delegate_user` | 0 | 1 | week-5 Task 3: the three delegation records got their own `payer` |
+| dexxer_core | `faucet_mint` | 0 | — | 24.09 (M-K): the Deposit faucet leg; no payer account, `fee_payer` covers only the network fee of a 0-SOL owner |
 | eSPL | `initEphemeralAtaIx` (prefix `0`) | 2 | 1 | `fee_payer` fronts the owner's eATA rent |
 | eSPL | `transferToVaultIx` (prefix `2`) | 5 | — | pure token transfer (owner's dUSDC -> vault), no payer account |
 | eSPL | `delegateEphemeralAtaIx` (prefix `4`) | — | 0 | no owner account; `fee_payer` fronts delegation-record rent |

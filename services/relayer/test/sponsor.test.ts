@@ -131,6 +131,23 @@ async function buildFaucetInitIx(owner: PublicKey, feePayer: PublicKey): Promise
     .instruction();
 }
 
+async function buildFaucetMintIx(owner: PublicKey, mintAuthOverride?: PublicKey): Promise<TransactionInstruction> {
+  const core = coreProgram(Keypair.generate());
+  const mint = Keypair.generate().publicKey;
+  return core.methods
+    .faucetMint(new BN(100_000_000))
+    .accounts({
+      owner,
+      config: CONFIG,
+      faucet: Keypair.generate().publicKey,
+      dusdcMint: mint,
+      mintAuth: mintAuthOverride ?? Keypair.generate().publicKey,
+      ownerAta: getAssociatedTokenAddressSync(mint, owner),
+      tokenProgram: TOKEN_PROGRAM_ID,
+    })
+    .instruction();
+}
+
 async function buildDelegateUserIx(owner: PublicKey, payer: PublicKey): Promise<TransactionInstruction> {
   const core = coreProgram(Keypair.generate());
   const k = () => Keypair.generate().publicKey;
@@ -432,6 +449,34 @@ test("checkWhitelist: rejects delegate_user whose payer is not fee_payer", async
   const result = checkWhitelist(tx, feePayer.publicKey, DUSDC_MINT);
   assert.equal(result.ok, false);
   if (!result.ok) assert.match(result.error, /delegate_user: account index 1 \(payer\) must be fee_payer/);
+});
+
+test("checkWhitelist: accepts faucet_mint (Deposit leg) — owner@0, fee_payer pays only the network fee", async () => {
+  const owner = Keypair.generate();
+  const feePayer = Keypair.generate();
+  const tx = new Transaction();
+  tx.feePayer = feePayer.publicKey;
+  tx.recentBlockhash = FAKE_BLOCKHASH;
+  tx.add(await buildFaucetMintIx(owner.publicKey));
+  tx.partialSign(owner);
+
+  const result = checkWhitelist(tx, feePayer.publicKey, DUSDC_MINT);
+  assert.equal(result.ok, true);
+  if (result.ok) assert.deepEqual(result.labels, ["dexxer_core:faucet_mint"]);
+});
+
+test("checkWhitelist: rejects faucet_mint that smuggles fee_payer into a non-payer position", async () => {
+  const owner = Keypair.generate();
+  const feePayer = Keypair.generate();
+  const tx = new Transaction();
+  tx.feePayer = feePayer.publicKey;
+  tx.recentBlockhash = FAKE_BLOCKHASH;
+  tx.add(await buildFaucetMintIx(owner.publicKey, feePayer.publicKey));
+  tx.partialSign(owner);
+
+  const result = checkWhitelist(tx, feePayer.publicKey, DUSDC_MINT);
+  assert.equal(result.ok, false);
+  if (!result.ok) assert.match(result.error, /faucet_mint: fee_payer may only appear at the payer position/);
 });
 
 test("checkWhitelist: accepts the whole L1a leg — ATA + faucet_init + init_user, all fee_payer-paid", async () => {
