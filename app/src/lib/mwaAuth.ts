@@ -498,12 +498,45 @@ async function reauthorizeFresh<T>(
   store: AuthorizationStore,
   op: (wallet: Web3MobileWallet, account: WalletUiAccount) => Promise<T>,
 ): Promise<T> {
-  const previouslySelectedAccount = (await store.fetch())?.selectedAccount
+  const previous = await store.fetch()
+  const previouslySelectedAccount = previous?.selectedAccount
   await sleep(SCENARIO_TEARDOWN_DELAY_MS)
   const { authorization, result } = await withSessionRetry(() =>
     transact(async (wallet) => {
-      const authResult = await wallet.authorize({ identity, chain })
+      let authResult: AuthorizationResult | undefined
+      // Fix round 4 (24.09.2026, live fakewallet Deposit): fakewallet ROTATES
+      // the auth token on every `reauthorize` and revokes the previous one
+      // (`AuthRepositoryImpl: Reissued AuthRecord id=9 ... Revoking id=8`).
+      // Two signing calls inside ONE async flow (Deposit = `signTransactions`
+      // for the L1 leg, then `signMessages` for the TEE token) hit this:
+      // the second call's wallet-ui closure still carried the pre-rotation
+      // token -> instant `-1`. The store, however, already holds the rotated
+      // token — so try THAT before authorizing afresh. Authorizing afresh is
+      // not free on fakewallet: a fresh `authorize` mints a brand-new account
+      // (`5Ahk..` instead of the connected `6YX1..`), which then signs with
+      // the wrong key (`pickSignature` "no 64-byte slice verifies").
+      const latestToken = previous?.authToken
+      if (latestToken) {
+        try {
+          authResult = await wallet.authorize({ identity, chain, auth_token: latestToken })
+          console.log('[mwa] reauthorize with the latest stored token succeeded (stale-closure token was rejected)')
+        } catch (e) {
+          if (!isAuthorizationFailure(e)) throw e
+          console.log('[mwa] latest stored token rejected too; authorizing afresh')
+        }
+      }
+      if (!authResult) authResult = await wallet.authorize({ identity, chain })
       const authorization = authorizationFromResult(authResult, previouslySelectedAccount)
+      // `address` is typed `PublicKey` but is a base58 STRING at runtime once
+      // it round-trips through the store (see `spikes/mwa.ts`'s `toPublicKey`)
+      // — compare the base64 form both sides always carry, print via String().
+      const got = String(authorization.selectedAccount.address)
+      if (previouslySelectedAccount && authorization.selectedAccount.addressBase64 !== previouslySelectedAccount.addressBase64) {
+        const expected = String(previouslySelectedAccount.address)
+        console.error(`[mwa] wallet authorized a different account: got ${got}, expected ${expected}`)
+        throw new Error(`Wallet returned account ${ellipsifyAddress(got)} instead of the connected ${ellipsifyAddress(expected)} — reconnect the wallet and retry`)
+      }
+      console.log(`[mwa] fresh session authorized as ${ellipsifyAddress(got)}; running the signing op`)
       const result = await op(wallet, authorization.selectedAccount)
       return { authorization, result }
     }),
@@ -538,6 +571,7 @@ export function useMwaSigning() {
         return await rawSignTransactions(tx)
       } catch (e) {
         if (!isAuthorizationFailure(e)) throw e
+        console.log('[mwa] signTransactions: reauthorize rejected by the wallet; retrying in a fresh session')
         const txs = (Array.isArray(tx) ? tx : [tx]) as Transaction[]
         const signed = await reauthorizeFresh(chain, identity, store, (wallet) =>
           wallet.signTransactions({ transactions: txs }),
@@ -554,6 +588,7 @@ export function useMwaSigning() {
         return await rawSignMessages(message)
       } catch (e) {
         if (!isAuthorizationFailure(e)) throw e
+        console.log('[mwa] signMessages: reauthorize rejected by the wallet; retrying in a fresh session')
         const payloads = (Array.isArray(message) ? message : [message]) as Uint8Array[]
         const signed = await reauthorizeFresh(chain, identity, store, (wallet, account) =>
           wallet.signMessages({ addresses: payloads.map(() => account.addressBase64), payloads }),
