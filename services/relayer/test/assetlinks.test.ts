@@ -58,7 +58,8 @@ test("GET /.well-known/assetlinks.json: 200 application/json with the statement"
     const { port } = server.address() as AddressInfo;
     const res = await fetch(`http://127.0.0.1:${port}/.well-known/assetlinks.json`);
     assert.equal(res.status, 200);
-    assert.match(res.headers.get("content-type") ?? "", /^application\/json/);
+    // EXACT match required by the MWA DAL verifier (`"application/json".equals(mimeType)`) — no charset suffix.
+    assert.equal(res.headers.get("content-type"), "application/json");
     const body = (await res.json()) as unknown;
     assert.deepEqual(body, buildAssetLinks(DEFAULT_ASSETLINKS_PACKAGE, [FP]));
   } finally {

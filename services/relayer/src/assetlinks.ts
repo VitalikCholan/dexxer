@@ -95,11 +95,16 @@ export function assetlinksRouter(opts: { packageName: string; fingerprints: stri
   const router = express.Router();
   const body = JSON.stringify(buildAssetLinks(opts.packageName, opts.fingerprints));
   router.get("/.well-known/assetlinks.json", (_req, res) => {
-    // Google's DAL grammar requires `application/json`; a long cache is fine —
-    // the statement only changes with a new signing certificate.
+    // `AndroidAppPackageVerifier`/`URISourceVerifier.loadDocument` compares the
+    // MIME type with `"application/json".equals(getContentType())` — an EXACT
+    // string match, so Express's `res.send` (which appends `; charset=utf-8`)
+    // would fail verification (measured on fakewallet 24.09: "Package
+    // verification failed" with the correct cert). Set the header verbatim and
+    // write the body with `res.end`. Also: no redirects (the verifier does not
+    // follow them), 1 s connect/read timeout on the wallet side, ≤ 50 KiB body.
     res.setHeader("Content-Type", "application/json");
     res.setHeader("Cache-Control", "public, max-age=3600");
-    res.status(200).send(body);
+    res.status(200).end(body);
   });
   return router;
 }
