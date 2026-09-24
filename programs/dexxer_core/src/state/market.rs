@@ -63,7 +63,17 @@ impl MarketParams {
             max_conf_bps: 50,
             max_deviation_bps: 200,
             ema_alpha_bps: 3000,
-            liq_hysteresis_ticks: 2,
+            // 3, not 2, since week-5 Task 3 (fix round 1): `Position.liq_ticks`
+            // is now incremented by TWO independent callers — the 1 s relayer
+            // `crank_tick` and the ~3.75 s scheduled `liquidation_check` — and
+            // a scheduled tick landing between two crank ticks counts the SAME
+            // mark sample a second time. At 2 the gate could therefore be
+            // satisfied by effectively one price sample, which is exactly what
+            // the hysteresis exists to prevent (the same double-count `crank_tick`
+            // already rejects within one tx via its duplicate-candidate check).
+            // Worst-case interleaving crank/sched/crank spans 3 ticks and at
+            // least 2 distinct mark samples, restoring the ">1 sample" intent.
+            liq_hysteresis_ticks: 3,
             max_stale_ticks: 30,
         }
     }

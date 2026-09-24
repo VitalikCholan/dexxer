@@ -17,7 +17,7 @@ import type { Readable } from "node:stream";
 import { assert, erConn, sendAndConfirmIx, sleep } from "../../tests/er/lib/env.js";
 import { bootstrap, MARKET_DEFAULTS } from "../../tests/er/lib/admin.js";
 import { accountNs, dexxerCoreProgram, pdas } from "../../tests/er/lib/program.js";
-import { closePosition, onboardTrader, openPosition, readPosition, setPrice, type Trader } from "../../tests/er/lib/trader.js";
+import { closePosition, onboardTrader, openPosition, readLastClosedRecord, readPosition, setPrice, type Trader } from "../../tests/er/lib/trader.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const CRANK_SCRIPT = resolve(HERE, "..", "crank-fallback", "index.ts");
@@ -136,23 +136,25 @@ async function main() {
     console.log("set_price(141)", setPrice141Sig);
 
     const liqDeadline = Date.now() + 30_000;
+    // Week-5 Task 1: a liquidation is a close, so the record goes into A's
+    // `DisclosureQueue` and the `Position` is freed to `Empty` in the same
+    // tick — a queued record, not a `Closed` state, is the liquidation signal.
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    let posA: any;
+    let recA: any = null;
     for (;;) {
-      posA = await readPosition(A);
-      if ("closed" in posA.state) break;
+      recA = await readLastClosedRecord(A);
+      if (recA !== null) break;
       if (Date.now() >= liqDeadline) throw new Error("A was not liquidated within 30s of the price move to $141");
       await sleep(300);
     }
-    assert("closed" in posA.state, "A liquidated within 30s of price move to $141");
     const ticksToLiquidation = tickLog.length - ticksBeforeMove;
     assert(ticksToLiquidation >= 2, `A liquidated after >= 2 ticks of the price move (got ${ticksToLiquidation})`);
-    assert("closed" in posA.state, "A.state == Closed");
-    assert(posA.closed !== null && "liquidated" in posA.closed.reason, "A.closed.reason == Liquidated");
+    assert("empty" in (await readPosition(A)).state, "A.state == Empty (the close frees it on the spot)");
+    assert("liquidated" in recA.reason, "A's queued record reason == Liquidated");
     console.log(`A liquidated after ${ticksToLiquidation} tick(s); closed record:`, {
-      exit: posA.closed.exit.toString(),
-      pnl: posA.closed.pnl.toString(),
-      fees: posA.closed.fees.toString(),
+      exit: recA.exit.toString(),
+      pnl: recA.pnl.toString(),
+      fees: recA.fees.toString(),
     });
 
     const posB = await readPosition(B);
@@ -162,12 +164,13 @@ async function main() {
     const closeBSig = await closePosition(boot, B, 0);
     console.log("close_position B", closeBSig);
     const posBAfter = await readPosition(B);
-    assert("closed" in posBAfter.state, "B.state == Closed");
-    assert("user" in posBAfter.closed.reason, "B.closed.reason == User");
+    assert("empty" in posBAfter.state, "B.state == Empty after close");
+    const recB = await readLastClosedRecord(B);
+    assert(recB !== null && "user" in recB.reason, "B's queued record reason == User");
     const expectedPnl = 45_000_000n; // 5 SOL x (150 - 141) = $45, short profits on a price drop
     assert(
-      BigInt(posBAfter.closed.pnl.toString()) === expectedPnl,
-      `B.closed.pnl == +$45 (5 x (150-141)) (got ${posBAfter.closed.pnl.toString()})`,
+      BigInt(recB.pnl.toString()) === expectedPnl,
+      `B's queued record pnl == +$45 (5 x (150-141)) (got ${recB.pnl.toString()})`,
     );
 
     console.log("=== 6. invariant from ER state ===");

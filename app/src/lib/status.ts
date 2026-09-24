@@ -4,43 +4,46 @@
 // HistoryScreen doesn't hand-roll the 13F lifecycle's state machine inline.
 //
 // Lifecycle of one closed trade (programs/dexxer_core/src/instructions/
-// {commit,disclosure}.rs, state/{position,disclosure}.rs — verified against
-// current Rust source, 23-Sep-2026, per CLAUDE.md):
+// {trade,commit}.rs, state/{position,disclosure}.rs — verified against
+// current Rust source, 23-Sep-2026, per CLAUDE.md; rewritten for week-5
+// Task 1's queue-first model, which retired the old `Position.closed` /
+// `mark_committed` hop this comment used to describe):
 //
-//   1. `close_position` (trade.rs): `Position.state = Closed`,
-//      `Position.closed = Some(rec)`, `rec.commitment_written = false`.
-//      -> 'committing'
-//   2. `commit_aggregate`'s `process_position_candidate` (commit.rs), once
-//      this `Position` is submitted in `remaining_accounts`: emits the
-//      `write_commitment` post-commit action (creates the L1 `Commitment`
-//      PDA) and flips `rec.commitment_written = true` on the SAME live
-//      `Position` account this file's callers read.
-//      -> 'committed'
-//   3. `mark_committed` (disclosure.rs) — crank-only, crank-asserted (spec
-//      risk #20: the ER can't read L1, so it trusts the crank-fallback
-//      service's observation that the `Commitment` PDA exists on L1):
-//      requires `rec.commitment_written`, pushes `rec` into
-//      `DisclosureQueue.records`, resets `Position` to `Empty` (`closed =
-//      None`). From this point on the record lives ONLY in
-//      `DisclosureQueue.records`, with its own `reveal_after_slot`.
-//   4. `commit_aggregate`'s `process_disclosure_queue_candidate` /
-//      `due_reveals`, once `reveal_after_slot <= slot`: emits
-//      `write_disclosure` (creates the anonymized L1 `Disclosure`) and pops
-//      the record out of `DisclosureQueue.records`.
-//      -> record disappears from both live sources; HistoryScreen matches
-//         it to an L1 `Disclosure` by `commitmentHash` (Task 8b) and renders
-//         it 'revealed' unconditionally — this file is never consulted for
+//   1. `close_position` (trade.rs)'s `finalize_close` pushes a brand-new
+//      `ClosedRecord` straight into `DisclosureQueue.records` — no
+//      intermediate stop on `Position` — with `commitment_written = false`,
+//      and resets `Position` to `Empty` in the SAME instruction.
+//      `Position.closed: Option<ClosedRecord>` still exists in the struct
+//      but is always `None` from this app's point of view; it is no longer
+//      a data source (`program.ts`'s `DecodedPosition` doesn't decode it).
+//      -> 'pending_commitment'
+//   2. `commit_aggregate`'s `process_disclosure_queue_candidate` /
+//      `pending_commitments` (commit.rs), once this owner's `DisclosureQueue`
+//      is submitted in `remaining_accounts`: emits the `write_commitment`
+//      post-commit action (creates the L1 `Commitment` PDA) and flips
+//      `rec.commitment_written = true` directly on the record, in place,
+//      inside the same queue this file's callers already read. There is no
+//      separate `mark_committed` step any more — the record never moves
+//      accounts again until it is revealed.
+//      -> 'committed' (or 'reveals_in' once `reveal_after_slot` is known and
+//         still in the future)
+//   3. `commit_aggregate`'s `due_reveals`, once `reveal_after_slot <= slot`:
+//      emits `write_disclosure` (creates the anonymized L1 `Disclosure`) and
+//      pops the record out of `DisclosureQueue.records`.
+//      -> record disappears from the queue; HistoryScreen matches it to an
+//         L1 `Disclosure` by `commitmentHash` (Task 8b) and renders it
+//         'revealed' unconditionally — this file is never consulted for
 //         those rows.
 //
-// So `disclosureStatus` below only ever needs to resolve the FIRST THREE
-// states from the two live sources HistoryScreen already reads
-// (`Position.closed` via `useLiveAccount`, `DisclosureQueue.records`) —
-// 'revealed' is reachable through this function too (a `DisclosureQueue`
-// record whose `reveal_after_slot` has already passed but the next
-// `commit_aggregate` cycle hasn't popped it yet — optimistic, since the
-// bytes back it: `due_reveals` is a certainty once due, not a possibility).
+// So `disclosureStatus` below only ever needs to resolve the first two
+// states off `DisclosureQueue.records` (History's only live/pending
+// source — see `useHistoryRows.ts`) — 'revealed' is reachable through this
+// function too (a queue record whose `reveal_after_slot` has already passed
+// but the next `commit_aggregate` cycle hasn't popped it yet — optimistic,
+// since the bytes back it: `due_reveals` is a certainty once due, not a
+// possibility).
 
-export type DisclosureStatus = 'committing' | 'committed' | 'reveals_in' | 'revealed'
+export type DisclosureStatus = 'pending_commitment' | 'committed' | 'reveals_in' | 'revealed'
 
 /**
  * ~0.4s/slot on devnet base (CLAUDE.md: devnet-observed slot cadence, same
@@ -51,10 +54,10 @@ export const DEVNET_SLOT_MS = 400
 
 export interface DisclosureStatusRecord {
   /**
-   * `ClosedRecord.commitment_written`. Always `true` for a record read from
-   * `DisclosureQueue.records` — it only ever enters the queue via
-   * `mark_committed`, which asserts this itself (`require!(rec.
-   * commitment_written, ...)`, disclosure.rs).
+   * `ClosedRecord.commitment_written` — `false` the instant `close_position`
+   * pushes a fresh record into `DisclosureQueue.records` (queue-first model,
+   * week-5 Task 1), flipped to `true` in place by `commit_aggregate`'s
+   * `pending_commitments` once it writes that record's L1 `Commitment` PDA.
    */
   commitmentWritten: boolean
   /** `ClosedRecord.reveal_after_slot`. */
@@ -62,29 +65,26 @@ export interface DisclosureStatusRecord {
 }
 
 /**
- * Classify a still-pending record (`Position.closed` or one entry of
- * `DisclosureQueue.records`) against the current slot.
+ * Classify a still-pending `DisclosureQueue.records` entry against the
+ * current slot.
  *
  * `hasCommitmentOnL1` defaults to `record.commitmentWritten` — the flag this
  * app already observes locally (flipped by `commit_aggregate` in the same ER
- * tx that also flips it on the live `Position`/`DisclosureQueue` account
- * this file's callers read). Exposed separately so a future caller could
- * override it with an actual L1 `Commitment`-PDA existence check —
- * `mark_committed` is crank-asserted by design (spec risk #20), not verified
- * on-chain, so the two *can* diverge if the crank ever lies; not wired up in
- * Task 9.
+ * tx that writes the L1 `Commitment` PDA). Exposed separately so a future
+ * caller could override it with an actual L1 `Commitment`-PDA existence
+ * check — that flip is crank-asserted by design (spec risk #20), not
+ * independently verified on-chain, so the two *can* diverge if the crank
+ * ever lies; not wired up here.
  *
- * Passing `slot: null` (e.g. a `Position.closed` row, where reaching
- * 'reveals_in'/'revealed' would be premature — see file header, step 3 has
- * to run first regardless of `reveal_after_slot`) intentionally caps the
- * result at 'committed'.
+ * `slot: null` (the queue's slot hasn't loaded yet) intentionally caps the
+ * result at 'committed' rather than guessing 'reveals_in'/'revealed'.
  */
 export function disclosureStatus(
   record: DisclosureStatusRecord,
   slot: bigint | null,
   hasCommitmentOnL1: boolean = record.commitmentWritten,
 ): DisclosureStatus {
-  if (!hasCommitmentOnL1) return 'committing'
+  if (!hasCommitmentOnL1) return 'pending_commitment'
   if (slot === null) return 'committed'
   return record.revealAfterSlot > slot ? 'reveals_in' : 'revealed'
 }
@@ -150,9 +150,9 @@ export function assertDisclosureStatusSelfCheck(): void {
   const notWritten = { commitmentWritten: false, revealAfterSlot: 100n }
   const written = { commitmentWritten: true, revealAfterSlot: 100n }
   const cases: [ReturnType<typeof disclosureStatus>, ReturnType<typeof disclosureStatus>][] = [
-    [disclosureStatus(notWritten, null), 'committing'],
-    [disclosureStatus(notWritten, 200n), 'committing'], // commitment_written gates even with slot past due
-    [disclosureStatus(written, null), 'committed'], // Position.closed row: slot capped at null -> never past 'committed'
+    [disclosureStatus(notWritten, null), 'pending_commitment'],
+    [disclosureStatus(notWritten, 200n), 'pending_commitment'], // commitment_written gates even with slot past due
+    [disclosureStatus(written, null), 'committed'], // slot not loaded yet: capped at null -> never past 'committed'
     [disclosureStatus(written, 50n), 'reveals_in'], // 50 < revealAfterSlot(100)
     [disclosureStatus(written, 100n), 'revealed'], // due exactly at revealAfterSlot
     [disclosureStatus(written, 150n), 'revealed'],

@@ -56,8 +56,17 @@ flowchart LR
   (crank + публічний індексер + `/sponsor`), онбординг у ≤2 підписи зі
   спонсорованим rent, планувальник `i64::MAX` на живому розкладі
   (mark-backstop), дизайн-токени + 5-табовий UI за макетами Claude Design.
+- **Тиждень 5** — надійність без relayer-а: per-position `liquidation_check`
+  (планувальник у TEE реально ліквідує, не лише рухає mark — ризик #18
+  закрито повністю), close звільняє позицію одразу й кладе запис у
+  `DisclosureQueue` (`mark_committed` видалено), reveal за один цикл при
+  нульовій затримці, вихід із боргом розкриття (частковий
+  `undelegate_user` + `close_orphan_queue`/`close_exited_user`), **0-SOL
+  онбординг** (`DelegateUser.payer`, нові `/sponsor`-shapes — виміряно 0
+  лампортів на owner, включно з ER-леґом), identity-aware MWA auth-token,
+  два devnet-апгрейди програми, relayer з карантином отруєних черг.
 
-Деталі й виміряні цифри — `docs/superpowers/plans/week{1,2,3,4}-results.md`.
+Деталі й виміряні цифри — `docs/superpowers/plans/week{1,2,3,4,5}-results.md`.
 
 ## Швидкий старт
 
@@ -75,8 +84,8 @@ flowchart LR
 ```sh
 anchor build
 
-cargo test -p dexxer_core                                 # unit — 55/55
-cargo +nightly-2026-09-18 test -p dexxer_litesvm            # LiteSVM — 71/71
+cargo test -p dexxer_core                                 # unit — 61/61
+cargo +nightly-2026-09-18 test -p dexxer_litesvm            # LiteSVM — 87/87
 ```
 
 ### ER/devnet-скрипти (`tests/er/`)
@@ -94,9 +103,15 @@ DEXXER_NET=devnet npm run devnet:onboard    # приклад devnet-скрипт
 ```sh
 cd services/relayer
 npm ci
-npm test                 # 60/60 — candles, feed golden vectors, health, shutdown, keys, sponsor whitelist/rate-limit
+npm test                 # 100/100 — candles, feed golden vectors, health, shutdown, keys,
+                          # sponsor whitelist/rate-limit, orphan janitor, disclosure quarantine/rotation
 npm run dev               # локальний запуск (DEXXER_NET=devnet, потребує CRANK_KEY_B58/FEE_PAYER_KEY_B58 env)
 ```
+
+Живі env тижня 5 (значення на Railway, деталі — `docs/deployments.md`):
+`COMMIT_INTERVAL_TICKS=60` (замінює зашитий `DISCLOSURE_EVERY_TICKS`, дефолт 300),
+`COMMIT_MAX_ACTIONS=4` (дефолт; реальний бридж MagicBlock відхиляє 8 реальних дій за раз —
+виміряно), `QUARANTINE_CYCLES` (дефолт 10, ізолює чергу, що падає 2 рази поспіль).
 
 ### Мобільний застосунок (`app/`)
 
@@ -157,16 +172,20 @@ npx solana-mobile@latest device install fakewallet
   admin]`, ніколи не комітиться). Раз на ~5 хв `commit_aggregate` публікує
   в `Pool` округлений знімок (крок `SNAPSHOT_STEP = 100 dUSDC`: активи —
   вниз, зобов'язання — вгору) — це єдине, що бачить світ на L1.
-- **Commit-then-reveal.** Закрита позиція спершу пише `commitment` (хеш
-  keccak256 від деталей угоди); саме розкриття (`Disclosure`, без адреси
-  власника) з'являється на L1 лише після затримки, усередині того самого
-  `commit_aggregate`-батчу (`write_commitment`/`write_disclosure`,
-  `MAX_ACTIONS_PER_COMMIT = 4`).
-- **Онбординг в один клік.** Застосунок збирає весь онбординг у пачку
-  (`signTransactions`), rent спонсорується через `POST /sponsor` relayer'а
-  (`payer` окремо від `owner` у `FaucetInit`/`InitUser`, `delegateSpl`) —
-  але ER-леґ (permissions+session) і саме делегування лишаються owner-
-  funded: реальний мінімум **≈0.004 SOL**, не нуль.
+- **Commit-then-reveal, queue-first (week 5).** Закрита позиція одразу
+  штовхає запис у приватну `DisclosureQueue` і звільняє `Position` —
+  `commitment` (keccak256-хеш деталей угоди) і саме розкриття (`Disclosure`,
+  без адреси власника) виходять із черги в одному `commit_aggregate`-батчі
+  (`write_commitment`/`write_disclosure`). Програмна стеля
+  `MAX_ACTIONS_PER_COMMIT = 8`; живий relayer-дефолт `COMMIT_MAX_ACTIONS = 4`
+  — реальний бридж MagicBlock відхиляє 8 реальних дій за раз (виміряно).
+- **Онбординг в один клік, 0 SOL (week 5).** Застосунок збирає весь
+  онбординг у пачку (`signTransactions`); rent усіх трьох PDA й
+  делегування тепер спонсорується через `POST /sponsor` relayer'а
+  (`DelegateUser.payer` окремо від `owner`, нові ATA/delegate-shapes) —
+  виміряно **0 лампортів на owner** протягом усього циклу, включно з
+  ER-леґом (permissions+session), на живих 0-SOL гаманцях (M-I,
+  `week5-results.md`).
 - **Relayer — єдиний привілейований сервіс.** `services/relayer` тримає
   лише `crank`/`fee_payer`-ключі, ніколи owner/session-токени; читає лише
   публічні акаунти й оракул. Клієнт читає приватний стан напряму через
@@ -182,17 +201,34 @@ npx solana-mobile@latest device install fakewallet
 - **Довіра до TEE (Intel/оператор MagicBlock).** Апаратна гарантія, не
   криптографічна; `verifyTeeRpcIntegrity` перевіряє справжність TDX-квоти,
   але не звіряє MRTD/RTMR з allowlist коду (v1).
-- **Планувальник не ліквідує.** `schedule_crank` з `iterations = i64::MAX`
-  реально тіка́є `Market.mark`/EMA без зовнішнього процесу (ризик #18
-  закрито як mark-backstop), але реєструється без `remaining_accounts` —
-  тому ліквідації повністю залежать від `services/relayer`/`crank-fallback`.
-- **Rent-залишок.** Онбординг спонсорується частково — ≈0.004 SOL все одно
-  потрібні власнику на делегування (ризик #22, частково закрито).
-- **`mark_committed` — crank-асертований** (ризик #20): ER не читає L1,
-  тому програма вірить crank-у на слово, що `Commitment` дійсно з'явився.
+- **Ліквідації тепер planувальник-driven, `services/relayer` — fallback,
+  не єдина точка відмови (тиждень 5).** `liquidation_check` — окрема
+  scheduler-задача на кожну позицію, зареєстрована самою програмою; на
+  devnet виміряно PASS — ліквідація без жодного relayer-виклику за 6.97 с
+  (ризик #18 закрито повністю, не лише mark-backstop тижня 4).
+  `services/relayer`/`crank-fallback` лишається потрібним як другий
+  незалежний шлях і для всього іншого (коміти, індексація, sponsor).
+- **Reveal за один цикл, з відомим дефектом бриджу.** При нульовій
+  затримці розкриття комміт+reveal виходять на L1 одним циклом
+  `commit_aggregate` (виміряно). Одна конкретна черга на devnet
+  відхиляється бриджем MagicBlock на кожному протестованому бюджеті дій
+  (не рятується тюнінгом) — цей трейдер лишається заблокованим на
+  `QueueFull`, доки не буде програмного фіксу (тиждень 6); relayer ізолює
+  проблему карантином, щоб вона не блокувала розкриття інших трейдерів.
+- **Exit із боргом розкриття.** Вихід не чекає на reveal — частковий
+  `undelegate_user` лишає чергу делегованою crank-у, який її дренує й
+  закриває постфактум (`close_orphan_queue`/`close_exited_user`), rent
+  повертається власнику. Виміряно end-to-end на 0-SOL гаманцях (M-I).
+- **Онбординг — 0 SOL, виміряно, не лише спонсоровано частково (тиждень
+  5).** `DelegateUser.payer` + нові `/sponsor`-shapes закрили останній
+  owner-funded залишок (≈0.004 SOL тижня 4) — на живих 0-SOL гаманцях весь
+  цикл, включно з ER-леґом, пройшов за 0 лампортів (ризик #22 закрито
+  повністю).
 - **Одна позиція на ринок**, devnet-only, тестовий `dUSDC`-мінт, власний
-  тестовий пул як контрагент PnL — не реальна ліквідність.
-- Повний список ризиків (#1–#26, з мітигаціями й статусом) —
+  тестовий пул як контрагент PnL — не реальна ліквідність. 4 legacy-позиції
+  тижнів 1–2 назавжди застрягли на старому лейауті акаунта (постійне
+  зміщення OI на ринку).
+- Повний список ризиків (#1–#36, з мітигаціями й статусом) —
   `docs/superpowers/specs/2026-09-18-dexxer-mvp-design.md` §7.1.
 
 ## Roadmap
@@ -217,7 +253,7 @@ npx solana-mobile@latest device install fakewallet
   рамка (§2.1 застарів там, де розходиться зі спекою).
 - `docs/dexxer-plan.md`, `docs/dexxer-mobile-stack.md` — план і мобільний
   стек (частково застарілі, замінені спекою).
-- `docs/superpowers/plans/week{1,2,3,4}-results.md` — виміряні результати
+- `docs/superpowers/plans/week{1,2,3,4,5}-results.md` — виміряні результати
   кожного тижня.
 - `docs/deployments.md` — живі devnet-адреси, PDA, relayer/Railway,
   scheduler `task_id` (без секретів).

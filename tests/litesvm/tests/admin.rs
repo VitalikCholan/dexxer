@@ -90,6 +90,35 @@ fn only_admin_can_set_scheduler_signer() {
     );
 }
 
+// Week-5 Task 5: `disclosure_delay_slots` was write-once in `init_config`,
+// which made the reveal delay impossible to retune on an already-deployed
+// config (the M-H delay-0 demo needs exactly that).
+#[test]
+fn set_disclosure_delay_admin_only() {
+    let mut h = Harness::new();
+    let w = World::bootstrap(&mut h);
+    let stranger = Keypair::new();
+    h.fund(&stranger.pubkey(), 1_000_000_000);
+    let r = h.send(
+        &[ixs::set_disclosure_delay(&stranger.pubkey(), &w.config, 7)],
+        &[&stranger],
+    );
+    assert!(r.is_err(), "stranger must not set disclosure_delay_slots"); // ConstraintHasOne
+    h.send(
+        &[ixs::set_disclosure_delay(&w.admin.pubkey(), &w.config, 7)],
+        &[&w.admin],
+    )
+    .unwrap();
+    assert_eq!(h.account::<Config>(&w.config).disclosure_delay_slots, 7);
+    // 0 is a legal value — it is what the demo uses to reveal in one cycle.
+    h.send(
+        &[ixs::set_disclosure_delay(&w.admin.pubkey(), &w.config, 0)],
+        &[&w.admin],
+    )
+    .unwrap();
+    assert_eq!(h.account::<Config>(&w.config).disclosure_delay_slots, 0);
+}
+
 #[test]
 fn seed_pool_requires_admin_and_nonzero() {
     let mut h = Harness::new();

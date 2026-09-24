@@ -964,3 +964,20 @@ export async function bootstrapDevnet(): Promise<BootstrappedDevnet> {
 
   return { admin, mint, market, marketRisk, pool, poolAta, poolLive, feed, feeEscrow, sigs, feePayer, balancesRoot, actionEscrow };
 }
+
+/**
+ * Week-5 Task 7 (M-H/M-J): `set_disclosure_delay` (base-layer `AdminConfig`,
+ * same pattern as `pause`/`set_scheduler_signer` — see
+ * `programs/dexxer_core/src/instructions/admin.rs`). `Config` is never
+ * delegated, so this is a plain `baseConn` write, not a TEE one. Missing
+ * from this file until now (Task 5 shipped the instruction but no client
+ * builder); added here per the task-7 controller amendment rather than
+ * inlined in each devnet script that needs it.
+ */
+export async function setDisclosureDelay(admin: Keypair, slots: bigint): Promise<string> {
+  const core = dexxerCoreProgram(baseConn, admin);
+  return core.methods
+    .setDisclosureDelay(new BN(slots.toString()))
+    .accounts({ admin: admin.publicKey, config: pdas.config() })
+    .rpc();
+}

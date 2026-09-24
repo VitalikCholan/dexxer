@@ -32,6 +32,10 @@ const POOL_LIVE_SEED = Buffer.from('pool_live')
 const COMMIT_SEED = Buffer.from('commit')
 const DISCLOSURE_SEED = Buffer.from('disclosure')
 const BALANCES_ROOT_SEED = Buffer.from('balances_root')
+// Week 5, Task 3: the MagicBlock Crank program's per-authority executor PDA.
+// Pinned validator source is cited in `tests/er/lib/crank-signer.ts`.
+const CRANK_EXECUTOR_SEED = Buffer.from('crank-executor')
+const CRANK_PROGRAM_ID = new PublicKey('Crank11111111111111111111111111111111111111')
 export const SOL_SYMBOL = Buffer.from([83, 79, 76, 0, 0, 0, 0, 0]) // b"SOL\0\0\0\0\0"
 
 // mock_oracle / Pricing Oracle feed seeds, matching tests/er/lib/program.ts
@@ -62,6 +66,15 @@ export const pdas = {
   config: () => pda([CONFIG_SEED], DEXXER_CORE_PROGRAM_ID),
   mintAuth: () => pda([MINT_AUTH_SEED], DEXXER_CORE_PROGRAM_ID),
   feeEscrow: () => pda([FEE_ESCROW_SEED], DEXXER_CORE_PROGRAM_ID),
+  /**
+   * `crank_signer_pda(feeEscrow)` — the signer the MagicBlock scheduler gives a
+   * per-position `liquidation_check` tick (week 5, Task 3). Derived from the
+   * task AUTHORITY, which is the `ScheduleTask` CPI payer: the `FeeEscrow` PDA.
+   * Mirrors `tests/er/lib/crank-signer.ts` (which cites the pinned validator
+   * source) and the program's own `liq_crank_signer`.
+   */
+  liqCrankSigner: () =>
+    pda([CRANK_EXECUTOR_SEED, pdas.feeEscrow().toBuffer()], CRANK_PROGRAM_ID),
   market: () => pda([MARKET_SEED, SOL_SYMBOL], DEXXER_CORE_PROGRAM_ID),
   marketRisk: (market: PublicKey) => pda([RISK_SEED, market.toBuffer()], DEXXER_CORE_PROGRAM_ID),
   pool: (mint: PublicKey) => pda([POOL_SEED, mint.toBuffer()], DEXXER_CORE_PROGRAM_ID),

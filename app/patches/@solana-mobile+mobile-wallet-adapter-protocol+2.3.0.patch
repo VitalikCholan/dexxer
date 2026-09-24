@@ -1,0 +1,13 @@
+diff --git a/node_modules/@solana-mobile/mobile-wallet-adapter-protocol/lib/cjs/index.native.js b/node_modules/@solana-mobile/mobile-wallet-adapter-protocol/lib/cjs/index.native.js
+index bbe8b5e..b42ce04 100644
+--- a/node_modules/@solana-mobile/mobile-wallet-adapter-protocol/lib/cjs/index.native.js
++++ b/node_modules/@solana-mobile/mobile-wallet-adapter-protocol/lib/cjs/index.native.js
+@@ -299,7 +299,7 @@ async function transact(callback, config) {
+ 		didSuccessfullyConnect = true;
+ 		return await callback(createMobileWalletProxy(sessionProperties.protocol_version, async (method, params) => {
+ 			try {
+-				return SolanaMobileWalletAdapter.invoke(method, params);
++				return await SolanaMobileWalletAdapter.invoke(method, params);
+ 			} catch (e) {
+ 				return handleError(e);
+ 			}

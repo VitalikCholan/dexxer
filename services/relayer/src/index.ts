@@ -31,7 +31,9 @@
 // (Same pattern scripts/crank-fallback/index.ts used before this move.)
 
 import express from "express";
-import { Connection } from "@solana/web3.js";
+import { Connection, PublicKey } from "@solana/web3.js";
+
+type PublicKeyT = InstanceType<typeof PublicKey>;
 import { createPool, getMeta, migrate, setMeta } from "./db.js";
 import { computeSchedulerActive, healthRouter } from "./health.js";
 import { shutdown } from "./shutdown.js";
@@ -39,7 +41,16 @@ import type { RelayerConfig, RelayerState } from "./crank.js";
 import { attachWs, indexerRouter } from "./indexer/http.js";
 import type { IndexerStats } from "./indexer/accounts.js";
 import { ORACLE_STALE_MS, isStale } from "./indexer/prices.js";
-import { DEFAULT_DAILY_BUDGET_SOL, pgSponsorStore, simulateCostEstimator, sponsorRouter, sponsorSnapshot } from "./sponsor.js";
+import { DEFAULT_ASSETLINKS_PACKAGE, assetlinksRouter, parseFingerprintsEnv } from "./assetlinks.js";
+import { nonceRouter } from "./nonce.js";
+import {
+  DEFAULT_DAILY_BUDGET_SOL,
+  DEFAULT_SPONSOR_MAX_CU_PRICE_MICROLAMPORTS,
+  pgSponsorStore,
+  simulateCostEstimator,
+  sponsorRouter,
+  sponsorSnapshot,
+} from "./sponsor.js";
 
 if ((process.env.DEXXER_NET ?? "local") === "devnet") {
   process.env.BASE_RPC ??= "https://rpc.magicblock.app/devnet";
@@ -51,9 +62,9 @@ if ((process.env.DEXXER_NET ?? "local") === "devnet") {
 }
 
 const { keypairFromEnv } = await import("./keys.js");
-const { startCrank, requestStop } = await import("./crank.js");
+const { COMMIT_INTERVAL_TICKS, COMMIT_MAX_ACTIONS, startCrank, requestStop } = await import("./crank.js");
 const { NET, BASE, ER, ER_WS } = await import("../../../tests/er/lib/env.js");
-const { pdas } = await import("../../../tests/er/lib/program.js");
+const { accountNs, dexxerCoreProgram, pdas } = await import("../../../tests/er/lib/program.js");
 const { startMarketWatch } = await import("./marketWatch.js");
 
 const cfg: RelayerConfig = {
@@ -72,9 +83,9 @@ const cfg: RelayerConfig = {
   databaseUrl: process.env.DATABASE_URL,
 };
 const sponsorDailyBudgetSol = Number(process.env.SPONSOR_DAILY_SOL ?? DEFAULT_DAILY_BUDGET_SOL);
-// Week-5 route, unused by the app today (see sponsor.ts's header comment) —
-// default false gates the SystemProgram session-top-up branch off.
-const sponsorAllowSessionTopUp = process.env.SPONSOR_ALLOW_SESSION_TOPUP === "true";
+// Fix (live Phantom smoke, 24.09): Phantom prepends ComputeBudget ixs to
+// legacy transactions it signs — see sponsor.ts's DEFAULT_SPONSOR_MAX_CU_PRICE_MICROLAMPORTS doc comment for the bound this caps.
+const sponsorMaxCuPriceMicroLamports = Number(process.env.SPONSOR_MAX_CU_PRICE_MICROLAMPORTS ?? DEFAULT_SPONSOR_MAX_CU_PRICE_MICROLAMPORTS);
 // Task 7: default true so this is a no-op change for every existing
 // deployment — set `CRANK_ENABLED=false` only to measure the MagicBlock
 // scheduler's own `crank_tick` (schedule-eternal.ts) as the SOLE thing
@@ -107,6 +118,14 @@ if (pool) {
 }
 
 const app = express();
+// Digital Asset Links for MWA identity verification (see assetlinks.ts).
+// Mounted first: static, key-free, must answer even if every loop below is off.
+app.use(
+  assetlinksRouter({
+    packageName: process.env.ASSETLINKS_PACKAGE ?? DEFAULT_ASSETLINKS_PACKAGE,
+    fingerprints: parseFingerprintsEnv(process.env.ASSETLINKS_SHA256_FINGERPRINTS),
+  }),
+);
 
 const server = app.listen(cfg.port, () => {
   console.log(`relayer: listening on :${cfg.port} net=${cfg.net}`);
@@ -116,7 +135,7 @@ const server = app.listen(cfg.port, () => {
 // Disclosure feed) — needs Postgres (`pool`) and `INDEXER_ENABLED=true`.
 // Reads ONLY public accounts (see indexer/accounts.ts's header comment) —
 // never `cfg.crank`/`cfg.feePayer`.
-const indexerStats: IndexerStats = { ticks: 0, lastTickTs: null, lastPoolSlot: null, disclosures: 0 };
+const indexerStats: IndexerStats = { ticks: 0, lastTickTs: null, lastPublishTimeMs: null, lastPoolSlot: null, disclosures: 0 };
 let wsHub: ReturnType<typeof attachWs> | null = null;
 let stopIndexer: (() => void) | null = null;
 if (cfg.indexerEnabled && !pool) {
@@ -142,22 +161,46 @@ const baseConn = new Connection(cfg.baseRpc, "confirmed");
 // Task 6: `/sponsor` — fee_payer co-signs whitelisted onboarding txs (see
 // sponsor.ts's header comment). Needs Postgres for the rate-limit/budget
 // store, same gating pattern as the indexer above.
-let getSponsorHealthSnapshot: (() => Promise<{ today_sol: number; count_today: number }>) | undefined;
+let getSponsorHealthSnapshot: (() => Promise<{ today_sol: number; count_today: number; maxCuPriceMicroLamports: number }>) | undefined;
 if (cfg.sponsorEnabled && !pool) {
   console.warn("sponsor: SPONSOR_ENABLED=true but no DATABASE_URL — /sponsor disabled (needs Postgres for the rate-limit store)");
 } else if (cfg.sponsorEnabled && pool) {
   const store = pgSponsorStore(pool);
+  // Week-5 final review M2: the only mint a sponsored ATA may be created for.
+  // Read once at boot from the public base `Config` (no secret involved, same
+  // source crank.ts uses for the `Pool` PDAs). If this read fails the endpoint
+  // still starts, but every ATA instruction is then rejected (fail-closed in
+  // `checkPositions`) — a loud, recoverable state, not a silent drain hole.
+  let dusdcMint: PublicKeyT | undefined;
+  try {
+    const cfgAcc = await accountNs(dexxerCoreProgram(baseConn, cfg.feePayer)).config.fetch(pdas.config());
+    dusdcMint = cfgAcc.dusdcMint as PublicKeyT;
+  } catch (e) {
+    console.error("sponsor: could not read Config.dusdcMint from base — ATA sponsoring will be refused", String(e));
+  }
   app.use(
     sponsorRouter({
       feePayer: cfg.feePayer,
       store,
       estimateLamports: simulateCostEstimator(baseConn, cfg.feePayer),
       dailyBudgetSol: sponsorDailyBudgetSol,
-      allowSessionTopUp: sponsorAllowSessionTopUp,
+      dusdcMint,
+      maxCuPriceMicroLamports: sponsorMaxCuPriceMicroLamports,
     }),
   );
-  getSponsorHealthSnapshot = sponsorSnapshot(store);
-  console.log(`sponsor: /sponsor enabled (daily budget ${sponsorDailyBudgetSol} SOL)`);
+  // Durable-nonce accounts for owners (nonce.ts) — same store/rate limit/budget as /sponsor.
+  app.use(
+    nonceRouter({
+      conn: baseConn,
+      feePayer: cfg.feePayer,
+      store,
+      dailyBudgetLamports: Math.round(sponsorDailyBudgetSol * 1e9),
+    }),
+  );
+  getSponsorHealthSnapshot = sponsorSnapshot(store, sponsorMaxCuPriceMicroLamports);
+  console.log(
+    `sponsor: /sponsor enabled (daily budget ${sponsorDailyBudgetSol} SOL, dUSDC mint ${dusdcMint ? dusdcMint.toBase58() : "UNKNOWN — ATA refused"}, max CU price ${sponsorMaxCuPriceMicroLamports} µL)`,
+  );
 }
 
 // Task 7: watches the public `Market` account (unauthenticated ER read, see
@@ -183,9 +226,13 @@ app.use(
     getIndexerSnapshot: () => ({
       ...indexerStats,
       wsClients: wsHub?.clientCount() ?? 0,
-      oracleStale: isStale(indexerStats.lastTickTs, Date.now(), ORACLE_STALE_MS),
+      // Week-5 Task 5: by the oracle's own publish time, not by when this
+      // process last received a notification — see indexer/prices.ts.
+      oracleStale: isStale(indexerStats.lastPublishTimeMs, Date.now(), ORACLE_STALE_MS),
     }),
     getSponsorSnapshot: getSponsorHealthSnapshot,
+    commitIntervalTicks: COMMIT_INTERVAL_TICKS,
+    commitMaxActions: COMMIT_MAX_ACTIONS,
   }),
 );
 

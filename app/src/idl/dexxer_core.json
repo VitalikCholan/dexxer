@@ -151,6 +151,85 @@
         },
         {
           "name": "feed"
+        },
+        {
+          "name": "disclosure_queue",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  100,
+                  113
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "user_account.owner",
+                "account": "UserAccount"
+              }
+            ]
+          }
+        },
+        {
+          "name": "fee_escrow",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  102,
+                  101,
+                  101,
+                  95,
+                  101,
+                  115,
+                  99,
+                  114,
+                  111,
+                  119
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "task_context",
+          "docs": [
+            "task (week-5 Task 3), passed to `ScheduleTask`/`CancelTask` as account",
+            "index 1. No on-chain derivation for it exists in `ephemeral-rollups-sdk`",
+            "0.16.2 and the Magic Program treats it as an inert writable placeholder:",
+            "any already-existing writable account is accepted and left byte-identical",
+            "(week-5 Task 0, measurement 6).",
+            "",
+            "PINNED TO `position` anyway (fix round 1, M-1). \"Any writable account\"",
+            "plus `mut` would let a caller name ANOTHER trader's delegated account",
+            "here, write-locking it for the duration of the transaction — a free",
+            "contention/DoS handle on someone else's position, which the placeholder's",
+            "inertness does nothing to prevent. Pinning it costs nothing (every client",
+            "already passes the position PDA) and additionally guarantees that the",
+            "registration and the later cancel name the same account. Anchor permits",
+            "the duplicate key because neither field is `init`."
+          ],
+          "writable": true
+        },
+        {
+          "name": "magic_program",
+          "address": "Magic11111111111111111111111111111111111111"
+        },
+        {
+          "name": "liq_crank_signer",
+          "docs": [
+            "`liquidation_check` ticks — `crank_signer_pda(fee_escrow)`, since the",
+            "`FeeEscrow` PDA is the `ScheduleTask` CPI payer and therefore the task",
+            "authority (week-5 Task 0). Deliberately NOT `Config.scheduler_signer`,",
+            "which is `crank_signer_pda(admin)` and belongs to the market-wide",
+            "`schedule_crank` task. Verified against the derivation in",
+            "`open_position` on the scheduling path only, so the ~1.5k CU",
+            "`find_program_address` is not charged to every trade."
+          ]
         }
       ],
       "args": [
@@ -213,6 +292,314 @@
           "type": "i64"
         }
       ]
+    },
+    {
+      "name": "close_exited_user",
+      "discriminator": [
+        85,
+        128,
+        16,
+        33,
+        41,
+        221,
+        188,
+        207
+      ],
+      "accounts": [
+        {
+          "name": "fee_payer",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "user_account",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  117,
+                  115,
+                  101,
+                  114
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "user_account.owner",
+                "account": "UserAccount"
+              }
+            ]
+          }
+        },
+        {
+          "name": "position",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  111,
+                  115,
+                  105,
+                  116,
+                  105,
+                  111,
+                  110
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "user_account.owner",
+                "account": "UserAccount"
+              },
+              {
+                "kind": "account",
+                "path": "position.market",
+                "account": "Position"
+              }
+            ]
+          }
+        },
+        {
+          "name": "dq",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  100,
+                  113
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "user_account.owner",
+                "account": "UserAccount"
+              }
+            ]
+          }
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "close_orphan_queue",
+      "discriminator": [
+        117,
+        201,
+        72,
+        31,
+        229,
+        121,
+        34,
+        181
+      ],
+      "accounts": [
+        {
+          "name": "crank",
+          "signer": true
+        },
+        {
+          "name": "config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "dq",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  100,
+                  113
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "dq.owner",
+                "account": "DisclosureQueue"
+              }
+            ]
+          }
+        },
+        {
+          "name": "user_account",
+          "docs": [
+            "it is there at all, to decide whether its owner has exited (week-5 Task",
+            "5: either absent/foreign-owned, or present with `exited == true`). It",
+            "cannot be a typed `Account<UserAccount>`: the absent case must still",
+            "pass the account list. The seeds constraint is all that binds the",
+            "address handed in here to `dq.owner`."
+          ],
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  117,
+                  115,
+                  101,
+                  114
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "dq.owner",
+                "account": "DisclosureQueue"
+              }
+            ]
+          }
+        },
+        {
+          "name": "dq_permission",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  101,
+                  114,
+                  109,
+                  105,
+                  115,
+                  115,
+                  105,
+                  111,
+                  110,
+                  58
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "dq"
+              }
+            ],
+            "program": {
+              "kind": "const",
+              "value": [
+                136,
+                161,
+                10,
+                196,
+                33,
+                152,
+                1,
+                214,
+                246,
+                106,
+                29,
+                60,
+                6,
+                152,
+                192,
+                102,
+                169,
+                175,
+                212,
+                217,
+                180,
+                252,
+                231,
+                71,
+                151,
+                141,
+                209,
+                5,
+                168,
+                212,
+                103,
+                82
+              ]
+            }
+          }
+        },
+        {
+          "name": "ephemeral_vault",
+          "writable": true,
+          "address": "MagicVau1t999999999999999999999999999999999"
+        },
+        {
+          "name": "permission_program",
+          "address": "ACLseoPoyC3cBqoUtkbjZ4aDrkurZW86v19pXz2XQnp1"
+        },
+        {
+          "name": "fee_escrow",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  102,
+                  101,
+                  101,
+                  95,
+                  101,
+                  115,
+                  99,
+                  114,
+                  111,
+                  119
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "magic_fee_vault",
+          "writable": true
+        },
+        {
+          "name": "magic_context",
+          "writable": true,
+          "address": "MagicContext1111111111111111111111111111111"
+        },
+        {
+          "name": "magic_program",
+          "address": "Magic11111111111111111111111111111111111111"
+        }
+      ],
+      "args": []
     },
     {
       "name": "close_position",
@@ -359,6 +746,85 @@
         },
         {
           "name": "feed"
+        },
+        {
+          "name": "disclosure_queue",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  100,
+                  113
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "user_account.owner",
+                "account": "UserAccount"
+              }
+            ]
+          }
+        },
+        {
+          "name": "fee_escrow",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  102,
+                  101,
+                  101,
+                  95,
+                  101,
+                  115,
+                  99,
+                  114,
+                  111,
+                  119
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "task_context",
+          "docs": [
+            "task (week-5 Task 3), passed to `ScheduleTask`/`CancelTask` as account",
+            "index 1. No on-chain derivation for it exists in `ephemeral-rollups-sdk`",
+            "0.16.2 and the Magic Program treats it as an inert writable placeholder:",
+            "any already-existing writable account is accepted and left byte-identical",
+            "(week-5 Task 0, measurement 6).",
+            "",
+            "PINNED TO `position` anyway (fix round 1, M-1). \"Any writable account\"",
+            "plus `mut` would let a caller name ANOTHER trader's delegated account",
+            "here, write-locking it for the duration of the transaction — a free",
+            "contention/DoS handle on someone else's position, which the placeholder's",
+            "inertness does nothing to prevent. Pinning it costs nothing (every client",
+            "already passes the position PDA) and additionally guarantees that the",
+            "registration and the later cancel name the same account. Anchor permits",
+            "the duplicate key because neither field is `init`."
+          ],
+          "writable": true
+        },
+        {
+          "name": "magic_program",
+          "address": "Magic11111111111111111111111111111111111111"
+        },
+        {
+          "name": "liq_crank_signer",
+          "docs": [
+            "`liquidation_check` ticks — `crank_signer_pda(fee_escrow)`, since the",
+            "`FeeEscrow` PDA is the `ScheduleTask` CPI payer and therefore the task",
+            "authority (week-5 Task 0). Deliberately NOT `Config.scheduler_signer`,",
+            "which is `crank_signer_pda(admin)` and belongs to the market-wide",
+            "`schedule_crank` task. Verified against the derivation in",
+            "`open_position` on the scheduling path only, so the ~1.5k CU",
+            "`find_program_address` is not charged to every trade."
+          ]
         }
       ],
       "args": [
@@ -518,7 +984,12 @@
           "address": "Magic11111111111111111111111111111111111111"
         }
       ],
-      "args": []
+      "args": [
+        {
+          "name": "max_actions",
+          "type": "u8"
+        }
+      ]
     },
     {
       "name": "commit_market",
@@ -927,6 +1398,85 @@
         },
         {
           "name": "feed"
+        },
+        {
+          "name": "disclosure_queue",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  100,
+                  113
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "user_account.owner",
+                "account": "UserAccount"
+              }
+            ]
+          }
+        },
+        {
+          "name": "fee_escrow",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  102,
+                  101,
+                  101,
+                  95,
+                  101,
+                  115,
+                  99,
+                  114,
+                  111,
+                  119
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "task_context",
+          "docs": [
+            "task (week-5 Task 3), passed to `ScheduleTask`/`CancelTask` as account",
+            "index 1. No on-chain derivation for it exists in `ephemeral-rollups-sdk`",
+            "0.16.2 and the Magic Program treats it as an inert writable placeholder:",
+            "any already-existing writable account is accepted and left byte-identical",
+            "(week-5 Task 0, measurement 6).",
+            "",
+            "PINNED TO `position` anyway (fix round 1, M-1). \"Any writable account\"",
+            "plus `mut` would let a caller name ANOTHER trader's delegated account",
+            "here, write-locking it for the duration of the transaction — a free",
+            "contention/DoS handle on someone else's position, which the placeholder's",
+            "inertness does nothing to prevent. Pinning it costs nothing (every client",
+            "already passes the position PDA) and additionally guarantees that the",
+            "registration and the later cancel name the same account. Anchor permits",
+            "the duplicate key because neither field is `init`."
+          ],
+          "writable": true
+        },
+        {
+          "name": "magic_program",
+          "address": "Magic11111111111111111111111111111111111111"
+        },
+        {
+          "name": "liq_crank_signer",
+          "docs": [
+            "`liquidation_check` ticks — `crank_signer_pda(fee_escrow)`, since the",
+            "`FeeEscrow` PDA is the `ScheduleTask` CPI payer and therefore the task",
+            "authority (week-5 Task 0). Deliberately NOT `Config.scheduler_signer`,",
+            "which is `crank_signer_pda(admin)` and belongs to the market-wide",
+            "`schedule_crank` task. Verified against the derivation in",
+            "`open_position` on the scheduling path only, so the ~1.5k CU",
+            "`find_program_address` is not charged to every trade."
+          ]
         }
       ],
       "args": [
@@ -2298,6 +2848,11 @@
           "signer": true
         },
         {
+          "name": "payer",
+          "writable": true,
+          "signer": true
+        },
+        {
           "name": "config",
           "pda": {
             "seeds": [
@@ -3185,6 +3740,85 @@
         },
         {
           "name": "feed"
+        },
+        {
+          "name": "disclosure_queue",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  100,
+                  113
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "user_account.owner",
+                "account": "UserAccount"
+              }
+            ]
+          }
+        },
+        {
+          "name": "fee_escrow",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  102,
+                  101,
+                  101,
+                  95,
+                  101,
+                  115,
+                  99,
+                  114,
+                  111,
+                  119
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "task_context",
+          "docs": [
+            "task (week-5 Task 3), passed to `ScheduleTask`/`CancelTask` as account",
+            "index 1. No on-chain derivation for it exists in `ephemeral-rollups-sdk`",
+            "0.16.2 and the Magic Program treats it as an inert writable placeholder:",
+            "any already-existing writable account is accepted and left byte-identical",
+            "(week-5 Task 0, measurement 6).",
+            "",
+            "PINNED TO `position` anyway (fix round 1, M-1). \"Any writable account\"",
+            "plus `mut` would let a caller name ANOTHER trader's delegated account",
+            "here, write-locking it for the duration of the transaction — a free",
+            "contention/DoS handle on someone else's position, which the placeholder's",
+            "inertness does nothing to prevent. Pinning it costs nothing (every client",
+            "already passes the position PDA) and additionally guarantees that the",
+            "registration and the later cancel name the same account. Anchor permits",
+            "the duplicate key because neither field is `init`."
+          ],
+          "writable": true
+        },
+        {
+          "name": "magic_program",
+          "address": "Magic11111111111111111111111111111111111111"
+        },
+        {
+          "name": "liq_crank_signer",
+          "docs": [
+            "`liquidation_check` ticks — `crank_signer_pda(fee_escrow)`, since the",
+            "`FeeEscrow` PDA is the `ScheduleTask` CPI payer and therefore the task",
+            "authority (week-5 Task 0). Deliberately NOT `Config.scheduler_signer`,",
+            "which is `crank_signer_pda(admin)` and belongs to the market-wide",
+            "`schedule_crank` task. Verified against the derivation in",
+            "`open_position` on the scheduling path only, so the ~1.5k CU",
+            "`find_program_address` is not charged to every trade."
+          ]
         }
       ],
       "args": [
@@ -4557,20 +5191,34 @@
       ]
     },
     {
-      "name": "mark_committed",
+      "name": "init_user_reuse_queue",
       "discriminator": [
-        61,
-        151,
-        200,
-        74,
-        77,
-        244,
-        69,
-        231
+        114,
+        35,
+        16,
+        160,
+        143,
+        248,
+        250,
+        44
       ],
       "accounts": [
         {
-          "name": "crank",
+          "name": "owner",
+          "writable": true,
+          "signer": true,
+          "relations": [
+            "user_account",
+            "position"
+          ]
+        },
+        {
+          "name": "payer",
+          "docs": [
+            "Sponsorable, as in `InitUser`: the two ER permission prefunds below are",
+            "paid by whoever calls, typically the relayer's `fee_payer`."
+          ],
+          "writable": true,
           "signer": true
         },
         {
@@ -4590,6 +5238,226 @@
               }
             ]
           }
+        },
+        {
+          "name": "market",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  109,
+                  97,
+                  114,
+                  107,
+                  101,
+                  116
+                ]
+              },
+              {
+                "kind": "const",
+                "value": [
+                  83,
+                  79,
+                  76,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "user_account",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  117,
+                  115,
+                  101,
+                  114
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "owner"
+              }
+            ]
+          }
+        },
+        {
+          "name": "position",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  111,
+                  115,
+                  105,
+                  116,
+                  105,
+                  111,
+                  110
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "owner"
+              },
+              {
+                "kind": "account",
+                "path": "market"
+              }
+            ]
+          }
+        },
+        {
+          "name": "disclosure_queue",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  100,
+                  113
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "owner"
+              }
+            ]
+          }
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "exit_salt",
+          "type": {
+            "array": [
+              "u8",
+              32
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "liquidation_check",
+      "docs": [
+        "Week-5 Task 3: the per-position scheduled liquidation task's",
+        "instruction. Registered by `open_position`, signed by",
+        "`crank_signer_pda(fee_escrow)`, never carries `remaining_accounts`."
+      ],
+      "discriminator": [
+        226,
+        200,
+        124,
+        67,
+        180,
+        185,
+        6,
+        68
+      ],
+      "accounts": [
+        {
+          "name": "crank",
+          "docs": [
+            "Authorization is asserted in the body rather than here: the accepted set",
+            "includes a derived PDA (`liq_crank_signer`), which an account constraint",
+            "cannot express without recomputing it on every field validation."
+          ],
+          "signer": true
+        },
+        {
+          "name": "config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "market",
+          "relations": [
+            "market_risk",
+            "position"
+          ]
+        },
+        {
+          "name": "market_risk",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  114,
+                  105,
+                  115,
+                  107
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "market"
+              }
+            ]
+          }
+        },
+        {
+          "name": "pool_live",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  111,
+                  111,
+                  108,
+                  95,
+                  108,
+                  105,
+                  118,
+                  101
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "pool_live.mint",
+                "account": "PoolLive"
+              }
+            ]
+          }
+        },
+        {
+          "name": "feed"
         },
         {
           "name": "position",
@@ -4616,14 +5484,35 @@
               },
               {
                 "kind": "account",
-                "path": "position.market",
-                "account": "Position"
+                "path": "market"
               }
             ]
           }
         },
         {
-          "name": "dq",
+          "name": "user_account",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  117,
+                  115,
+                  101,
+                  114
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "user_account.owner",
+                "account": "UserAccount"
+              }
+            ]
+          }
+        },
+        {
+          "name": "disclosure_queue",
           "writable": true,
           "pda": {
             "seeds": [
@@ -4636,8 +5525,8 @@
               },
               {
                 "kind": "account",
-                "path": "position.owner",
-                "account": "Position"
+                "path": "disclosure_queue.owner",
+                "account": "DisclosureQueue"
               }
             ]
           }
@@ -4790,6 +5679,85 @@
         },
         {
           "name": "feed"
+        },
+        {
+          "name": "disclosure_queue",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  100,
+                  113
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "user_account.owner",
+                "account": "UserAccount"
+              }
+            ]
+          }
+        },
+        {
+          "name": "fee_escrow",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  102,
+                  101,
+                  101,
+                  95,
+                  101,
+                  115,
+                  99,
+                  114,
+                  111,
+                  119
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "task_context",
+          "docs": [
+            "task (week-5 Task 3), passed to `ScheduleTask`/`CancelTask` as account",
+            "index 1. No on-chain derivation for it exists in `ephemeral-rollups-sdk`",
+            "0.16.2 and the Magic Program treats it as an inert writable placeholder:",
+            "any already-existing writable account is accepted and left byte-identical",
+            "(week-5 Task 0, measurement 6).",
+            "",
+            "PINNED TO `position` anyway (fix round 1, M-1). \"Any writable account\"",
+            "plus `mut` would let a caller name ANOTHER trader's delegated account",
+            "here, write-locking it for the duration of the transaction — a free",
+            "contention/DoS handle on someone else's position, which the placeholder's",
+            "inertness does nothing to prevent. Pinning it costs nothing (every client",
+            "already passes the position PDA) and additionally guarantees that the",
+            "registration and the later cancel name the same account. Anchor permits",
+            "the duplicate key because neither field is `init`."
+          ],
+          "writable": true
+        },
+        {
+          "name": "magic_program",
+          "address": "Magic11111111111111111111111111111111111111"
+        },
+        {
+          "name": "liq_crank_signer",
+          "docs": [
+            "`liquidation_check` ticks — `crank_signer_pda(fee_escrow)`, since the",
+            "`FeeEscrow` PDA is the `ScheduleTask` CPI payer and therefore the task",
+            "authority (week-5 Task 0). Deliberately NOT `Config.scheduler_signer`,",
+            "which is `crank_signer_pda(admin)` and belongs to the market-wide",
+            "`schedule_crank` task. Verified against the derivation in",
+            "`open_position` on the scheduling path only, so the ~1.5k CU",
+            "`find_program_address` is not charged to every trade."
+          ]
         }
       ],
       "args": [
@@ -5281,6 +6249,53 @@
               32
             ]
           }
+        }
+      ]
+    },
+    {
+      "name": "set_disclosure_delay",
+      "discriminator": [
+        87,
+        245,
+        141,
+        232,
+        156,
+        212,
+        165,
+        203
+      ],
+      "accounts": [
+        {
+          "name": "admin",
+          "signer": true,
+          "relations": [
+            "config"
+          ]
+        },
+        {
+          "name": "config",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        }
+      ],
+      "args": [
+        {
+          "name": "slots",
+          "type": "u64"
         }
       ]
     },
@@ -6825,6 +7840,21 @@
       "code": 6040,
       "name": "PoolLiveMismatch",
       "msg": "PoolLive mint does not match Pool mint"
+    },
+    {
+      "code": 6041,
+      "name": "LiquidationTaskFailed",
+      "msg": "scheduling the liquidation task failed"
+    },
+    {
+      "code": 6042,
+      "name": "NotExited",
+      "msg": "user account has not exited"
+    },
+    {
+      "code": 6043,
+      "name": "QueueStillPending",
+      "msg": "disclosure queue still has pending records"
     }
   ],
   "types": [
@@ -7726,6 +8756,11 @@
           },
           {
             "name": "closed",
+            "docs": [
+              "Always `None` since week-5 Task 1 (the record goes to the owner's",
+              "`DisclosureQueue` at close time). Kept in the layout so live delegated",
+              "`Position` accounts need no migration."
+            ],
             "type": {
               "option": {
                 "defined": {
@@ -7831,6 +8866,17 @@
           {
             "name": "bump",
             "type": "u8"
+          },
+          {
+            "name": "exited",
+            "docs": [
+              "Week-5 Task 2 (spec §2.6.3): set by `undelegate_user`, cleared by",
+              "`init_user_reuse_queue`. Marks an account that has left the ER and is",
+              "sitting scrubbed and dormant on L1 — the gate that lets re-onboarding",
+              "re-initialize it in place instead of `init`-ing a PDA that already",
+              "exists. Appended at the END so every earlier field keeps its offset."
+            ],
+            "type": "bool"
           }
         ]
       }

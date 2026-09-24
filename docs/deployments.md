@@ -24,6 +24,14 @@ program id) і ролі ключів.
 `tick n=... slot=... mark=... sig=... liquidated=[]` кожну секунду проти
 реального devnet-tee (`https://devnet-tee.magicblock.app`).
 
+**Перевірено знову (23.09.2026, week 5, після фінального деплою з quarantine):**
+```json
+{"ok":true,"tick":11,"feePayerSol":0.191982024,"commitIntervalTicks":60,"commitMaxActions":4, ...}
+```
+Живий прогін 3 послідовних disclosure-циклів підтвердив: отруєна черга (`0xA0000002` на кожному
+бюджеті) виключається rotation/quarantine-механізмом і більше не блокує молодші черги — деталі,
+сигнатури й таблиця циклів у `docs/superpowers/plans/week5-results.md` §Task 7.0.
+
 ### Ключі (ролі, не значення)
 
 Приватність-правило (CLAUDE.md): relayer тримає ЛИШЕ `crank`/`fee_payer` —
@@ -31,12 +39,18 @@ program id) і ролі ключів.
 
 | Env var на сервісі `relayer` | Роль | Джерело локально |
 | --- | --- | --- |
-| `CRANK_KEY_B58` | `Config.crank` — підписант `crank_tick`/`set_balances_root`/`mark_committed`; permission-член (`[owner, session, crank]`) кожної приватної `Position` | `tests/er/.keys/devnet-crank.json` |
+| `CRANK_KEY_B58` | `Config.crank` — підписант `crank_tick`/`set_balances_root`/`close_orphan_queue` (`mark_committed` видалено тижнем 5); permission-член (`[owner, session, crank]`) кожної приватної `Position` | `tests/er/.keys/devnet-crank.json` |
 | `FEE_PAYER_KEY_B58` | `Config.fee_payer` — єдиний прийнятний `payer` для `commit_aggregate` | `tests/er/.keys/devnet-fee-payer.json` |
 | `DATABASE_URL` | reference-змінна на сервіс `Postgres` (`${{ Postgres.DATABASE_URL }}`) | — |
 | `DEXXER_NET` | `devnet` | — |
 | `PORT` | `8080` | — |
 | `RAILWAY_DOCKERFILE_PATH` | `services/relayer/Dockerfile` | — |
+| `ASSETLINKS_PACKAGE` | не задано (дефолт `com.dexxer.app`) | Digital Asset Links для MWA identity verification (24.09), `GET /.well-known/assetlinks.json` |
+| `ASSETLINKS_SHA256_FINGERPRINTS` | не задано (дефолт — сертифікат debug-keystore dev-client-а `FA:C6:17:45:…:3B:9C`) | для release-збірки виставити власний відбиток(и), через кому |
+| `COMMIT_INTERVAL_TICKS` **(week 5)** | інтервал disclosure/orphan-циклу в тіках crank-петлі; дефолт 300, **живе значення `60`** (≈1 хв, обрано для демо M-H — reveal за один цикл при `disclosure_delay_slots=0`); замінює зашитий `DISCLOSURE_EVERY_TICKS` тижня 4 | — |
+| `COMMIT_MAX_ACTIONS` **(week 5)** | бюджет дій на один бандл, який relayer **передає в програму** аргументом `commit_aggregate(max_actions)` (апгрейд #3) і яким же обмежує вибір черг; дефолт і **живе значення `4`**, clamp `[1, 8]` (8 — програмна СТЕЛЯ `MAX_ACTIONS_PER_COMMIT`, не кількість дій у бандлі); halve-and-retry на `0xA0000002` халвить і аргумент, і бюджет вибірки. Реальний бридж MagicBlock відхиляє 8 реальних дій за раз, 4 проходять (виміряно на живому беклозі, `week5-results.md` §Task 7). **До апгрейду #3** цей env обирав лише *які* черги йдуть у бандл — програма емітила до 8 дій на чергу незалежно від нього, через що одна повна черга ніколи не комітилася | — |
+| `QUARANTINE_CYCLES` **(week 5)** | скільки циклів ізолювати `DisclosureQueue`, що впала 2 рази поспіль на `0xA0000002`; дефолт **10** (не виставлявся окремо, лишено дефолтним) | — |
+| ~~`SPONSOR_ALLOW_SESSION_TOPUP`~~ **видалено (week 5)** | гілка session-lamports top-up через `/sponsor` прибрана разом з env-змінною — devnet-tee відхиляє чужого `fee_payer` як платника не-ним-ініційованої ER-tx (`InvalidAccountForFee`), тож ця гілка була недосяжна для чесного клієнта й досяжна лише для атакера | — |
 
 Обидва ключі закодовано локально через `bs58.encode(Uint8Array.from(JSON.parse(readFileSync(...))))`
 і встановлені через Railway API — значення ніколи не потрапляли в git чи в
@@ -112,7 +126,19 @@ disclosures, wsClients }` — перевірено live:
 `/disclosures` REST читають з Postgres напряму, тож стан там переживає
 рестарт, на відміну від `stats`-лічильників у `/healthz`).
 
-## Scheduler (Task 7, 23.09.2026)
+## Scheduler (Task 7 тижня 4, 23.09.2026)
+
+**Історичний запис, частково витіснений тижнем 5** — весь цей розділ описує
+глобальний `schedule_crank` (mark/EMA-backstop, `ScheduleCrank` без
+`remaining_accounts`, справді НЕ ліквідує — висновок нижче лишається
+правильним для цього конкретного механізму). Тиждень 5 додав окремий,
+незалежний механізм — `liquidation_check`, per-position scheduler-задача,
+що реєструється самою програмою в `open_position` і **справді ліквідує без
+relayer-а** (M-G′, `week5-results.md` §Task 7.1, PASS за 6.97 с). Обидва
+механізми живуть одночасно на devnet: `schedule_crank`/`schedule-eternal.ts`
+нижче лишається задеплоєним і продовжує рухати лише `Market.mark`;
+`liquidation_check` реєструється автоматично для кожної нової позиції з
+Task 3-апгрейду (`26ee85a..a6d5623`) і окремого deploy-скрипту не має.
 
 `scripts/admin/schedule-eternal.ts` (`npm run admin:schedule-eternal --prefix
 scripts`) зареєстрував `crank_tick` як MagicBlock-задачу планувальника з
@@ -172,3 +198,97 @@ UserAccount]`, а це вміє лише `services/relayer` (або ручний
 `5.221662297 SOL` → `5.071657297 SOL`. Railway `crank`/`fee_payer`
 баланси не змінились протягом вимірювання (`crankSol: 0.1`,
 `feePayerSol: 0.202817912` до і після).
+
+## Апгрейди програми `dexxer_core` (week 5, 23–24.09.2026)
+
+Program id незмінний `G2okX5Bae4CxfK8vzso1Ecc96QUv7E3P4YvxaZnaYXoV`, upgrade-authority
+`spikes/keys/payer.json` (`4P1WD92zwtUB2jxYQJRvsQc4fLSDtergp6tvMyzMgGMM`). Три апгрейди за тиждень
+(деталі, регресія й виміри — `docs/superpowers/plans/week5-results.md` §Task 4/5 і §фінальна фікс-хвиля).
+
+| # | Підпис | Слот | Причина | Вартість | `extend`? |
+| --- | --- | --- | --- | --- | --- |
+| 1 | `3hDzZgGzZqZrcqn7w7XDMHcbcbpGwbwVovGCDpUzUMfZnoLYnVNMWFYJ1ptMmjGeUEVW1MmGkV8sjgzPKnKSGhm1` | `503069579` | Tasks 1–3: queue-first close, exit із боргом розкриття, per-position `liquidation_check` + `DelegateUser.payer` | `extend` **0.665850760 SOL** (незворотно) + деплой **0.006338798 SOL** = **0.672189558 SOL** | **так**, `solana program extend … 131072` — `.so` 1 212 664 B > тодішня `Data Length` 1 179 344 B; після — **1 310 416 B** |
+| 2 | `rTNNmdXhWapr2ciVewNHwczY4ePY2NZPqLaGRyYoGoRdfyrEs8bDyJfSwvsHZ8Kt9s6vzmi3pXHfzfe9Py21RhG` | — | Прелюдія Task 5: `close_orphan_queue`'s сигнал сирітства (виміряно зламаним у Task 4 — `require!(ua.data_is_empty() \|\| ua.owner != crate::ID, ...)` завжди хибна на devnet-tee) + нова `set_disclosure_delay` | **0.006015 SOL** (лише мережеві збори — рента буфера ≈6.17 SOL повернулася) | **ні** — `.so` 1 213 624 B ≤ вже розширеної довжини 1 310 416 B |
+| 3 | `eXAtUAVtzb66Hk5sRkYaLE4afAKXtM2VXUqcNg5qMfLvBee5GSjCJwA3Hjmu39LdvdnzTuUUndp9xUjJ2CemBpg` | `503324217` | Фінальне ревʼю week 5, C1: `commit_aggregate(max_actions: u8)` — бюджет дій на бандл обирає клієнт (clamp `[1, MAX_ACTIONS_PER_COMMIT]`). Плюс M3 (авторизація `liquidation_check`) | **0.006015 SOL** (6.944625579 → 6.938610579; рента буфера ≈6.2 SOL повернулася) | **ні** — `.so` 1 213 904 B ≤ 1 310 416 B |
+
+**Вартість `extend`, для відтворення.** Кожен `solana program deploy`/`upgrade` вимагає **вільних
+SOL на payer-і, що дорівнюють ренті буфера** (для апгрейду #1 — 6.16 SOL) у момент виклику; сама
+рента повертається одразу після завершення деплою. `extend` — окрема, **незворотна** витрата (рента
+за додані байти `Data Length`), робити лише коли новий `.so` фізично більший за поточну виділену
+довжину акаунта програми (`solana program show <id>` → `Data Length`). Кран
+`api.devnet.solana.com` під час апгрейду #1 був порожній (`rate limit`); `rpc.magicblock.app/devnet`
+видавав по 1 SOL із паузами — планувати airdrop-и заздалегідь.
+
+**Верифікація деплою (усі три апгрейди):** `solana program dump <id> - | sha256sum` == sha256
+локального `target/deploy/dexxer_core.so`; `cmp target/idl/dexxer_core.json
+app/src/idl/dexxer_core.json` — байт-у-байт.
+
+### `set_disclosure_delay` — операційна нотатка
+
+Адмінська інструкція (`AdminConfig`-патерн, як `pause`/`set_scheduler_signer`), додана апгрейдом
+#2. Пише `Config.disclosure_delay_slots`, яке раніше писалось **лише** в `init_config` (сеттера не
+було — Task 4 знахідка, змінити демо-затримку без цієї інструкції на живому `Config` було
+неможливо). `slots = 0` — легальне значення, використане для демо M-H (комміт+розкриття одним
+`commit_aggregate`-bundle). Викликається адміном, ER-транзакція.
+
+### `set_params` — операційна нотатка (актуалізовано week 5)
+
+`set_params` пише **всю** структуру `MarketParams` — читайте живий `Market` перед викликом і
+накладайте лише потрібні поля (`tests/er/devnet/10-set-params.ts`, `npm run devnet:setparams --
+KEY=VALUE`), інакше наївний виклик мовчки поверне `max_conf_bps` на дефолт 50 і зламає торгівлю
+(devnet-фід стабільно віддає `conf == 0`, week 2 знахідка). Week 5 підняв `liq_hysteresis_ticks`
+цим шляхом: `2 → 3` (два незалежних джерела тіків — `crank_tick` і новий `liquidation_check` —
+без цього подвійний рахунок гістерезису), сигнатура
+`4BbcAZdAXtdpTXK6saX9sktZYHRMaxa2RZ4pRzyWreNLRokDFZ6tQZsS8jwDohnWWWf3e8NEsjK9uAk6npti1jsY`. Живі
+параметри після week 5 (`Market`, повний знімок):
+
+```
+max_lev_bps 100000, imr_bps 1000, mmr_bps 500, open/close_fee_bps 6/6, liq_fee_bps 100,
+oi_cap 0, max_position 100000000000, min_size 10000000, max_staleness_secs 2, max_conf_bps 0,
+max_deviation_bps 200, ema_alpha_bps 3000, liq_hysteresis_ticks 3, max_stale_ticks 30
+```
+
+### Legacy `UserAccount` (тижні 1–2) — стан на кінець week 5
+
+Інвентаризація ДО апгрейду #1 (`getProgramAccounts` crank-токеном): 24 `UserAccount`/`Position`/
+`DisclosureQueue`-трійки; 16 на 150 B (пізній week-2/3 лейаут), 4 на 118 B (без `exit_salt`), 4 на
+110 B (ще й без `last_withdraw_slot`) — **8 з 24 нечитабельні жодною типізованою інструкцією вже
+до тижня 5**. `UserAccount` v2 (week 5, +`exited`, 151 B) робить нечитабельними всі 24 старих
+розміри — тільки нові акаунти читаються після апгрейду. Task 4 закрив 2 із 6 `Open`-позицій на
+**старій** програмі до апгрейду (ще на v1-лейауті); 4 лишились назавжди: недекодовний
+`UserAccount`, для однієї з чотирьох ключа в репозиторії немає. Постійне зміщення на `Market`:
+`oi_long = 448 252 365`, `PoolLive.locked_total = 80 000 000`.
+
+## Devnet-скрипти — індекс (`tests/er/devnet/`)
+
+Перебудовано з `ls tests/er/devnet/` + `tests/er/package.json`'s `devnet:*` скриптів (fix round 1
+Task 8 — попередня версія цієї таблиці мала неправильну назву файлу `06` і хибно писала, що `07`
+не існує; обидва виправлено). Нумерація наскрізна для гілки, вбудована у самі назви файлів, не
+week-межі: `00`–`04` — тиждень 2 (Task 5, приватний онбординг/leak-test/commit/withdraw), `05` —
+тиждень 2 (Task 6, ліквідація), `06`–`08` — тиждень 3 (Task 8, M-B/M-E/M-A), `09` — тиждень 4
+(Task 3, M-F), `10`–`15` — тиждень 5 (`10`–`12` — операційні/міграційні скрипти Task 4/5, `13`–`15`
+— виміри Task 7 брифу `week5-reliability.md`).
+
+| # | Файл | `npm run` | Що робить |
+| --- | --- | --- | --- |
+| 00 | `00-measure.ts` | `devnet:measure` | Bootstrap-обгортка: виставляє `process.env.*` під профіль `devnet` до динамічного `await import("./run.js")` (інакше `.env`'s localhost-адреси мовчки перемагають, CLAUDE.md); сама логіка виміру — в `run.ts` |
+| — | `run.ts` | (немає власного `npm run` — імпортується з `00-measure.ts`) | Тіло виміру, яке `00` імпортує: тиждень-2 Task 1, вимірювання M1–M4 |
+| 01 | `01-onboard-private.ts` | `devnet:onboard` | Тиждень 2, Task 5, скрипт 1/4: повна приватна послідовність онбордингу на реальному devnet + `devnet-tee.magicblock.app`, на `dexxer_core` |
+| 02 | `02-leak-test.ts` | `devnet:leak` | Тиждень 2, Task 5, скрипт 2/4: level-4 leak test spec §6.4 (запускається одразу після `01`, читає його `.keys/devnet-run-latest.json`) |
+| 03 | `03-commit-cycle.ts` | `devnet:commit` | Тиждень 2, Task 5, скрипт 3/4: `commit_aggregate` ×12, ≥5 с між викликами, підписано `Config.fee_payer` через TEE-з'єднання — доводить, що fee-vault-scoped шлях перетинає M3's ліміт 10 простих комітів |
+| 04 | `04-withdraw.ts` | `devnet:withdraw` | Тиждень 2, Task 5, скрипт 4/4: `withdraw(300e6)` на ER, потім клієнтський L1-леґ — `undelegateIx` → поллінг base ATA |
+| — | `w3-measure.ts` | `devnet:w3measure` | Тиждень 3, Task 1: оркестратор для M-A/M-C/M-D — сама логіка живе в spike-директоріях (`spikes/01-private-counter-tee/w3-ma.ts`, `spikes/06-magic-action/w3-mc.ts`, `spikes/05-crank-tee/w3-md.ts`), цей файл лише шеллить `npx tsx` з `spikes/` |
+| 05 | `05-crank-liquidation.ts` | `devnet:liquidation` | Тиждень 2, Task 6, перевірка (c): наскрізна ліквідація через `crank-fallback`-скрипт на devnet-tee — фреш-трейдер, ~10x лонг, `set_params(mmr_bps)` робить позицію ліквідовною, поллінг `Position.liq_ticks`/`state`. Тиждень 5: те саме, як регресія 05 |
+| 06 | `06-commitment-reveal.ts` | `devnet:disclosure` | Тиждень 3, Task 8, скрипт 1/3 (**M-B**): повний цикл commitment → reveal на реальному devnet, друга позиція на тому самому трейдері (доводить «одна позиція за прогін» знято). Тиждень 5, Task 1: оновлено під queue-first close (commitment/disclosure з `DisclosureQueue`, не з `Position`) |
+| 07 | `07-balances-root.ts` | `devnet:root` | Тиждень 3, Task 8, скрипт 2/3 (**M-E**): цикл `BalancesRoot` + раунд-тріп коміту на реальному devnet, плюс 12x-вимір вартості `commit_aggregate` тепер, коли кожен комміт несе ДВА акаунти (`Pool` і `BalancesRoot`) |
+| 08 | `08-undelegate.ts` | `devnet:undelegate` | Тиждень 3, Task 8, скрипт 3/3 (**M-A** на `dexxer_core`): повний вихід трейдера з `06` — закрити другу позицію, спорожнити чергу розкриття, вивести маржу, `undelegate_user`, поллінг бази до скрабу всіх трьох PDA |
+| 09 | `09-pool-snapshot.ts` | `devnet:snapshot` | Тиждень 4, Task 3 (**M-F**): приватний робочий агрегат (`PoolLive`) проти публічного огрубленого знімка (`Pool`) наскрізно на реальному devnet, після міграції `PoolLive` |
+| 10 | `10-set-params.ts` | `devnet:setparams -- KEY=VALUE` | Тиждень 5, Task 4 (міграція): патчить окремі поля `MarketParams` на делегованому `Market`, не чіпаючи решту (наївний виклик з `MARKET_DEFAULTS` мовчки скинув би `max_conf_bps` на 50 і зламав торгівлю) |
+| 11 | `11-liq-task-migration.ts` | `devnet:liqtask` | Тиждень 5, Task 4, виміри (a)/(b)/(c): cancel невідомого `task_id`, реєстрація `liquidation_check` в `open_position` (`task_context == position`, дубльований ключ), вихід із боргом розкриття (рантайм-вимір `close_orphan_queue`) |
+| 12 | `12-close-orphan.ts` | `devnet:orphan` | Тиждень 5, Task 5, частина A, доказ: другий апгрейд програми лагодить сигнал сирітства, який читає `close_orphan_queue` (на реальній осиротілій черзі, лишеній Task 4) |
+| 13 | `13-liquidation-check.ts` | `devnet:liqcheck` | Тиждень 5, Task 7 (**M-G′**): ліквідація БЕЗ relayer-а, лише планувальник у TEE (`CRANK_ENABLED=false`, `liquidation_check` тіка́є незалежно від `crank_tick` relayer-а) |
+| 14 | `14-close-reopen.ts` | `devnet:reopen` | Тиждень 5, Task 7 (**M-H**/**M-J**): `set_disclosure_delay(0)` + живий `COMMIT_INTERVAL_TICKS=60` → Close→L1-`Disclosure`-час; той самий слот close→open негайно; 8 циклів заповнюють кільце, 9-те закриття — `QueueFull` |
+| 15 | `15-exit-debt.ts` | `devnet:exitdebt` | Тиждень 5, Task 7 (**M-I**): гаманець із 0 SOL усе життя, онбординг лише через `POST /sponsor`, торгує раз, виходить із боргом розкриття (`undelegate_user` при `dq.len > 0`), спостерігається до кінця через автоматичне відновлення relayer-а (disclosure-цикл → `close_orphan_queue` → `close_exited_user`) |
+
+`tests/er/lib/admin.ts::setDisclosureDelay` — спільний білдер для `set_disclosure_delay`,
+використаний скриптами 13–15.

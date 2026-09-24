@@ -2,16 +2,28 @@
 //
 // POST /sponsor (Task 6, week 4) — the relayer's `fee_payer` key
 // co-signs a whitelisted onboarding transaction the owner has ALREADY
-// signed, so the app can batch faucet_init/init_user/delegateSpl/
+// signed, so the app can batch createAta/faucet_init/init_user/delegateSpl/
 // delegate_user into a couple of MWA `signTransactions([...])` legs with
-// `fee_payer` fronting network fees and PDA/eSPL rent for those two L1
-// legs. The whitelist ALSO accepts init_permissions/set_session/a matching
-// SystemProgram session-top-up transfer (an ER leg) — the app tried
-// sponsoring that leg too this fix round and reverted it (real devnet-tee
-// rejects fee_payer as an ER tx's fee payer — see
-// app/src/features/onboard/batchOnboarding.ts's file header for the exact
-// error and the revert); this whitelist support is kept as tested,
-// currently-unused forward capacity, not something the app calls today.
+// `fee_payer` fronting network fees and PDA/ATA/eSPL rent for those two L1
+// legs.
+//
+// --- Week-5 Task 5: what this endpoint sponsors, and what it never will ---
+//
+// The ER leg (`init_permissions` + `set_session` + the session top-up) is
+// NOT sponsorable and its whitelist support has been removed rather than
+// left as dormant capacity: devnet-tee rejects a foreign `fee_payer` as an
+// ER transaction's fee payer outright (`InvalidAccountForFee`, measured in
+// week 4 — see app/src/features/onboard/batchOnboarding.ts's file header),
+// so every byte of that branch was code that could only ever be reached by
+// an attacker. With it goes the only SystemProgram instruction this
+// endpoint ever accepted: `fee_payer` now moves lamports for nobody, which
+// removes the drain surface that branch carried by construction.
+//
+// The ATA `CreateIdempotent` moved the other way — from owner-funded to
+// fee_payer-funded (`ATA_SHAPE.payerIdx = 0`), one of the two rent costs
+// the 0-SOL onboarding goal takes off a first-time owner. `init_user_reuse_queue`
+// (week-5 Task 2, the returning owner's `init_user`) joined the whitelist on
+// the same owner@0/payer@1 terms.
 //
 // The relayer never originates anything here and never calls
 // `sendRawTransaction` — it only `partialSign`s with `fee_payer` and hands
@@ -25,16 +37,10 @@
 // `FaucetInit`/`InitUser` gained a `payer` account distinct from `owner`
 // (`payer = payer` in every `init` constraint) — `fee_payer` now genuinely
 // fronts PDA rent, not just the flat network fee, for those two
-// instructions (verified on real devnet this fix round). `delegateSpl`'s
-// `payer` option lets `fee_payer` front the eSPL leg's rent too (app-side
-// change, also verified on real devnet). Sponsoring the ER leg
-// (`init_permissions` + `set_session` + the session top-up) was ALSO
-// attempted — the whitelist below still accepts that shape (plus exactly
-// one `SystemProgram` transfer shape for the session top-up) — but the app
-// reverted to NOT using it after real devnet-tee rejected `fee_payer` as
-// that leg's fee payer (`"InvalidAccountForFee"` — see
-// `app/src/features/onboard/batchOnboarding.ts`'s file header for the full
-// account). This whitelist capacity is kept, tested, currently unused.
+// instructions (verified on real devnet). `delegateSpl`'s `payer` option
+// lets `fee_payer` front the eSPL leg's rent too (app-side change, also
+// verified on real devnet). Sponsoring the ER leg was attempted and is now
+// permanently out — see the Task-5 note at the top of this file.
 //
 // Finding B (critical): the old whitelist matched programId + discriminator
 // only, never WHERE `fee_payer`/`owner` actually sit in an instruction's
@@ -51,14 +57,16 @@
 // `app/src/idl/dexxer_core.json` (same IDL `tests/er/lib/program.ts`
 // already loads for every other relayer subsystem):
 //   faucet_init, init_user       — owner@0, payer@1 (payer must be fee_payer)
-//   delegate_user                — owner@0, no payer account at all
-//   init_permissions, set_session — owner@0, no payer account (the
-//                                   permissioned account self-funds its own
-//                                   permission rent inside the ER — see
-//                                   user.rs's `InitPermissions`/`SetSession`)
+//   init_user_reuse_queue        — owner@0, payer@1 (week-5 Task 2: the
+//                                   returning owner, whose queue outlived
+//                                   their exit)
+//   delegate_user                — owner@0, payer@1 (week-5 Task 3 P1: the
+//                                   three delegation records got their own
+//                                   payer, split out of `owner`)
 // `init_position`/`init_dq`/`delegate_position`/`delegate_dq` don't exist as
 // standalone instructions — `init_user`/`delegate_user` cover all three
-// per-user PDAs in one call.
+// per-user PDAs in one call. `init_permissions`/`set_session` are the ER
+// leg and are deliberately absent (see the Task-5 note above).
 //
 // eSPL: the exact instruction shape `delegateSpl(owner, mint, amount,
 // { payer: feePayer, validator, initVaultIfMissing: false, idempotent:
@@ -72,27 +80,32 @@
 // Any other eSPL opcode (idempotent/private/shuttle variants) is NOT
 // whitelisted.
 //
-// ATA program: `createAssociatedTokenAccountIdempotentInstruction(owner,
+// ATA program: `createAssociatedTokenAccountIdempotentInstruction(feePayer,
 // ownerAta, owner, mint)` — `useOnboarding.ts` prepends this ahead of
-// `faucet_init` when the owner's dUSDC ATA doesn't exist yet. This one
-// stays OWNER-funded, not fee_payer — its `payer`@0 must be the owner, its
-// `owner`@2 must be the owner, and `fee_payer` must not appear in it at
-// all. Matched by `ASSOCIATED_TOKEN_PROGRAM_ID` + the single-byte
-// `CreateIdempotent` opcode (`[1]`); the (data-less) non-idempotent
-// `Create` is NOT whitelisted.
+// `faucet_init` when the owner's dUSDC ATA doesn't exist yet. Since week-5
+// Task 5 it is FEE_PAYER-funded: `payer`@0 must be fee_payer and `owner`@2
+// must be the signing owner (that second half is what stops it funding a
+// stranger's ATA). Matched by `ASSOCIATED_TOKEN_PROGRAM_ID` + the
+// single-byte `CreateIdempotent` opcode (`[1]`); the (data-less)
+// non-idempotent `Create` is NOT whitelisted.
 //
-// SystemProgram: exactly ONE `SystemProgram::transfer` is ever sponsored
-// per tx — the session top-up (`app/src/lib/session.ts`'s
-// `sessionTopUpIx`), now paid by `fee_payer` instead of the owner. It must
-// (a) originate `from` fee_payer, (b) transfer `to` the exact pubkey the
-// SAME tx's `set_session` instruction passes as its `session_key` argument
-// (cross-instruction check — decoded straight from the instruction's Borsh
-// args, no IDL coder needed for three fixed-width fields), and (c) move at
-// most `SESSION_FUND_LAMPORTS` lamports. Any other SystemProgram
-// instruction (or a transfer that fails any of those three checks, or a
-// second SystemProgram instruction in the same tx) is rejected outright —
-// letting an owner move `fee_payer`'s own lamports anywhere else would let
-// them drain the shared fee_payer on every call.
+// SystemProgram: nothing. `fee_payer` never moves lamports through this
+// endpoint, so no instruction can drain it beyond the rent and fees the
+// whitelisted shapes above imply.
+//
+// ComputeBudget (fix, live Phantom smoke 24.09): Phantom prepends
+// `SetComputeUnitLimit`/`SetComputeUnitPrice` to legacy transactions it
+// signs — the old whitelist rejected `ComputeBudget111111111111111111111111111111`
+// outright with 400, which fakewallet (no ComputeBudget prefix) never
+// exercised. These instructions carry no accounts, so there is nothing to
+// smuggle a foreign pubkey into: `SetComputeUnitLimit` is accepted for any
+// value (it cannot cost `fee_payer` more than the tx's own CU budget
+// already implies), `SetComputeUnitPrice` only up to
+// `SPONSOR_MAX_CU_PRICE_MICROLAMPORTS` (env, default
+// `DEFAULT_SPONSOR_MAX_CU_PRICE_MICROLAMPORTS = 500_000`), and every other
+// variant is rejected. A transaction made ENTIRELY of ComputeBudget
+// instructions is still rejected (`hasSponsorableIx` in `checkWhitelist`) —
+// see `checkComputeBudgetInstruction`.
 //
 // --- Signature checks --------------------------------------------------
 //
@@ -149,13 +162,14 @@
 
 import express from "express";
 import type { Router } from "express";
-import { PublicKey, SystemProgram, Transaction } from "@solana/web3.js";
+import { ComputeBudgetProgram, PublicKey, SystemInstruction, SystemProgram, Transaction } from "@solana/web3.js";
 import type { Connection, Keypair, TransactionInstruction } from "@solana/web3.js";
 import bs58 from "bs58";
 import { EPHEMERAL_SPL_TOKEN_PROGRAM_ID } from "@magicblock-labs/ephemeral-rollups-sdk";
 import { ASSOCIATED_TOKEN_PROGRAM_ID } from "@solana/spl-token";
 import { DEXXER_CORE_IDL, DEXXER_CORE_PROGRAM_ID } from "../../../tests/er/lib/program.js";
 import type { DbPool } from "./db.js";
+import { nonceAccountsFor } from "./nonce.js";
 
 export const LAMPORTS_PER_SIGNATURE = 5000;
 export const RATE_LIMIT_MS = 60 * 60 * 1000; // 60 min
@@ -176,15 +190,21 @@ export const MAX_SPONSOR_CALLS_PER_OWNER_WINDOW = 6;
 export const DAY_MS = 24 * 60 * 60 * 1000;
 export const DEFAULT_DAILY_BUDGET_SOL = 0.5;
 /**
- * Session top-up cap (fix round 1, finding A.3) — mirrors `SESSION_LAMPORTS`
- * in `app/src/lib/session.ts`. Duplicated, not imported: the relayer and
- * the app are separate deployables with no shared package.
+ * Live Phantom smoke (24.09, L1a onboarding batch): Phantom prepends
+ * ComputeBudget instructions (`SetComputeUnitLimit`/`SetComputeUnitPrice`)
+ * to legacy transactions it signs — a standard wallet behaviour the
+ * fakewallet test harness never exercised. `SetComputeUnitPrice`'s
+ * microLamports figure is the only ComputeBudget field that can cost
+ * `fee_payer` more (it's a per-CU priority-fee multiplier); at the 1.4M CU
+ * transaction max, this default caps the sponsor-paid priority fee at
+ * 700_000 lamports ≈ 0.0007 SOL per tx — bounded, `fee_payer` pays priority
+ * fees for sponsored txs same as it pays the flat network fee.
  */
-export const SESSION_FUND_LAMPORTS = 10_000_000;
+export const DEFAULT_SPONSOR_MAX_CU_PRICE_MICROLAMPORTS = 500_000;
 
 // --- whitelist -----------------------------------------------------------
 
-const CORE_WHITELIST = new Set(["faucet_init", "init_user", "delegate_user", "init_permissions", "set_session"]);
+const CORE_WHITELIST = new Set(["faucet_init", "init_user", "init_user_reuse_queue", "delegate_user", "faucet_mint"]);
 
 interface CoreIx {
   name: string;
@@ -212,14 +232,31 @@ if (CORE_DISCRIMINATORS.size !== CORE_WHITELIST.size) {
 interface IxShape {
   payerIdx?: number;
   ownerIdx?: number;
+  /**
+   * Week-5 final review M2: an account position that must hold the configured
+   * dUSDC mint. Only the ATA shape uses it — without it an owner could have
+   * `fee_payer` fund an ATA for an ARBITRARY mint and then close it to reclaim
+   * the rent, a free (if `SPONSOR_DAILY_SOL`-bounded) per-day drain.
+   */
+  mintIdx?: number;
 }
 
 const CORE_SHAPES: Record<string, IxShape> = {
   faucet_init: { ownerIdx: 0, payerIdx: 1 },
   init_user: { ownerIdx: 0, payerIdx: 1 },
-  delegate_user: { ownerIdx: 0 },
-  init_permissions: { ownerIdx: 0 },
-  set_session: { ownerIdx: 0 },
+  // Week-5 Task 2: the returning owner's `init_user` — same owner@0/payer@1
+  // shape, so it is sponsorable on exactly the same terms.
+  init_user_reuse_queue: { ownerIdx: 0, payerIdx: 1 },
+  // Week-5 Task 3 (P1): `DelegateUser` gained `payer: Signer` at index 1.
+  delegate_user: { ownerIdx: 0, payerIdx: 1 },
+  // Live fakewallet smoke (24.09, week-5 M-K): a 0-SOL-onboarded owner has
+  // no SOL to pay `faucet_mint`'s network fee, so the app's owner-paid
+  // Deposit L1 leg was silently dropped (`skipPreflight`, "confirm timeout").
+  // `FaucetMint` has no `payer` account — the mint costs no rent, only the
+  // flat network fee — so the shape pins `owner`@0 and (via `checkPositions`'
+  // implicit rule) forbids `fee_payer` anywhere in the instruction. The mint
+  // and mint authority are `has_one`/seed-checked on-chain against `Config`.
+  faucet_mint: { ownerIdx: 0 },
 };
 if (Object.keys(CORE_SHAPES).length !== CORE_WHITELIST.size) {
   throw new Error("sponsor: CORE_SHAPES is out of sync with CORE_WHITELIST");
@@ -232,13 +269,67 @@ const ESPL_SHAPES: Map<number, IxShape & { label: string }> = new Map([
   [4, { label: "espl:delegate_ephemeral_ata", payerIdx: 0 }],
 ]);
 
-/** ATA `CreateIdempotent(payer, ata, owner, mint, ...)` — owner-funded, `fee_payer` must not appear in it at all. */
-const ATA_SHAPE: IxShape = { ownerIdx: 2 };
+/**
+ * ATA `CreateIdempotent(payer, ata, owner, mint, ...)` — fee_payer-funded
+ * since week-5 Task 5 (it was owner-funded before; the ATA rent is one of
+ * the two costs the 0-SOL onboarding goal takes off the owner). `owner`@2
+ * must still be the signing owner, which is what stops this from funding a
+ * stranger's ATA on a whitelisted owner's signature — and `mint`@3 must be the
+ * configured dUSDC mint (week-5 final review M2), which is what stops it from
+ * funding an ATA for an arbitrary mint the owner can then close for the rent.
+ */
+const ATA_SHAPE: IxShape = { payerIdx: 0, ownerIdx: 2, mintIdx: 3 };
+
+const COMPUTE_BUDGET_PROGRAM_ID = ComputeBudgetProgram.programId;
 
 interface IxCheck {
   ok: boolean;
   label?: string;
   reason?: string;
+}
+
+/**
+ * ComputeBudget instructions carry no accounts at all, so the
+ * payer/owner-position checks `checkPositions` runs for every other
+ * whitelisted shape don't apply here — there is nothing to smuggle a foreign
+ * pubkey into. `SetComputeUnitLimit` (variant 2) is accepted unconditionally:
+ * it cannot make `fee_payer` pay more than the transaction's own compute
+ * budget already implies. `SetComputeUnitPrice` (variant 3) is accepted only
+ * up to `maxCuPriceMicroLamports` (`SPONSOR_MAX_CU_PRICE_MICROLAMPORTS`,
+ * default `DEFAULT_SPONSOR_MAX_CU_PRICE_MICROLAMPORTS`) — this is the one
+ * ComputeBudget field that scales what `fee_payer` actually pays. Every
+ * other variant (`RequestHeapFrame`=1, `SetLoadedAccountsDataSizeLimit`=4,
+ * the deprecated `RequestUnits`=0) is rejected to keep the accepted surface
+ * small.
+ */
+function checkComputeBudgetInstruction(ix: TransactionInstruction, maxCuPriceMicroLamports: number): IxCheck {
+  if (ix.keys.length !== 0) {
+    return { ok: false, reason: "ComputeBudget instruction must not reference any accounts" };
+  }
+  if (ix.data.length < 1) {
+    return { ok: false, reason: "ComputeBudget instruction has no variant byte" };
+  }
+  const variant = ix.data[0];
+  if (variant === 2) {
+    return { ok: true, label: "computebudget:set_compute_unit_limit" };
+  }
+  if (variant === 3) {
+    if (ix.data.length < 9) {
+      return { ok: false, reason: "ComputeBudget SetComputeUnitPrice instruction data too short (need 8 bytes for u64 microLamports)" };
+    }
+    const microLamports = ix.data.readBigUInt64LE(1);
+    if (microLamports > BigInt(maxCuPriceMicroLamports)) {
+      return {
+        ok: false,
+        reason: `ComputeBudget SetComputeUnitPrice ${microLamports} µL exceeds SPONSOR_MAX_CU_PRICE_MICROLAMPORTS ${maxCuPriceMicroLamports}`,
+      };
+    }
+    return { ok: true, label: "computebudget:set_compute_unit_price" };
+  }
+  return {
+    ok: false,
+    reason: `ComputeBudget instruction variant ${variant} not in whitelist {2 (SetComputeUnitLimit), 3 (SetComputeUnitPrice)}`,
+  };
 }
 
 /**
@@ -248,7 +339,7 @@ interface IxCheck {
  * other position, including implicitly (when `shape.payerIdx` is
  * `undefined`, `feePayer` must not appear anywhere in this instruction).
  */
-function checkPositions(ix: TransactionInstruction, shape: IxShape, feePayer: PublicKey, owner: PublicKey, label: string): string | null {
+function checkPositions(ix: TransactionInstruction, shape: IxShape, feePayer: PublicKey, owner: PublicKey, label: string, dusdcMint?: PublicKey): string | null {
   if (shape.payerIdx !== undefined) {
     const k = ix.keys[shape.payerIdx];
     if (!k || !k.pubkey.equals(feePayer)) return `${label}: account index ${shape.payerIdx} (payer) must be fee_payer`;
@@ -256,6 +347,16 @@ function checkPositions(ix: TransactionInstruction, shape: IxShape, feePayer: Pu
   if (shape.ownerIdx !== undefined) {
     const k = ix.keys[shape.ownerIdx];
     if (!k || !k.pubkey.equals(owner)) return `${label}: account index ${shape.ownerIdx} (owner) must be the tx's owner signer`;
+  }
+  // Week-5 final review M2. A missing `dusdcMint` (a caller that could not
+  // resolve `Config.dusdcMint`) FAILS CLOSED: a shape that names a mint
+  // position is rejected rather than waved through unchecked.
+  if (shape.mintIdx !== undefined) {
+    if (!dusdcMint) return `${label}: the relayer has no configured dUSDC mint to validate account index ${shape.mintIdx} against`;
+    const k = ix.keys[shape.mintIdx];
+    if (!k || !k.pubkey.equals(dusdcMint)) {
+      return `${label}: account index ${shape.mintIdx} (mint) must be the configured dUSDC mint ${dusdcMint.toBase58()}`;
+    }
   }
   for (let i = 0; i < ix.keys.length; i++) {
     if (i === shape.payerIdx) continue;
@@ -266,7 +367,42 @@ function checkPositions(ix: TransactionInstruction, shape: IxShape, feePayer: Pu
   return null;
 }
 
-function checkInstruction(ix: TransactionInstruction, feePayer: PublicKey, owner: PublicKey): IxCheck {
+/**
+ * Durable-nonce support (24.09.2026, live Phantom onboarding — see
+ * `nonce.ts` for why the RELAYER creates the accounts). The only System
+ * instruction accepted in a sponsored tx is `AdvanceNonceAccount`: nonce@0
+ * must be one of the owner's two relayer-derived nonce accounts
+ * (`nonceAccountsFor(fee_payer, owner)`) and authority@2 must be the owner.
+ * It is companion-only — a tx made of nothing but an advance is not
+ * sponsorable — and appears at most once per tx.
+ */
+function checkSystemInstruction(ix: TransactionInstruction, feePayer: PublicKey, owner: PublicKey): IxCheck {
+  let type: ReturnType<typeof SystemInstruction.decodeInstructionType>;
+  try {
+    type = SystemInstruction.decodeInstructionType(ix);
+  } catch (e) {
+    return { ok: false, reason: `System instruction could not be decoded: ${String(e)}` };
+  }
+  if (type !== "AdvanceNonceAccount") {
+    return { ok: false, reason: `System instruction ${type} not in whitelist {AdvanceNonceAccount}` };
+  }
+  const p = SystemInstruction.decodeNonceAdvance(ix);
+  if (!p.authorizedPubkey.equals(owner)) return { ok: false, reason: "system:advance_nonce: nonce authority must be the tx's owner signer" };
+  if (!nonceAccountsFor(feePayer, owner).some((a) => a.equals(p.noncePubkey))) {
+    return { ok: false, reason: "system:advance_nonce: nonce account is not one of the owner's two relayer-derived nonce accounts" };
+  }
+  const posErr = checkPositions(ix, { ownerIdx: 2 }, feePayer, owner, "system:advance_nonce");
+  if (posErr) return { ok: false, reason: posErr };
+  return { ok: true, label: "system:advance_nonce" };
+}
+
+function checkInstruction(
+  ix: TransactionInstruction,
+  feePayer: PublicKey,
+  owner: PublicKey,
+  dusdcMint?: PublicKey,
+  maxCuPriceMicroLamports: number = DEFAULT_SPONSOR_MAX_CU_PRICE_MICROLAMPORTS,
+): IxCheck {
   if (ix.programId.equals(DEXXER_CORE_PROGRAM_ID)) {
     if (ix.data.length < 8) return { ok: false, reason: `dexxer_core instruction too short (${ix.data.length} bytes, need >=8 for a discriminator)` };
     const disc = Buffer.from(ix.data.subarray(0, 8)).toString("hex");
@@ -289,28 +425,17 @@ function checkInstruction(ix: TransactionInstruction, feePayer: PublicKey, owner
     if (!(ix.data.length === 1 && ix.data[0] === 1)) {
       return { ok: false, reason: "only the ATA program's CreateIdempotent (data=[1]) instruction is whitelisted" };
     }
-    const posErr = checkPositions(ix, ATA_SHAPE, feePayer, owner, "ata:create_idempotent");
+    const posErr = checkPositions(ix, ATA_SHAPE, feePayer, owner, "ata:create_idempotent", dusdcMint);
     if (posErr) return { ok: false, reason: posErr };
     return { ok: true, label: "ata:create_idempotent" };
   }
-  return { ok: false, reason: `programId ${ix.programId.toBase58()} not in whitelist {dexxer_core, eSPL, ATA, SystemProgram (session top-up only)}` };
-}
-
-/** `set_session(session_key: Pubkey, expiry: i64, actions: u32)` — session_key is the first 32 bytes after the 8-byte discriminator. */
-function decodeSetSessionKey(ix: TransactionInstruction): PublicKey | null {
-  if (ix.data.length < 40) return null;
-  return new PublicKey(ix.data.subarray(8, 40));
-}
-
-const SYSTEM_TRANSFER_TAG = 2; // SystemInstruction::Transfer, 4-byte LE u32 tag
-
-function decodeSystemTransfer(ix: TransactionInstruction): { from: PublicKey; to: PublicKey; lamports: number } | null {
-  if (ix.data.length !== 12) return null; // 4-byte tag + 8-byte lamports, exactly
-  if (ix.data.readUInt32LE(0) !== SYSTEM_TRANSFER_TAG) return null;
-  if (ix.keys.length !== 2) return null;
-  const [fromMeta, toMeta] = ix.keys;
-  if (!fromMeta.isSigner || !fromMeta.isWritable) return null;
-  return { from: fromMeta.pubkey, to: toMeta.pubkey, lamports: Number(ix.data.readBigUInt64LE(4)) };
+  if (ix.programId.equals(COMPUTE_BUDGET_PROGRAM_ID)) {
+    return checkComputeBudgetInstruction(ix, maxCuPriceMicroLamports);
+  }
+  if (ix.programId.equals(SystemProgram.programId)) {
+    return checkSystemInstruction(ix, feePayer, owner);
+  }
+  return { ok: false, reason: `programId ${ix.programId.toBase58()} not in whitelist {dexxer_core, eSPL, ATA, ComputeBudget(limit/price≤cap), System(AdvanceNonceAccount)}` };
 }
 
 export type WhitelistCheck = { ok: true; owner: PublicKey; labels: string[] } | { ok: false; error: string };
@@ -325,7 +450,12 @@ export type WhitelistCheck = { ok: true; owner: PublicKey; labels: string[] } | 
  * "Versioned messages must be deserialized with VersionedMessage.deserialize()"
  * before a `Transaction` object — and thus this function — is ever reached.
  */
-export function checkWhitelist(tx: Transaction, feePayer: PublicKey, allowSessionTopUp = false): WhitelistCheck {
+export function checkWhitelist(
+  tx: Transaction,
+  feePayer: PublicKey,
+  dusdcMint?: PublicKey,
+  maxCuPriceMicroLamports: number = DEFAULT_SPONSOR_MAX_CU_PRICE_MICROLAMPORTS,
+): WhitelistCheck {
   if (!tx.feePayer || !tx.feePayer.equals(feePayer)) {
     return { ok: false, error: `tx.feePayer must equal the relayer's fee_payer (${feePayer.toBase58()})` };
   }
@@ -362,45 +492,16 @@ export function checkWhitelist(tx: Transaction, feePayer: PublicKey, allowSessio
 
   const labels: string[] = [];
   const seenLabels = new Set<string>();
-  let sessionKeyArg: PublicKey | null = null;
-  let transfer: { from: PublicKey; to: PublicKey; lamports: number } | null = null;
+  // Point 1 (checkInstruction loop note): ComputeBudget instructions have no
+  // accounts, so their positional-role checks are a no-op by construction —
+  // this flag is what stops a tx made ENTIRELY of ComputeBudget ixs (no
+  // dexxer_core/eSPL/ATA instruction at all) from being sponsored.
+  let hasSponsorableIx = false;
 
   for (let i = 0; i < tx.instructions.length; i++) {
     const ix = tx.instructions[i];
 
-    if (ix.programId.equals(SystemProgram.programId)) {
-      // Fix round 1, finding A.3: exactly one SystemProgram instruction is
-      // ever sponsored — the session top-up transfer. Cross-checked against
-      // `set_session`'s argument after the loop (order-independent: the
-      // transfer can precede or follow `set_session` in the same tx).
-      //
-      // Gated behind `allowSessionTopUp` (env `SPONSOR_ALLOW_SESSION_TOPUP`,
-      // default false — see sponsor.ts's header comment): the app doesn't
-      // call this leg today (real devnet-tee rejects fee_payer as an ER
-      // tx's fee payer), so by default this behaves exactly like before
-      // finding A.3 — any SystemProgram instruction is rejected outright.
-      if (!allowSessionTopUp) {
-        return { ok: false, error: `instruction ${i}: SystemProgram transfer sponsorship is disabled (set SPONSOR_ALLOW_SESSION_TOPUP=true to enable)` };
-      }
-      if (transfer) {
-        return { ok: false, error: `instruction ${i}: only one SystemProgram transfer is ever sponsored per tx` };
-      }
-      const t = decodeSystemTransfer(ix);
-      if (!t) {
-        return { ok: false, error: `instruction ${i}: only a plain SystemProgram Transfer (the session top-up) is ever sponsored` };
-      }
-      if (!t.from.equals(feePayer)) {
-        return { ok: false, error: `instruction ${i}: SystemProgram transfer must originate from fee_payer` };
-      }
-      if (t.lamports > SESSION_FUND_LAMPORTS) {
-        return { ok: false, error: `instruction ${i}: SystemProgram transfer of ${t.lamports} lamports exceeds the session fund cap (${SESSION_FUND_LAMPORTS})` };
-      }
-      transfer = t;
-      labels.push("system:transfer");
-      continue;
-    }
-
-    const check = checkInstruction(ix, feePayer, owner);
+    const check = checkInstruction(ix, feePayer, owner, dusdcMint, maxCuPriceMicroLamports);
     if (!check.ok) {
       return { ok: false, error: `instruction ${i}: ${check.reason}` };
     }
@@ -410,18 +511,11 @@ export function checkWhitelist(tx: Transaction, feePayer: PublicKey, allowSessio
     }
     seenLabels.add(label);
     labels.push(label);
-    if (label === "dexxer_core:set_session") {
-      sessionKeyArg = decodeSetSessionKey(ix);
-    }
+    if (!label.startsWith("computebudget:") && label !== "system:advance_nonce") hasSponsorableIx = true;
   }
 
-  if (transfer) {
-    if (!sessionKeyArg) {
-      return { ok: false, error: "SystemProgram transfer present without a set_session instruction in the same tx" };
-    }
-    if (!transfer.to.equals(sessionKeyArg)) {
-      return { ok: false, error: "SystemProgram transfer destination must equal set_session's session_key argument" };
-    }
+  if (!hasSponsorableIx) {
+    return { ok: false, error: "transaction contains no whitelisted dexxer_core/eSPL/ATA instruction — ComputeBudget or nonce-advance instructions alone are not sponsorable" };
   }
 
   return { ok: true, owner, labels };
@@ -546,33 +640,38 @@ export interface SponsorDeps {
   feePayer: Keypair;
   store: SponsorStore;
   estimateLamports: CostEstimator;
+  /** Configured dUSDC mint (`Config.dusdcMint`, read from base at boot) — the only mint a sponsored ATA may be created for (week-5 final review M2). */
+  dusdcMint?: PublicKey;
   dailyBudgetSol?: number;
+  /** `SPONSOR_MAX_CU_PRICE_MICROLAMPORTS` env, default `DEFAULT_SPONSOR_MAX_CU_PRICE_MICROLAMPORTS` — the ceiling `checkWhitelist` enforces on a wallet-prepended `SetComputeUnitPrice`. */
+  maxCuPriceMicroLamports?: number;
   /** Injectable clock, defaults to `Date.now` — tests pin it. */
   now?: () => number;
-  /**
-   * Env `SPONSOR_ALLOW_SESSION_TOPUP`, default false — see `checkWhitelist`'s
-   * `allowSessionTopUp` param and this file's header comment. Week-5 route,
-   * unused by the app today.
-   */
-  allowSessionTopUp?: boolean;
 }
 
 export interface SponsorSnapshot {
   today_sol: number;
   count_today: number;
+  /** The ceiling currently enforced on a sponsored `SetComputeUnitPrice` — static config, not a store query, but reported alongside the spend snapshot for `/healthz`. */
+  maxCuPriceMicroLamports: number;
 }
 
 /** Used by `/healthz` (index.ts) to report today's sponsor spend without duplicating the store query logic. */
-export function sponsorSnapshot(store: SponsorStore, now: () => number = Date.now): () => Promise<SponsorSnapshot> {
+export function sponsorSnapshot(
+  store: SponsorStore,
+  maxCuPriceMicroLamports: number = DEFAULT_SPONSOR_MAX_CU_PRICE_MICROLAMPORTS,
+  now: () => number = Date.now,
+): () => Promise<SponsorSnapshot> {
   return async () => {
     const spent = await store.spentSince(now() - DAY_MS);
-    return { today_sol: spent.lamports / 1e9, count_today: spent.count };
+    return { today_sol: spent.lamports / 1e9, count_today: spent.count, maxCuPriceMicroLamports };
   };
 }
 
 export function sponsorRouter(deps: SponsorDeps): Router {
   const router = express.Router();
   const dailyBudgetLamports = Math.round((deps.dailyBudgetSol ?? DEFAULT_DAILY_BUDGET_SOL) * 1e9);
+  const maxCuPriceMicroLamports = deps.maxCuPriceMicroLamports ?? DEFAULT_SPONSOR_MAX_CU_PRICE_MICROLAMPORTS;
   const now = deps.now ?? Date.now;
 
   router.post("/sponsor", express.json(), async (req, res) => {
@@ -590,7 +689,7 @@ export function sponsorRouter(deps: SponsorDeps): Router {
       return;
     }
 
-    const check = checkWhitelist(tx, deps.feePayer.publicKey, deps.allowSessionTopUp ?? false);
+    const check = checkWhitelist(tx, deps.feePayer.publicKey, deps.dusdcMint, maxCuPriceMicroLamports);
     if (!check.ok) {
       res.status(400).json({ error: check.error });
       return;

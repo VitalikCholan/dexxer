@@ -199,6 +199,14 @@ pub fn set_scheduler_signer(
         .data(),
     }
 }
+// Week-5 Task 5: retune the reveal delay on a live config (AdminConfig shape).
+pub fn set_disclosure_delay(admin: &Pubkey, config: &Pubkey, slots: u64) -> Instruction {
+    Instruction {
+        program_id: prog(),
+        accounts: vec![rs(admin), w(config)],
+        data: ix::SetDisclosureDelay { slots }.data(),
+    }
+}
 pub fn seed_pool(admin: &Pubkey, wd: &World, amount: u64) -> Instruction {
     Instruction {
         program_id: prog(),
@@ -369,6 +377,9 @@ pub fn decrease_position(
         .data(),
     }
 }
+/// `candidates` become `remaining_accounts` triples `[Position, UserAccount,
+/// DisclosureQueue]` (week-5 Task 1: a liquidation is a close, and a close
+/// pushes its record into the owner's queue).
 pub fn crank_tick(crank: &Pubkey, wd: &World, candidates: &[&Trader]) -> Instruction {
     // `crank: Signer<'info>` in `CrankTick` carries no `#[account(mut)]`, so the
     // client-side meta must be a readonly signer, not writable (`s`).
@@ -383,11 +394,32 @@ pub fn crank_tick(crank: &Pubkey, wd: &World, candidates: &[&Trader]) -> Instruc
     for t in candidates {
         accounts.push(w(&t.position));
         accounts.push(w(&t.user));
+        accounts.push(w(&t.dq));
     }
     Instruction {
         program_id: prog(),
         accounts,
         data: ix::CrankTick {}.data(),
+    }
+}
+/// `liquidation_check` (ER): the per-position scheduled task's instruction.
+/// Fixed account list — the scheduler freezes it at registration time, so it
+/// never carries `remaining_accounts` (week-5 Task 3).
+pub fn liquidation_check(signer: &Pubkey, wd: &World, t: &Trader) -> Instruction {
+    Instruction {
+        program_id: prog(),
+        accounts: vec![
+            rs(signer),
+            r(&wd.config),
+            r(&wd.market),
+            w(&wd.risk),
+            w(&wd.pool_live),
+            r(&wd.feed),
+            w(&t.position),
+            w(&t.user),
+            w(&t.dq),
+        ],
+        data: ix::LiquidationCheck {}.data(),
     }
 }
 pub fn credit_deposit(signer: &Pubkey, t: &Trader, wd: &World, amount: u64) -> Instruction {
@@ -431,7 +463,16 @@ pub fn withdraw(signer: &Pubkey, t: &Trader, wd: &World, amount: u64) -> Instruc
 /// `payer` must equal `Config.fee_payer` (`w.fee_payer` in tests). `extra` is any
 /// mix of `Position`/`DisclosureQueue` accounts appended after the fixed accounts —
 /// `commit_aggregate` reads them from `remaining_accounts`.
-pub fn commit_aggregate(payer: &Pubkey, wd: &World, extra: &[AccountMeta]) -> Instruction {
+///
+/// `max_actions` is the caller's per-bundle action budget (week-5 final review
+/// C1), clamped on-chain to `[1, MAX_ACTIONS_PER_COMMIT]`. Tests that assert the
+/// pre-argument behaviour pass `MAX_ACTIONS_PER_COMMIT` (8).
+pub fn commit_aggregate(
+    payer: &Pubkey,
+    wd: &World,
+    extra: &[AccountMeta],
+    max_actions: u8,
+) -> Instruction {
     let mut accounts = vec![
         r(&wd.config),
         rs(payer),
@@ -447,7 +488,7 @@ pub fn commit_aggregate(payer: &Pubkey, wd: &World, extra: &[AccountMeta]) -> In
     Instruction {
         program_id: prog(),
         accounts,
-        data: ix::CommitAggregate {}.data(),
+        data: ix::CommitAggregate { max_actions }.data(),
     }
 }
 /// Shared account layout for a direct (non-Magic-Action) call to `write_commitment`:
@@ -600,13 +641,116 @@ pub fn undelegate_user(signer: &Pubkey, t: &Trader, wd: &World) -> Instruction {
         data: ix::UndelegateUser {}.data(),
     }
 }
-/// `mark_committed` (ER, crank): retires a `Closed && commitment_written` position's
-/// `ClosedRecord` into the owner's `DisclosureQueue` and frees the `Position` back
-/// to `Empty`. `MarkCommitted { crank, config, position, dq }` — no instruction args.
-pub fn mark_committed(crank: &Pubkey, t: &Trader, wd: &World) -> Instruction {
+
+/// `ComputeBudgetProgram::SetComputeUnitLimit` (discriminant `2`, u32 LE units),
+/// hand-built so the test crate needs no extra dependency. A full `crank_tick`
+/// batch no longer fits in the 200k default: 16 candidates measure ~166k when
+/// none liquidate but 367k when all of them do (week-5 Task 1 put a
+/// `DisclosureQueue` in every candidate triple), so any client that fills the
+/// batch has to raise the limit — `services/relayer/src/crank.ts` does the same.
+pub fn set_compute_unit_limit(units: u32) -> Instruction {
+    let mut data = vec![2u8];
+    data.extend_from_slice(&units.to_le_bytes());
+    Instruction {
+        program_id: Pubkey::from_str_const("ComputeBudget111111111111111111111111111111"),
+        accounts: vec![],
+        data,
+    }
+}
+
+// ---------------------------------------------------------------- week-5 Task 2
+
+/// `close_orphan_queue` (ER, crank): reclaims the `DisclosureQueue` an exited
+/// user left behind once its last record has been revealed.
+pub fn close_orphan_queue(crank: &Pubkey, t: &Trader, wd: &World) -> Instruction {
     Instruction {
         program_id: prog(),
-        accounts: vec![rs(crank), r(&wd.config), w(&t.position), w(&t.dq)],
-        data: ix::MarkCommitted {}.data(),
+        accounts: vec![
+            rs(crank),
+            r(&wd.config),
+            w(&t.dq),
+            // Read-only and unchecked on purpose: absent, foreign-owned, or
+            // present-and-`exited` is what the instruction reads as
+            // "the owner has exited".
+            r(&t.user),
+            w(&pdas::permission(&t.dq)),
+            w(&pdas::ephemeral_vault()),
+            r(&pdas::permission_program()),
+            w(&wd.fee_escrow),
+            w(&wd.magic_fee_vault),
+            w(&pdas::magic_context()),
+            r(&pdas::magic_program()),
+        ],
+        data: ix::CloseOrphanQueue {}.data(),
+    }
+}
+
+/// `close_exited_user` (base layer, `Config.fee_payer`): rent reclaim on all
+/// three of an exited owner's undelegated PDAs.
+pub fn close_exited_user(fee_payer: &Pubkey, t: &Trader, wd: &World) -> Instruction {
+    Instruction {
+        program_id: prog(),
+        accounts: vec![
+            s(fee_payer),
+            r(&wd.config),
+            w(&t.user),
+            w(&t.position),
+            w(&t.dq),
+        ],
+        data: ix::CloseExitedUser {}.data(),
+    }
+}
+
+/// `delegate_user` (base layer): the `#[delegate]` macro expands each delegated
+/// PDA into a `[buffer, delegation_record, delegation_metadata, account]`
+/// quadruple — buffer under this program, record/metadata under the delegation
+/// program. LiteSVM deploys no delegation program, so the CPI itself always
+/// fails here; the builder exists so the guards that run BEFORE it (week-5 Task
+/// 2 fix round 1: `exited`) can be tested.
+pub fn delegate_user(owner: &Pubkey, payer: &Pubkey, wd: &World) -> Instruction {
+    use ephemeral_rollups_sdk::pda::{
+        DELEGATE_BUFFER_TAG, DELEGATION_METADATA_TAG, DELEGATION_RECORD_TAG,
+    };
+    let dlp = pk(anchor_lang::prelude::Pubkey::new_from_array(
+        ephemeral_rollups_sdk::consts::DELEGATION_PROGRAM_ID.to_bytes(),
+    ));
+    // Week-5 Task 3 (P1): `payer` sits immediately after `owner` and funds the
+    // three delegation records; `owner` still signs for its own PDAs.
+    let mut accounts = vec![s(owner), s(payer), r(&wd.config), r(&wd.market)];
+    for acc in [
+        pdas::user(owner),
+        pdas::position(owner, &wd.market),
+        pdas::dq(owner),
+    ] {
+        let buffer = Pubkey::find_program_address(&[DELEGATE_BUFFER_TAG, acc.as_ref()], &prog()).0;
+        let record = Pubkey::find_program_address(&[DELEGATION_RECORD_TAG, acc.as_ref()], &dlp).0;
+        let meta = Pubkey::find_program_address(&[DELEGATION_METADATA_TAG, acc.as_ref()], &dlp).0;
+        accounts.extend([w(&buffer), w(&record), w(&meta), w(&acc)]);
+    }
+    accounts.extend([r(&prog()), r(&dlp), r(&SYSTEM)]);
+    Instruction {
+        program_id: prog(),
+        accounts,
+        data: ix::DelegateUser {}.data(),
+    }
+}
+
+/// `init_user_reuse_queue`: re-onboarding after an exit — same account shape as
+/// `init_user`, but every PDA already exists (undelegation hands them back
+/// scrubbed, it does not close them).
+pub fn init_user_reuse_queue(owner: &Pubkey, wd: &World, exit_salt: [u8; 32]) -> Instruction {
+    Instruction {
+        program_id: prog(),
+        accounts: vec![
+            s(owner),
+            s(owner), // payer: owner self-pays in tests, as in `init_user`
+            r(&wd.config),
+            r(&wd.market),
+            w(&pdas::user(owner)),
+            w(&pdas::position(owner, &wd.market)),
+            w(&pdas::dq(owner)),
+            r(&SYSTEM),
+        ],
+        data: ix::InitUserReuseQueue { exit_salt }.data(),
     }
 }

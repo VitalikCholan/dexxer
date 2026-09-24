@@ -53,11 +53,20 @@ export function indexerRouter(pool: DbPool): Router {
   router.get("/mark", async (_req, res) => {
     const t = await latestTick(pool);
     const now = Date.now();
-    // Fix round 1 (code review): the base-layer copy of the delegated oracle
-    // feed is a stale commit snapshot, not a live fallback — so a TEE outage
-    // must surface as `stale:true` here, never as silently frozen prices.
-    const stale = isStale(t?.ts ?? null, now, ORACLE_STALE_MS);
-    res.json(t ? { price: t.price.toString(), slot: t.slot, ts: t.ts, stale } : { price: null, slot: null, ts: null, stale: true });
+    // Week-5 Task 5: staleness is judged on the ORACLE's own `publish_time`,
+    // not on `ts` (when this relayer happened to receive the update) — the
+    // TEE pushes a notification every ER slot regardless of whether the feed
+    // changed, so arrival time cannot distinguish a live publisher from a
+    // frozen one. `publishTime` is exposed alongside so a client can judge
+    // for itself. (The base-layer copy of the delegated feed is a stale
+    // COMMIT snapshot, never a live fallback — hence surfacing staleness
+    // rather than failing over to it.)
+    const stale = isStale(t?.publishTime ?? null, now, ORACLE_STALE_MS);
+    res.json(
+      t
+        ? { price: t.price.toString(), slot: t.slot, ts: t.ts, publishTime: t.publishTime, stale }
+        : { price: null, slot: null, ts: null, publishTime: null, stale: true },
+    );
   });
 
   router.get("/pool/history", async (req, res) => {

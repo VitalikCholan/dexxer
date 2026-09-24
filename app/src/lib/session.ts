@@ -12,21 +12,11 @@
 // (`app/src/features/onboard/useOnboarding.ts`); once that lands, the
 // session key can sign ER instructions on its own, same as `crank`/`admin`
 // in `tests/er/lib/trader.ts`.
-import {
-  Connection,
-  Keypair,
-  LAMPORTS_PER_SOL,
-  PublicKey,
-  SystemProgram,
-  TransactionInstruction,
-} from '@solana/web3.js'
+import { Connection, Keypair, PublicKey } from '@solana/web3.js'
 import * as SecureStore from 'expo-secure-store'
 import nacl from 'tweetnacl'
 import { getAuthToken } from '@magicblock-labs/ephemeral-rollups-sdk'
 import { TEE_RPC, TEE_WS } from './solana'
-
-/** Base-layer lamports the session key needs to pay its own ER tx fees (spike-07 finding, `tests/er/devnet/01-onboard-private.ts`). */
-export const SESSION_LAMPORTS = 0.01 * LAMPORTS_PER_SOL
 
 function storageKey(owner: PublicKey): string {
   return `dexxer.session.${owner.toBase58()}`
@@ -102,28 +92,4 @@ export async function teeConnectionForSession(session: Keypair): Promise<Connect
   })
   cache.set(key, { conn, expiresAt: auth.expiresAt })
   return conn
-}
-
-/**
- * Base-layer transfer that gives `session` its own ER fee balance.
- *
- * Deviates from the literal brief instruction
- * (`lamportsDelegatedTransferIx(owner, session, lamports)`): that SDK
- * instruction requires its `destination` to already be a *delegated*
- * base-layer account (`references/lamports-topup.md`, confirmed empirically
- * in `tests/er/devnet/01-onboard-private.ts`'s header comment /
- * `docs/superpowers/plans/week2-results.md` §Task 5 step 0.4) — `session` is
- * a plain, never-delegated keypair (not a program PDA), so it can never
- * satisfy that precondition. A plain `SystemProgram.transfer` is the
- * mechanism actually proven to work across week-2's M1–M4 measurements: the
- * ER clones a referenced non-delegated account's current base state
- * (balance included), so holding base-layer SOL is enough for `session` to
- * pay its own ER fees — the brief's actual intent.
- */
-export function sessionTopUpIx(
-  owner: PublicKey,
-  session: PublicKey,
-  lamports = SESSION_LAMPORTS,
-): TransactionInstruction {
-  return SystemProgram.transfer({ fromPubkey: owner, toPubkey: session, lamports })
 }

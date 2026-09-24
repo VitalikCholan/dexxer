@@ -34,3 +34,18 @@ export const ER_VALIDATOR = new PublicKey('MTEWGuqxUpYZGFJQcp8tLN7x5v9BSeoFHYWQQ
  * unset in normal dev, so this falls back to the live Railway deployment.
  */
 export const RELAYER_URL = process.env.EXPO_PUBLIC_RELAYER_URL ?? 'https://relayer-production-1ae7.up.railway.app'
+
+/**
+ * MWA dApp identity URI (24.09.2026, live Phantom smoke). Wallets verify the
+ * calling APK against `https://<host>/.well-known/assetlinks.json` at this
+ * origin (MWA spec, "Identity verification on Android"); Phantom refuses
+ * `reauthorize` when that check fails, costing an extra prompt per session.
+ * The relayer serves the statement (`services/relayer/src/assetlinks.ts`),
+ * so the identity defaults to the relayer's origin. Must be `https`, origin
+ * only (no path). Override with `EXPO_PUBLIC_IDENTITY_URI` once the app has
+ * its own domain. Changing it invalidates stored auth tokens by design —
+ * `mwaAuth.ts`'s `identityHash` detects the change and deauthorizes.
+ */
+export const IDENTITY_URI = (process.env.EXPO_PUBLIC_IDENTITY_URI ?? new URL(RELAYER_URL).origin).replace(/\/$/, '')
+/** SIWS `domain` — the identity URI's host, per the SIWS spec (must match `uri`). */
+export const IDENTITY_DOMAIN = new URL(IDENTITY_URI).host

@@ -55,6 +55,7 @@ import {
 } from "@magicblock-labs/ephemeral-rollups-sdk";
 import { baseConn, ER_VALIDATOR, loadOrCreateKey, sendAndConfirmIx, teeConn, waitAccountExists, waitDelegated } from "./env.js";
 import { DEXXER_CORE_PROGRAM_ID, accountNs, dexxerCoreProgram, delegationTriple, mockOracleProgram, pdas } from "./program.js";
+import { crankSignerPda } from "./crank-signer.js";
 import { MOCK_CONF } from "./admin.js";
 import type { Bootstrapped } from "./admin.js";
 
@@ -249,6 +250,9 @@ export async function onboardTrader(
       .delegateUser()
       .accounts({
         owner: kp.publicKey,
+        // Week-5 Task 3 (P1): the delegation-record payer, split out of
+        // `owner` so a sponsor can fund it. The trader self-pays here.
+        payer: kp.publicKey,
         config,
         market,
         bufferUserAccount: ut.buffer,
@@ -309,6 +313,48 @@ export async function onboardTrader(
   return trader;
 }
 
+/**
+ * The non-signer half of the `Trade` context (`programs/dexxer_core/src/instructions/trade.rs`).
+ *
+ * Week-5 Task 1 appended four accounts: `disclosureQueue` (a close now pushes
+ * its `ClosedRecord` straight into the owner's ring), `feeEscrow`, `taskContext`
+ * and `magicProgram`; Task 3 appended `liqCrankSigner` and put all five to work
+ * — `open_position` now registers a per-position liquidation task and
+ * `close_position` cancels it.
+ *
+ * `taskContext` is an inert writable placeholder on-chain: the Magic Program
+ * never creates, writes or reassigns it, and ANY already-existing writable
+ * account is accepted (week-5 Task 0, measurement 6). The position PDA is used
+ * on every client (here, LiteSVM's `trade_accounts`, and the app) so the
+ * registration and the cancel always name the same account.
+ *
+ * `liqCrankSigner` is `crank_signer_pda(feeEscrow)` — the signer the scheduler
+ * gives a scheduled tick, derived from the task AUTHORITY, which is the
+ * `ScheduleTask` CPI payer (the `FeeEscrow` PDA). It is NOT
+ * `Config.scheduler_signer` (= `crank_signer_pda(admin)`), which belongs to the
+ * market-wide `schedule_crank` task; `open_position` rejects any other value.
+ *
+ * Takes the PDA triple structurally rather than a whole `Trader` so the devnet
+ * scripts, which assemble their own minimal trader object, can use it too.
+ */
+export function tradeAccounts(boot: Bootstrapped, t: Pick<Trader, "userAccount" | "position" | "disclosureQueue">) {
+  const market = pdas.market();
+  return {
+    config: pdas.config(),
+    market,
+    marketRisk: pdas.marketRisk(market),
+    poolLive: boot.poolLive,
+    userAccount: t.userAccount,
+    position: t.position,
+    feed: boot.feed,
+    disclosureQueue: t.disclosureQueue,
+    feeEscrow: pdas.feeEscrow(),
+    taskContext: t.position,
+    magicProgram: MAGIC_PROGRAM_ID,
+    liqCrankSigner: crankSignerPda(pdas.feeEscrow()),
+  };
+}
+
 /** Open a position for `t` on the ER (Trade context; `side`: "long" | "short"). */
 export async function openPosition(
   boot: Bootstrapped,
@@ -320,7 +366,6 @@ export async function openPosition(
 ): Promise<string> {
   const conn = await teeConn(t.kp);
   const core = dexxerCoreProgram(conn, t.kp);
-  const market = pdas.market();
   const ix = await core.methods
     .openPosition(
       side === "long" ? { long: {} } : { short: {} },
@@ -328,16 +373,7 @@ export async function openPosition(
       new BN(usd(marginUsd).toString()),
       new BN(usd(limitUsdPrice).toString()),
     )
-    .accounts({
-      signer: t.kp.publicKey,
-      config: pdas.config(),
-      market,
-      marketRisk: pdas.marketRisk(market),
-      poolLive: boot.poolLive,
-      userAccount: t.userAccount,
-      position: t.position,
-      feed: boot.feed,
-    })
+    .accounts({ signer: t.kp.publicKey, ...tradeAccounts(boot, t) })
     .instruction();
   return sendAndConfirmIx(conn, t.kp, ix);
 }
@@ -356,19 +392,9 @@ export async function closePosition(boot: Bootstrapped, t: Trader, limitUsdPrice
   const posState = await accountNs(core).position.fetch(t.position);
   const isShort = "short" in posState.side;
   const limitArg: bigint = limitUsdPrice === 0 ? (isShort ? U64_MAX : 0n) : usd(limitUsdPrice);
-  const market = pdas.market();
   const ix = await core.methods
     .closePosition(new BN(limitArg.toString()))
-    .accounts({
-      signer: t.kp.publicKey,
-      config: pdas.config(),
-      market,
-      marketRisk: pdas.marketRisk(market),
-      poolLive: boot.poolLive,
-      userAccount: t.userAccount,
-      position: t.position,
-      feed: boot.feed,
-    })
+    .accounts({ signer: t.kp.publicKey, ...tradeAccounts(boot, t) })
     .instruction();
   return sendAndConfirmIx(conn, t.kp, ix);
 }
@@ -379,6 +405,20 @@ export async function readPosition(t: Trader): Promise<any> {
   const conn = await teeConn(t.kp);
   const core = dexxerCoreProgram(conn, t.kp);
   return accountNs(core).position.fetch(t.position);
+}
+
+/**
+ * The newest `ClosedRecord` in `t`'s ring, or `null` if the ring is empty.
+ * Since week-5 Task 1 this — not `Position.closed`, which is always `None`
+ * now — is where a close's record lands.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export async function readLastClosedRecord(t: Trader): Promise<any | null> {
+  const conn = await teeConn(t.kp);
+  const core = dexxerCoreProgram(conn, t.kp);
+  const dq = await accountNs(core).disclosureQueue.fetch(t.disclosureQueue);
+  if (dq.len === 0) return null;
+  return dq.records[(dq.head + dq.len - 1) % dq.records.length];
 }
 
 /**

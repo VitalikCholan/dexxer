@@ -1,6 +1,8 @@
 use anchor_lang::prelude::*;
 use solana_keccak_hasher::hashv;
 
+use crate::errors::DexxerError;
+
 use super::{CloseReason, ClosedRecord, Side};
 
 pub const DQ_CAPACITY: usize = 8;
@@ -14,6 +16,25 @@ pub struct DisclosureQueue {
     pub len: u8,
     pub records: [ClosedRecord; DQ_CAPACITY],
     pub bump: u8,
+}
+
+impl DisclosureQueue {
+    /// Append one closed trade to the ring (week-5 Task 1: this is what
+    /// `finalize_close` calls, so a close never parks the record on the
+    /// `Position`). `QueueFull` is deliberately a hard error rather than an
+    /// overwrite: the record is the only copy of the data the commitment /
+    /// disclosure is later built from, and dropping the oldest one would
+    /// silently lose a trade that was already promised to L1.
+    pub fn push(&mut self, rec: ClosedRecord) -> Result<()> {
+        require!((self.len as usize) < DQ_CAPACITY, DexxerError::QueueFull);
+        let idx = (self.head as usize)
+            .checked_add(self.len as usize)
+            .ok_or(DexxerError::MathOverflow)?
+            % DQ_CAPACITY;
+        self.records[idx] = rec;
+        self.len = self.len.checked_add(1).ok_or(DexxerError::MathOverflow)?;
+        Ok(())
+    }
 }
 
 /// L1 `[b"commit", hash]` (seeded by the commitment hash, not the per-user nonce — week-3 ruling 9)

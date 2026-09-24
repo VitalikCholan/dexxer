@@ -10,7 +10,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { decodeFeed, isStale } from "../src/indexer/prices.js";
+import { ORACLE_STALE_MS, decodeFeed, isStale, publishTimeMs } from "../src/indexer/prices.js";
 
 /** Mirrors oracle.rs's `fixture()`: 8 disc | 32 write_authority(0) | tag=1 | 32 feed_id | i64 price | u64 conf | i32 expo | i64 publish | i64 prev | i64 ema | u64 ema_conf | u64 posted | 1 trailing = 134 bytes. */
 function fixture(price: bigint, conf: bigint, expo: number, publish: bigint, posted: bigint): Buffer {
@@ -91,8 +91,34 @@ test("decodeFeed: tag=0 (Partial) shifts offsets by one — mirrors oracle.rs::p
   assert.equal(f.price, 100_000_000n);
 });
 
-test("isStale: null lastTs is always stale", () => {
+// Week-5 Task 5: the argument is the ORACLE's own `publish_time` (converted
+// to ms by `publishTimeMs`), not the moment this process happened to read
+// the account. A TEE that keeps serving the same frozen price update at a
+// healthy push rate used to look perfectly live; by publish time it does
+// not. `maxAgeMs` defaults to `ORACLE_STALE_MS`, so the brief's two-argument
+// form works as written.
+test("isStale: null publish time is always stale", () => {
   assert.equal(isStale(null, 1_000_000, 30_000), true);
+  assert.equal(isStale(null, 1_000_000), true);
+});
+
+test("publishTimeMs: seconds from the feed become milliseconds", () => {
+  assert.equal(publishTimeMs(1_700_000_000n), 1_700_000_000_000);
+});
+
+test("isStale: a feed whose publish_time is older than ORACLE_STALE_MS is stale", () => {
+  const now = 1_700_000_000_000;
+  const fresh = publishTimeMs(1_699_999_999n); // 1s old
+  const old = publishTimeMs(1_699_999_960n); // 40s old
+  assert.equal(isStale(fresh, now), false);
+  assert.equal(isStale(old, now), true);
+});
+
+test("isStale: a publish time in the future is not stale", () => {
+  // Clock skew between the oracle publisher and this process must not read
+  // as staleness — only a value older than the window does.
+  const now = 1_700_000_000_000;
+  assert.equal(isStale(now + 5_000, now), false);
 });
 
 test("isStale: within maxAgeMs is not stale", () => {

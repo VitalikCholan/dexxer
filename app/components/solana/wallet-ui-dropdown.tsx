@@ -10,10 +10,11 @@ import * as Dropdown from '@rn-primitives/dropdown-menu'
 import { WalletUiButtonConnect } from './wallet-ui-button-connect'
 import { useWalletUiTheme } from '@/components/solana/use-wallet-ui-theme'
 import { showError } from '@/utils/show-error'
+import { disconnect as mwaDisconnect } from '@/src/lib/mwaAuth'
 
 function useDropdownItems() {
   const { getExplorerUrl } = useCluster()
-  const { account, disconnect } = useMobileWallet()
+  const { account, disconnect, store } = useMobileWallet()
   if (!account) {
     return []
   }
@@ -34,8 +35,13 @@ function useDropdownItems() {
     },
     {
       label: 'Disconnect',
+      // Week 5, Task 6, fix round 1: this is a real entry point (Account tab
+      // header) that called the raw hook `disconnect()` directly, bypassing
+      // `mwaAuth`'s raw-deauthorize-on-the-wallet's-side step — see
+      // `wallet-ui-button-disconnect.tsx` for the same fix and `mwaAuth.ts`'s
+      // file header for why the raw hook alone never reaches the wallet.
       onPress: () => {
-        disconnect().catch((error: unknown) => showError('Could not disconnect wallet', error))
+        mwaDisconnect(disconnect, store).catch((error: unknown) => showError('Could not disconnect wallet', error))
       },
     },
   ]

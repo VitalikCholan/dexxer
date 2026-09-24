@@ -50,7 +50,7 @@ const { ER_VALIDATOR, NET, baseConn, loadOrCreateKey, sendAndConfirmIx, sleep, t
 const assert: (cond: unknown, msg: string) => asserts cond = envMod.assert;
 const { DEXXER_CORE_PROGRAM_ID, accountNs, dexxerCoreProgram, delegationTriple, pdas } = await import("../lib/program.js");
 const { bootstrapDevnet } = await import("../lib/admin.js");
-const { creditDeposit, initPermissions, U64_MAX } = await import("../lib/trader.js");
+const { creditDeposit, initPermissions, tradeAccounts, U64_MAX } = await import("../lib/trader.js");
 
 if (NET !== "devnet") {
   console.error(`FAIL: DEXXER_NET must be "devnet" (got "${NET}"). Run: DEXXER_NET=devnet npm run devnet:liquidation`);
@@ -157,6 +157,7 @@ async function main() {
     .delegateUser()
     .accounts({
       owner: owner.publicKey,
+      payer: owner.publicKey, // week-5 Task 3 (P1): delegation-record payer
       config,
       market,
       bufferUserAccount: ut.buffer,
@@ -209,7 +210,6 @@ async function main() {
   console.log("set_session", setSessionSig, "fund session", fundSessionSig);
 
   console.log("=== open_position (~10x long, session-signed) ===");
-  const marketRisk = pdas.marketRisk(market);
   const marketBeforeOpen = await accountNs(coreOwnerEr).market.fetch(market);
   const price = BigInt(marketBeforeOpen.mark.toString()); // 1e6-scaled USD, per math.rs PRICE_SCALE
   assert(price > 0n, `Market.mark is seeded (nonzero) before opening — got ${price.toString()}. Run crank-fallback or schedule-crank first so the market has a mark.`);
@@ -226,7 +226,7 @@ async function main() {
   const coreSessionEr = dexxerCoreProgram(sessionConn, session);
   const openIx = await coreSessionEr.methods
     .openPosition({ long: {} }, new BN(sizeLamports.toString()), new BN(marginUsd.toString()), new BN(U64_MAX.toString()))
-    .accounts({ signer: session.publicKey, config, market, marketRisk, poolLive: boot.poolLive, userAccount, position, feed: boot.feed })
+    .accounts({ signer: session.publicKey, ...tradeAccounts(boot, { userAccount, position, disclosureQueue }) })
     .instruction();
   const openSig = await sendAndConfirmIx(sessionConn, session, openIx);
   console.log("open_position (session-signed)", openSig);
@@ -261,9 +261,13 @@ async function main() {
       liqPollTries = i + 1;
       const pos = await accountNs(coreOwnerEr).position.fetch(position);
       liqTicksSeen.push(Number(pos.liqTicks));
-      if ("closed" in pos.state) {
+      // Week-5 Task 1: a liquidation is a close, and a close pushes its record
+      // into the owner's ring and frees the `Position` straight to `Empty` —
+      // so "the queue grew" is what a liquidation looks like from out here.
+      const dq = await accountNs(coreOwnerEr).disclosureQueue.fetch(disclosureQueue);
+      if ("empty" in pos.state && dq.len > 0) {
         liquidated = true;
-        closedInfo = pos.closed;
+        closedInfo = dq.records[(dq.head + dq.len - 1) % dq.records.length];
         console.log(`Position liquidated after ${((Date.now() - tSetParams) / 1000).toFixed(1)}s, ${liqPollTries} polls, liq_ticks history: ${JSON.stringify(liqTicksSeen)}`);
         break;
       }

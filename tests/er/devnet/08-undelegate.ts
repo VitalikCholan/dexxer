@@ -15,14 +15,13 @@
 //
 // Preconditions for `undelegate_user` (instructions/user.rs): `Position.state
 // == Empty`, `DisclosureQueue.len == 0`, `UserAccount.free_margin == 0 &&
-// locked_margin == 0`. The 06 trader ends its run with: Position #2 still
-// `Closed` (its own record was never committed — 06 only drives record #1's
-// reveal), DisclosureQueue empty (06's own last step drained it), and
-// nonzero free_margin. This script closes that gap: commit+mark_committed
-// position #2's record, drain whatever lands in the queue, withdraw(all),
-// then undelegate. Task 8b (ruling 9): `Commitment` is now hash-seeded, so
-// (unlike the pre-8b version of this file) a single commit is always
-// sufficient — no nonce-collision retry loop needed.
+// locked_margin == 0`. The 06 trader ends its run with: its Position already
+// `Empty` (week-5 Task 1: a close frees it on the spot), position #2's record
+// still sitting in the `DisclosureQueue` uncommitted (06 only drives record
+// #1's reveal), and nonzero free_margin. This script closes that gap: commit
+// and then reveal whatever is left in the queue, withdraw(all), then
+// undelegate. Task 8b (ruling 9): `Commitment` is hash-seeded, so a single
+// commit is always sufficient — no nonce-collision retry loop needed.
 //
 // Run: `npm run devnet:undelegate` (from tests/er). Requires
 // `06-commitment-reveal.ts` to have run (`.keys/devnet-run-mb-latest.json`).
@@ -103,7 +102,6 @@ async function main() {
 
   console.log("=== bootstrapDevnet (idempotent) ===");
   const boot = await bootstrapDevnet();
-  const crank = loadOrCreateKey("devnet-crank");
   const feePayer = loadOrCreateKey("devnet-fee-payer");
   const coreBaseAdmin = dexxerCoreProgram(baseConn, boot.admin);
 
@@ -117,8 +115,6 @@ async function main() {
 
   const ownerConn = await teeConn(owner);
   const coreOwnerEr = dexxerCoreProgram(ownerConn, owner);
-  const crankConn = await teeConn(crank);
-  const crankCore = dexxerCoreProgram(crankConn, crank);
   const feePayerConn = await teeConn(feePayer);
   const feePayerCore = dexxerCoreProgram(feePayerConn, feePayer);
   const cfg = await accountNs(feePayerCore).config.fetch(pdas.config());
@@ -127,7 +123,7 @@ async function main() {
 
   async function commitAggregate(remainingKey: InstanceType<typeof PublicKey> | null): Promise<string> {
     const ix = await feePayerCore.methods
-      .commitAggregate()
+      .commitAggregate(4)
       .accounts({
         config: pdas.config(), payer: feePayer.publicKey, pool: boot.pool, poolLive: boot.poolLive, balancesRoot: boot.balancesRoot,
         feeEscrow: boot.feeEscrow, magicFeeVault: cfg.magicFeeVault, magicContext: MAGIC_CONTEXT_ID, magicProgram: MAGIC_PROGRAM_ID,
@@ -137,29 +133,35 @@ async function main() {
     return sendAndConfirmIx(feePayerConn, feePayer, ix);
   }
 
-  async function markCommitted(): Promise<string> {
-    return sendAndConfirmIx(crankConn, crank, await crankCore.methods.markCommitted().accounts({ crank: crank.publicKey, config: pdas.config(), position, dq: disclosureQueue }).instruction());
-  }
-
-  async function waitForSlot(target: bigint) {
-    let cur = BigInt(await baseConn.getSlot("confirmed"));
+  // `ClosedRecord.reveal_after_slot` is an ER slot, and the ER's slot counter
+  // is unrelated to the base layer's (week-5 Task 4: ~343.4M vs ~503.1M, and
+  // the ER advances ~80 slots/s against base's ~2.5). Polling base here — what
+  // this script did through week 4 — compared two different counters and
+  // returned instantly. Poll the ER.
+  async function waitForErSlot(target: bigint) {
+    let cur = BigInt(await ownerConn.getSlot("confirmed"));
     while (cur < target) {
-      await sleep(3000);
-      cur = BigInt(await baseConn.getSlot("confirmed"));
+      await sleep(1000);
+      cur = BigInt(await ownerConn.getSlot("confirmed"));
     }
   }
 
-  // === Step 1: if Position is Closed (06's second position, never
-  // committed), commit+mark_committed it. If already Empty (a re-run), skip.
-  // Task 8b: Commitment is hash-seeded, so a single commit always lands at
-  // its own dedicated PDA — no collision, no retry loop needed.
+  // === Step 1: drain whatever 06 left in the ring (week-5 Task 1: the record
+  // of 06's second close is queued and uncommitted). Past the record's
+  // `reveal_after_slot`, ONE `commit_aggregate` emits both `write_commitment`
+  // and `write_disclosure` and pops it. If the ring is already empty (a
+  // re-run), skip.
   const posNow = await accountNs(coreOwnerEr).position.fetch(position);
-  if ("closed" in posNow.state) {
-    console.log("\n=== closing out the still-Closed position from 06's second close ===");
-    const { args, salt } = recToArgsAndSalt(posNow.closed);
+  assert("empty" in posNow.state, "Position.state == Empty (close frees it immediately since week-5 Task 1)");
+  const dqBefore = await accountNs(coreOwnerEr).disclosureQueue.fetch(disclosureQueue);
+  if (dqBefore.len > 0) {
+    console.log("\n=== draining the record 06's second close left in the ring ===");
+    const rec = dqBefore.records[dqBefore.head];
+    const { args, salt } = recToArgsAndSalt(rec);
     const hash = commitmentHash(args, salt);
-    const sig = await commitAggregate(position);
-    console.log(`commit_aggregate(position) sig=${sig}`);
+    await waitForErSlot(args.revealAfterSlot);
+    const sig = await commitAggregate(disclosureQueue);
+    console.log(`commit_aggregate(dq — commitment + disclosure in one bundle) sig=${sig}`);
     const commitmentAcc = await pollBase(`Commitment[hash]`, async () => {
       try {
         return await accountNs(coreBaseAdmin).commitment.fetch(pdas.commitment(hash));
@@ -170,16 +172,18 @@ async function main() {
     const onChainHash = Uint8Array.from(commitmentAcc.hash as number[]);
     const matches = Buffer.compare(Buffer.from(hash), Buffer.from(onChainHash)) === 0;
     assert(matches, "closeout commitment hash matches (hash-seeded, no collision possible)");
-    const markSig = await markCommitted();
-    sigs.closeoutMark = markSig;
-    await waitForSlot(args.revealAfterSlot);
-    const drainSig = await commitAggregate(disclosureQueue);
-    console.log(`drained via commit_aggregate(dq): ${drainSig}`);
+    sigs.closeoutCommit = sig;
+    await pollBase("Disclosure[hash]", async () => {
+      try {
+        return await accountNs(coreBaseAdmin).disclosure.fetch(pdas.disclosure(hash));
+      } catch {
+        return null;
+      }
+    });
+    console.log("Disclosure landed on L1 from the same bundle");
     await sleep(3000);
-    const posAfter = await accountNs(coreOwnerEr).position.fetch(position);
-    assert("empty" in posAfter.state, "Position.state == Empty before undelegate_user");
   } else {
-    console.log("Position already Empty (re-run) — skipping closeout");
+    console.log("DisclosureQueue already empty (re-run) — skipping closeout");
   }
 
   const dqNow = await accountNs(coreOwnerEr).disclosureQueue.fetch(disclosureQueue);

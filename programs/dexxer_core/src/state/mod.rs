@@ -1,3 +1,5 @@
+use anchor_lang::prelude::Pubkey;
+
 pub mod balances_root;
 pub mod config;
 pub mod disclosure;
@@ -43,14 +45,32 @@ pub const SNAPSHOT_STEP: u64 = 100_000_000;
 pub const ROOT_LEAVES: usize = 64;
 /// UserAccounts per `set_balances_root` call (tx size / CU budget).
 pub const ROOT_BATCH: usize = 16;
-/// Post-commit actions per `commit_aggregate` bundle. Kept at 4 on purpose: M-C measured the
-/// bridge cap at 28 PASS / 29 FAIL on a fresh account with a 5-account spike action (week 3,
-/// Task 1); the real write_commitment/write_disclosure shape is heavier and was not re-probed.
-pub const MAX_ACTIONS_PER_COMMIT: usize = 4;
+/// HARD program ceiling on post-commit actions per `commit_aggregate` bundle — NOT the number
+/// a bundle actually carries. The per-bundle count is chosen by the caller via
+/// `commit_aggregate(max_actions)`, clamped here to `[1, MAX_ACTIONS_PER_COMMIT]` (week-5
+/// final review C1), so the safe number is tunable from the relayer's `COMMIT_MAX_ACTIONS`
+/// env without a program redeploy.
+///
+/// Measured truth on the REAL `write_commitment`/`write_disclosure` action shape (week 5,
+/// Task 7, live devnet-tee): **8 real actions = bridge `0xA0000002` FAIL, 4 = PASS**. Week 3's
+/// M-C figure (28 PASS / 29 FAIL) was taken with a cheap 5-account spike action and does NOT
+/// describe this shape — the real actions are far heavier per action. Raising this constant
+/// without re-measuring would hand a client a budget the bridge rejects.
+pub const MAX_ACTIONS_PER_COMMIT: usize = 8;
 /// `ActionArgs::new` default escrow index (magic-actions.md).
 pub const ACTION_ESCROW_INDEX: u8 = 255;
 pub const SOL_SYMBOL: [u8; 8] = *b"SOL\0\0\0\0\0";
 pub const PERMISSION_MEMBERS: usize = 3; // owner, session, crank
+/// Upper bound on `crank_tick` candidates the PROGRAM accepts in one call.
+///
+/// It is not what a client can actually fit: since week-5 Task 1 a candidate is
+/// a `[Position, UserAccount, DisclosureQueue]` triple, and a legacy (non-v0)
+/// transaction carrying 8 triples plus a ComputeBudget instruction already
+/// measures ~1175 bytes — 9 triples overflow the 1232-byte packet (measured,
+/// fix round 1, finding 1). Clients on legacy transactions must therefore chunk
+/// at 8 (`CRANK_TX_MAX_CANDIDATES` in `services/relayer/src/crank.ts`); the
+/// program cap stays 16 so a v0 transaction with an address-lookup table can
+/// use the whole budget later.
 pub const MAX_CANDIDATES: usize = 16;
 // Week-2 Task 5 fix round 2 (controller ruling): guards against a sybil
 // griefing the shared `FeeEscrow`'s commit budget via a `withdraw(1)`-per-tx
@@ -60,6 +80,69 @@ pub const MAX_CANDIDATES: usize = 16;
 pub const MIN_WITHDRAW: u64 = 1_000_000;
 /// Minimum slots between successful `withdraw` calls for the same `UserAccount`.
 pub const WITHDRAW_COOLDOWN_SLOTS: u64 = 300;
+
+// ------------------------------------------------------------- week-5 Task 3
+/// How often the per-position Magic Actions task calls `liquidation_check`.
+///
+/// 5 s, not the market crank's 1 s: the scheduler was measured to overshoot
+/// the requested interval (16 ticks per 60 s at `interval 5000` — week-5
+/// Task 0, measurement 1), and every position carries its own task, so the
+/// tick rate is multiplied by the number of open positions. `liq_ticks`
+/// hysteresis is counted in TICKS, not wall time, which means the same
+/// `Market.liq_hysteresis_ticks` is ~3 s of grace on the crank path and ~11 s
+/// on this one. That is deliberate and this constant is NOT adjusted for it:
+/// the scheduled path is the backstop, the crank is the fast path, and a
+/// backstop that fires later is the safe direction.
+///
+/// What DID have to be adjusted is the tick budget itself: both callers share
+/// one `Position.liq_ticks`, so the default `liq_hysteresis_ticks` went 2 -> 3
+/// to keep the gate spanning more than one distinct mark sample — the full
+/// reasoning is on `liq_due` in `instructions/liquidation.rs`.
+pub const LIQ_TASK_INTERVAL_MS: i64 = 5_000;
+
+/// Magic Actions `task_id` for one position's liquidation task.
+///
+/// `task_id` is VALIDATOR-GLOBAL, not per-program (week-5 Task 0, open item
+/// 1), so it must be derived from something globally unique to this position —
+/// its own PDA. keccak256 is the project's hash primitive everywhere else
+/// (week-3 rule), and the first 8 bytes are plenty: a collision would need two
+/// positions whose PDAs share a 64-bit keccak prefix.
+pub fn liq_task_id(position: &Pubkey) -> i64 {
+    let h = solana_keccak_hasher::hashv(&[position.as_ref()]).to_bytes();
+    let mut b = [0u8; 8];
+    b.copy_from_slice(&h[..8]);
+    i64::from_le_bytes(b)
+}
+
+#[cfg(test)]
+mod liq_task_tests {
+    use super::*;
+
+    #[test]
+    fn liq_task_id_is_deterministic_and_position_specific() {
+        let a = Pubkey::new_from_array([7u8; 32]);
+        let b = Pubkey::new_from_array([8u8; 32]);
+        assert_eq!(liq_task_id(&a), liq_task_id(&a), "same input, same id");
+        assert_ne!(liq_task_id(&a), liq_task_id(&b));
+    }
+
+    /// Golden vector — pins the byte layout (keccak256 of the raw 32 pubkey
+    /// bytes, first 8 bytes read little-endian) so a client that recomputes
+    /// the id off-chain can be checked against the same number.
+    #[test]
+    fn liq_task_id_golden_vector() {
+        let p = Pubkey::new_from_array([0u8; 32]);
+        let h = solana_keccak_hasher::hashv(&[p.as_ref()]).to_bytes();
+        let expected = i64::from_le_bytes(h[..8].try_into().unwrap());
+        assert_eq!(liq_task_id(&p), expected);
+        // keccak256(32 zero bytes) = 290decd9548b62a8d60345a988386fc84ba6bc95484008f6362f93160ef3e563
+        assert_eq!(&h[..8], &[0x29, 0x0d, 0xec, 0xd9, 0x54, 0x8b, 0x62, 0xa8]);
+        assert_eq!(
+            liq_task_id(&p),
+            i64::from_le_bytes([0x29, 0x0d, 0xec, 0xd9, 0x54, 0x8b, 0x62, 0xa8])
+        );
+    }
+}
 
 #[cfg(test)]
 mod size_tests {

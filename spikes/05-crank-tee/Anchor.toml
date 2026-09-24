@@ -6,10 +6,10 @@ resolution = true
 skip-lint = false
 
 [programs.devnet]
-crank_counter = "AsXtStXjZxwUd6UNVqJ9kQYJ9cYFdZbh2SeSWaZdX8bi"
+crank_counter = "9pAYXKX2xwpsUhQFvW5rGVGRKmv9mTwpPLMGKgBHsv3q"
 
 [programs.localnet]
-crank_counter = "6avjV8kWVhVf2NX6ZeE7SaqyqjRnCD6JDwhiUH6yFymz"
+crank_counter = "9pAYXKX2xwpsUhQFvW5rGVGRKmv9mTwpPLMGKgBHsv3q"
 
 [provider]
 cluster = "devnet"

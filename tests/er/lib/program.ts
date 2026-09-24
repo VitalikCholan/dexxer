@@ -120,7 +120,17 @@ const DISCLOSURE_SEED = Buffer.from("disclosure");
 const BALANCES_ROOT_SEED = Buffer.from("balances_root");
 export const ROOT_LEAVES = 64;
 export const ROOT_BATCH = 16;
-export const MAX_ACTIONS_PER_COMMIT = 4;
+// Mirrors programs/dexxer_core/src/state/mod.rs's MAX_ACTIONS_PER_COMMIT verbatim
+// (the program's hard per-bundle post-commit-action ceiling — was 4, raised to 8 in
+// week-5 Task 1). This TS constant had gone stale at 4 while the Rust side moved to
+// 8, so every caller importing it (services/relayer/src/disclosure.ts) was silently
+// working off the wrong ceiling. Week-5 Task 7 measured that the MagicBlock bridge's
+// OWN action cap is below 8 for the real write_commitment/write_disclosure shape
+// (0xA0000002 on devnet-tee with a real backlog) — see disclosure.ts's
+// `COMMIT_MAX_ACTIONS` for the runtime-tunable budget that actually governs how many
+// actions the relayer requests per bundle; this constant stays the program's hard
+// upper bound, not a target to run at.
+export const MAX_ACTIONS_PER_COMMIT = 8;
 /** `ephemeral_rollups_sdk::pda::ephemeral_balance_pda_from_payer`'s default action-escrow index (state/mod.rs `ACTION_ESCROW_INDEX`). */
 export const ACTION_ESCROW_INDEX = 255;
 export const SOL_SYMBOL = Buffer.from([83, 79, 76, 0, 0, 0, 0, 0]); // b"SOL\0\0\0\0\0"

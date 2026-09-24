@@ -1,19 +1,38 @@
 use crate::{
     errors::DexxerError,
-    instructions::user::assert_trader,
+    instructions::{
+        liquidation::{cancel_liquidation_task, liq_crank_signer, schedule_liquidation_task},
+        user::assert_trader,
+    },
     math,
     oracle::{check_deviation, check_open_quality, read_price},
     risk::{self, Settlement},
     state::*,
 };
 use anchor_lang::prelude::*;
+use anchor_lang::solana_program::instruction::{AccountMeta, Instruction};
+use ephemeral_rollups_sdk::consts::MAGIC_PROGRAM_ID;
 use solana_keccak_hasher::hashv;
 
+/// STACK BUDGET — read before adding an account here. Week-5 Task 1's four new
+/// fields put `Trade::try_accounts` 8 bytes over the SBF 4096-byte frame
+/// (`anchor build`: "Stack offset of 4104 exceeded max offset of 4096", plus
+/// five "function call overwrites values in the frame" errors). Boxing `config`
+/// bought back a `Config`'s worth of frame — `Config::INIT_SPACE` is 275 B — so
+/// roughly 270 B of headroom is left. Week-5 Task 3 spent some of it on
+/// `liq_crank_signer` (an `UncheckedAccount`, cheap); if a future field does
+/// not fit, box the next-largest account (`market`, then `market_risk`). The
+/// build fails loudly on overflow, so this is a warning, not an invariant to
+/// trust blindly.
 #[derive(Accounts)]
 pub struct Trade<'info> {
     pub signer: Signer<'info>,
+    // Boxed: week-5 Task 1 added four accounts to this context, which tipped
+    // `Trade::try_accounts` 8 bytes past the SBF stack limit (build error, same
+    // failure mode as `user_account`/`position` below). `Config` is the largest
+    // read-only account here, so it is the cheapest one to move to the heap.
     #[account(seeds = [CONFIG_SEED], bump = config.bump)]
-    pub config: Account<'info, Config>,
+    pub config: Box<Account<'info, Config>>,
     #[account(mut, seeds = [MARKET_SEED, &market.symbol], bump = market.bump)]
     pub market: Account<'info, Market>,
     #[account(mut, seeds = [RISK_SEED, market.key().as_ref()], bump = market_risk.bump, has_one = market)]
@@ -44,6 +63,163 @@ pub struct Trade<'info> {
     pub position: Box<Account<'info, Position>>,
     /// CHECK: validated in oracle::read_price (key == market.feed, owner == config.oracle_program)
     pub feed: UncheckedAccount<'info>,
+    // Week-5 Task 1: `finalize_close` pushes the `ClosedRecord` straight into
+    // the owner's ring, so every trading instruction that can close a position
+    // (`close_position`, `decrease_position` to zero) needs it. Boxed for the
+    // same SBF stack reason as `user_account`/`position` above — this is the
+    // biggest per-user account of the three.
+    #[account(mut, seeds = [DQ_SEED, user_account.owner.as_ref()], bump = disclosure_queue.bump)]
+    pub disclosure_queue: Box<Account<'info, DisclosureQueue>>,
+    // The per-position liquidation task's payer AND authority (week-5 Task 3):
+    // `open_position` registers the task with this PDA as the `ScheduleTask`
+    // CPI payer, which is what makes the PROGRAM the task's authority, and
+    // `close_position`/`decrease_position`-to-zero cancel with the same PDA as
+    // `CancelCrankCpi.authority`. Same delegated escrow `commit_aggregate` and
+    // `withdraw` pay their commit CPIs from.
+    #[account(mut, seeds = [FEE_ESCROW_SEED], bump = fee_escrow.bump)]
+    pub fee_escrow: Box<Account<'info, FeeEscrow>>,
+    /// CHECK: Magic Actions task-context account for this position's liquidation
+    /// task (week-5 Task 3), passed to `ScheduleTask`/`CancelTask` as account
+    /// index 1. No on-chain derivation for it exists in `ephemeral-rollups-sdk`
+    /// 0.16.2 and the Magic Program treats it as an inert writable placeholder:
+    /// any already-existing writable account is accepted and left byte-identical
+    /// (week-5 Task 0, measurement 6).
+    ///
+    /// PINNED TO `position` anyway (fix round 1, M-1). "Any writable account"
+    /// plus `mut` would let a caller name ANOTHER trader's delegated account
+    /// here, write-locking it for the duration of the transaction — a free
+    /// contention/DoS handle on someone else's position, which the placeholder's
+    /// inertness does nothing to prevent. Pinning it costs nothing (every client
+    /// already passes the position PDA) and additionally guarantees that the
+    /// registration and the later cancel name the same account. Anchor permits
+    /// the duplicate key because neither field is `init`.
+    #[account(mut, constraint = task_context.key() == position.key() @ DexxerError::InvalidCandidate)]
+    pub task_context: UncheckedAccount<'info>,
+    /// CHECK: address-checked; gates the Task 3 scheduler CPI via `.executable`
+    #[account(address = MAGIC_PROGRAM_ID)]
+    pub magic_program: UncheckedAccount<'info>,
+    /// CHECK: the signer the scheduler will give this position's
+    /// `liquidation_check` ticks — `crank_signer_pda(fee_escrow)`, since the
+    /// `FeeEscrow` PDA is the `ScheduleTask` CPI payer and therefore the task
+    /// authority (week-5 Task 0). Deliberately NOT `Config.scheduler_signer`,
+    /// which is `crank_signer_pda(admin)` and belongs to the market-wide
+    /// `schedule_crank` task. Verified against the derivation in
+    /// `open_position` on the scheduling path only, so the ~1.5k CU
+    /// `find_program_address` is not charged to every trade.
+    pub liq_crank_signer: UncheckedAccount<'info>,
+}
+
+/// The account list of this position's scheduled `liquidation_check`, in
+/// `ScheduleTask` order: index 0 (the payer) is prepended by the CPI, index 1
+/// is the task context, 2.. are the task's own accounts.
+///
+/// LEAKED ON PURPOSE — for brevity, not out of necessity. `ScheduleCrankCpi`
+/// wants `&'a [compat::AccountInfo<'a>]` with ONE lifetime, and
+/// `AccountInfo<'a>` is invariant in `'a` (it holds a `RefCell<&'a mut [u8]>`),
+/// so a slice borrowed from a local `Vec` can never satisfy THAT type —
+/// `schedule_crank` works around it by making the client repeat every account
+/// in `remaining_accounts`, acceptable for an admin-only instruction and not
+/// for `open_position`. `Box::leak` hands back a genuinely `'info`-scoped slice
+/// instead; the "leak" is ~10 `AccountInfo`s on the BPF bump allocator, which
+/// is reset at the end of this instruction.
+///
+/// The alternative, for the record, also works and has no lifetime problem at
+/// all: build the CPI instruction by hand —
+/// `Instruction::new_with_bincode(MAGIC_PROGRAM_ID,
+/// &MagicBlockInstruction::ScheduleTask(args), metas)` — and call
+/// `solana_program::program::invoke_signed` with a plain local
+/// `Vec<AccountInfo<'info>>`, since that function's slice lifetime and the
+/// `AccountInfo` lifetime are independent. It was not chosen because it
+/// re-implements the account-meta layout the SDK already owns (payer writable
+/// signer at index 0, then each account with its own flags), and a silent
+/// divergence there would be a devnet-only failure.
+fn liq_task_accounts<'info>(a: &'info Trade<'info>) -> &'info [AccountInfo<'info>] {
+    let infos: Vec<AccountInfo<'info>> = vec![
+        a.task_context.to_account_info(),
+        a.liq_crank_signer.to_account_info(),
+        a.config.to_account_info(),
+        a.market.to_account_info(),
+        a.market_risk.to_account_info(),
+        a.pool_live.to_account_info(),
+        a.feed.to_account_info(),
+        a.position.to_account_info(),
+        a.user_account.to_account_info(),
+        a.disclosure_queue.to_account_info(),
+    ];
+    Box::leak(infos.into_boxed_slice())
+}
+
+/// `open_position`'s tail: register this position's liquidation task.
+///
+/// Open-time registration (not init-time) is week-5 Task 0's ruling: the task
+/// account list is frozen at registration, and at `init_user` time the
+/// `Position` exists but carries no market yet — more importantly, a task
+/// registered per user rather than per open could never be cancelled on close.
+/// The task registry is invisible from L1 and from an un-tokened TEE RPC
+/// (Task 0, measurement 4), so registering one leaks nothing about the owner.
+fn register_liq_task<'info>(a: &'info Trade<'info>) -> Result<()> {
+    if !a.magic_program.executable {
+        msg!("liq task: skipped (no magic program)");
+        return Ok(());
+    }
+    let escrow: &'info Account<'info, FeeEscrow> = &a.fee_escrow;
+    let payer: &'info AccountInfo<'info> = escrow.as_ref();
+    require!(
+        a.liq_crank_signer.key() == liq_crank_signer(&payer.key()),
+        DexxerError::Unauthorized
+    );
+    let inner = Instruction {
+        program_id: crate::ID,
+        accounts: vec![
+            // The scheduler accepts exactly one signer in a scheduled
+            // instruction, read-only, and it must be the authority's derived
+            // crank-executor PDA.
+            AccountMeta::new_readonly(a.liq_crank_signer.key(), true),
+            AccountMeta::new_readonly(a.config.key(), false),
+            // Read-only: the mark belongs to the market-wide crank schedule.
+            AccountMeta::new_readonly(a.market.key(), false),
+            AccountMeta::new(a.market_risk.key(), false),
+            AccountMeta::new(a.pool_live.key(), false),
+            AccountMeta::new_readonly(a.feed.key(), false),
+            AccountMeta::new(a.position.key(), false),
+            AccountMeta::new(a.user_account.key(), false),
+            AccountMeta::new(a.disclosure_queue.key(), false),
+        ],
+        data: anchor_lang::InstructionData::data(&crate::instruction::LiquidationCheck {}),
+    };
+    schedule_liquidation_task(
+        payer,
+        &a.magic_program,
+        liq_task_accounts(a),
+        inner,
+        liq_task_id(&a.position.key()),
+        a.fee_escrow.bump,
+    )
+}
+
+/// The mirror of `register_liq_task`, called by every path that takes a
+/// position from `Open` back to `Empty` BY USER ACTION: `close_position` and a
+/// `decrease_position` that closes the remainder.
+///
+/// The liquidation paths (`crank_tick`, `liquidation_check`) deliberately do
+/// NOT cancel: neither carries a `task_context`/`magic_program`, and a
+/// scheduled tick cancelling the task it is running inside is untested. A task
+/// left over a liquidated position is a measured-safe no-op (week-5 Task 0) —
+/// it ticks, sees `PositionState::Empty`, and returns — until the next
+/// `open_position` re-registers it (an update) or `undelegate_user` cancels it.
+fn cancel_liq_task<'info>(a: &'info Trade<'info>) -> Result<()> {
+    if !a.magic_program.executable {
+        msg!("liq task: skipped (no magic program)");
+        return Ok(());
+    }
+    let escrow: &'info Account<'info, FeeEscrow> = &a.fee_escrow;
+    cancel_liquidation_task(
+        escrow.as_ref(),
+        &a.task_context,
+        &a.magic_program,
+        liq_task_id(&a.position.key()),
+        a.fee_escrow.bump,
+    )
 }
 
 fn seed_mark(market: &mut Market, index: u64, slot: u64) {
@@ -53,8 +229,8 @@ fn seed_mark(market: &mut Market, index: u64, slot: u64) {
     }
 }
 
-pub fn open_position(
-    mut ctx: Context<Trade>,
+pub fn open_position<'info>(
+    mut ctx: Context<'info, Trade<'info>>,
     side: Side,
     size: u64,
     margin: u64,
@@ -143,7 +319,10 @@ pub fn open_position(
     // Exact at open: entry == px.price, so notional(size, entry) == entry_notional.
     p.oi_notional = entry_notional;
     seed_mark(&mut a.market, px.price, clock.slot);
-    Ok(())
+    // Every mutation above is done: hand the accounts over as a shared,
+    // `'info`-scoped reference so the scheduler CPI can borrow them (see
+    // `liq_task_accounts`).
+    register_liq_task(ctx.accounts)
 }
 
 pub fn add_margin(mut ctx: Context<Trade>, amount: u64) -> Result<()> {
@@ -183,7 +362,10 @@ pub fn add_margin(mut ctx: Context<Trade>, amount: u64) -> Result<()> {
     Ok(())
 }
 
-pub fn close_position(mut ctx: Context<Trade>, limit_price: u64) -> Result<()> {
+pub fn close_position<'info>(
+    mut ctx: Context<'info, Trade<'info>>,
+    limit_price: u64,
+) -> Result<()> {
     let clock = Clock::get()?;
     let a = &mut ctx.accounts;
     require!(
@@ -205,13 +387,14 @@ pub fn close_position(mut ctx: Context<Trade>, limit_price: u64) -> Result<()> {
         &mut a.pool_live,
         &mut a.user_account,
         &mut a.position,
+        &mut a.disclosure_queue,
         px.price,
         fee_bps,
         CloseReason::User,
         &clock,
         delay,
     )?;
-    Ok(())
+    cancel_liq_task(ctx.accounts)
 }
 
 pub fn increase_position(
@@ -220,6 +403,9 @@ pub fn increase_position(
     add_margin: u64,
     limit_price: u64,
 ) -> Result<()> {
+    // No task work here: the position stays `Open`, so its task stays
+    // registered and keeps ticking against the updated size/entry.
+
     let clock = Clock::get()?;
     let a = &mut ctx.accounts;
     require!(!a.config.paused, DexxerError::Paused);
@@ -345,7 +531,11 @@ pub fn increase_position(
     Ok(())
 }
 
-pub fn decrease_position(mut ctx: Context<Trade>, close_size: u64, limit_price: u64) -> Result<()> {
+pub fn decrease_position<'info>(
+    mut ctx: Context<'info, Trade<'info>>,
+    close_size: u64,
+    limit_price: u64,
+) -> Result<()> {
     let clock = Clock::get()?;
     let a = &mut ctx.accounts;
     require!(
@@ -372,13 +562,16 @@ pub fn decrease_position(mut ctx: Context<Trade>, close_size: u64, limit_price: 
             &mut a.pool_live,
             &mut a.user_account,
             &mut a.position,
+            &mut a.disclosure_queue,
             px.price,
             fee_bps,
             CloseReason::User,
             &clock,
             delay,
         )?;
-        return Ok(());
+        // A decrease that takes the size to zero IS a close — same task
+        // teardown as `close_position`.
+        return cancel_liq_task(ctx.accounts);
     }
     let remaining = a
         .position
@@ -463,6 +656,13 @@ pub fn decrease_position(mut ctx: Context<Trade>, close_size: u64, limit_price: 
 }
 
 /// Shared by close_position, decrease_position (full) and crank liquidation.
+///
+/// Queue-first (week-5 Task 1): the `ClosedRecord` is pushed into `dq` and the
+/// `Position` is reset to `Empty` in this same instruction, so a trader can
+/// reopen immediately and no crank round-trip (`mark_committed`, now gone) sits
+/// between a close and the next trade. `dq.push` is fallible (`QueueFull`), and
+/// it is the LAST thing that can fail here — a full ring reverts the entire
+/// close rather than settling the money and losing the record.
 #[allow(clippy::too_many_arguments)]
 pub fn finalize_close(
     market_key: Pubkey,
@@ -470,6 +670,7 @@ pub fn finalize_close(
     pool: &mut PoolLive,
     user: &mut UserAccount,
     pos: &mut Position,
+    dq: &mut DisclosureQueue,
     exit: u64,
     fee_bps: u32,
     reason: CloseReason,
@@ -525,7 +726,7 @@ pub fn finalize_close(
         &clock.slot.to_le_bytes(),
     ])
     .to_bytes();
-    pos.closed = Some(ClosedRecord {
+    dq.push(ClosedRecord {
         market: market_key,
         side: pos.side,
         size: pos.size,
@@ -543,11 +744,20 @@ pub fn finalize_close(
             .checked_add(delay_slots)
             .ok_or(DexxerError::MathOverflow)?,
         commitment_written: false,
-    });
-    pos.state = PositionState::Closed;
+    })?;
+    // Fully `Empty`, field by field: the next `open_position` overwrites
+    // `state`/`side`/`size`/`entry`/`margin`/`liq_price`/`opened_slot`, but
+    // leaving any of them set in between would show a phantom trade to the
+    // owner's client, so nothing is left behind. `closed` stays in the layout
+    // (no account migration) and is now always `None`.
+    pos.state = PositionState::Empty;
+    pos.closed = None;
+    pos.side = Side::Long;
     pos.size = 0;
+    pos.entry = 0;
     pos.margin = 0;
     pos.liq_price = 0;
+    pos.opened_slot = 0;
     pos.liq_ticks = 0;
     Ok(s)
 }

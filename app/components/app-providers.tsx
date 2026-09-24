@@ -1,3 +1,4 @@
+import { IDENTITY_URI } from '@/src/lib/solana'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MobileWalletProvider } from '@wallet-ui/react-native-web3js'
 import { PropsWithChildren } from 'react'
@@ -12,7 +13,15 @@ import { AppTheme } from '@/components/app-theme'
 // the product domain once one exists. `icon` is resolved relative to `uri`
 // per the MWA spec — this repo has no favicon served at that path, so it's
 // omitted rather than pointed at a 404.
-const identity = { name: 'Dexxer', uri: 'https://github.com/VitalikCholan/dexxer' }
+//
+// Week 5, Task 6: exported (not just module-private) so it stays the single
+// source of truth this literal object identity feeds — an `auth_token` is
+// bound to the exact `AppIdentity` it was issued under, and `mwaAuth.ts`'s
+// `identityHash`/`ensureAuthorized`/`disconnect` (wired from
+// `useOnboarding.ts`'s `connectWallet` and
+// `wallet-ui-button-disconnect.tsx`) hash it to detect a change and
+// raw-deauthorize the stale token before this repo's `uri` ever moves.
+export const identity = { name: 'Dexxer', uri: IDENTITY_URI }
 const queryClient = new QueryClient()
 export function AppProviders({ children }: PropsWithChildren) {
   return (

@@ -31,9 +31,21 @@ pub struct World {
     pub fee_payer: Keypair,
 }
 
+/// `Config.disclosure_delay_slots` every `World::bootstrap` uses — long enough
+/// that a freshly closed trade's `reveal_after_slot` is still in the future, so
+/// a `commit_aggregate` in the same slot schedules `write_commitment` only.
+pub const DEFAULT_DISCLOSURE_DELAY: u64 = 100;
+
 impl World {
     pub fn bootstrap(h: &mut Harness) -> World {
-        Self::bootstrap_inner(h, true)
+        Self::bootstrap_inner(h, true, DEFAULT_DISCLOSURE_DELAY)
+    }
+
+    /// Same as `bootstrap`, with an explicit `Config.disclosure_delay_slots`.
+    /// `0` makes every closed record due the instant it is queued, which is how
+    /// the one-bundle commitment+disclosure path is exercised (week-5 Task 1).
+    pub fn bootstrap_with_delay(h: &mut Harness, disclosure_delay_slots: u64) -> World {
+        Self::bootstrap_inner(h, true, disclosure_delay_slots)
     }
 
     /// Same as `bootstrap`, but stops short of `init_pool_live` (and, since
@@ -43,10 +55,14 @@ impl World {
     /// exist so the `has_one = admin` check (not "account already in use")
     /// is what fires.
     pub fn bootstrap_without_pool_live(h: &mut Harness) -> World {
-        Self::bootstrap_inner(h, false)
+        Self::bootstrap_inner(h, false, DEFAULT_DISCLOSURE_DELAY)
     }
 
-    fn bootstrap_inner(h: &mut Harness, with_pool_live: bool) -> World {
+    fn bootstrap_inner(
+        h: &mut Harness,
+        with_pool_live: bool,
+        disclosure_delay_slots: u64,
+    ) -> World {
         let admin = Keypair::new();
         let crank = Keypair::new();
         let mint_kp = Keypair::new();
@@ -67,7 +83,7 @@ impl World {
                 &crank.pubkey(),
                 &oracle_program,
                 &Pubkey::new_unique(),
-                100,
+                disclosure_delay_slots,
                 &crank.pubkey(), // scheduler_signer: fixed test crank, no real scheduler on LiteSVM
                 &admin.pubkey(), // fee_payer: reuse admin locally, no real scheduler on LiteSVM
                 &magic_fee_vault,
@@ -236,6 +252,21 @@ impl Trader {
             AccountMeta::new(self.user, false),
             AccountMeta::new(self.position, false),
             AccountMeta::new_readonly(w.feed, false),
+            AccountMeta::new(self.dq, false),
+            AccountMeta::new(w.fee_escrow, false),
+            // `task_context` is unconstrained (week-5 Task 3 will pass the real
+            // Magic Actions task context here): Task 0's spike measured that any
+            // existing writable account is accepted, so the position PDA stands
+            // in — it always exists and is already writable in this very
+            // instruction. No Magic program is deployed on LiteSVM, so nothing
+            // ever reads it here.
+            AccountMeta::new(self.position, false),
+            AccountMeta::new_readonly(pdas::magic_program(), false),
+            // `liq_crank_signer` (week-5 Task 3): the signer a scheduled
+            // `liquidation_check` tick carries. Only checked on the scheduling
+            // path, which is gated out here (no Magic program on LiteSVM), but
+            // passed correctly anyway so the derivation stays exercised.
+            AccountMeta::new_readonly(pdas::liq_crank_signer(), false),
         ]
     }
 }

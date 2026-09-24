@@ -35,7 +35,7 @@ import { Connection, Keypair, PublicKey } from "@solana/web3.js";
 import type { AccountInfo } from "@solana/web3.js";
 import { ORACLE, baseConn } from "../../../../tests/er/lib/env.js";
 import { DEXXER_CORE_PROGRAM_ID, DISCLOSURE_DISC, accountNs, decodeBalancesRoot, dexxerCoreProgram, pdas } from "../../../../tests/er/lib/program.js";
-import { ORACLE_STALE_MS, decodeFeed, isStale } from "./prices.js";
+import { ORACLE_STALE_MS, decodeFeed, isStale, publishTimeMs } from "./prices.js";
 import { insertDisclosure, insertPoolSnapshot, insertRoot, insertTick } from "./store.js";
 import type { DisclosureRow } from "./store.js";
 import type { DbPool } from "../db.js";
@@ -50,6 +50,8 @@ const DISCLOSURE_POLL_MS = 30_000;
 export interface IndexerStats {
   ticks: number;
   lastTickTs: number | null;
+  /** Week-5 Task 5: the ORACLE's `publish_time` of the newest decoded update, in epoch ms — what `oracleStale` is computed from (see prices.ts::isStale). */
+  lastPublishTimeMs: number | null;
   lastPoolSlot: number | null;
   disclosures: number;
 }
@@ -174,16 +176,28 @@ export function startIndexer(deps: IndexerDeps): () => void {
           }
           if (feed.postedSlot === 0n) return; // unfilled/stale — CLAUDE.md's oracle rule
           const now = Date.now();
+          const publishedAt = publishTimeMs(feed.publishTime);
           lastPrice = feed.price;
-          staleAnnounced = false; // fresh data — the next outage gets its own single announcement
+          stats.lastPublishTimeMs = publishedAt;
+          // Week-5 Task 5: only a genuinely FRESH publish clears the stale
+          // announcement. The TEE re-pushes the same bytes every ER slot, so
+          // "a notification arrived" is not evidence the publisher is alive —
+          // its `publish_time` being recent is.
+          if (!isStale(publishedAt, now, ORACLE_STALE_MS)) staleAnnounced = false;
           if (now - lastMarkAt < MARK_THROTTLE_MS) return;
           lastMarkAt = now;
           stats.ticks += 1;
           stats.lastTickTs = now;
-          void insertTick(pool, { ts: now, price: feed.price, slot }).catch((e) =>
+          void insertTick(pool, { ts: now, price: feed.price, slot, publishTime: publishedAt }).catch((e) =>
             console.error("indexer/oracle: insertTick failed", String(e)),
           );
-          broadcast({ type: "mark", price: feed.price.toString(), ts: now, stale: false });
+          broadcast({
+            type: "mark",
+            price: feed.price.toString(),
+            ts: now,
+            publishTime: publishedAt,
+            stale: isStale(publishedAt, now, ORACLE_STALE_MS),
+          });
         },
         { checkIntervalMs: 1000, staleAfterMs: 3000 },
         "oracle",
@@ -199,10 +213,16 @@ export function startIndexer(deps: IndexerDeps): () => void {
     // moment to compute it at — it must notice the transition itself.
     const staleWatchdog = setInterval(() => {
       const now = Date.now();
-      if (!staleAnnounced && isStale(stats.lastTickTs, now, ORACLE_STALE_MS)) {
+      if (!staleAnnounced && isStale(stats.lastPublishTimeMs, now, ORACLE_STALE_MS)) {
         staleAnnounced = true;
-        console.warn("indexer/oracle: feed stale, broadcasting stale:true once");
-        broadcast({ type: "mark", price: lastPrice !== null ? lastPrice.toString() : null, ts: now, stale: true });
+        console.warn("indexer/oracle: feed stale by publish_time, broadcasting stale:true once");
+        broadcast({
+          type: "mark",
+          price: lastPrice !== null ? lastPrice.toString() : null,
+          ts: now,
+          publishTime: stats.lastPublishTimeMs,
+          stale: true,
+        });
       }
     }, 1000);
     staleWatchdog.unref();

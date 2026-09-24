@@ -6,15 +6,18 @@
 // each leg is idempotent, so re-tapping after a failure resumes rather than
 // restarts.
 //
-// Copy correction (controller ruling — measured fact overrides the design
-// mockup): the subtitle is NOT "No SOL needed" — rent for the L1
-// PDAs/eSPL delegation is sponsored (`services/relayer`'s `/sponsor`,
-// Task 6), but `delegate_user`'s own CPI to the Delegation Program still
-// draws directly from the owner and has no sponsor path (Task 6 fix round
-// 1's residual-gap finding, `batchOnboarding.ts`'s header comment): a
-// genuinely 0-SOL wallet cannot complete onboarding, real measured minimum
-// ≈0.0033-0.0035 SOL. The subtitle below says so plainly instead of
-// promising zero.
+// Copy (week 5, Task 6): "No SOL needed — account rent is sponsored" is now
+// accurate, not aspirational. Week 4's fix round left two owner-funded
+// costs — the ATA-create and `delegate_user`'s own rent (no distinct
+// `payer` field at all) — which week 5 closed on both ends:
+// `delegate_user` gained a `payer` split from `owner`
+// (programs/dexxer_core/src/instructions/user.rs), and
+// `services/relayer/src/sponsor.ts`'s whitelist now fronts both. The ER
+// leg (`init_permissions`/`set_session`) still costs the owner its own
+// (negligible) ER network fee — it cannot be sponsored at all
+// (`InvalidAccountForFee`, `batchOnboarding.ts`'s file header) — but that
+// is not SOL rent, and the ER leg is funded from the shared ephemeral
+// vault, not the owner's L1 balance.
 import { router } from 'expo-router'
 import { ScrollView, Text, View } from 'react-native'
 import { AppPage } from '@/components/app-page'
@@ -95,7 +98,7 @@ export function OnboardScreen() {
           {busy ? 'Confirming…' : failedStep ? 'Retry' : 'Confirm in wallet'}
         </Button>
         <Text style={[caption, { color: colors.textSecondary, textAlign: 'center' }]}>
-          Account rent is sponsored — you need ≈0.004 SOL for delegation
+          No SOL needed — rent is sponsored for empty wallets; a wallet holding SOL pays its own (≈0.03 SOL)
         </Text>
       </ScrollView>
     </AppPage>

@@ -21,6 +21,7 @@ import { Address } from '@/src/ui/Address'
 import { Skeleton } from '@/src/ui/Skeleton'
 import { showToast } from '@/src/ui/Toast'
 import { useTeeConnection } from '@/src/lib/er'
+import { useMwaSigning } from '@/src/lib/mwaAuth'
 import { useLiveAccount } from '@/src/lib/live'
 import { decodeDisclosureQueue, decodePosition, decodeUserAccount, describeTxError } from '@/src/lib/program'
 import { formatSessionLeft } from '@/src/lib/status'
@@ -44,7 +45,12 @@ export function AccountScreen() {
   const { colors, space } = useTheme()
   const heading = useTextStyle('heading')
 
-  const { account, signTransactions } = useMobileWallet()
+  const { account } = useMobileWallet()
+  // Retry-wrapped `signTransactions` — a wallet's `reauthorize` rejection
+  // (Phantom `-1`) self-heals with one fresh `authorize` prompt instead of
+  // surfacing as `-1 authorization request failed` (`mwaAuth.ts`'s "Phantom
+  // reauthorize bug" section).
+  const { signTransactions } = useMwaSigning()
   const { getConnection } = useTeeConnection()
   const { owner, conn, accounts, loading, error } = useTradeSession()
   const gate = useOnboardingGate()
@@ -65,6 +71,7 @@ export function AccountScreen() {
       showToast({ tone: 'success', text: `${label} confirmed` })
       setSheet(null)
     } catch (e) {
+      console.error(`[dexxer] ${label} failed:`, e)
       showToast({ tone: 'danger', text: describeTxError(e) })
     } finally {
       setBusy(false)
@@ -108,9 +115,11 @@ export function AccountScreen() {
 
   const checklist: ExitChecklist = {
     noOpenPosition: position.value === null || position.value.state === 'Empty',
-    historyQueueEmpty: dq.value === null || dq.value.len === 0,
     balanceWithdrawn: user.value === null || (user.value.freeMargin === 0n && user.value.lockedMargin === 0n),
   }
+  // Informational only (week-5 Task 2 retired the `QueueNotEmpty` gate) —
+  // how many still-queued trades will be revealed on schedule after exit.
+  const pendingDisclosures = dq.value?.len ?? 0
 
   return (
     <AppPage>
@@ -179,6 +188,7 @@ export function AccountScreen() {
           open={sheet === 'exit'}
           onClose={() => setSheet(null)}
           checklist={checklist}
+          pendingDisclosures={pendingDisclosures}
           busy={busy}
           onConfirm={handleExit}
         />

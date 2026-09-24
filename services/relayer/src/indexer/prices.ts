@@ -111,10 +111,32 @@ export function decodeFeed(data: Buffer | Uint8Array): DecodedFeed {
 // `mark` frame, `/healthz.indexer.oracleStale`) rather than silently
 // serving old data.
 
-/** A tick/mark is "live" only if it landed within the last `ORACLE_STALE_MS`. */
+/** A mark is "live" only if the ORACLE published it within the last `ORACLE_STALE_MS`. */
 export const ORACLE_STALE_MS = 30_000;
 
-/** Pure predicate — `lastTs === null` (never any data) also counts as stale. */
-export function isStale(lastTs: number | null, now: number, maxAgeMs: number): boolean {
-  return lastTs === null || now - lastTs > maxAgeMs;
+/**
+ * The feed's `publish_time` (unix seconds, as `oracle.rs::parse_price_update`
+ * reads it) as epoch milliseconds — the unit `isStale` compares in.
+ */
+export function publishTimeMs(publishTime: bigint): number {
+  return Number(publishTime) * 1000;
+}
+
+/**
+ * Week-5 Task 5: staleness is measured against the ORACLE's own
+ * `publish_time`, not against the moment this process last received an
+ * account notification. The two differ exactly where it matters — the TEE
+ * pushes a notification on every ER slot whether or not the feed's bytes
+ * changed (week-4 finding, `useLiveAccount`), so a publisher that has
+ * stopped publishing still looks perfectly live by arrival time and does
+ * not by publish time. `oracle.rs` already gates every on-chain read the
+ * same way (`clock - publish_time <= max_staleness_secs`); this makes the
+ * relayer's public surface agree with the program.
+ *
+ * `null` (no data at all) counts as stale. A publish time in the FUTURE
+ * (clock skew between the publisher and this process) does not — only a
+ * value older than `maxAgeMs` does.
+ */
+export function isStale(publishTimeMs: number | null, now: number, maxAgeMs: number = ORACLE_STALE_MS): boolean {
+  return publishTimeMs === null || now - publishTimeMs > maxAgeMs;
 }

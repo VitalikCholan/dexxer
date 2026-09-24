@@ -2,9 +2,12 @@
 //
 // Task 10: the 3-step "Set up private account" list. Maps the design's 3
 // steps onto `batchOnboarding.ts`'s actual legs (brief's own mapping): L1a
-// (faucet_init + init_user) = "Create private accounts (L1)", L1b
-// (delegateSpl + delegate_user) = "Move them into the private enclave
-// (L1)", the ER leg + session top-up = "Activate session key (enclave)".
+// (faucet_init + init_user|init_user_reuse_queue) = "Create private accounts
+// (L1)", L1b (delegateSpl + delegate_user) = "Move them into the private
+// enclave (L1)", the ER leg (init_permissions + set_session) = "Activate
+// session key (enclave)" — week 5, Task 6 dropped the session lamports
+// top-up leg entirely (zero-SOL onboarding), so this step is just the ER leg
+// now.
 import { Text, View } from 'react-native'
 import { useTheme } from '@/src/theme'
 import { useTextStyle } from '@/src/ui/styles'
@@ -32,7 +35,7 @@ interface StepDef {
 const STEPS: StepDef[] = [
   { label: 'Create private accounts (L1)', doneAt: 'Initialized', legs: ['faucet+init_user'] },
   { label: 'Move them into the private enclave (L1)', doneAt: 'Delegated', legs: ['delegate'] },
-  { label: 'Activate session key (enclave)', doneAt: 'SessionSet', legs: ['permissions+session', 'session top-up'] },
+  { label: 'Activate session key (enclave)', doneAt: 'SessionSet', legs: ['permissions+session'] },
 ]
 
 function stepStatus(step: StepDef, state: OnboardState, progress: BatchProgress): StepStatus {

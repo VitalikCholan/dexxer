@@ -68,6 +68,9 @@ pub mod dexxer_core {
     ) -> Result<()> {
         admin::set_scheduler_signer(ctx, new_scheduler_signer)
     }
+    pub fn set_disclosure_delay(ctx: Context<AdminConfig>, slots: u64) -> Result<()> {
+        admin::set_disclosure_delay(ctx, slots)
+    }
     pub fn seed_pool(ctx: Context<SeedPool>, amount: u64) -> Result<()> {
         admin::seed_pool(ctx, amount)
     }
@@ -100,8 +103,8 @@ pub mod dexxer_core {
     pub fn withdraw(ctx: Context<Withdraw>, amount: u64) -> Result<()> {
         user::withdraw(ctx, amount)
     }
-    pub fn open_position(
-        ctx: Context<Trade>,
+    pub fn open_position<'info>(
+        ctx: Context<'info, Trade<'info>>,
         side: Side,
         size: u64,
         margin: u64,
@@ -112,7 +115,10 @@ pub mod dexxer_core {
     pub fn add_margin(ctx: Context<Trade>, amount: u64) -> Result<()> {
         trade::add_margin(ctx, amount)
     }
-    pub fn close_position(ctx: Context<Trade>, limit_price: u64) -> Result<()> {
+    pub fn close_position<'info>(
+        ctx: Context<'info, Trade<'info>>,
+        limit_price: u64,
+    ) -> Result<()> {
         trade::close_position(ctx, limit_price)
     }
     pub fn increase_position(
@@ -123,8 +129,18 @@ pub mod dexxer_core {
     ) -> Result<()> {
         trade::increase_position(ctx, add_size, add_margin, limit_price)
     }
-    pub fn decrease_position(ctx: Context<Trade>, close_size: u64, limit_price: u64) -> Result<()> {
+    pub fn decrease_position<'info>(
+        ctx: Context<'info, Trade<'info>>,
+        close_size: u64,
+        limit_price: u64,
+    ) -> Result<()> {
         trade::decrease_position(ctx, close_size, limit_price)
+    }
+    /// Week-5 Task 3: the per-position scheduled liquidation task's
+    /// instruction. Registered by `open_position`, signed by
+    /// `crank_signer_pda(fee_escrow)`, never carries `remaining_accounts`.
+    pub fn liquidation_check(ctx: Context<LiquidationCheck>) -> Result<()> {
+        liquidation::liquidation_check(ctx)
     }
     pub fn crank_tick<'info>(ctx: Context<'info, CrankTick<'info>>) -> Result<()> {
         crank::crank_tick(ctx)
@@ -143,8 +159,11 @@ pub mod dexxer_core {
     ) -> Result<()> {
         crank::cancel_crank(ctx, task_id)
     }
-    pub fn commit_aggregate<'info>(ctx: Context<'info, CommitAggregate<'info>>) -> Result<()> {
-        commit::commit_aggregate(ctx)
+    pub fn commit_aggregate<'info>(
+        ctx: Context<'info, CommitAggregate<'info>>,
+        max_actions: u8,
+    ) -> Result<()> {
+        commit::commit_aggregate(ctx, max_actions)
     }
     pub fn commit_market(ctx: Context<CommitMarket>) -> Result<()> {
         commit::commit_market(ctx)
@@ -170,8 +189,20 @@ pub mod dexxer_core {
     pub fn init_market_permissions(ctx: Context<InitMarketPermissions>) -> Result<()> {
         user::init_market_permissions(ctx)
     }
-    pub fn undelegate_user(ctx: Context<UndelegateUser>) -> Result<()> {
+    pub fn undelegate_user<'info>(ctx: Context<'info, UndelegateUser<'info>>) -> Result<()> {
         user::undelegate_user(ctx)
+    }
+    pub fn close_orphan_queue(ctx: Context<CloseOrphanQueue>) -> Result<()> {
+        user::close_orphan_queue(ctx)
+    }
+    pub fn close_exited_user(ctx: Context<CloseExitedUser>) -> Result<()> {
+        user::close_exited_user(ctx)
+    }
+    pub fn init_user_reuse_queue(
+        ctx: Context<InitUserReuseQueue>,
+        exit_salt: [u8; 32],
+    ) -> Result<()> {
+        user::init_user_reuse_queue(ctx, exit_salt)
     }
     pub fn write_commitment(
         ctx: Context<WriteCommitment>,
@@ -186,9 +217,6 @@ pub mod dexxer_core {
         salt: [u8; 32],
     ) -> Result<()> {
         disclosure::write_disclosure(ctx, args, salt)
-    }
-    pub fn mark_committed(ctx: Context<MarkCommitted>) -> Result<()> {
-        disclosure::mark_committed(ctx)
     }
     pub fn init_balances_root(ctx: Context<InitBalancesRoot>) -> Result<()> {
         root::init_balances_root(ctx)

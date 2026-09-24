@@ -26,6 +26,7 @@ import {
 import { useMobileWallet } from '@wallet-ui/react-native-web3js'
 import { TEE_RPC, baseConn } from '../lib/solana'
 import { pickSignature, toPublicKey } from './mwa'
+import { ensureAuthorized } from '../lib/mwaAuth'
 
 const PROGRAM_ID = new PublicKey('2DvXCXzp56aFw8JsHrMuiRwZWizZjxwaqzYo2ADKH2W7')
 // Devnet TEE validator identity (spikes/.env, verified by spikes/00-identity.ts).
@@ -57,13 +58,18 @@ async function routerStatus(account: PublicKey): Promise<{ isDelegated: boolean;
 }
 
 export function Check8() {
-  const { account, connect, signTransactions, signAndSendTransaction, signMessages } = useMobileWallet()
+  const { account, connect, identity, store, signTransactions, signAndSendTransaction, signMessages } =
+    useMobileWallet()
   const [out, setOut] = useState('Step 1: Onboard (3 MWA prompts). Step 2: Run Check 8.')
   const [busy, setBusy] = useState(false)
 
+  // Week 5, Task 6, fix round 1: routed through `mwaAuth.ensureAuthorized`
+  // for the same reason as every other raw `connect()` call site — see
+  // `mwaAuth.ts`'s file header. `typeof connect` still logs the raw hook
+  // function (unaffected — that's what this diagnostic is checking).
   async function withWallet(log: string[]) {
     log.push(`typeof connect=${typeof connect} account=${account ? 'set' : 'undefined'}`)
-    const wallet = account ?? (await connect())
+    const wallet = account ?? (await ensureAuthorized(identity, connect, store))
     log.push(`wallet.address type=${typeof wallet.address} ctor=${(wallet.address as any)?.constructor?.name}`)
     const owner = toPublicKey(wallet.address)
     log.push(`Buffer=${typeof Buffer} from=${typeof (globalThis as any).Buffer?.from}`)
@@ -157,7 +163,11 @@ export function Check8() {
               ix(
                 [
                   { pubkey: owner, isSigner: true, isWritable: false },
-                  { pubkey: delegateBufferPdaFromDelegatedAccountAndOwnerProgram(counter, PROGRAM_ID), isSigner: false, isWritable: true },
+                  {
+                    pubkey: delegateBufferPdaFromDelegatedAccountAndOwnerProgram(counter, PROGRAM_ID),
+                    isSigner: false,
+                    isWritable: true,
+                  },
                   { pubkey: delegationRecordPdaFromDelegatedAccount(counter), isSigner: false, isWritable: true },
                   { pubkey: delegationMetadataPdaFromDelegatedAccount(counter), isSigner: false, isWritable: true },
                   { pubkey: counter, isSigner: false, isWritable: true },

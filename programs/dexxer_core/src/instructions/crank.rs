@@ -1,5 +1,8 @@
 use crate::{
-    errors::DexxerError, instructions::trade::finalize_close, math, oracle::read_price, risk,
+    errors::DexxerError,
+    instructions::liquidation::{liq_due, liquidate_now},
+    math,
+    oracle::read_price,
     state::*,
 };
 use anchor_lang::prelude::*;
@@ -28,6 +31,72 @@ pub struct CrankTick<'info> {
     pub pool_live: Account<'info, PoolLive>,
     /// CHECK: validated in oracle::read_price
     pub feed: UncheckedAccount<'info>,
+}
+
+/// One candidate's liquidation, split out and `#[inline(never)]` so the
+/// `DisclosureQueue` local (up to 1300 B, `state/mod.rs`'s
+/// `print_sizes_for_spec_q3` bound) lives in its own call frame instead of
+/// `crank_tick`'s, which already carries a `Position` and a `UserAccount` and
+/// would blow the SBF 4096-byte stack limit — the same split
+/// `commit_aggregate` needed for the same account (`commit.rs`).
+///
+/// Everything this function touches is work only a candidate that is ACTUALLY
+/// being liquidated needs, which is why the queue's PDA derivation and decode
+/// live here rather than in `crank_tick`'s per-candidate preamble: a
+/// `find_program_address` is ~1.5k CU and a full tick carries up to
+/// `MAX_CANDIDATES` of them, almost none of which liquidate (fix round 1,
+/// finding 4). The cheap structural checks on `dq_ai` (program-owned,
+/// writable) stay in the loop, where they cost nothing.
+///
+/// Returns `false` when the owner's ring is full: the record is the only copy
+/// of the closed trade, so it must not be dropped — but neither may one such
+/// candidate abort the whole batch and take every other liquidation in the
+/// tick down with it (that would make a market-wide liquidation DoS cost
+/// eight open/close pairs — fix round 1, finding 2). The position stays
+/// `Open`, keeps accruing `liq_ticks`, and is liquidated on a later tick once
+/// a `commit_aggregate` reveal drains the ring. `close_position`'s own
+/// `QueueFull` stays a hard, atomic revert: that one is user-facing and the
+/// user can wait.
+#[allow(clippy::too_many_arguments)]
+#[inline(never)]
+fn liquidate_candidate(
+    dq_ai: &AccountInfo,
+    market_key: Pubkey,
+    risk_acc: &mut MarketRisk,
+    pool: &mut PoolLive,
+    user: &mut UserAccount,
+    pos: &mut Position,
+    mark: u64,
+    fee_bps: u32,
+    clock: &Clock,
+    delay_slots: u64,
+) -> Result<bool> {
+    // The queue's address is derived from the position's own owner, which is
+    // what binds it to this candidate; `dq.owner` is re-checked after the
+    // decode as defence in depth.
+    let (exp_dq, _) = Pubkey::find_program_address(&[DQ_SEED, pos.owner.as_ref()], &crate::ID);
+    require!(dq_ai.key() == exp_dq, DexxerError::InvalidCandidate);
+    let mut dq = DisclosureQueue::try_deserialize(&mut &dq_ai.try_borrow_data()?[..])?;
+    require!(dq.owner == pos.owner, DexxerError::InvalidCandidate);
+    // The settlement itself is shared with the scheduled per-position path
+    // (week-5 Task 3) so the two can never drift apart; everything above is
+    // this path's own untyped-account plumbing.
+    let done = liquidate_now(
+        market_key,
+        risk_acc,
+        pool,
+        user,
+        pos,
+        &mut dq,
+        mark,
+        fee_bps,
+        clock,
+        delay_slots,
+    )?;
+    if done {
+        dq.try_serialize(&mut &mut dq_ai.try_borrow_mut_data()?[..])?;
+    }
+    Ok(done)
 }
 
 // anchor-lang 1.0.2's `Context<'info, T>` carries a single lifetime (not the
@@ -84,26 +153,32 @@ pub fn crank_tick<'info>(mut ctx: Context<'info, CrankTick<'info>>) -> Result<()
         return Ok(());
     }
     let mark = m.mark;
-    // (3)-(5) candidates: pairs [position, user_account]
+    // (3)-(5) candidates: triples [position, user_account, disclosure_queue].
+    // The queue joined the tuple in week-5 Task 1: a liquidation is a close,
+    // and a close now pushes its `ClosedRecord` straight into the owner's ring
+    // (`finalize_close`), so the crank must carry that account for every
+    // candidate it might liquidate this tick.
     let rem = ctx.remaining_accounts;
     require!(
-        rem.len() % 2 == 0 && rem.len() / 2 <= MAX_CANDIDATES,
+        rem.len() % 3 == 0 && rem.len() / 3 <= MAX_CANDIDATES,
         DexxerError::InvalidCandidate
     );
-    // Reject a duplicate [Position, UserAccount] pair inside the same
-    // remaining_accounts list — without this, the same candidate passed
+    // Reject a duplicate [Position, UserAccount, DisclosureQueue] triple inside
+    // the same remaining_accounts list — without this, the same candidate passed
     // twice would run `liquidatable_now`/hysteresis logic twice in one tx,
     // double-incrementing `liq_ticks` and being able to trip liquidation a
     // tick early.
     let mut seen: [Pubkey; MAX_CANDIDATES] = [Pubkey::default(); MAX_CANDIDATES];
     let mut seen_len: usize = 0;
-    for pair in rem.chunks(2) {
-        let (pos_ai, user_ai) = (&pair[0], &pair[1]);
+    for triple in rem.chunks(3) {
+        let (pos_ai, user_ai, dq_ai) = (&triple[0], &triple[1], &triple[2]);
         require!(
             pos_ai.owner == &crate::ID
                 && user_ai.owner == &crate::ID
+                && dq_ai.owner == &crate::ID
                 && pos_ai.is_writable
-                && user_ai.is_writable,
+                && user_ai.is_writable
+                && dq_ai.is_writable,
             DexxerError::InvalidCandidate
         );
         require!(
@@ -113,7 +188,27 @@ pub fn crank_tick<'info>(mut ctx: Context<'info, CrankTick<'info>>) -> Result<()
         seen[seen_len] = pos_ai.key();
         seen_len = seen_len.checked_add(1).ok_or(DexxerError::MathOverflow)?;
         let mut pos = Position::try_deserialize(&mut &pos_ai.try_borrow_data()?[..])?;
-        let mut user = UserAccount::try_deserialize(&mut &user_ai.try_borrow_data()?[..])?;
+        // Week-5 Task 2 appended `exited` to `UserAccount` (layout version 2),
+        // so a v1 account created before that upgrade is one byte short and
+        // cannot be deserialized into the current struct at all. That is not a
+        // recoverable state and this skip does not make it one: a v1 account is
+        // unreadable by EVERY typed instruction, so its owner can neither close
+        // an open position nor be liquidated — the skip only keeps ONE such
+        // candidate from taking the whole tick's liquidations down with it
+        // (same containment rule as the full-ring skip below).
+        //
+        // No program-side migration exists, deliberately (fix round 1,
+        // controller ruling IMPORTANT 3): devnet's legacy accounts are test
+        // wallets, and the devnet policy is to close their positions on the OLD
+        // program before this upgrade is deployed (inventoried in Task 4). A
+        // production upgrade would need a real realloc migration instead.
+        let mut user = match UserAccount::try_deserialize(&mut &user_ai.try_borrow_data()?[..]) {
+            Ok(u) => u,
+            Err(_) => {
+                msg!("liq skipped: undecodable user account {}", user_ai.key());
+                continue;
+            }
+        };
         require!(
             pos.market == market_key && pos.owner == user.owner,
             DexxerError::InvalidCandidate
@@ -124,6 +219,9 @@ pub fn crank_tick<'info>(mut ctx: Context<'info, CrankTick<'info>>) -> Result<()
         );
         let (exp_user, _) =
             Pubkey::find_program_address(&[USER_SEED, user.owner.as_ref()], &crate::ID);
+        // `dq_ai`'s address is checked inside `liquidate_candidate`, not here:
+        // it is only ever read on the liquidation path, and deriving it for
+        // every candidate costs ~1.5k CU each (fix round 1, finding 4).
         require!(
             pos_ai.key() == exp_pos && user_ai.key() == exp_user,
             DexxerError::InvalidCandidate
@@ -131,29 +229,30 @@ pub fn crank_tick<'info>(mut ctx: Context<'info, CrankTick<'info>>) -> Result<()
         if pos.state != PositionState::Open {
             continue;
         }
-        if risk::liquidatable_now(&pos, &a.market, mark)? {
-            pos.liq_ticks = pos
-                .liq_ticks
-                .checked_add(1)
-                .ok_or(DexxerError::MathOverflow)?;
-            if pos.liq_ticks >= a.market.liq_hysteresis_ticks {
-                let fee_bps = a.market.liq_fee_bps as u32;
-                let delay = a.config.disclosure_delay_slots;
-                finalize_close(
-                    market_key,
-                    &mut a.market_risk,
-                    &mut a.pool_live,
-                    &mut user,
-                    &mut pos,
-                    mark,
-                    fee_bps,
-                    CloseReason::Liquidated,
-                    &clock,
-                    delay,
-                )?;
+        // Hysteresis is shared with `liquidation_check` (week-5 Task 3) — the
+        // one place `liq_ticks` moves, on either path.
+        if liq_due(&mut pos, &a.market, mark)? {
+            let fee_bps = a.market.liq_fee_bps as u32;
+            let delay = a.config.disclosure_delay_slots;
+            let done = liquidate_candidate(
+                dq_ai,
+                market_key,
+                &mut a.market_risk,
+                &mut a.pool_live,
+                &mut user,
+                &mut pos,
+                mark,
+                fee_bps,
+                &clock,
+                delay,
+            )?;
+            if !done {
+                // Ring full — skipped, not failed (see `liquidate_candidate`).
+                // `liq_ticks` above is still written back below, so the
+                // position stays hot and liquidates on the first tick after
+                // a reveal drains the ring.
+                msg!("liq skipped: queue full {}", pos_ai.key());
             }
-        } else {
-            pos.liq_ticks = 0;
         }
         pos.try_serialize(&mut &mut pos_ai.try_borrow_mut_data()?[..])?;
         user.try_serialize(&mut &mut user_ai.try_borrow_mut_data()?[..])?;

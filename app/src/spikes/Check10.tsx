@@ -12,13 +12,14 @@ import { getAuthToken } from '@magicblock-labs/ephemeral-rollups-sdk'
 import { useMobileWallet } from '@wallet-ui/react-native-web3js'
 import { pickSignature, toPublicKey } from './mwa'
 import { TEE_RPC } from '../lib/solana'
+import { ensureAuthorized } from '../lib/mwaAuth'
 
 const PROGRAM_ID = new PublicKey('2DvXCXzp56aFw8JsHrMuiRwZWizZjxwaqzYo2ADKH2W7')
 const TEE_WS = TEE_RPC.replace(/^https/, 'wss')
 const LISTEN_TIMEOUT_MS = 60_000
 
 export function Check10() {
-  const { account, connect, signMessages } = useMobileWallet()
+  const { account, connect, identity, store, signMessages } = useMobileWallet()
   const [out, setOut] = useState(
     'Tap Run, then within 60 s tap "Run Check 8 (increment)" above — it mutates this wallet’s counter (Onboard first).',
   )
@@ -46,7 +47,8 @@ export function Check10() {
     setBusy(true)
     setOut('connecting…')
     try {
-      const wallet = account ?? (await connect())
+      // Week 5, Task 6, fix round 1: routed through `mwaAuth.ensureAuthorized` — see `mwaAuth.ts`'s file header.
+      const wallet = account ?? (await ensureAuthorized(identity, connect, store))
       const owner = toPublicKey(wallet.address)
       const auth = await getAuthToken(TEE_RPC, owner, async (m) => pickSignature(m, await signMessages(m), owner))
       const tee = new Connection(`${TEE_RPC}?token=${auth.token}`, {
@@ -55,7 +57,10 @@ export function Check10() {
       })
       connRef.current = tee
 
-      const [counter] = PublicKey.findProgramAddressSync([new TextEncoder().encode('counter'), owner.toBytes()], PROGRAM_ID)
+      const [counter] = PublicKey.findProgramAddressSync(
+        [new TextEncoder().encode('counter'), owner.toBytes()],
+        PROGRAM_ID,
+      )
 
       const t0 = Date.now()
       setOut(`subscribed to ${counter.toBase58()}, waiting for a change…`)

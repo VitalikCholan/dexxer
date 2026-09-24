@@ -104,73 +104,40 @@ pub fn write_disclosure(
     Ok(())
 }
 
-#[derive(Accounts)]
-pub struct MarkCommitted<'info> {
-    pub crank: Signer<'info>,
-    #[account(seeds = [CONFIG_SEED], bump = config.bump,
-        constraint = crank.key() == config.crank @ DexxerError::Unauthorized)]
-    pub config: Box<Account<'info, Config>>,
-    #[account(mut, seeds = [POSITION_SEED, position.owner.as_ref(), position.market.as_ref()], bump = position.bump)]
-    pub position: Box<Account<'info, Position>>,
-    #[account(mut, seeds = [DQ_SEED, position.owner.as_ref()], bump = dq.bump)]
-    pub dq: Box<Account<'info, DisclosureQueue>>,
-}
-
-/// Crank observed the `Commitment` PDA on base (the ER cannot read L1 — spec
-/// risk #2) and now retires the closed record into the disclosure ring,
-/// returning the position to `Empty` so the trader can open again. Crank-
-/// asserted by design (spec risk #20); the L1 `Commitment` is public, so a
-/// crank that lies here is visible to anyone after the fact.
+/// Records in the ring whose `write_commitment` has not been scheduled yet ->
+/// `(nonce, hash)` for `commit_aggregate` to turn into `write_commitment`
+/// post-commit actions, newest-last in ring order, at most `max` of them.
 ///
-/// Order matters (controller ruling 7, week 3): validate -> push into the
-/// queue -> only then reset the position. `commitment_written` must never be
-/// cleared before the record is safely queued, since a failure between those
-/// two steps would otherwise let a later `commit_aggregate` re-emit
-/// `write_commitment` for a nonce that already has an L1 record.
-pub fn mark_committed(ctx: Context<MarkCommitted>) -> Result<()> {
-    let pos = &mut ctx.accounts.position;
-    require!(pos.state == PositionState::Closed, DexxerError::NotClosed);
-    let rec = pos.closed.ok_or(DexxerError::NotClosed)?;
-    require!(rec.commitment_written, DexxerError::CommitmentNotWritten);
-
-    let dq = &mut ctx.accounts.dq;
-    require!((dq.len as usize) < DQ_CAPACITY, DexxerError::QueueFull);
-    let idx = (dq.head as usize)
-        .checked_add(dq.len as usize)
-        .ok_or(DexxerError::MathOverflow)?
-        % DQ_CAPACITY;
-    dq.records[idx] = rec;
-    dq.len = dq.len.checked_add(1).ok_or(DexxerError::MathOverflow)?;
-
-    pos.closed = None;
-    pos.state = PositionState::Empty;
-    pos.side = Side::Long;
-    pos.size = 0;
-    pos.entry = 0;
-    pos.margin = 0;
-    pos.liq_price = 0;
-    pos.opened_slot = 0;
-    pos.liq_ticks = 0;
-    pos.oi_notional = 0;
-    Ok(())
-}
-
-/// A closed position whose commitment has not been emitted yet -> (nonce, hash).
-/// Used by `commit_aggregate` to decide whether a `Position` in `remaining_accounts`
-/// needs a `write_commitment` post-commit action this bundle.
-pub fn pending_commitment(pos: &Position) -> Option<(u64, [u8; 32])> {
-    if pos.state != PositionState::Open && pos.state != PositionState::Empty {
-        if let Some(rec) = pos.closed.as_ref() {
-            if !rec.commitment_written {
-                let args = DisclosureArgs::from(rec);
-                return Some((rec.nonce, commitment_hash(&args, &rec.salt)));
-            }
+/// The `commitment_written` flag is flipped HERE, in the same ER transaction
+/// that schedules the action (week-5 Task 1) — which is what retires the
+/// crank-asserted `mark_committed` step and with it spec risk #20: the program
+/// no longer has to take the crank's word that an L1 `Commitment` exists. A
+/// failed/replayed bundle cannot re-emit an action for the same record, and a
+/// nonce whose commitment did land hard-fails `write_commitment`'s L1 `init`
+/// anyway (week-3 controller ruling 7). What remains is spec risk #26: a
+/// dropped bundle leaves the record flagged with no L1 `Commitment` behind it.
+pub fn pending_commitments(dq: &mut DisclosureQueue, max: usize) -> Result<Vec<(u64, [u8; 32])>> {
+    let mut out = Vec::new();
+    for i in 0..dq.len as usize {
+        if out.len() >= max {
+            break;
+        }
+        let idx = (dq.head as usize)
+            .checked_add(i)
+            .ok_or(DexxerError::MathOverflow)?
+            % DQ_CAPACITY;
+        let rec = &mut dq.records[idx];
+        if !rec.commitment_written {
+            let args = DisclosureArgs::from(&*rec);
+            out.push((rec.nonce, commitment_hash(&args, &rec.salt)));
+            rec.commitment_written = true;
         }
     }
-    None
+    Ok(out)
 }
 
-/// Pops up to `max` records whose reveal slot has passed (`reveal_after_slot <= slot`).
+/// Pops up to `max` records that are both already committed (`commitment_written`)
+/// and past their reveal slot (`reveal_after_slot <= slot`).
 /// Ring order is preserved for the remaining records (compaction is O(len), len <= 8).
 /// Records are popped only when they are actually emitted here — never peeked and left —
 /// so a `write_disclosure` action for a given nonce is scheduled at most once.
@@ -184,7 +151,11 @@ pub fn due_reveals(
     for i in 0..dq.len as usize {
         let idx = (dq.head as usize + i) % DQ_CAPACITY;
         let rec = dq.records[idx];
-        if rec.reveal_after_slot <= slot && out.len() < max {
+        // `commitment_written` first: a disclosure may never reach L1 before
+        // the commitment it opens, so a record whose `write_commitment` has
+        // not been scheduled yet waits here even if its reveal slot passed
+        // (`WriteDisclosure` reads the `Commitment` PDA and would fail).
+        if rec.commitment_written && rec.reveal_after_slot <= slot && out.len() < max {
             out.push((DisclosureArgs::from(&rec), rec.salt));
         } else {
             kept.push(rec);
@@ -197,4 +168,101 @@ pub fn due_reveals(
     dq.head = 0;
     dq.len = u8::try_from(kept.len()).map_err(|_| DexxerError::MathOverflow)?;
     Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn queue(recs: &[ClosedRecord]) -> DisclosureQueue {
+        let mut records = [ClosedRecord::default(); DQ_CAPACITY];
+        records[..recs.len()].copy_from_slice(recs);
+        DisclosureQueue {
+            version: 1,
+            owner: Pubkey::default(),
+            head: 0,
+            len: recs.len() as u8,
+            records,
+            bump: 255,
+        }
+    }
+
+    fn record(nonce: u64, reveal_after_slot: u64, commitment_written: bool) -> ClosedRecord {
+        ClosedRecord {
+            nonce,
+            reveal_after_slot,
+            commitment_written,
+            ..ClosedRecord::default()
+        }
+    }
+
+    /// The rule `commit_aggregate` leans on: a disclosure may never be scheduled
+    /// before the commitment it opens, even when the reveal slot is long past.
+    /// Isolated here because in a real bundle `pending_commitments` runs first
+    /// and normally flips the flag before `due_reveals` ever sees the record —
+    /// the skip is only observable once the action budget runs out.
+    #[test]
+    fn due_reveals_skips_due_but_uncommitted() {
+        let mut dq = queue(&[record(1, 0, false)]);
+        let out = due_reveals(&mut dq, 10_000, 8).unwrap();
+        assert!(
+            out.is_empty(),
+            "an uncommitted record must never be revealed"
+        );
+        assert_eq!(dq.len, 1, "and it must stay in the ring");
+        assert_eq!(dq.records[0].nonce, 1);
+
+        dq.records[0].commitment_written = true;
+        let out = due_reveals(&mut dq, 10_000, 8).unwrap();
+        assert_eq!(out.len(), 1, "once committed, the same record is due");
+        assert_eq!(dq.len, 0);
+    }
+
+    #[test]
+    fn pending_commitments_flags_only_what_it_returns() {
+        let mut dq = queue(&[record(1, 0, false), record(2, 0, false), record(3, 0, true)]);
+        let out = pending_commitments(&mut dq, 1).unwrap();
+        assert_eq!(out.len(), 1, "clamped to `max`");
+        assert_eq!(out[0].0, 1, "ring order: oldest unwritten first");
+        assert!(
+            dq.records[0].commitment_written,
+            "the returned record is flagged"
+        );
+        assert!(
+            !dq.records[1].commitment_written,
+            "a record left out of the budget keeps its flag for the next bundle"
+        );
+
+        let out = pending_commitments(&mut dq, 8).unwrap();
+        assert_eq!(out.len(), 1, "already-written records are never re-emitted");
+        assert_eq!(out[0].0, 2);
+        assert!(pending_commitments(&mut dq, 8).unwrap().is_empty());
+    }
+
+    #[test]
+    fn push_fills_the_ring_then_rejects() {
+        let mut dq = queue(&[]);
+        for n in 0..DQ_CAPACITY as u64 {
+            dq.push(record(n, 0, false)).unwrap();
+        }
+        assert_eq!(dq.len as usize, DQ_CAPACITY);
+        let err = dq.push(record(99, 0, false)).unwrap_err();
+        // `require!` wraps the variant in an `AnchorError` carrying the source
+        // location, so compare the error number rather than the rendered string.
+        match err {
+            anchor_lang::error::Error::AnchorError(e) => assert_eq!(
+                e.error_code_number,
+                anchor_lang::error::ERROR_CODE_OFFSET + DexxerError::QueueFull as u32
+            ),
+            other => panic!("expected QueueFull, got {other:?}"),
+        }
+        assert_eq!(
+            dq.len as usize, DQ_CAPACITY,
+            "a rejected push changes nothing"
+        );
+        assert!(
+            dq.records.iter().all(|r| r.nonce != 99),
+            "the rejected record must not have landed anywhere in the ring"
+        );
+    }
 }

@@ -4,296 +4,51 @@
 //   NotOnboarded -> Funded -> Initialized -> Delegated -> Credited ->
 //   Permissioned -> SessionSet
 //
-// Task 6 (week 4): `advance()` runs `runBatchedOnboarding`
-// (`batchOnboarding.ts`) — faucet_init (+ATA-create if missing) + init_user
-// + delegateSpl + delegate_user collected into up to two sponsored L1
-// transactions, and init_permissions + set_session (+ the session fee
-// top-up) collected into one sponsored ER transaction, all signed in ONE
-// `mwa.signTransactions([...])` call. `credit_deposit` (crediting
+// `advance()` runs `runBatchedOnboarding` (`batchOnboarding.ts`) —
+// faucet_init (+ATA-create if missing) + init_user (or
+// init_user_reuse_queue for a returning owner) + delegateSpl +
+// delegate_user collected into two fee_payer-sponsored L1 transactions, and
+// init_permissions + set_session collected into one owner-paid ER
+// transaction, all signed in ONE `mwa.signTransactions([...])` call
+// (week-5 Task 6: no more session-lamports top-up leg — see
+// `batchOnboarding.ts`'s file header). `credit_deposit` (crediting
 // `free_margin`) is deliberately NOT part of the batch — see
-// `batchOnboarding.ts`'s `runDevDeposit` and Task 10's real Deposit screen.
+// `batchOnboarding.ts`'s `runDevDeposit` and the real Deposit screen
+// (`AccountScreen.tsx`).
 //
-// The original step-by-step flow (`runFlow` below, one MWA prompt per
-// instruction/small group) is kept intact behind `LEGACY_ONBOARDING` for
-// quick rollback/debugging — set it to `true` to go back to it. Mirrors
-// `tests/er/devnet/01-onboard-private.ts` / `tests/er/lib/trader.ts`
-// (`onboardTrader`) step-for-step — same instructions, same accounts, same
-// order — with every owner-signed step routed through Mobile Wallet Adapter
-// instead of a local `Keypair`.
-//
-// This file (fix round 1, finding E) is now just the hook wrapper: React
-// state, `buildCtx`, and `runFlow`. The batch pipeline itself
-// (`collectBatchLegs`/`runBatchedOnboarding`/`BatchLeg`) and the shared
-// send/confirm primitives (`sendL1`/`sendErOwner`/`confirmOnConn`/
-// `waitDelegated`) live in `batchOnboarding.ts`.
+// This file is just the hook wrapper: React state and `buildCtx`. The batch
+// pipeline itself (`collectBatchLegs`/`runBatchedOnboarding`/`BatchLeg`) and
+// the shared send/confirm primitives
+// (`sendL1`/`sendErOwner`/`confirmOnConn`/`waitDelegated`) live in
+// `batchOnboarding.ts`. The original one-prompt-per-step flow this file used
+// to keep behind a `LEGACY_ONBOARDING` flag was removed in week 5 — it
+// pre-dated the sponsored/fee_payer-paid account shapes (owner-paid ATA/
+// `delegate_user`, an L1 session top-up) and would no longer build against
+// the current program/relayer whitelist.
 import { useCallback, useState } from 'react'
-import { PublicKey, SystemProgram, type TransactionInstruction } from '@solana/web3.js'
-import {
-  DELEGATION_PROGRAM_ID,
-  EPHEMERAL_VAULT_ID,
-  MAGIC_PROGRAM_ID,
-  PERMISSION_PROGRAM_ID,
-  delegateSpl,
-  permissionPdaFromAccount,
-} from '@magicblock-labs/ephemeral-rollups-sdk'
-import { BN } from '@coral-xyz/anchor'
-import {
-  createAssociatedTokenAccountIdempotentInstruction,
-  getAssociatedTokenAddressSync,
-  TOKEN_PROGRAM_ID,
-} from '@solana/spl-token'
+import { PublicKey } from '@solana/web3.js'
+import { DELEGATION_PROGRAM_ID } from '@magicblock-labs/ephemeral-rollups-sdk'
+import { getAssociatedTokenAddressSync } from '@solana/spl-token'
 import { useMobileWallet } from '@wallet-ui/react-native-web3js'
 import { toPublicKey } from '@/src/spikes/mwa'
-import { baseConn, ER_VALIDATOR } from '@/src/lib/solana'
+import { baseConn } from '@/src/lib/solana'
 import { useTeeConnection } from '@/src/lib/er'
+import { readConfigDusdcMint } from '@/src/lib/program'
+import { pdas } from '@/src/lib/pdas'
+import { getOrCreateExitSalt, getOrCreateSessionKeypair, getSessionKeypair } from '@/src/lib/session'
+import { ensureAuthorized, useMwaSigning } from '@/src/lib/mwaAuth'
 import {
-  dexxerCoreProgram,
-  readConfigDusdcMint,
-  readUserAccountFreeMargin,
-  readUserAccountSessionKey,
-  DEXXER_CORE_PROGRAM_ID,
-} from '@/src/lib/program'
-import { delegationTriple, pdas } from '@/src/lib/pdas'
-import {
-  getOrCreateExitSalt,
-  getOrCreateSessionKeypair,
-  getSessionKeypair,
-  sessionTopUpIx,
-  SESSION_LAMPORTS,
-} from '@/src/lib/session'
-import {
-  DEPOSIT,
-  errText,
   IDLE_BATCH_PROGRESS,
   runBatchedOnboarding,
   runDevDeposit,
-  sendErOwner,
-  sendL1,
-  SESSION_ACTIONS,
-  SESSION_EXPIRY_SECS,
-  waitDelegated,
   type BatchProgress,
   type Mwa,
   type OnboardCtx,
   type OnboardState,
+  errText,
 } from './batchOnboarding'
 
 export type { BatchPhase, BatchProgress, OnboardState } from './batchOnboarding'
-
-/** Set `true` to fall back to the original one-prompt-per-step flow (`runFlow`) — see file header. */
-const LEGACY_ONBOARDING = false
-
-/** Runs the whole remaining onboarding pipeline from `ctx`'s current on-chain state through `SessionSet`. Legacy path — see `LEGACY_ONBOARDING`. */
-async function runFlow(
-  ctx: OnboardCtx,
-  mwa: Mwa,
-  appendLog: (s: string) => void,
-  setState: (s: OnboardState) => void,
-): Promise<void> {
-  const {
-    owner,
-    config,
-    mint,
-    market,
-    userAccount,
-    position,
-    disclosureQueue,
-    faucetPda,
-    mintAuth,
-    pool,
-    poolLive,
-    poolAta,
-    ownerAta,
-    session,
-    exitSalt,
-  } = ctx
-  const core = dexxerCoreProgram(baseConn, owner)
-
-  // === faucet (dUSDC) ===
-  const faucetInfo = await baseConn.getAccountInfo(faucetPda, 'confirmed')
-  if (!faucetInfo) {
-    const ixs: TransactionInstruction[] = []
-    const ataInfo = await baseConn.getAccountInfo(ownerAta, 'confirmed')
-    if (!ataInfo) ixs.push(createAssociatedTokenAccountIdempotentInstruction(owner, ownerAta, owner, mint))
-    ixs.push(
-      await core.methods
-        .faucetInit(new BN(DEPOSIT.toString()))
-        .accounts({
-          owner,
-          payer: owner,
-          config,
-          faucet: faucetPda,
-          dusdcMint: mint,
-          mintAuth,
-          ownerAta,
-          systemProgram: SystemProgram.programId,
-          tokenProgram: TOKEN_PROGRAM_ID,
-        })
-        .instruction(),
-    )
-    appendLog(`faucet_init ${await sendL1(owner, ixs, mwa.signTransactions)}`)
-  } else {
-    appendLog('faucet_init: exists, skipped')
-  }
-  setState('Funded')
-
-  // === init_user ===
-  const userAccountInfo = await baseConn.getAccountInfo(userAccount, 'confirmed')
-  if (!userAccountInfo) {
-    const ix = await core.methods
-      .initUser(Array.from(exitSalt))
-      .accounts({
-        owner,
-        payer: owner,
-        config,
-        market,
-        userAccount,
-        position,
-        disclosureQueue,
-        systemProgram: SystemProgram.programId,
-      })
-      .instruction()
-    appendLog(`init_user ${await sendL1(owner, [ix], mwa.signTransactions)}`)
-  } else {
-    appendLog('init_user: exists, skipped')
-  }
-  setState('Initialized')
-
-  // === delegateSpl (deposit) + delegate_user ===
-  const userAccountInfoNow = await baseConn.getAccountInfo(userAccount, 'confirmed')
-  const alreadyDelegated = userAccountInfoNow !== null && userAccountInfoNow.owner.equals(DELEGATION_PROGRAM_ID)
-  if (!alreadyDelegated) {
-    const delegateSplIxs = await delegateSpl(owner, mint, DEPOSIT, {
-      validator: ER_VALIDATOR,
-      initVaultIfMissing: false,
-      idempotent: false,
-    })
-    appendLog(`delegateSpl ${await sendL1(owner, delegateSplIxs, mwa.signTransactions)}`)
-
-    const ut = delegationTriple(userAccount)
-    const pt = delegationTriple(position)
-    const dt = delegationTriple(disclosureQueue)
-    const delegateUserIx = await core.methods
-      .delegateUser()
-      .accounts({
-        owner,
-        config,
-        market,
-        bufferUserAccount: ut.buffer,
-        delegationRecordUserAccount: ut.record,
-        delegationMetadataUserAccount: ut.metadata,
-        userAccount,
-        bufferPosition: pt.buffer,
-        delegationRecordPosition: pt.record,
-        delegationMetadataPosition: pt.metadata,
-        position,
-        bufferDisclosureQueue: dt.buffer,
-        delegationRecordDisclosureQueue: dt.record,
-        delegationMetadataDisclosureQueue: dt.metadata,
-        disclosureQueue,
-        ownerProgram: DEXXER_CORE_PROGRAM_ID,
-        delegationProgram: DELEGATION_PROGRAM_ID,
-        systemProgram: SystemProgram.programId,
-      })
-      .instruction()
-    appendLog(`delegate_user ${await sendL1(owner, [delegateUserIx], mwa.signTransactions)}`)
-
-    await waitDelegated(userAccount, 'UserAccount', appendLog)
-    await waitDelegated(position, 'Position', appendLog)
-    await waitDelegated(disclosureQueue, 'DisclosureQueue', appendLog)
-  } else {
-    appendLog('delegate: already delegated, skipped')
-  }
-  setState('Delegated')
-
-  // From here on, every step reads/writes the ER — one MWA `signMessages`
-  // prompt to mint the owner's TEE auth token (cached after, see er.ts).
-  const ownerTee = await mwa.getConnection(owner)
-  const coreEr = dexxerCoreProgram(ownerTee, owner)
-
-  // === credit_deposit (ER, owner token) ===
-  const userAccountInfoEr = await ownerTee.getAccountInfo(userAccount, 'confirmed')
-  const freeMargin = userAccountInfoEr ? readUserAccountFreeMargin(userAccountInfoEr.data) : 0n
-  if (freeMargin === 0n) {
-    const ix = await coreEr.methods
-      .creditDeposit(new BN(DEPOSIT.toString()))
-      .accounts({ owner, userAccount, pool, poolLive, ownerAta, vaultAta: poolAta, tokenProgram: TOKEN_PROGRAM_ID })
-      .instruction()
-    appendLog(`credit_deposit ${await sendErOwner(ownerTee, owner, [ix], mwa.signTransactions)}`)
-  } else {
-    appendLog('credit_deposit: free_margin already nonzero, skipped')
-  }
-  setState('Credited')
-
-  // === init_permissions (ER, private, members=[owner, crank] — session not set yet) ===
-  const userPermission = permissionPdaFromAccount(userAccount)
-  const positionPermission = permissionPdaFromAccount(position)
-  const dqPermission = permissionPdaFromAccount(disclosureQueue)
-  const permInfo = await ownerTee.getAccountInfo(userPermission, 'confirmed')
-  if (!permInfo || !permInfo.owner.equals(PERMISSION_PROGRAM_ID)) {
-    const ix = await coreEr.methods
-      .initPermissions()
-      .accounts({
-        owner,
-        config,
-        market,
-        userAccount,
-        position,
-        disclosureQueue,
-        userPermission,
-        positionPermission,
-        dqPermission,
-        permissionProgram: PERMISSION_PROGRAM_ID,
-        ephemeralVault: EPHEMERAL_VAULT_ID,
-        magicProgram: MAGIC_PROGRAM_ID,
-      })
-      .instruction()
-    appendLog(`init_permissions ${await sendErOwner(ownerTee, owner, [ix], mwa.signTransactions)}`)
-  } else {
-    appendLog('init_permissions: exists, skipped')
-  }
-  setState('Permissioned')
-
-  // === set_session (ER, rebuilds members=[owner, session, crank]) ===
-  const userAccountInfoAfterPerm = await ownerTee.getAccountInfo(userAccount, 'confirmed')
-  const sessionKeyOnChain = userAccountInfoAfterPerm
-    ? readUserAccountSessionKey(userAccountInfoAfterPerm.data)
-    : PublicKey.default
-  if (!sessionKeyOnChain.equals(session.publicKey)) {
-    const expiry = Math.floor(Date.now() / 1000) + SESSION_EXPIRY_SECS
-    const ix = await coreEr.methods
-      .setSession(session.publicKey, new BN(expiry), SESSION_ACTIONS)
-      .accounts({
-        owner,
-        config,
-        market,
-        userAccount,
-        position,
-        disclosureQueue,
-        userPermission,
-        positionPermission,
-        dqPermission,
-        permissionProgram: PERMISSION_PROGRAM_ID,
-        ephemeralVault: EPHEMERAL_VAULT_ID,
-        magicProgram: MAGIC_PROGRAM_ID,
-      })
-      .instruction()
-    appendLog(
-      `set_session ${await sendErOwner(ownerTee, owner, [ix], mwa.signTransactions)} expiry=${expiry} actions=${SESSION_ACTIONS}`,
-    )
-  } else {
-    appendLog('set_session: already set to this device session key, skipped')
-  }
-
-  // === fund session's own ER fee balance (base-layer transfer — see session.ts header comment) ===
-  const sessionBalance = await baseConn.getBalance(session.publicKey, 'confirmed')
-  if (sessionBalance < SESSION_LAMPORTS / 2) {
-    appendLog(`fund session ${await sendL1(owner, [sessionTopUpIx(owner, session.publicKey)], mwa.signTransactions)}`)
-  } else {
-    appendLog('session lamports: already funded, skipped')
-  }
-  setState('SessionSet')
-}
 
 /** Cheap, L1-only progress check — no ER auth prompt, safe to call on mount/owner change. */
 async function checkL1Progress(
@@ -321,7 +76,7 @@ export interface UseOnboarding {
   busy: boolean
   log: string[]
   error: string | null
-  /** Task 6: `Collecting -> Signing -> Submitting(i/n) -> Done | Failed(step)` — only meaningful while `LEGACY_ONBOARDING` is false. */
+  /** `Collecting -> Signing -> Submitting(i/n) -> Done | Failed(step)` — see `batchOnboarding.ts`'s `BatchProgress`. */
   batchProgress: BatchProgress
   connectWallet: () => Promise<void>
   refresh: () => Promise<void>
@@ -332,7 +87,8 @@ export interface UseOnboarding {
 }
 
 export function useOnboarding(): UseOnboarding {
-  const { account, connect, signAndSendTransaction, signTransactions } = useMobileWallet()
+  const { account, connect, identity, store, signAndSendTransaction } = useMobileWallet()
+  const { signTransactions } = useMwaSigning()
   const { getConnection } = useTeeConnection()
   const [state, setState] = useState<OnboardState>('Disconnected')
   const [busy, setBusy] = useState(false)
@@ -342,18 +98,25 @@ export function useOnboarding(): UseOnboarding {
   const [batchProgress, setBatchProgress] = useState<BatchProgress>(IDLE_BATCH_PROGRESS)
 
   const owner = account ? toPublicKey(account.address) : null
+  // `signTransactions` here is `useMwaSigning()`'s retry-wrapped version, not
+  // the raw hook's — see `mwaAuth.ts`'s "Phantom reauthorize bug" section.
   const mwa: Mwa = { signAndSendTransaction, signTransactions, getConnection }
 
   const appendLog = useCallback((s: string) => setLog((prev) => [...prev, s]), [])
 
+  // Week 5, Task 6: identity-aware auth — `ensureAuthorized` raw-deauthorizes
+  // a stored token issued under a DIFFERENT app identity before letting
+  // `connect()` authorize fresh, and persists the resulting token's identity
+  // hash for next time. See `mwaAuth.ts`'s file header for why the library's
+  // own `connect()` doesn't already do this.
   const connectWallet = useCallback(async () => {
     setError(null)
     try {
-      await connect()
+      await ensureAuthorized(identity, connect, store)
     } catch (e) {
       setError(errText(e))
     }
-  }, [connect])
+  }, [connect, identity, store])
 
   const refresh = useCallback(async () => {
     if (!owner) {
@@ -420,11 +183,7 @@ export function useOnboarding(): UseOnboarding {
     setError(null)
     try {
       const ctx = await buildCtx(owner)
-      if (LEGACY_ONBOARDING) {
-        await runFlow(ctx, mwa, appendLog, setState)
-      } else {
-        await runBatchedOnboarding(ctx, mwa, appendLog, setState, setBatchProgress)
-      }
+      await runBatchedOnboarding(ctx, mwa, appendLog, setState, setBatchProgress)
     } catch (e) {
       setError(errText(e))
     } finally {

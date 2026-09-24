@@ -68,18 +68,30 @@ export interface IndexerSnapshot {
   lastPoolSlot: number | null;
   disclosures: number;
   wsClients: number;
-  /** Fix round 1 (code review): `now - lastTickTs > ORACLE_STALE_MS` (indexer/prices.ts's `isStale`) — the base-layer feed copy is a stale commit snapshot, not a live fallback, so this must be surfaced rather than silently serving old prices. `true` (not `false`) when the indexer has never ticked at all. */
+  /** Week-5 Task 5: the ORACLE's `publish_time` of the newest update, epoch ms — `null` when nothing has been decoded yet. */
+  lastPublishTimeMs: number | null;
+  /** Week-5 Task 5: `now - lastPublishTimeMs > ORACLE_STALE_MS` (indexer/prices.ts's `isStale`) — measured against the oracle's own publish time, not against when this process last received a notification (the TEE pushes one every ER slot regardless of whether the feed changed). `true` (not `false`) when the indexer has never decoded an update at all. */
   oracleStale: boolean;
 }
 
-const EMPTY_INDEXER_SNAPSHOT: IndexerSnapshot = { ticks: 0, lastTickTs: null, lastPoolSlot: null, disclosures: 0, wsClients: 0, oracleStale: true };
+const EMPTY_INDEXER_SNAPSHOT: IndexerSnapshot = {
+  ticks: 0,
+  lastTickTs: null,
+  lastPublishTimeMs: null,
+  lastPoolSlot: null,
+  disclosures: 0,
+  wsClients: 0,
+  oracleStale: true,
+};
 
 /** Task 6 (sponsor): today's rolling-24h sponsor spend — zeroed when sponsoring is disabled or no Postgres. */
 export interface SponsorHealthSnapshot {
   today_sol: number;
   count_today: number;
+  /** `SPONSOR_MAX_CU_PRICE_MICROLAMPORTS` (fix: wallet-prepended ComputeBudget ixs, Phantom smoke 24.09) — the ceiling enforced on a sponsored `SetComputeUnitPrice`, 0 when sponsoring is disabled. */
+  maxCuPriceMicroLamports: number;
 }
-const EMPTY_SPONSOR_SNAPSHOT: SponsorHealthSnapshot = { today_sol: 0, count_today: 0 };
+const EMPTY_SPONSOR_SNAPSHOT: SponsorHealthSnapshot = { today_sol: 0, count_today: 0, maxCuPriceMicroLamports: 0 };
 
 export interface HealthPayload {
   ok: boolean;
@@ -93,6 +105,10 @@ export interface HealthPayload {
   /** Task 7: see this file's header comment / `computeSchedulerActive` for the exact definition. */
   schedulerActive: boolean | null;
   db: "ok" | "error";
+  /** Week-5 Task 5: `COMMIT_INTERVAL_TICKS` (env, default 300) — how many 1s ticks between one `commit_aggregate`/root/orphan cycle and the next. */
+  commitIntervalTicks: number;
+  /** Week-5 Task 7: `disclosure.ts`'s `COMMIT_MAX_ACTIONS` (env, default 4, clamped to `[1, MAX_ACTIONS_PER_COMMIT=8]`) — the per-bundle post-commit-action budget the relayer requests, tuned below the program's hard ceiling because the MagicBlock bridge's own action cap is lower (measured, 0xA0000002). */
+  commitMaxActions: number;
   indexer: IndexerSnapshot;
   sponsor: SponsorHealthSnapshot;
 }
@@ -113,6 +129,8 @@ export function buildHealthPayload(
   sponsor?: SponsorHealthSnapshot,
   crankEnabled = true,
   schedulerActive: boolean | null = null,
+  commitIntervalTicks = 300,
+  commitMaxActions = 4,
 ): HealthPayload {
   const stale = crankEnabled && (state.lastTickAt === null || now - state.lastTickAt > STALE_MS);
   return {
@@ -125,6 +143,8 @@ export function buildHealthPayload(
     crankEnabled,
     schedulerActive,
     db: dbStatus,
+    commitIntervalTicks,
+    commitMaxActions,
     indexer: indexer ?? EMPTY_INDEXER_SNAPSHOT,
     sponsor: sponsor ?? EMPTY_SPONSOR_SNAPSHOT,
   };
@@ -144,6 +164,10 @@ export interface HealthDeps {
   getIndexerSnapshot?: () => IndexerSnapshot;
   /** Task 6: async getter (a Postgres query) for today's sponsor spend/count — undefined when sponsoring is disabled. */
   getSponsorSnapshot?: () => Promise<SponsorHealthSnapshot>;
+  /** Week-5 Task 5: `crank.ts`'s `COMMIT_INTERVAL_TICKS`, reported as-is. */
+  commitIntervalTicks: number;
+  /** Week-5 Task 7: `crank.ts`'s re-exported `COMMIT_MAX_ACTIONS`, reported as-is. */
+  commitMaxActions: number;
 }
 
 interface BalanceCache {
@@ -194,6 +218,8 @@ export function healthRouter(deps: HealthDeps): Router {
       sponsor,
       deps.crankEnabled,
       deps.getSchedulerActive?.() ?? null,
+      deps.commitIntervalTicks,
+      deps.commitMaxActions,
     );
     res.status(payload.ok ? 200 : 503).json(payload);
   });

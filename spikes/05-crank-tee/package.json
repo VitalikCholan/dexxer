@@ -5,6 +5,7 @@
     "lint:fix": "prettier --config ../../.prettierrc.json --ignore-path ../../.prettierignore --no-error-on-unmatched-pattern */*.js \"*/**/*{.js,.ts}\" -w",
     "lint": "prettier --config ../../.prettierrc.json --ignore-path ../../.prettierignore --no-error-on-unmatched-pattern */*.js \"*/**/*{.js,.ts}\" --check",
     "build": "anchor keys sync && anchor build",
+    "w5:p3": "cd .. && npx tsx 05-crank-tee/w5-p3.ts",
     "test:local": ". ../../scripts/local-env.sh && npx ts-mocha -p ./tsconfig.json -t 1000000 'tests/**/*.ts'",
     "setup": "cd ../.. && SETUP_ONLY=1 ./scripts/test-locally.sh crank-counter",
     "test": "yarn test:local"

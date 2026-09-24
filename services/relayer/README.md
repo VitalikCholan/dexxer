@@ -11,8 +11,18 @@ permission member of (privacy rule, see repo `CLAUDE.md`).
 - `src/crank.ts` — the 1s `crank_tick` loop (liquidation candidates via
   `getProgramAccounts`), moved from `scripts/crank-fallback/index.ts`.
 - `src/disclosure.ts` — the ~5-min `set_balances_root` + `commit_aggregate`
-  + `mark_committed` cycle, moved unchanged (import paths only) from
-  `scripts/crank-fallback/disclosure.ts`.
+  cycle. Since week-5 Task 1 `commit_aggregate` sources both the
+  `write_commitment` and the `write_disclosure` actions from the owner's
+  `DisclosureQueue`, so the queue is the only candidate kind and the old
+  `mark_committed` follow-up is gone.
+- `src/orphan.ts` (week-5 Task 5) — the exit-with-debt janitor, run once per
+  `COMMIT_INTERVAL_TICKS` right after the disclosure cycle. Pass 1 (ER,
+  crank): every `DisclosureQueue` with `len == 0` whose owner has left
+  (`UserAccount.exited`, or the account is gone) -> `close_orphan_queue`.
+  Pass 2 (base, `fee_payer`): every owner whose three PDAs are back under
+  `dexxer_core` and still flagged `exited` -> `close_exited_user`, returning
+  their rent to `fee_payer`. Both passes are idempotent and re-derive their
+  candidates from chain state every cycle, so a restart strands nothing.
 - `src/keys.ts` — `keypairFromEnv(name, fileFallback)`: bs58 secret key from
   an env var in production, `tests/er/.keys/<fileFallback>.json` (via
   `loadOrCreateKey`) for local dev.
@@ -58,15 +68,15 @@ All endpoints return JSON. Base URL: the relayer's own domain.
 | Method & path | Query params | Returns |
 | --- | --- | --- |
 | `GET /prices` | `tf` (`1m`\|`5m`\|`15m`, default `1m`), `limit` (default 300, max 1000) | `{ tf, candles: [{ t, o, h, l, c }] }` — `t` unix ms, `o/h/l/c` are plain numbers (SOL/USD price, 1e6 scale) |
-| `GET /mark` | — | `{ price, slot, ts, stale }` — `price` is a **string** (see Numbers below), or all-`null`/`stale:true` if no tick has landed yet. `stale = now - ts > ORACLE_STALE_MS` (30s) — see "Oracle staleness" below |
+| `GET /mark` | — | `{ price, slot, ts, publishTime, stale }` — `price` is a **string** (see Numbers below), or all-`null`/`stale:true` if no tick has landed yet. `publishTime` is the ORACLE's own `publish_time` in epoch ms; `stale = now - publishTime > ORACLE_STALE_MS` (30s) — see "Oracle staleness" below |
 | `GET /pool/history` | `limit` (default 100, max 1000) | array of Pool snapshot rows, oldest→newest |
 | `GET /pool/latest` | — | one Pool snapshot row, or `null` |
 | `GET /disclosures` | `limit` (default 100, max 1000) | array of closed-trade disclosure rows, newest `closed_slot` first |
 | `GET /root/latest` | — | `{ root_slot, filled, leavesHex }`, or `null` |
-| `GET /healthz` | — | (Task 4) health payload, now also carrying `indexer: { ticks, lastTickTs, lastPoolSlot, disclosures, wsClients, oracleStale }` |
-| `GET /ws` (WebSocket, not REST) | — | pushes `{type:"mark",price,ts,stale}` (throttled to ≤1/s while live; exactly one extra `stale:true` frame when the feed transitions to stale — see below), `{type:"pool",...}` on a new Pool snapshot, `{type:"disclosure",...}` on a newly discovered Disclosure |
+| `GET /healthz` | — | (Task 4) health payload, now also carrying `commitIntervalTicks` and `indexer: { ticks, lastTickTs, lastPublishTimeMs, lastPoolSlot, disclosures, wsClients, oracleStale }` |
+| `GET /ws` (WebSocket, not REST) | — | pushes `{type:"mark",price,ts,publishTime,stale}` (throttled to ≤1/s while live; exactly one extra `stale:true` frame when the feed transitions to stale — see below), `{type:"pool",...}` on a new Pool snapshot, `{type:"disclosure",...}` on a newly discovered Disclosure |
 
-### Oracle staleness (fix round 1)
+### Oracle staleness (fix round 1; week-5 Task 5: by `publish_time`)
 
 The base-layer copy of the delegated oracle feed is a stale **commit**
 snapshot (it only updates when `commit_aggregate` runs, not on every price
@@ -76,8 +86,17 @@ So there is **no base-RPC fallback** for prices: the TEE reconnect/poll
 loop (`indexer/accounts.ts`) is the only oracle source, and staleness is
 surfaced explicitly instead:
 
-- `GET /mark`'s `stale` is computed per-request straight from the latest
-  stored tick's age (`isStale(ts, now, ORACLE_STALE_MS)`,
+Week-5 Task 5 changed **what** staleness is measured against: the oracle's
+own `publish_time` (the field `programs/dexxer_core/src/oracle.rs` already
+gates every on-chain read on), not the moment this process last received an
+account notification. The TEE pushes a notification on every ER slot whether
+or not the feed's bytes changed, so a publisher that has stopped publishing
+looks perfectly live by arrival time. `publish_time` is stored per tick
+(migration `005_ticks_publish_time.sql`, epoch ms) and exposed as
+`publishTime` so a client can judge for itself.
+
+- `GET /mark`'s `stale` is computed per-request from the latest stored
+  tick's `publish_time` (`isStale(publishTime, now, ORACLE_STALE_MS)`,
   `ORACLE_STALE_MS = 30_000`, `src/indexer/prices.ts`).
 - The WS `mark` stream carries `stale` on every frame; while the feed is
   live those are the normal throttled (≤1/s) `stale:false` frames, and the
@@ -85,7 +104,8 @@ surfaced explicitly instead:
   **one** `stale:true` frame (not spammed every second for the whole
   outage) using the last known price.
 - `/healthz`'s `indexer.oracleStale` is the same predicate against
-  `indexer.lastTickTs` — `true` if the indexer has never ticked at all.
+  `indexer.lastPublishTimeMs` — `true` if the indexer has never decoded an
+  update at all.
 - `/prices` (candle history) is unaffected — it doesn't claim to be "now".
 
 A Pool snapshot row: `{ slot, ts, capital_total, protocol_liquidity, locked_total, fees_accrued, insurance, bad_debt_total }`.
@@ -112,20 +132,13 @@ transaction so the app can batch `faucet_init`/`init_user`/`delegateSpl`/
 `delegate_user` (the two L1 legs) into a `signTransactions([...])` prompt,
 with `fee_payer` fronting network fees and PDA/eSPL rent for those two legs.
 
-The whitelist ALSO accepts `init_permissions`/`set_session`/a matching
-SystemProgram session-top-up transfer (an ER leg) — that shape was tried in
-the app this fix round and reverted: real devnet-tee rejects `fee_payer` as
-an ER transaction's fee payer (`"InvalidAccountForFee"`) unless `fee_payer`
-itself originated the tx. The app's ER leg + session top-up stay
-owner-funded/owner-`feePayer` for now; this whitelist support is kept as
-forward-looking, tested, currently-unused capacity. See `src/sponsor.ts`'s
-header comment for the full design rationale (fix round 1, findings A/B/C).
-
-The SystemProgram transfer branch is additionally gated behind
-`SPONSOR_ALLOW_SESSION_TOPUP` (default `false` — see Env vars below): since
-the app doesn't call this leg today, every SystemProgram instruction is
-rejected outright by default, same as before this shape existed. Flip the
-env var to `true` only once a real caller needs it (week 5).
+The ER leg (`init_permissions` + `set_session` + the session top-up) is
+**not** sponsorable and its whitelist support was removed in week-5 Task 5:
+devnet-tee rejects a foreign `fee_payer` as an ER transaction's fee payer
+outright (`"InvalidAccountForFee"`), so that branch could only ever have
+been reached by an attacker. With it went the only SystemProgram
+instruction this endpoint accepted — `fee_payer` now moves lamports for
+nobody. See `src/sponsor.ts`'s header comment for the full rationale.
 
 ```
 POST /sponsor
@@ -151,18 +164,33 @@ signer. Each instruction shape may appear at most once per sponsored tx.
 | --- | --- | --- | --- | --- |
 | dexxer_core | `faucet_init` | 0 | 1 | `fee_payer` fronts `Faucet` PDA rent |
 | dexxer_core | `init_user` | 0 | 1 | `fee_payer` fronts `UserAccount`/`Position`/`DisclosureQueue` rent |
-| dexxer_core | `delegate_user` | 0 | — | no payer account; `fee_payer` must not appear at all |
-| dexxer_core | `init_permissions` | 0 | — | permissioned accounts self-fund permission rent in the ER |
-| dexxer_core | `set_session` | 0 | — | same; its `session_key` arg is cross-checked against the SystemProgram transfer below |
+| dexxer_core | `init_user_reuse_queue` | 0 | 1 | week-5 Task 2: the returning owner, whose queue outlived their exit |
+| dexxer_core | `delegate_user` | 0 | 1 | week-5 Task 3: the three delegation records got their own `payer` |
+| dexxer_core | `faucet_mint` | 0 | — | 24.09 (M-K): the Deposit faucet leg; no payer account, `fee_payer` covers only the network fee of a 0-SOL owner |
 | eSPL | `initEphemeralAtaIx` (prefix `0`) | 2 | 1 | `fee_payer` fronts the owner's eATA rent |
 | eSPL | `transferToVaultIx` (prefix `2`) | 5 | — | pure token transfer (owner's dUSDC -> vault), no payer account |
 | eSPL | `delegateEphemeralAtaIx` (prefix `4`) | — | 0 | no owner account; `fee_payer` fronts delegation-record rent |
-| ATA program | `CreateIdempotent` (data `[1]`) | 2 | — | OWNER-funded, not `fee_payer` (index 0 must be owner, not `fee_payer`) |
-| SystemProgram | `Transfer` | — | — | rejected outright unless `SPONSOR_ALLOW_SESSION_TOPUP=true`; when enabled, exactly one per tx, `from = fee_payer`, `to` must equal the same tx's `set_session.session_key` arg, `lamports <= SESSION_FUND_LAMPORTS (10_000_000)` — the ER leg's session top-up |
+| ATA program | `CreateIdempotent` (data `[1]`) | 2 | 0 | week-5 Task 5: FEE_PAYER-funded (was owner-funded); `owner`@2 must be the signing owner, which is what stops it funding a stranger's ATA |
+| System | `AdvanceNonceAccount` | 2 | — | 24.09 (durable nonces): nonce@0 must be one of the owner's two relayer-derived nonce accounts (`nonceAccountsFor(fee_payer, owner)`), authority@2 = owner; companion-only (never sponsorable alone), at most once per tx |
+| ComputeBudget | `SetComputeUnitLimit` (data[0]=2) | — | — | fix (Phantom smoke 24.09): accepted for any value — no accounts, cannot cost `fee_payer` more than the tx's own CU budget |
+| ComputeBudget | `SetComputeUnitPrice` (data[0]=3) | — | — | accepted only up to `SPONSOR_MAX_CU_PRICE_MICROLAMPORTS` (default `500000`); any other ComputeBudget variant (`RequestHeapFrame`, `SetLoadedAccountsDataSizeLimit`, ...) is rejected |
+| SystemProgram | anything | — | — | rejected outright — `fee_payer` never moves lamports through this endpoint |
 
 Any other `programId`/discriminator/opcode is rejected outright; the
 non-idempotent ATA `Create` and any other SystemProgram instruction are
-never whitelisted.
+never whitelisted. A transaction made ENTIRELY of ComputeBudget
+instructions is rejected too — at least one dexxer_core/eSPL/ATA
+instruction is required.
+
+Fix (live Phantom smoke, 24.09): the endpoint's 400 for the L1a onboarding
+batch was Phantom prepending `SetComputeUnitLimit`/`SetComputeUnitPrice` to
+the legacy transaction it signed — standard wallet behaviour the fakewallet
+test harness never exercised, since it doesn't prepend ComputeBudget
+instructions. ComputeBudget carries no accounts, so there's nothing to
+smuggle a foreign pubkey into; only `SetComputeUnitPrice`'s microLamports
+figure can cost `fee_payer` more (a per-CU priority-fee multiplier), which
+is why it alone is capped. `/healthz`'s `sponsor` field now also reports
+`maxCuPriceMicroLamports`.
 
 ### Rate limit + budget (fix round 1, findings C + post-verification)
 
@@ -180,8 +208,9 @@ original "1 per owner per 60 min" ceiling could never complete one. A
 reservation that later fails the daily-budget check (`SPONSOR_DAILY_SOL`,
 rolling 24h across all owners) is released (`SponsorStore.release`) so that
 slot isn't burned for a request that was never actually sponsored.
-`/healthz`'s `sponsor` field (`{ today_sol, count_today }`) reports the
-rolling 24h spend (finalized rows only).
+`/healthz`'s `sponsor` field (`{ today_sol, count_today, maxCuPriceMicroLamports }`)
+reports the rolling 24h spend (finalized rows only) plus the currently
+enforced ComputeBudget `SetComputeUnitPrice` ceiling.
 
 ## Env vars
 
@@ -193,10 +222,15 @@ rolling 24h spend (finalized rows only).
 | `PORT` | no (default `8080`) | HTTP port |
 | `DATABASE_URL` | prod | Postgres connection string (Railway reference variable to the Postgres plugin); unset = no persistence, `/healthz`'s `db` reports `"error"` |
 | `CRANK_INTERVAL_MS` | no (default `1000`) | tick cadence |
+| `COMMIT_INTERVAL_TICKS` | no (default `300`) | ticks between one `commit_aggregate` + `BalancesRoot` + orphan-reclaim cycle and the next (300 ≈ 5 min at the default cadence). Reported by `/healthz` as `commitIntervalTicks`; a value below 1 falls back to the default |
+| `COMMIT_MAX_ACTIONS` | no (default `4`) | per-bundle action budget **passed to the program** as `commit_aggregate(max_actions)` (also bounds queue selection). Clamped to `[1, 8]` — 8 is the program's hard ceiling (`MAX_ACTIONS_PER_COMMIT`, `state/mod.rs`), and week-5 Task 7 measured the MagicBlock bridge rejecting a real 8-action bundle (`0xA0000002`) on devnet-tee while 4 passes, so the default sits below that ceiling. Before the week-5 final-review fix (program upgrade #3) this var only chose WHICH queues went in: the program emitted up to 8 actions per queue regardless, which is why a single full ring could never be committed. On a bridge-cap failure the cycle now halves BOTH the argument and the selection budget once and retries, before falling back to a bare 0-action commit (see disclosure.ts). Reported by `/healthz` as `commitMaxActions` |
+| `QUARANTINE_CYCLES` | no (default `10`) | disclosure-cycles a queue stays excluded from selection after its SECOND consecutive bridge-cap failure (week-5 Task 7 fix round 1, `src/disclosure.ts`'s `QuarantineState`) — ~10 min at the default 60-tick/60s cadence. A queue's FIRST failure already rotates it out for exactly the next cycle regardless of this var, so the rest of the backlog is never starved by a single poisoned queue (oldest-debt-first alone was a live outage of automatic draining — see disclosure.ts's header comment). A non-positive or unparseable value falls back to the default |
 | `INDEXER_ENABLED` | no (default `false`) | Task 5: starts the public-data indexer (see above) — needs `DATABASE_URL`, disabled with a warning if it's unset |
 | `SPONSOR_ENABLED` | no (default `false`) | Task 6: starts `POST /sponsor` (see below) — needs `DATABASE_URL`, disabled with a warning if it's unset |
 | `SPONSOR_DAILY_SOL` | no (default `0.5`) | rolling 24h cap on sponsored lamports across all owners |
-| `SPONSOR_ALLOW_SESSION_TOPUP` | no (default `false`) | gates the whitelist's SystemProgram session-top-up branch (see Whitelist above) — week-5 route, unused by the app today |
+| `SPONSOR_MAX_CU_PRICE_MICROLAMPORTS` | no (default `500000`) | fix (Phantom smoke 24.09): ceiling on a wallet-prepended ComputeBudget `SetComputeUnitPrice` this endpoint will co-sign. At the 1.4M CU transaction max the default caps the sponsor-paid priority fee at 700 000 lamports ≈ 0.0007 SOL/tx. `SetComputeUnitLimit` has no such cap — it cannot cost `fee_payer` more than the tx's own CU budget. Reported by `/healthz`'s `sponsor.maxCuPriceMicroLamports` |
+| `ASSETLINKS_PACKAGE` | no (default `com.dexxer.app`) | Android package name published in `GET /.well-known/assetlinks.json` (MWA identity verification, 24.09) |
+| `ASSETLINKS_SHA256_FINGERPRINTS` | no (default: Android debug keystore cert of the dev-client) | comma-separated SHA-256 signing-cert fingerprints for that statement; a release build MUST set its own (`keytool -list -v -keystore <ks> -alias <alias>` → `SHA256:`). Boot fails on a malformed value |
 
 Never commit key values. Encode a local keyfile for Railway with:
 
@@ -235,8 +269,56 @@ Postgres — the crank loop is unaffected; only `/healthz`'s `lastTickAt`/
 ```sh
 npm test        # node:test — keypairFromEnv b58 round-trip, health-payload staleness logic,
                  # candles.ts bucketing (pure), prices.ts::decodeFeed (golden vectors vs oracle.rs),
-                 # prices.ts::isStale (staleness predicate)
+                 # prices.ts::isStale (publish_time staleness predicate), sponsor.ts::checkWhitelist
+                 # (every accept/reject shape) + the /sponsor router, orphan.ts::runOrphanCycle
+                 # (the whole decision table, with injected readers — no network)
+                 # Needs DEXXER_IDL_DIR=$PWD/../../app/src/idl (as CI sets it).
 npx tsc --noEmit
+```
+
+## Durable nonces — `POST /nonce`
+
+Alpenglow скоротив слоти devnet до ~150–250 мс (24.08; мейнет з 28.09), тож
+150-слотове вікно blockhash тепер ~25 с. Промпт Phantom триває ~38 с (його
+fee-оцінка ретраїть 429 від `api.devnet.solana.com` до того, як юзер може
+підтвердити), тому жодна owner-підписана L1-tx на звичайному blockhash не
+долітала. Розв'язок — durable nonce: `recentBlockhash` = значення з
+nonce-акаунта, tx валідна до наступного advance.
+
+Створити nonce-акаунт власник теж не може (той самий повільний гаманець),
+тому створює **relayer**: `POST /nonce {owner}` → ідемпотентно створює два
+System-акаунти `createWithSeed(fee_payer, "dn<slot>-" + base58(owner)[0:28])`
+з **authority = owner** (лише власник може ними користуватись), фронтує rent
+(~0.00145 SOL кожен; рахується в rate-limit і денний бюджет `/sponsor`), і
+повертає `{ nonces: [{account, nonce}] }` з поточними значеннями. Повторний
+виклик — безкоштовний і без резервації.
+
+Апка (`app/src/lib/nonce.ts`) перед кожною owner-L1-tx бере свіжі значення,
+будує tx з `AdvanceNonceAccount` першою інструкцією та **власними**
+ComputeBudget-інструкціями одразу після — інакше Phantom дописує свої
+ПЕРЕД advance і ламає nonce-семантику (phantom/docs#91, виміряно 24.09:
+без наших CB tx губилась, з ними Phantom повертає `[advance, CB, CB, ix]`).
+Два акаунти — бо онбординг підписує дві L1-tx одним промптом.
+
+## Digital Asset Links — `GET /.well-known/assetlinks.json`
+
+MWA-гаманці (Phantom, Seeker Vault, fakewallet) перевіряють identity dApp-а за
+Digital Asset Links: беруть host з `identity.uri`, тягнуть
+`https://<host>/.well-known/assetlinks.json` і звіряють **пакет, що реально
+викликав** (з Android binder, не з запиту) та його підписний сертифікат з
+`android_app`-таргетом із relation `delegate_permission/common.handle_all_urls`
+(`solana-mobile/digital-asset-links-android`, `AndroidAppPackageVerifier`;
+лише `https`). Без цього Phantom відхиляє `reauthorize` (`-1`) і кожна сесія
+коштує зайвий промпт (виміряно 24.09, live Phantom smoke).
+
+Relayer уже має публічний HTTPS-домен, який знає апка (`RELAYER_URL`), тому
+статмент віддає він (`src/assetlinks.ts`); апка ставить `identity.uri` на цей
+origin (`EXPO_PUBLIC_IDENTITY_URI`, дефолт — origin `RELAYER_URL`). Ендпоінт
+статичний, без ключів і без читання чейну. Перевірка формату Google-ом:
+
+```bash
+curl -s https://<host>/.well-known/assetlinks.json
+curl -s "https://digitalassetlinks.googleapis.com/v1/statements:list?source.web.site=https://<host>&relation=delegate_permission/common.handle_all_urls"
 ```
 
 ## Docker / Railway
