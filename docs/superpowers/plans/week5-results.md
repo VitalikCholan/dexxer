@@ -1,9 +1,225 @@
 # Тиждень 5 — результати
 
-Надійність без relayer-а: ліквідації з планувальника всередині TEE. Гілка `week4-mvp-polish`
-(база — `2f24c2a`), план — `docs/superpowers/plans/2026-09-23-week5-reliability.md`. Формат той
-самий, що й у `week4-results.md`: виміряний підсумок для контролера й спеки, не заміна власних
-task-звітів (`.superpowers/sdd/2026-09-23-week5-reliability/task-N-report.md`).
+Надійність без relayer-а: ліквідації з планувальника всередині TEE. Гілка `week5-reliability`
+(мердж-база `main` — `f2e293f`), план — `docs/superpowers/plans/2026-09-23-week5-reliability.md`.
+Формат той самий, що й у `week4-results.md`: виміряний підсумок для контролера й спеки, не заміна
+власних task-звітів (`.superpowers/sdd/2026-09-23-week5-reliability/task-N-report.md`).
+
+## Підсумок тижня 5
+
+Коміти `144dc1f..a6d5623` (23 коміти на гілці `week5-reliability`, мердж-база `f2e293f`). Мета —
+надійність без relayer-а як єдиної точки відмови: ліквідації з планувальника, коротший reveal,
+вихід з боргом розкриття, 0-SOL онбординг. Порядок виконання — Task 0 (спайк) → Tasks 1–3
+(програма) → Task 4 (редеплой + виміри) → Task 5 (другий апгрейд + relayer) → Task 6 (застосунок)
+→ Task 7 (виміри M-G′/M-H/M-J/M-I/M-K + fix дефекту бриджу) → Task 8 (ця документація).
+
+**Що зроблено, по шарах.**
+
+- **Програма** (`programs/dexxer_core`, program id незмінний
+  `G2okX5Bae4CxfK8vzso1Ecc96QUv7E3P4YvxaZnaYXoV`, 2 devnet-апгрейди): close — queue-first
+  (`finalize_close` штовхає `ClosedRecord` у `DisclosureQueue`, `Position → Empty` одразу,
+  `Position.closed` завжди `None`, поле лишено в лейауті); `commit_aggregate` бере дії з черги —
+  спершу `write_commitment` (прапорець `commitment_written` перемикається на записі в ER), далі
+  `write_disclosure`, `MAX_ACTIONS_PER_COMMIT = 8` як програмна стеля; `mark_committed`/
+  `MarkCommitted`/`pending_commitment` видалені; кандидати `crank_tick` — трійки `[Position,
+  UserAccount, DisclosureQueue]`, повне кільце пропускається (`continue`), недекодовний v1
+  `UserAccount` пропускається; `Trade` несе `disclosure_queue`/`fee_escrow`/`task_context`/
+  `magic_program`/`liq_crank_signer`; `UserAccount` v2 (`exited: bool` у кінці); частковий
+  `undelegate_user` (черга лишається делегованою, `members = [crank]`); `close_orphan_queue`
+  (ER, crank; сигнал сирітства — `UserAccount` відсутній/чужий АБО присутній з `exited == true`);
+  `close_exited_user` (base, fee_payer, закриває три PDA разом); `init_user_reuse_queue`;
+  `set_disclosure_delay` (admin); `liquidation_check` — задача планувальника на позицію,
+  реєструється в `open_position` (payer/authority — `FeeEscrow` PDA, `task_id =
+  keccak(position)[0..8]`, інтервал 5000 мс, `iterations = i64::MAX`, підписант тіку —
+  `crank_signer_pda(fee_escrow)`, **не** `Config.scheduler_signer`), скасовується в
+  `close_position`/повному `decrease_position`/`undelegate_user` (cancel невідомого id —
+  безпечний no-op, виміряно); `DelegateUser.payer`; дефолт `liq_hysteresis_ticks` 2 → 3; нові
+  помилки `LiquidationTaskFailed 6041`, `NotExited 6042`, `QueueStillPending 6043`. LiteSVM
+  71 → 87, unit 55 → 61.
+- **Relayer** (`services/relayer`, живий на Railway): disclosure-цикл queue-first (найстарший
+  борг першим, з rotation), `COMMIT_INTERVAL_TICKS` (env, живе значення `60`),
+  `COMMIT_MAX_ACTIONS` (env, живе значення `4` — місток відхиляє реальні 8 дій, виміряно),
+  halve-and-retry, `QuarantineState` (карантин отруєних черг), `orphan.ts`-janitor (ER
+  `close_orphan_queue` → base `close_exited_user`, пропускає черги, чиє розделегування вже сіло
+  на базу), стейлнес оракула за `publish_time`, `/sponsor`-whitelist `{faucet_init, init_user,
+  init_user_reuse_queue, delegate_user}` за формою акаунтів `{owner idx 0, payer idx 1}`, ATA
+  `{payer idx 0 = fee_payer, owner idx 2 = owner-підписант}`, eSPL-shapes; гілку
+  `SystemProgram`-топ-апу видалено разом з `SPONSOR_ALLOW_SESSION_TOPUP`. Тести 61 → 100.
+- **Застосунок**: 0-SOL онбординг (ATA/faucet/init/делегування — платить `fee_payer`, ER-леґ
+  залишається owner-funded, але виміряно за ~0 лампортів на живих 0-SOL гаманцях),
+  `init_user_reuse_queue`-шлях, `mwaAuth.ts` — identity-хешований auth-token з `deauthorize` при
+  зміні identity/дисконекті (усі точки входу централізовані), History = записи черги +
+  L1-розкриття (`Position.closed` більше не джерело), Exit-чеклист — «немає відкритої позиції» +
+  «баланс виведено» + інформативно «N угод розкриються після виходу», копі «No SOL needed —
+  account rent is sponsored».
+
+**Траєкторія тестів.** LiteSVM **71 → 87**, unit (`cargo test -p dexxer_core`) **55 → 61**,
+relayer (`node --test`) **61 → 100** (Task 1 довів до 61, Task 5 — до 75, Task 7 — до 100 через
+quarantine/rotation-тести й e2e-шов).
+
+**Devnet-апгрейди й вартість (SOL, `spikes/keys/payer.json`, Task 4/5):**
+
+| Апгрейд | Причина | Вартість | Зауваження |
+|---|---|---|---|
+| #1 (Task 4) | Tasks 1–3: queue-first close, exit-with-debt, per-position scheduler | `extend` **0.665850760** (незворотно) + деплой **0.006338798** = **0.672189558 SOL** | вимагав **6.16 SOL вільних** у момент виклику (рента буфера, повертається); `Data Length` 1 179 344 B < `.so` 1 212 664 B → `solana program extend … 131072` обов'язковий |
+| #2 (Task 5) | Прелюдія: сигнал сирітства `close_orphan_queue` (виміряно зламаним у Task 4) + `set_disclosure_delay` | **0.006015 SOL** | `.so` 1 213 624 B ≤ вже розширеної довжини 1 310 416 B → `extend` не знадобився |
+
+Разом два програмних апгрейди тижня 5 коштували **≈0.678 SOL** (переважно одноразовий `extend`).
+Окремо — спайк Task 0 (`spikes/05-crank-tee`, власний тимчасовий program id, закритий у межах
+задачі): чиста вартість **0.138817160 SOL**.
+
+**Виміряні істини (Task 7, `tests/er/devnet/13–15-*.ts`):**
+
+| Вимір | Результат | Джерело |
+|---|---|---|
+| M-G′ — ліквідація без relayer-а (`CRANK_ENABLED=false`, лише планувальник у TEE) | **PASS**, **6.97 с** до ліквідації (`liq_ticks [0,2,0]`) | §Task 7.1 |
+| M-H — Close → L1 `Disclosure` за один цикл (`disclosure_delay_slots=0`, `COMMIT_INTERVAL_TICKS=60`) | **PASS по суті** — обидва PDA (`Commitment`/`Disclosure`) існують на L1, точний момент landing-у невідомий (post-hoc підтверджено, скриптовий 100-с таймаут — FAIL за власним вердиктом скрипта) | §Task 7.2 |
+| M-J — Close→Open той самий слот негайно; 9-те закриття при повному кільці | **PASS** (reopen за 1.7 с) + **PASS** (`Custom 6023 QueueFull`, `Position` лишилась `Open`) | §Task 7.3 |
+| M-I — 0-SOL гаманці: онбординг → торгівля → exit з боргом → janitor-реклейм | **PASS** для обох гаманців (0 лампортів протягом усього циклу, включно з ER-леґом) | §Task 7.4 |
+| Cap реальних дій бриджу MagicBlock | виміряно **8 FAIL / 4 PASS** на реальній формі дій (не синтетичний спайк тижня 3) — дефолт relayer-а `COMMIT_MAX_ACTIONS=4` | §Task 7.0 |
+| Сигнал сирітства `close_orphan_queue` | старий `data_is_empty() \|\| owner != crate::ID` — **завжди хибний** на devnet-tee (ER віддає розделегований акаунт як клон бази, `owner == crate::ID`); новий — `exited == true`, коли акаунт присутній, АБО відсутній/чужий | §Task 4.4(c), §Task 5.1 |
+
+**Дайджест рулінгів** (усі `Ruling`-рядки контролерського леджера
+`.superpowers/sdd/2026-09-23-week5-reliability/progress.md`, що впливали на дизайн — що
+вирішено / чому / ціна помилки):
+
+1. Тестові лічильники в брифі — орієнтир, не ворота приймання (назви тестів відрізняються) — ціна: нуль.
+2. Заборону агентам запускати емулятор (правило тижня 4) знято користувачем 23.09 на тиждень 5 — ціна: нуль.
+3. «Повторний `undelegate_user`» з фокусу ревʼю Task 2 покритий наявним тестом
+   `undelegate_with_pending_disclosures_keeps_queue`, окремого тесту не додано — ціна: пропущений
+   edge-case подвійного виходу, пійманий пізніше на devnet (M-I).
+4. Повне кільце ліквідаційного кандидата — crank пропускає його (`continue`), не абортує весь
+   батч; relayer шле не більше 8 кандидатів за транзакцію (`CRANK_TX_MAX_CANDIDATES`), програмний
+   `MAX_CANDIDATES` лишається 16 — ціна помилки: недоліквідований full-ring трейдер (поганий борг)
+   до Task 2/3.
+5. `init_user_reuse_queue` — `mut`-переініціалізація трьох PDA (гейт `exited == true` /
+   `Position::Empty`), не `init` (PDA після розделегування існують, скраблені, не закриті) — ціна
+   помилки: повторний онбординг ламається на devnet M-I, лагодиться одним редеплоєм.
+6. Legacy `UserAccount` v1 (на байт коротший), що не десеріалізується в кандидатах кранка —
+   `msg!` + `continue`, не абортує батч.
+7. `close_queue_l1` з брифу замінено на `close_exited_user` (база, `fee_payer`, закриває всі три
+   PDA разом, гейт — `exited`/нульові баланси/`Position::Empty`) — ціна помилки: один редеплой;
+   `orphan.ts` (Task 5) мусив цілитись саме в `close_exited_user`.
+8. `delegate_user` вимагає `!exited` (ручна десеріалізація) — не можна ре-делегувати вихідний акаунт.
+9. Окремої інструкції міграції v1 не буде; Task 4 інвентаризував v1-акаунти з відкритими
+   позиціями на devnet і закрив їх на СТАРІЙ програмі до апгрейду.
+10. `close_orphan_queue` лишається crank-only, доки сигнал сирітства не виміряний на devnet
+    (M-I); permissionless-варіант — після.
+11. `task_context` = `Position` PDA (фолбек — гаманець owner-а); `Trade` отримує
+    `scheduler_signer` останнім полем; `cancel_liquidation_task` — і в `undelegate_user`; шляхи
+    ліквідації задачу ніколи не скасовують — ціна помилки: осиротіла задача тіка́є вічно як
+    безпечний no-op (0 лампортів в ER, виміряно), або exit падає на cancel невідомого id
+    (перевірено в Task 4 — PASS, не падає).
+12. Дефолт `liq_hysteresis_ticks` 2 → 3 (два незалежних джерела тіків — crank і планувальник) —
+    ціна помилки: ліквідація на один crank-секунд пізніше.
+13. Task 4 спершу вимірює (а) cancel невідомого `task_id`, (б) exit/close з cancel, і лише потім
+    деплоїть далі; запасний план на випадок помилки — прибрати in-path cancel-и + окрема
+    admin-інструкція `cancel_liq_task`, другий апгрейд — ціна: ≈0.03 SOL і час (не знадобився,
+    (а)/(б) — PASS).
+14. Проміжний стан «спонсорований онбординг не повний до Task 6» прийнятий свідомо — Task 5/6
+    несуть його далі в брифах.
+15. Зберігання liq-crank-signer-а в `Config` відкладено до фінального ревʼю гілки (потребує зміни
+    лейауту `Config`).
+16. Сигнал сирітства `close_orphan_queue` замінено на `exited == true` при присутньому акаунті
+    АБО відсутній/чужий власник — програмний патч + LiteSVM-тест + другий апгрейд, зв'язані в
+    прелюдію Task 5.
+17. Адмінська `set_disclosure_delay` додана в той самий (другий) апгрейд — потрібна для демо M-H
+    (`delay=0`).
+18. 4 застряглі legacy-позиції (недекодовний `UserAccount`, одна без ключа в репо) прийняті як
+    devnet-сміття, бeклог тижня 6 — ціна: постійне зміщення `oi_long`/`locked_total`.
+19. Бриф-текст `close_queue_l1` → `close_exited_user` скрізь; `COMMIT_INTERVAL_TICKS=60` на
+    Railway на весь тиждень (демо M-H); цикл сирітства — спершу ER (`close_orphan_queue`,
+    crank), потім base (`close_exited_user`, `fee_payer`).
+20. Нумерація devnet-скриптів 10–12 у плані вже зайнята — Task 7 узяв 13/14/15
+    (`liquidation-check`/`close-reopen`/`exit-debt`).
+21. Relayer отримує `COMMIT_MAX_ACTIONS` (дефолт 4, clamp `[1, 8]`) і halve-and-retry по бюджету
+    дій, не по кількості черг; програмна стеля `MAX_ACTIONS_PER_COMMIT=8` лишається
+    задокументованим верхнім клампом.
+22. Корінна причина застряглої черги — гіпотеза ризику #26 (`commitment_written` піднявся, а
+    `write_commitment` не долетів) **перевірена й спростована** (6 з 6 `Commitment`-PDA існують
+    на базі); реальний механізм невідомий → relayer отримує карантин/ротацію того ж вечора,
+    програмний фікс (crank-інструкція, що скидає `commitment_written` без L1-`Commitment`) —
+    тиждень 6 — ціна до фіксу: трейдер `DsTSr…`/черга `HgvCy4r2…` застрягла на `QueueFull`.
+
+(Операційний рулінг поза дизайном: місячний ліміт витрат на opus вдарив під час Task 5 → подальші
+імплементери диспетчерились на sonnet із повнішими брифами, ескалація на opus лише для
+fix-раундів ≥4 — ціна: більше раундів ревʼю.)
+
+**Відкриті ризики → тиждень 6.** Застрягла отруєна черга `HgvCy4r2…` (трейдер `DsTSr…`) —
+`QueueFull` назавжди, доки не буде програмного фіксу (корінна причина невідома, гіпотеза #26
+спростована); недоліквідований full-ring трейдер = поганий борг (архітектурно можливий, не
+спостережений цього тижня); 4 legacy-позиції тижнів 1–2 застрягли назавжди (зміщення OI/locked);
+стійкість планувальника до рестарту devnet-tee не виміряна; осиротіла `liquidation_check`-задача
+на departed `Position` (тікає вічно як no-op, матеріальної шкоди не виміряно, кількість монотонно
+росте); чи ER взагалі шанує `ComputeBudget` на 1.4M CU — не підтверджено (devnet-tee не віддає
+логи/CU для ER-транзакцій; непрямий доказ — 367k CU на 16 ліквідацій не впав); ризик #23
+(TEE-permission гейтить лише читання, не інклюзію tx) тепер несе й `liquidation_check`;
+`close_orphan_queue` — crank-only, залежність від живучості релеєра; `listBaseOwners` — O(n)-скан
+бази; історія міграції v1-лейауту відсутня як окрема інструкція; #27 (SIWS-гейт на `/sponsor`) —
+далі в тиждень 6.
+
+---
+
+## Task 1–3, 6: короткі підсумки
+
+Повних task-звітів для цих чотирьох задач тут немає (формат — лише Task 0/4/5/7, які торкалися
+devnet/спайку напряму); нижче — короткий підсумок кожної з посиланням на
+`.superpowers/sdd/2026-09-23-week5-reliability/task-{1,2,3,6}-report.md`.
+
+### Task 1 — Close звільняє позицію одразу, розкриття з черги
+
+Коміт `26ee85a` (доопрацьовано з WIP після падіння попереднього імплементера) + fix round 1
+`b2f17ba`. `finalize_close` штовхає `ClosedRecord` у `DisclosureQueue` і одразу скидає
+`Position → Empty`; `commit_aggregate`'s `Position`-шлях видалено — джерело дій тепер лише черга
+(`pending_commitments`/`due_reveals`); `mark_committed`/`MarkCommitted` видалені; `crank_tick`
+переведено на трійки `[Position, UserAccount, DisclosureQueue]`. Знахідка WIP: 4 нові акаунти
+`Trade` пробили SBF-стек (4104 B > 4096) — виправлено боксуванням `config`. Ревʼю: full-ring
+кандидат мав абортувати весь `crank_tick`-батч — за рулінгом контролера замінено на `continue`
+(push-into-ring, не batch-abort). LiteSVM 71, unit 59, relayer 61 (complete).
+
+### Task 2 — Exit із боргом розкриття
+
+Коміт `9998b04` + fix round 1 `6aef671`. Частковий `undelegate_user` (черга з `len > 0` лишається
+делегованою, `members → [crank]`, `UserAccount.exited = true`); нові інструкції
+`close_orphan_queue` (ER, crank) і `init_user_reuse_queue` (база, ре-онбординг без `init`);
+бриф-варіант `close_queue_l1` (порожнє тіло) замінено ревʼю на `close_exited_user` (база,
+`fee_payer`, закриває три PDA разом, гейт `exited`/нульові баланси) — перший варіант не мав
+`exited`-гейту й «цегляв» власника в напівзакритому стані. `USER_ACCOUNT_VERSION = 2`. Помилки
+`LiquidationTaskFailed 6041` (зарезервовано під Task 3), `NotExited 6042`, `QueueStillPending
+6043`. LiteSVM 78, unit 59 (complete).
+
+### Task 3 — `DelegateUser.payer` (P1) + per-position `liquidation_check` (P3)
+
+Коміт `0bc1453` + fix round 1 `40e0fbb`. Новий модуль `instructions/liquidation.rs`:
+`LiquidationCheck`-контекст (9 акаунтів, усі великі — `Box`), `liquidation_check` читає mark з
+`Market`, оракул лише як gate свіжості; `schedule_liquidation_task`/`cancel_liquidation_task` —
+`ScheduleCrankCpi`/`CancelCrankCpi` через `invoke_signed` з `FeeEscrow` PDA як payer/authority.
+`open_position` реєструє задачу, `close_position`/`decrease_position`-до-нуля/`undelegate_user`
+скасовують. Спільна логіка (`liq_due`/`liquidate_now`) винесена й використовується і `crank_tick`,
+і `liquidation_check` — без дублювання. `DelegateUser` отримує `payer: Signer` окремо від
+`owner`. Ревʼю: дефолт `liq_hysteresis_ticks` піднято 2→3 (два незалежні джерела тіків), gate
+`task_context == position` доданий явним constraint. LiteSVM 84, unit 61 (complete). Програмна
+частина тижня 5 завершена тут — Task 4 лише редеплоїть.
+
+### Task 6 — Застосунок: 0-SOL онбординг, identity-aware MWA, History/Positions/Exit
+
+Коміти `15d07f9`, `6ff03f8`, `9094d90` + fix round 1 `6c657ca`. `batchOnboarding.ts`/
+`program.ts`: ATA-`payer` і `delegate_user`'s `payer` тепер `fee_payer` (відповідає новим
+sponsor-shapes Task 5), сесійний L1 top-up (`SystemProgram.transfer`) видалено разом із мертвим
+`LEGACY_ONBOARDING`-фолбеком. Новий `app/src/lib/mwaAuth.ts`: `auth_token` прив'язаний до хешу
+`AppIdentity` (sha256 над відсортованим JSON), `ensureAuthorized`/`disconnect` де-авторизують
+токен, виданий під іншою identity, до виклику `connect()`/після `disconnect()` — виправляє
+відсутній `wallet.deauthorize(...)` у бібліотечному хуку. `useHistoryRows.ts` (нове) виносить
+дані History з `HistoryScreen.tsx`; `Position.closed` більше не декодується
+(`DecodedPosition`); `PositionCard`/`PositionsScreen` втратили мертву гілку «Closed pending
+commitment»; `ExitSheet.tsx` замінює чекліст-поле `historyQueueEmpty` на інформативне
+`pendingDisclosures: N`. Ревʼю: `WalletUiDropdown`/settings-конект оминали `mwaAuth` — виправлено
+централізацією в `WalletUiButtonConnect`/`Disconnect` + auth-provider `signIn`. `tsc`/`lint`/
+`format` чисті; 6 скріншотів на емуляторі (`docs/superpowers/plans/assets/week5-task6-*.png`);
+живий фреш-онбординг/reuse-queue/exit-з-чергою залишено на Task 7 M-I (devnet) — не завершено на
+емуляторі цим завданням.
+
+---
 
 ## Task 0: Спайк P3 — per-position scheduler
 
