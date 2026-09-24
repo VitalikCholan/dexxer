@@ -46,7 +46,7 @@ program id) і ролі ключів.
 | `PORT` | `8080` | — |
 | `RAILWAY_DOCKERFILE_PATH` | `services/relayer/Dockerfile` | — |
 | `COMMIT_INTERVAL_TICKS` **(week 5)** | інтервал disclosure/orphan-циклу в тіках crank-петлі; дефолт 300, **живе значення `60`** (≈1 хв, обрано для демо M-H — reveal за один цикл при `disclosure_delay_slots=0`); замінює зашитий `DISCLOSURE_EVERY_TICKS` тижня 4 | — |
-| `COMMIT_MAX_ACTIONS` **(week 5)** | верхня межа дій в одному `commit_aggregate`-виклику relayer-а; дефолт і **живе значення `4`**, clamp `[1, 8]` (8 — програмна стеля `MAX_ACTIONS_PER_COMMIT`); halve-and-retry на `0xA0000002`. Реальний бридж MagicBlock відхиляє 8 реальних дій за раз (виміряно на живому беклозі, `week5-results.md` §Task 7) | — |
+| `COMMIT_MAX_ACTIONS` **(week 5)** | бюджет дій на один бандл, який relayer **передає в програму** аргументом `commit_aggregate(max_actions)` (апгрейд #3) і яким же обмежує вибір черг; дефолт і **живе значення `4`**, clamp `[1, 8]` (8 — програмна СТЕЛЯ `MAX_ACTIONS_PER_COMMIT`, не кількість дій у бандлі); halve-and-retry на `0xA0000002` халвить і аргумент, і бюджет вибірки. Реальний бридж MagicBlock відхиляє 8 реальних дій за раз, 4 проходять (виміряно на живому беклозі, `week5-results.md` §Task 7). **До апгрейду #3** цей env обирав лише *які* черги йдуть у бандл — програма емітила до 8 дій на чергу незалежно від нього, через що одна повна черга ніколи не комітилася | — |
 | `QUARANTINE_CYCLES` **(week 5)** | скільки циклів ізолювати `DisclosureQueue`, що впала 2 рази поспіль на `0xA0000002`; дефолт **10** (не виставлявся окремо, лишено дефолтним) | — |
 | ~~`SPONSOR_ALLOW_SESSION_TOPUP`~~ **видалено (week 5)** | гілка session-lamports top-up через `/sponsor` прибрана разом з env-змінною — devnet-tee відхиляє чужого `fee_payer` як платника не-ним-ініційованої ER-tx (`InvalidAccountForFee`), тож ця гілка була недосяжна для чесного клієнта й досяжна лише для атакера | — |
 
@@ -197,16 +197,17 @@ UserAccount]`, а це вміє лише `services/relayer` (або ручний
 баланси не змінились протягом вимірювання (`crankSol: 0.1`,
 `feePayerSol: 0.202817912` до і після).
 
-## Апгрейди програми `dexxer_core` (week 5, 23.09.2026)
+## Апгрейди програми `dexxer_core` (week 5, 23–24.09.2026)
 
 Program id незмінний `G2okX5Bae4CxfK8vzso1Ecc96QUv7E3P4YvxaZnaYXoV`, upgrade-authority
-`spikes/keys/payer.json` (`4P1WD92zwtUB2jxYQJRvsQc4fLSDtergp6tvMyzMgGMM`). Два апгрейди за тиждень
-(деталі, регресія й виміри — `docs/superpowers/plans/week5-results.md` §Task 4/5).
+`spikes/keys/payer.json` (`4P1WD92zwtUB2jxYQJRvsQc4fLSDtergp6tvMyzMgGMM`). Три апгрейди за тиждень
+(деталі, регресія й виміри — `docs/superpowers/plans/week5-results.md` §Task 4/5 і §фінальна фікс-хвиля).
 
 | # | Підпис | Слот | Причина | Вартість | `extend`? |
 | --- | --- | --- | --- | --- | --- |
 | 1 | `3hDzZgGzZqZrcqn7w7XDMHcbcbpGwbwVovGCDpUzUMfZnoLYnVNMWFYJ1ptMmjGeUEVW1MmGkV8sjgzPKnKSGhm1` | `503069579` | Tasks 1–3: queue-first close, exit із боргом розкриття, per-position `liquidation_check` + `DelegateUser.payer` | `extend` **0.665850760 SOL** (незворотно) + деплой **0.006338798 SOL** = **0.672189558 SOL** | **так**, `solana program extend … 131072` — `.so` 1 212 664 B > тодішня `Data Length` 1 179 344 B; після — **1 310 416 B** |
 | 2 | `rTNNmdXhWapr2ciVewNHwczY4ePY2NZPqLaGRyYoGoRdfyrEs8bDyJfSwvsHZ8Kt9s6vzmi3pXHfzfe9Py21RhG` | — | Прелюдія Task 5: `close_orphan_queue`'s сигнал сирітства (виміряно зламаним у Task 4 — `require!(ua.data_is_empty() \|\| ua.owner != crate::ID, ...)` завжди хибна на devnet-tee) + нова `set_disclosure_delay` | **0.006015 SOL** (лише мережеві збори — рента буфера ≈6.17 SOL повернулася) | **ні** — `.so` 1 213 624 B ≤ вже розширеної довжини 1 310 416 B |
+| 3 | `eXAtUAVtzb66Hk5sRkYaLE4afAKXtM2VXUqcNg5qMfLvBee5GSjCJwA3Hjmu39LdvdnzTuUUndp9xUjJ2CemBpg` | `503324217` | Фінальне ревʼю week 5, C1: `commit_aggregate(max_actions: u8)` — бюджет дій на бандл обирає клієнт (clamp `[1, MAX_ACTIONS_PER_COMMIT]`). Плюс M3 (авторизація `liquidation_check`) | **0.006015 SOL** (6.944625579 → 6.938610579; рента буфера ≈6.2 SOL повернулася) | **ні** — `.so` 1 213 904 B ≤ 1 310 416 B |
 
 **Вартість `extend`, для відтворення.** Кожен `solana program deploy`/`upgrade` вимагає **вільних
 SOL на payer-і, що дорівнюють ренті буфера** (для апгрейду #1 — 6.16 SOL) у момент виклику; сама
@@ -216,7 +217,7 @@ SOL на payer-і, що дорівнюють ренті буфера** (для �
 `api.devnet.solana.com` під час апгрейду #1 був порожній (`rate limit`); `rpc.magicblock.app/devnet`
 видавав по 1 SOL із паузами — планувати airdrop-и заздалегідь.
 
-**Верифікація деплою (обидва апгрейди):** `solana program dump <id> - | sha256sum` == sha256
+**Верифікація деплою (усі три апгрейди):** `solana program dump <id> - | sha256sum` == sha256
 локального `target/deploy/dexxer_core.so`; `cmp target/idl/dexxer_core.json
 app/src/idl/dexxer_core.json` — байт-у-байт.
 

@@ -56,8 +56,8 @@
   «баланс виведено» + інформативно «N угод розкриються після виходу», копі «No SOL needed —
   account rent is sponsored».
 
-**Траєкторія тестів.** LiteSVM **71 → 87**, unit (`cargo test -p dexxer_core`) **55 → 61**,
-relayer (`node --test`) **61 → 100** (Task 1 довів до 61, Task 5 — до 75, Task 7 — до 100 через
+**Траєкторія тестів.** LiteSVM **71 → 87 → 89** (останні два — фінальна фікс-хвиля, §нижче), unit (`cargo test -p dexxer_core`) **55 → 61**,
+relayer (`node --test`) **61 → 100 → 102** (Task 1 довів до 61, Task 5 — до 75, Task 7 — до 100, фінальна фікс-хвиля — до 102, через
 quarantine/rotation-тести й e2e-шов).
 
 **Devnet-апгрейди й вартість (SOL, `spikes/keys/payer.json`, Task 4/5):**
@@ -140,18 +140,35 @@ quarantine/rotation-тести й e2e-шов).
     задокументованим верхнім клампом.
 22. Корінна причина застряглої черги — гіпотеза ризику #26 (`commitment_written` піднявся, а
     `write_commitment` не долетів) **перевірена й спростована** (6 з 6 `Commitment`-PDA існують
-    на базі); реальний механізм невідомий → relayer отримує карантин/ротацію того ж вечора,
-    програмний фікс (crank-інструкція, що скидає `commitment_written` без L1-`Commitment`) —
-    тиждень 6 — ціна до фіксу: трейдер `DsTSr…`/черга `HgvCy4r2…` застрягла на `QueueFull`.
+    на базі); relayer отримує карантин/ротацію того ж вечора.
+    **ОНОВЛЕНО 24.09.2026 (фінальне ревʼю, C1 — механізм знайдено, дефект закрито).** Рулінг
+    зупинився на «механізм невідомий» передчасно: він лежав у власному дифі тижня. До апгрейду
+    #3 `commit_aggregate` **не мав аргументів** — `room` брався прямо з
+    `MAX_ACTIONS_PER_COMMIT = 8`, тож ОДНА черга з повним кільцем завжди емітила всі свої 8 дій,
+    хоч би що просив клієнт (`COMMIT_MAX_ACTIONS` обирав лише *які* черги йдуть у бандл). Саме
+    тому halve-and-retry був no-op для однієї черги (`selectCandidates(pending, 4)` і
+    `(pending, 2)` повертали той самий `[queue]` → байт-у-байт та сама tx), і саме тому «падало
+    на кожному бюджеті 8→1». `HgvCy4r2…` мала рівно 6 due + 2 незакомічені = **8 дій**;
+    8 реальних дій — виміряний FAIL бриджу, 4 — PASS. Фікс: `commit_aggregate(max_actions: u8)`,
+    clamp `[1, MAX_ACTIONS_PER_COMMIT]` (апгрейд #3, сиг `eXAtUAVt…`), relayer передає
+    `COMMIT_MAX_ACTIONS` як аргумент і халвить його ж на `0xA0000002`. Доказ — нижче.
 
 (Операційний рулінг поза дизайном: місячний ліміт витрат на opus вдарив під час Task 5 → подальші
 імплементери диспетчерились на sonnet із повнішими брифами, ескалація на opus лише для
 fix-раундів ≥4 — ціна: більше раундів ревʼю.)
 
-**Відкриті ризики → тиждень 6.** Застрягла отруєна черга `HgvCy4r2…` (трейдер `DsTSr…`) —
-`QueueFull` назавжди, доки не буде програмного фіксу (корінна причина невідома, гіпотеза #26
-спростована); недоліквідований full-ring трейдер = поганий борг (архітектурно можливий, не
-спостережений цього тижня); 4 legacy-позиції тижнів 1–2 застрягли назавжди (зміщення OI/locked);
+**Відкриті ризики → тиждень 6.** ~~Застрягла отруєна черга `HgvCy4r2…`~~ **ЗАКРИТО 24.09.2026**
+(фінальне ревʼю C1 + апгрейд #3 — див. рулінг 22 і §«Фінальна фікс-хвиля» нижче: черга
+дренувалася 8 → 6 → 2 → 0 за три цикли, усі 8 записів на L1); з нею re-rated і
+недоліквідований full-ring трейдер — повне кільце більше не термінальний стан, `QueueFull` знову
+тимчасовий (архітектурно можливий борг лишається, але як «трейдер чекає цикл», не «назавжди»);
+**нові (фінальне ревʼю):** #37 — `due_reveals` знімає запис із черги в тій самій ER-tx, що лише
+*планує* L1-дію: якщо дія не долітає, 13F-запис втрачено без ретраю (гостріше при
+`disclosure_delay_slots = 0`, де commitment і reveal в одному бандлі); #38 — у гістерезису немає
+per-sample гарду: повторні виклики в одному слоті можуть ліквідувати за ОДНИМ семплом mark
+(підписант довірений, тож не експлойт — діра в коректності); #39 — `close_exited_user` віддає
+ренту `fee_payer` беззастережно, що для legacy (owner-paid) акаунтів є вилученням коштів
+власника; далі —  4 legacy-позиції тижнів 1–2 застрягли назавжди (зміщення OI/locked);
 стійкість планувальника до рестарту devnet-tee не виміряна; осиротіла `liquidation_check`-задача
 на departed `Position` (тікає вічно як no-op, матеріальної шкоди не виміряно, кількість монотонно
 росте); чи ER взагалі шанує `ComputeBudget` на 1.4M CU — не підтверджено (devnet-tee не віддає
@@ -1037,23 +1054,17 @@ init_user, sponsored, 0 SOL) для **нового** ключа як замін�
 
 ### Відкрите після Task 7
 
-1. **Черга `HgvCy4r2W5W3q4JmkEDYCQ3rSXbNNXMAypdb9zYuVHEY` (власник `devnet-overflow`'s
-   `DsTSr…`) лишається застряглою** — `len=8, uncommitted=2, due=6`, підтверджено свіжим
-   читанням наприкінці fix round 1. Відхиляється містком на кожному протестованому бюджеті
-   1–8 (§0) — не рятується `COMMIT_MAX_ACTIONS`-тюнінгом, бо дефект не про кількість дій у
-   бандлі. **Fix round 1 закрило liveness-частину** (§0): черга тепер на карантині
-   (`QuarantineState`, `QUARANTINE_CYCLES=10`) і більше НЕ блокує молодші черги — доведено
-   живим прогоном (§0's таблиця циклів 1–3 + пряма демонстрація на свіжому 0-SOL трейдері,
-   яка drain'ялась поки `HgvCy4r2…` стояла на карантині). **Що лишається відкритим — сам
-   трейдер досі не розкритий**, і корінна причина досі невідома: контролерова гіпотеза
-   (ризик #26, «Commitment ніколи не landed») **перевірена й спростована** (§0 — 6 з 6
-   `Commitment`-PDA існують на базі для «due»-записів). Requires investigation (week 6, зміна
-   програми): чи це справді per-action розмір/CU (`write_disclosure` читає `Commitment` і
-   несе повний `ClosedRecord`, важче за `write_commitment`), чи транзієнтна перевантаженість
-   містка в момент вимірювання, чи щось третє. Карантин періодично дає їй одну повторну
-   спробу (раз на ~10 циклів) — якщо колись пощастить (бридж відновиться/полагодять), вона
-   сама розкриється без подальшого втручання; якщо ні — трейдер лишається заблокованим
-   назавжди, і це вже питання до програми, не до relayer-а.
+1. ~~**Черга `HgvCy4r2W5W3q4JmkEDYCQ3rSXbNNXMAypdb9zYuVHEY` (власник `devnet-overflow`'s
+   `DsTSr…`) лишається застряглою**~~ — **ЗАКРИТО 24.09.2026, фінальна фікс-хвиля (C1).**
+   Стан на момент закриття був `len=8, uncommitted=2, due=6`. Висновок Task 7 «дефект не про
+   кількість дій у бандлі» був **хибним**: дефект був саме про кількість, просто клієнтський
+   бюджет ніколи не долітав до програми. `commit_aggregate` не мав аргументів — `room` брався
+   з `MAX_ACTIONS_PER_COMMIT = 8`, тож ця одна черга емітила всі 8 дій на кожному виклику,
+   незалежно від `COMMIT_MAX_ACTIONS`; 8 реальних дій = виміряний FAIL бриджу. Це ж пояснює,
+   чому halve-and-retry не допомагав: з однією чергою `selectCandidates(pending, 4)` і
+   `(pending, 2)` повертали той самий `[queue]`, тобто «зменшений» ретрай був байт-у-байт та
+   сама транзакція. Карантин (fix round 1) лишається в коді як defence in depth, але більше
+   не є єдиною відповіддю. Доказ дренажу — §«Фінальна фікс-хвиля» нижче.
 2. **`init_user_reuse_queue`-вікно не зловлене на devnet** — при 60-тиковому janitor-і обидва
    проходи (ER+база) виконуються в одному циклі без паузи між ними; шлях лишається
    верифікованим лише в LiteSVM. Якщо вікно принципово важливе для продукту (а не лише
@@ -1073,3 +1084,93 @@ init_user, sponsored, 0 SOL) для **нового** ключа як замін�
    overflow-recovery — ні (черга й досі стоїть). Наступного разу — або довший бюджет, або
    окрема post-hoc перевірка як зроблено тут.
 6. **M-K** — не виконано агентом (правило), чек-лист вище чекає на користувача.
+
+---
+
+## Фінальна фікс-хвиля (24.09.2026) — C1 і мінори фінального ревʼю
+
+Ревʼю гілки: `.superpowers/sdd/2026-09-23-week5-reliability/final-review-report.md`
+(вердикт «Ready to merge — with fixes»). Звіт про виконання:
+`.superpowers/sdd/2026-09-23-week5-reliability/final-fix-report.md`.
+
+### C1 — механізм застряглої черги і його фікс
+
+**Що було.** `commit_aggregate` не приймав аргументів: `process_disclosure_queue_candidate`
+рахував `room = MAX_ACTIONS_PER_COMMIT.saturating_sub(actions.len())`, тобто бюджет дій був
+**програмною константою**, а єдиним важелем клієнта лишався набір черг у `remaining_accounts`.
+Для ОДНІЄЇ черги програма планувала всі її pending-дії, до 8, незалежно від
+`COMMIT_MAX_ACTIONS`. 8 реальних дій = виміряний бридж-FAIL `0xA0000002` (Task 7), 4 = PASS.
+
+**Наслідки, усі з яких збігалися зі спостереженим дефектом:**
+
+1. черга, що набрала ≥5 pending-дій між циклами, більше ніколи не комітилася;
+2. halve-and-retry був no-op для такої черги — `selectCandidates` з бюджетом 4 і 2 повертав той
+   самий `[queue]`, тобто ретрай був байт-у-байт та сама транзакція (звідси «FAIL на кожному
+   бюджеті 8→1» з Task 7 — вимірювалося не те, що впливало);
+3. для трейдера це не косметика: `DQ_CAPACITY`-повне кільце робить `close_position` хардфейлом
+   `QueueFull`, а `liquidate_now` — скіпом, тобто позицію **ні закрити, ні ліквідувати**.
+
+**Фікс.** `commit_aggregate(max_actions: u8)`, `budget = max_actions.clamp(1,
+MAX_ACTIONS_PER_COMMIT as u8)`, `room` рахується від `budget`. `MAX_ACTIONS_PER_COMMIT = 8`
+лишається жорсткою СТЕЛЕЮ. Relayer передає `COMMIT_MAX_ACTIONS` як аргумент і халвить його ж
+(а не лише бюджет вибірки) на `0xA0000002`. Коментар константи в `state/mod.rs` виправлено на
+виміряну правду (8 FAIL / 4 PASS на реальній формі; фігура тижня 3 «28/29» стосувалася дешевого
+спайку і цю форму не описує).
+
+**Тести.** LiteSVM 87 → **89**: `single_queue_never_exceeds_requested_budget` (одна черга,
+5 незакомічених записів = 10 потенційних дій; `max_actions=4` → `actions=4`, усі 4 пішли на
+commitments, нічого не popped; другий виклик → `actions=4`, `len` 5→2; третій → `actions=2`,
+`len`→0 — кільце реально дренується) і
+`max_actions_is_clamped_to_one_and_to_the_program_cap` (`0`→`actions=1`, `200`→`actions=8`).
+Relayer 100 → **102** (два нові — M2, нижче). Unit — **61**, без змін.
+
+### Апгрейд #3 і живий доказ дренажу
+
+| | |
+| --- | --- |
+| Підпис деплою | `eXAtUAVtzb66Hk5sRkYaLE4afAKXtM2VXUqcNg5qMfLvBee5GSjCJwA3Hjmu39LdvdnzTuUUndp9xUjJ2CemBpg` |
+| Слот | `503324217` |
+| SOL payer-а до / після | `6.944625579` → `6.938610579` (**0.006015 SOL**; рента буфера ≈6.2 SOL повернулася) |
+| `extend`? | не потрібен — `.so` 1 213 904 B ≤ `Data Length` 1 310 416 B |
+| Верифікація | `solana program dump` == локальний `.so`: `93b258298ac351555b06a9c6ff8049136a7e0884a3dcfea16ac6f32a7a848eb0`; `cmp target/idl/dexxer_core.json app/src/idl/dexxer_core.json` — байт-у-байт |
+| Relayer | `railway up --service relayer --ci` (`COMMIT_MAX_ACTIONS=4` вже стояв), `/healthz` → `commitMaxActions:4`, `crankEnabled:true` |
+
+**Дренаж отруєної черги `HgvCy4r2W5W3q4JmkEDYCQ3rSXbNNXMAypdb9zYuVHEY` (власник
+`DsTSrhSCHtCCcnyhqcuki8w34YQujfv1xs2mYhdE1fPg`)** — поллінг `len` через TEE з crank-ключем
+(`tests/er/.keys/devnet-crank.json`), `COMMIT_INTERVAL_TICKS=60`:
+
+| UTC | ER-слот | `len` | Що сталося |
+| --- | --- | --- | --- |
+| 05:54:49 | 347 541 664 | **8** | до апгрейду relayer-а: 6 due (`cw=true`) + 2 незакомічені |
+| 05:56:29 | 347 551 739 | 8 | — |
+| 05:57:43 | 347 559 101 | 8 | — |
+| 05:58:56 | 347 566 436 | **6** | цикл 1: 2 `write_commitment` (записи 7–8) + 2 `write_disclosure` = **4 дії** |
+| 06:00:10 | 347 573 816 | 6 | — |
+| 06:01:33 | 347 582 106 | **2** | цикл 2: 4 `write_disclosure` = **4 дії** |
+| 06:02:47 | 347 589 457 | 2 | — |
+| 06:04:00 | 347 596 781 | **0** | цикл 3: 2 `write_disclosure` = **2 дії** — кільце порожнє |
+| 06:05:13 / 06:06:26 | — | 0 | стабільно порожня |
+
+**Підписи L1-дій (`Disclosure`-PDA, зчитані `getSignaturesForAddress` на базі):**
+
+| Цикл | Підпис (L1) | blockTime | Записи (nonce → `Disclosure` PDA) |
+| --- | --- | --- | --- |
+| 1 | `5azQNpo8Gtye9R8Wi5Gu63hPPhmvrfs9eNJ7ZTPr1zgt5GMBdVt5vQVMC2AZXMJX5AmEuCba1VfKVPaXnvvCXVyd` | 05:58:36Z | 1 → `8mLMfGDZ5ZxjVnEEqfzDtikJhUZimvattdRh54GhP9hi`, 2 → `FZUs9d4tJz84VJ8eAfiqcH4mfpQeVybgjaP5P3PCr7MY` |
+| 2 | `5TNUKiAXkQxSPkwq6gyMEUgTsYBdw7EqqexGgb9g2DWnC492CFHkhgsZeukejHHrHh3JFgdx6ZvBrcwUBJtxtg5X` | 06:00:49Z | 3 → `J9Sq4mJJh24jDj2gFnZKzt7RtGhJ6acbVB5rCmXVBP8y`, 4 → `257BUEU5zXMuVhz3JXEVa1RWNLjUSsLAkkAcuB4azVDY`, 5 → `87bM42QarePTPV1S8n3MQSFucTPQ1eRHiuPr57dAkoM7`, 6 → `6JpeZ2GSUfQ1emzJWT4BqzugfNYNFLR4Gpe4zC246YK7` |
+| 3 | `1pVBYBrLrWPjVL9E9XBhZBBuJTXK6hWu1yAKpbF4yurbBAgznkEod86nGs5AVjSuYBxajEst9T4jYnN7t4heqV9` | 06:03:01Z | 7 → `GJ5z8YewxK4qDqE7bTQaGRBVvFhyjtk2kSypqxivHS65`, 8 → `GyRNRkWyL5ijZQ7yHdNToiexntsCsc6hCZj8WU3Ycjy8` |
+
+Усі 8 записів черги, що «застрягла назавжди», розкриті на L1 за **три цикли ≈ 5 хвилин**, без
+жодного ручного `commit_aggregate` — рівно те, що прогнозував C1. Ризик #26 закрито.
+
+### Мінори тієї ж хвилі
+
+| # | Що | Де |
+| --- | --- | --- |
+| I2 | Коментар на `MAX_ACTIONS_PER_COMMIT` казав «far under the bridge cap 28/29» — та фігура з тижня 3 знята на дешевому спайку. Тепер: 8 FAIL / 4 PASS на реальній формі, і що кількість у бандлі обирає викликач | `state/mod.rs` |
+| M1 | Твердження «`nonce` не скидається / рухається лише вперед» було хибним — скраб `undelegate_user` виставляє `nonce = 0`. Виправлено в коді й у CLAUDE.md/спеці: колізій немає, бо salt — `keccak(owner, nonce, slot)`, а слот завжди вперед | `instructions/user.rs`, CLAUDE.md, spec §4.2 |
+| M2 | `/sponsor`'s `ATA_SHAPE` пінить `mint`@3 до `Config.dusdcMint` (читається з бази на старті relayer-а); fail-closed, якщо мінт невідомий. Раніше власник міг змусити `fee_payer` профінансувати ATA довільного мінта й закрити його заради ренти | `services/relayer/src/{sponsor,index}.ts` + 2 тести |
+| M3 | `liquidation_check` більше не приймає `Config.scheduler_signer` (market-schedule identity не має що робити на per-position шляху), і порівняння зі `liq_crank_signer` стоїть ПЕРШИМ — на нормальному (запланованому) тіку це економить два `find_program_address` | `instructions/liquidation.rs` |
+| M4 | `open_registers_task_idempotently` → `open_skips_task_registration_without_magic_program`; повідомлення асертів прямо кажуть, що LiteSVM не має Magic-програми і ідемпотентність тут НЕ перевіряється (це devnet-вимір Task 0) | `tests/litesvm/tests/liquidation.rs` |
+| M5 | Мертві хелпери `buildInitPermissionsIx`/`buildSetSessionIx` видалено; контракт `readErUserAccount` (`null` = «нема», undecodable = `{exited:false}` = «вважати живим») задокументований на інтерфейсі, не лише в catch | `services/relayer/{test/sponsor.test.ts,src/orphan.ts}` |
+| M6 | `delegate_user`'s ручний `try_deserialize` — пояснено, чому явна перевірка власника не потрібна (адресу виводить `#[delegate]`-макрос із seeds) | `instructions/user.rs` |
+| I1/I3/I4 | Код не змінювався — заведені як ризики #37/#38/#39 у спеці §7.1 + політичний рядок біля `close_exited_user` у §4.2 | spec |
