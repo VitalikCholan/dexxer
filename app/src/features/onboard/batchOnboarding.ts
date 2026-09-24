@@ -184,6 +184,7 @@ export async function sendL1Sponsored(
   const signed = await signTransactions(tx)
   const sponsored = await sponsorTx(signed)
   const sig = await baseConn.sendRawTransaction(sponsored.serialize(), { skipPreflight: true })
+  if (__DEV__) console.log(`[dexxer] sendL1Sponsored: sent ${sig} (feePayer ${sponsored.feePayer?.toBase58()})`)
   await confirmOnConn(baseConn, sig)
   return sig
 }
