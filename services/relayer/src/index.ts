@@ -42,6 +42,7 @@ import { attachWs, indexerRouter } from "./indexer/http.js";
 import type { IndexerStats } from "./indexer/accounts.js";
 import { ORACLE_STALE_MS, isStale } from "./indexer/prices.js";
 import { DEFAULT_ASSETLINKS_PACKAGE, assetlinksRouter, parseFingerprintsEnv } from "./assetlinks.js";
+import { nonceRouter } from "./nonce.js";
 import {
   DEFAULT_DAILY_BUDGET_SOL,
   DEFAULT_SPONSOR_MAX_CU_PRICE_MICROLAMPORTS,
@@ -185,6 +186,15 @@ if (cfg.sponsorEnabled && !pool) {
       dailyBudgetSol: sponsorDailyBudgetSol,
       dusdcMint,
       maxCuPriceMicroLamports: sponsorMaxCuPriceMicroLamports,
+    }),
+  );
+  // Durable-nonce accounts for owners (nonce.ts) — same store/rate limit/budget as /sponsor.
+  app.use(
+    nonceRouter({
+      conn: baseConn,
+      feePayer: cfg.feePayer,
+      store,
+      dailyBudgetLamports: Math.round(sponsorDailyBudgetSol * 1e9),
     }),
   );
   getSponsorHealthSnapshot = sponsorSnapshot(store, sponsorMaxCuPriceMicroLamports);

@@ -110,6 +110,7 @@ import {
 import { delegationTriple } from '@/src/lib/pdas'
 import { sponsorTx, SponsorError } from '@/src/lib/sponsor'
 import { SELF_FUND_ONBOARDING_MIN_LAMPORTS, canSelfFund } from '@/src/lib/selfFund'
+import { fetchNonces, nonceTransaction, type NonceInfo } from '@/src/lib/nonce'
 
 export type OnboardState =
   'Disconnected' | 'NotOnboarded' | 'Funded' | 'Initialized' | 'Delegated' | 'Credited' | 'Permissioned' | 'SessionSet'
@@ -182,10 +183,39 @@ export async function sendL1(
   ixs: TransactionInstruction[],
   signTransactions: (tx: Transaction) => Promise<Transaction>,
 ): Promise<string> {
-  const signed = await signWithLiveBlockhash(baseConn, owner, ixs, signTransactions)
+  const signed = await signOwnerL1(owner, owner, ixs, signTransactions)
   const sig = await baseConn.sendRawTransaction(signed.serialize(), { skipPreflight: true })
   await confirmOnConn(baseConn, sig)
   return sig
+}
+
+/**
+ * Signs an owner L1 transaction on the owner's durable nonce (slot 0,
+ * `nonce.ts` — the relayer creates the accounts on first use), so the wallet
+ * may take any time to sign; falls back to a live blockhash only if the
+ * relayer cannot hand out a nonce.
+ */
+export async function signOwnerL1(
+  owner: PublicKey,
+  feePayer: PublicKey,
+  ixs: TransactionInstruction[],
+  sign: (tx: Transaction) => Promise<Transaction>,
+): Promise<Transaction> {
+  try {
+    const [nonce] = await fetchNonces(owner)
+    if (__DEV__) console.log(`[dexxer] signOwnerL1: durable nonce slot 0 ${nonce.account.toBase58()} (${nonce.value.slice(0, 8)}…)`)
+    const signed = await sign(nonceTransaction(feePayer, owner, nonce, ixs))
+    if (__DEV__) {
+      const order = signed.instructions.map((ix) => ix.programId.toBase58().slice(0, 6)).join(',')
+      console.log(`[dexxer] signOwnerL1: wallet returned ixs=[${order}] blockhash=${signed.recentBlockhash?.slice(0, 8)} tx=${signed.serialize().toString('base64')}`)
+    }
+    return signed
+  } catch (e) {
+    // Relayer down / rate-limited: fall back to a live blockhash rather than
+    // blocking the user — with a fast wallet it still lands.
+    if (__DEV__) console.log(`[dexxer] signOwnerL1: nonce unavailable (${errText(e)}) — live blockhash`)
+    return signWithLiveBlockhash(baseConn, feePayer, ixs, sign)
+  }
 }
 
 /**
@@ -204,7 +234,7 @@ export async function sendL1Sponsored(
 ): Promise<string> {
   const configInfo = await baseConn.getAccountInfo(config, 'confirmed')
   if (!configInfo) throw new Error('Config PDA not found — protocol not bootstrapped on this devnet deployment')
-  const signed = await signWithLiveBlockhash(baseConn, readConfigFeePayer(configInfo.data), ixs, signTransactions)
+  const signed = await signOwnerL1(owner, readConfigFeePayer(configInfo.data), ixs, signTransactions)
   const sponsored = await sponsorTx(signed)
   const sig = await baseConn.sendRawTransaction(sponsored.serialize(), { skipPreflight: true })
   if (__DEV__) console.log(`[dexxer] sendL1Sponsored: sent ${sig} (feePayer ${sponsored.feePayer?.toBase58()})`)
@@ -335,6 +365,8 @@ export interface BatchLeg {
   sponsor: boolean
   /** `OnboardState` to report once this leg lands. */
   onLanded: OnboardState[]
+  /** Durable nonce backing this leg (L1 legs, `nonce.ts`); absent = plain blockhash (ER leg, or nonce accounts not created yet). */
+  nonce?: NonceInfo
 }
 
 /**
@@ -349,6 +381,7 @@ export async function collectBatchLegs(
   mwa: Pick<Mwa, 'getConnection'>,
   feePayerPubkey: PublicKey,
   appendLog: (s: string) => void,
+  nonces: (NonceInfo | null)[] = [null, null],
 ): Promise<BatchLeg[]> {
   const {
     owner,
@@ -441,6 +474,7 @@ export async function collectBatchLegs(
       feePayer: feePayerPubkey,
       sponsor: !feePayerPubkey.equals(owner),
       onLanded: ['Funded', 'Initialized'],
+      nonce: nonces[0] ?? undefined,
     })
 
   // --- L1b: delegateSpl (fee_payer fronts eSPL rent — Finding A.2) + delegate_user ---
@@ -501,6 +535,7 @@ export async function collectBatchLegs(
       feePayer: feePayerPubkey,
       sponsor: !feePayerPubkey.equals(owner),
       onLanded: ['Delegated'],
+      nonce: nonces[1] ?? undefined,
     })
 
   // --- ER: init_permissions + set_session (owner-paid, unsponsored) ---
@@ -578,6 +613,24 @@ export async function collectBatchLegs(
 }
 
 /**
+ * Fetches the owner's two durable nonces from the relayer (`nonce.ts`; the
+ * relayer creates the accounts on the first call — no wallet prompt).
+ * Returns `[null, null]` on failure so onboarding still runs on live
+ * blockhashes rather than dying on an optional step.
+ */
+async function ensureNonceAccounts(owner: PublicKey, appendLog: (s: string) => void): Promise<(NonceInfo | null)[]> {
+  try {
+    const nonces = await fetchNonces(owner)
+    appendLog(`nonce: L1 legs on durable nonces ${nonces.map((n) => n.account.toBase58().slice(0, 6)).join(', ')}`)
+    return nonces
+  } catch (e) {
+    appendLog(`nonce: unavailable, continuing on live blockhashes — ${errText(e)}`)
+    if (__DEV__) console.log(`[dexxer] nonce: unavailable — ${errText(e)}`)
+    return [null, null]
+  }
+}
+
+/**
  * Collects whatever's left (`collectBatchLegs`), signs every leg's
  * transaction in ONE `mwa.signTransactions([...])` call, then submits each
  * sequentially — L1a before L1b (L1b's `delegate_user` needs L1a's
@@ -614,7 +667,12 @@ export async function runBatchedOnboarding(
   const feePayerPubkey = selfFund ? ctx.owner : readConfigFeePayer(configInfo.data)
   appendLog(selfFund ? 'L1 legs: self-funded (owner pays rent + fees)' : 'L1 legs: sponsored by the relayer fee_payer')
 
-  const legs = await collectBatchLegs(ctx, mwa, feePayerPubkey, appendLog)
+  // Durable nonces (nonce.ts): the relayer creates the owner's two nonce
+  // accounts (no prompt), then every L1 leg rides on its own nonce and can
+  // no longer expire while the wallet is open.
+  const nonces = await ensureNonceAccounts(ctx.owner, appendLog)
+
+  const legs = await collectBatchLegs(ctx, mwa, feePayerPubkey, appendLog, nonces)
   if (legs.length === 0) {
     appendLog('onboarding: nothing left to do')
     onProgress({ phase: 'Done', step: null, i: 0, n: 0 })
@@ -623,6 +681,7 @@ export async function runBatchedOnboarding(
 
   const txs = await Promise.all(
     legs.map(async (leg) => {
+      if (leg.nonce) return nonceTransaction(leg.feePayer, ctx.owner, leg.nonce, leg.ixs)
       const tx = new Transaction().add(...leg.ixs)
       tx.feePayer = leg.feePayer
       tx.recentBlockhash = (await leg.conn.getLatestBlockhash()).blockhash
@@ -649,7 +708,9 @@ export async function runBatchedOnboarding(
       // an earlier leg's confirmation wait (up to ~15s) may have let this
       // one's expire.
       const bh = toSend.recentBlockhash
-      const stillValid = bh ? (await leg.conn.isBlockhashValid(bh, { commitment: 'confirmed' })).value : false
+      // A nonce-backed leg carries the nonce value as `recentBlockhash` — it
+      // is not a blockhash and never expires by slot; skip the liveness check.
+      const stillValid = leg.nonce ? true : bh ? (await leg.conn.isBlockhashValid(bh, { commitment: 'confirmed' })).value : false
       if (!stillValid) {
         appendLog(`re-sign leg ${i + 1} (blockhash expired)`)
         // Re-checked AFTER signing too — Phantom prompts measured at 38–55 s each (24.09).

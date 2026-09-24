@@ -171,6 +171,7 @@ signer. Each instruction shape may appear at most once per sponsored tx.
 | eSPL | `transferToVaultIx` (prefix `2`) | 5 | — | pure token transfer (owner's dUSDC -> vault), no payer account |
 | eSPL | `delegateEphemeralAtaIx` (prefix `4`) | — | 0 | no owner account; `fee_payer` fronts delegation-record rent |
 | ATA program | `CreateIdempotent` (data `[1]`) | 2 | 0 | week-5 Task 5: FEE_PAYER-funded (was owner-funded); `owner`@2 must be the signing owner, which is what stops it funding a stranger's ATA |
+| System | `AdvanceNonceAccount` | 2 | — | 24.09 (durable nonces): nonce@0 must be one of the owner's two relayer-derived nonce accounts (`nonceAccountsFor(fee_payer, owner)`), authority@2 = owner; companion-only (never sponsorable alone), at most once per tx |
 | ComputeBudget | `SetComputeUnitLimit` (data[0]=2) | — | — | fix (Phantom smoke 24.09): accepted for any value — no accounts, cannot cost `fee_payer` more than the tx's own CU budget |
 | ComputeBudget | `SetComputeUnitPrice` (data[0]=3) | — | — | accepted only up to `SPONSOR_MAX_CU_PRICE_MICROLAMPORTS` (default `500000`); any other ComputeBudget variant (`RequestHeapFrame`, `SetLoadedAccountsDataSizeLimit`, ...) is rejected |
 | SystemProgram | anything | — | — | rejected outright — `fee_payer` never moves lamports through this endpoint |
@@ -274,6 +275,30 @@ npm test        # node:test — keypairFromEnv b58 round-trip, health-payload st
                  # Needs DEXXER_IDL_DIR=$PWD/../../app/src/idl (as CI sets it).
 npx tsc --noEmit
 ```
+
+## Durable nonces — `POST /nonce`
+
+Alpenglow скоротив слоти devnet до ~150–250 мс (24.08; мейнет з 28.09), тож
+150-слотове вікно blockhash тепер ~25 с. Промпт Phantom триває ~38 с (його
+fee-оцінка ретраїть 429 від `api.devnet.solana.com` до того, як юзер може
+підтвердити), тому жодна owner-підписана L1-tx на звичайному blockhash не
+долітала. Розв'язок — durable nonce: `recentBlockhash` = значення з
+nonce-акаунта, tx валідна до наступного advance.
+
+Створити nonce-акаунт власник теж не може (той самий повільний гаманець),
+тому створює **relayer**: `POST /nonce {owner}` → ідемпотентно створює два
+System-акаунти `createWithSeed(fee_payer, "dn<slot>-" + base58(owner)[0:28])`
+з **authority = owner** (лише власник може ними користуватись), фронтує rent
+(~0.00145 SOL кожен; рахується в rate-limit і денний бюджет `/sponsor`), і
+повертає `{ nonces: [{account, nonce}] }` з поточними значеннями. Повторний
+виклик — безкоштовний і без резервації.
+
+Апка (`app/src/lib/nonce.ts`) перед кожною owner-L1-tx бере свіжі значення,
+будує tx з `AdvanceNonceAccount` першою інструкцією та **власними**
+ComputeBudget-інструкціями одразу після — інакше Phantom дописує свої
+ПЕРЕД advance і ламає nonce-семантику (phantom/docs#91, виміряно 24.09:
+без наших CB tx губилась, з ними Phantom повертає `[advance, CB, CB, ix]`).
+Два акаунти — бо онбординг підписує дві L1-tx одним промптом.
 
 ## Digital Asset Links — `GET /.well-known/assetlinks.json`
 

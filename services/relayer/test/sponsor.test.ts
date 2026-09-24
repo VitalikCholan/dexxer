@@ -23,7 +23,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import express from "express";
 import type { AddressInfo } from "node:net";
-import { ComputeBudgetProgram, Keypair, PublicKey, SystemProgram, Transaction, TransactionInstruction } from "@solana/web3.js";
+import { ComputeBudgetProgram, Keypair, PublicKey, SystemProgram, Transaction, TransactionInstruction  } from "@solana/web3.js";
 import { BN } from "@coral-xyz/anchor";
 import { delegateSpl, EPHEMERAL_SPL_TOKEN_PROGRAM_ID } from "@magicblock-labs/ephemeral-rollups-sdk";
 import { createAssociatedTokenAccountIdempotentInstruction, getAssociatedTokenAddressSync, TOKEN_PROGRAM_ID } from "@solana/spl-token";
@@ -39,6 +39,7 @@ import {
   type SponsorReservation,
   type SponsorStore,
 } from "../src/sponsor.js";
+import { nonceAccountsFor, nonceSeedFor } from "../src/nonce.js";
 import { dexxerCoreProgram, DEXXER_CORE_PROGRAM_ID } from "../../../tests/er/lib/program.js";
 
 const FAKE_BLOCKHASH = Keypair.generate().publicKey.toBase58();
@@ -449,6 +450,60 @@ test("checkWhitelist: rejects delegate_user whose payer is not fee_payer", async
   const result = checkWhitelist(tx, feePayer.publicKey, DUSDC_MINT);
   assert.equal(result.ok, false);
   if (!result.ok) assert.match(result.error, /delegate_user: account index 1 \(payer\) must be fee_payer/);
+});
+
+test("checkWhitelist: accepts a nonce-advanced faucet_mint on one of the owner's relayer-derived nonce accounts", async () => {
+  const owner = Keypair.generate();
+  const feePayer = Keypair.generate();
+  const [acc0] = nonceAccountsFor(feePayer.publicKey, owner.publicKey);
+  assert.equal(acc0.toBase58(), (await PublicKey.createWithSeed(feePayer.publicKey, nonceSeedFor(owner.publicKey, 0), SystemProgram.programId)).toBase58());
+  const mint = new Transaction({
+    feePayer: feePayer.publicKey,
+    nonceInfo: { nonce: FAKE_BLOCKHASH, nonceInstruction: SystemProgram.nonceAdvance({ noncePubkey: acc0, authorizedPubkey: owner.publicKey }) },
+  });
+  mint.add(await buildFaucetMintIx(owner.publicKey));
+  mint.partialSign(owner);
+  // The handler sees the WIRE form (`Transaction.from(base64)`), where web3.js has already prepended the nonce-advance at compile time.
+  const wire = Transaction.from(mint.serialize({ requireAllSignatures: false, verifySignatures: false }));
+  const r = checkWhitelist(wire, feePayer.publicKey, DUSDC_MINT);
+  assert.equal(r.ok, true);
+  if (r.ok) assert.deepEqual(r.labels, ["system:advance_nonce", "dexxer_core:faucet_mint"]);
+});
+
+test("checkWhitelist: rejects nonce-advance on a foreign nonce account, with a foreign authority, or standing alone", async () => {
+  const owner = Keypair.generate();
+  const feePayer = Keypair.generate();
+  const [acc0] = nonceAccountsFor(feePayer.publicKey, owner.publicKey);
+  const wireOf = (tx: Transaction) => Transaction.from(tx.serialize({ requireAllSignatures: false, verifySignatures: false }));
+
+  const foreign = new Transaction({
+    feePayer: feePayer.publicKey,
+    nonceInfo: { nonce: FAKE_BLOCKHASH, nonceInstruction: SystemProgram.nonceAdvance({ noncePubkey: Keypair.generate().publicKey, authorizedPubkey: owner.publicKey }) },
+  });
+  foreign.add(await buildFaucetMintIx(owner.publicKey));
+  foreign.partialSign(owner);
+  const r1 = checkWhitelist(wireOf(foreign), feePayer.publicKey, DUSDC_MINT);
+  assert.equal(r1.ok, false);
+  if (!r1.ok) assert.match(r1.error, /not one of the owner's two relayer-derived nonce accounts/);
+
+  // authority = fee_payer would make fee_payer a required signer of the advance — and fee_payer may only appear as payer
+  const badAuth = new Transaction({
+    feePayer: feePayer.publicKey,
+    nonceInfo: { nonce: FAKE_BLOCKHASH, nonceInstruction: SystemProgram.nonceAdvance({ noncePubkey: acc0, authorizedPubkey: feePayer.publicKey }) },
+  });
+  badAuth.add(await buildFaucetMintIx(owner.publicKey));
+  badAuth.partialSign(owner);
+  const r2 = checkWhitelist(wireOf(badAuth), feePayer.publicKey, DUSDC_MINT);
+  assert.equal(r2.ok, false);
+
+  const alone = new Transaction({
+    feePayer: feePayer.publicKey,
+    nonceInfo: { nonce: FAKE_BLOCKHASH, nonceInstruction: SystemProgram.nonceAdvance({ noncePubkey: acc0, authorizedPubkey: owner.publicKey }) },
+  });
+  alone.add(SystemProgram.nonceAdvance({ noncePubkey: acc0, authorizedPubkey: owner.publicKey }));
+  alone.partialSign(owner);
+  const r3 = checkWhitelist(wireOf(alone), feePayer.publicKey, DUSDC_MINT);
+  assert.equal(r3.ok, false);
 });
 
 test("checkWhitelist: accepts faucet_mint (Deposit leg) — owner@0, fee_payer pays only the network fee", async () => {

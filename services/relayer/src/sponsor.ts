@@ -162,13 +162,14 @@
 
 import express from "express";
 import type { Router } from "express";
-import { ComputeBudgetProgram, PublicKey, Transaction } from "@solana/web3.js";
+import { ComputeBudgetProgram, PublicKey, SystemInstruction, SystemProgram, Transaction } from "@solana/web3.js";
 import type { Connection, Keypair, TransactionInstruction } from "@solana/web3.js";
 import bs58 from "bs58";
 import { EPHEMERAL_SPL_TOKEN_PROGRAM_ID } from "@magicblock-labs/ephemeral-rollups-sdk";
 import { ASSOCIATED_TOKEN_PROGRAM_ID } from "@solana/spl-token";
 import { DEXXER_CORE_IDL, DEXXER_CORE_PROGRAM_ID } from "../../../tests/er/lib/program.js";
 import type { DbPool } from "./db.js";
+import { nonceAccountsFor } from "./nonce.js";
 
 export const LAMPORTS_PER_SIGNATURE = 5000;
 export const RATE_LIMIT_MS = 60 * 60 * 1000; // 60 min
@@ -366,6 +367,35 @@ function checkPositions(ix: TransactionInstruction, shape: IxShape, feePayer: Pu
   return null;
 }
 
+/**
+ * Durable-nonce support (24.09.2026, live Phantom onboarding — see
+ * `nonce.ts` for why the RELAYER creates the accounts). The only System
+ * instruction accepted in a sponsored tx is `AdvanceNonceAccount`: nonce@0
+ * must be one of the owner's two relayer-derived nonce accounts
+ * (`nonceAccountsFor(fee_payer, owner)`) and authority@2 must be the owner.
+ * It is companion-only — a tx made of nothing but an advance is not
+ * sponsorable — and appears at most once per tx.
+ */
+function checkSystemInstruction(ix: TransactionInstruction, feePayer: PublicKey, owner: PublicKey): IxCheck {
+  let type: ReturnType<typeof SystemInstruction.decodeInstructionType>;
+  try {
+    type = SystemInstruction.decodeInstructionType(ix);
+  } catch (e) {
+    return { ok: false, reason: `System instruction could not be decoded: ${String(e)}` };
+  }
+  if (type !== "AdvanceNonceAccount") {
+    return { ok: false, reason: `System instruction ${type} not in whitelist {AdvanceNonceAccount}` };
+  }
+  const p = SystemInstruction.decodeNonceAdvance(ix);
+  if (!p.authorizedPubkey.equals(owner)) return { ok: false, reason: "system:advance_nonce: nonce authority must be the tx's owner signer" };
+  if (!nonceAccountsFor(feePayer, owner).some((a) => a.equals(p.noncePubkey))) {
+    return { ok: false, reason: "system:advance_nonce: nonce account is not one of the owner's two relayer-derived nonce accounts" };
+  }
+  const posErr = checkPositions(ix, { ownerIdx: 2 }, feePayer, owner, "system:advance_nonce");
+  if (posErr) return { ok: false, reason: posErr };
+  return { ok: true, label: "system:advance_nonce" };
+}
+
 function checkInstruction(
   ix: TransactionInstruction,
   feePayer: PublicKey,
@@ -402,7 +432,10 @@ function checkInstruction(
   if (ix.programId.equals(COMPUTE_BUDGET_PROGRAM_ID)) {
     return checkComputeBudgetInstruction(ix, maxCuPriceMicroLamports);
   }
-  return { ok: false, reason: `programId ${ix.programId.toBase58()} not in whitelist {dexxer_core, eSPL, ATA, ComputeBudget(limit/price≤cap)}` };
+  if (ix.programId.equals(SystemProgram.programId)) {
+    return checkSystemInstruction(ix, feePayer, owner);
+  }
+  return { ok: false, reason: `programId ${ix.programId.toBase58()} not in whitelist {dexxer_core, eSPL, ATA, ComputeBudget(limit/price≤cap), System(AdvanceNonceAccount)}` };
 }
 
 export type WhitelistCheck = { ok: true; owner: PublicKey; labels: string[] } | { ok: false; error: string };
@@ -478,11 +511,11 @@ export function checkWhitelist(
     }
     seenLabels.add(label);
     labels.push(label);
-    if (!label.startsWith("computebudget:")) hasSponsorableIx = true;
+    if (!label.startsWith("computebudget:") && label !== "system:advance_nonce") hasSponsorableIx = true;
   }
 
   if (!hasSponsorableIx) {
-    return { ok: false, error: "transaction contains no whitelisted dexxer_core/eSPL/ATA instruction — ComputeBudget instructions alone are not sponsorable" };
+    return { ok: false, error: "transaction contains no whitelisted dexxer_core/eSPL/ATA instruction — ComputeBudget or nonce-advance instructions alone are not sponsorable" };
   }
 
   return { ok: true, owner, labels };
