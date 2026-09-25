@@ -1,4 +1,4 @@
-// scripts/emu-proxy.js — minimal HTTP/HTTPS (CONNECT) forward proxy for the Android emulator.
+// scripts/emu-proxy.cjs — minimal HTTP/HTTPS (CONNECT) forward proxy for the Android emulator.
 //
 // Why (24.09.2026, docs/emulator-runbook.md): the AVD guest cannot resolve
 // Cloudflare/AAAA hosts (`rpc.magicblock.app`, `devnet-router`) from inside apps,
@@ -6,7 +6,7 @@
 // Routing the guest through this proxy makes the Mac do the DNS. Logs one line
 // per CONNECT/request so you can see which host an app/wallet is hitting.
 //
-// Run:  node scripts/emu-proxy.js   (listens on 127.0.0.1:8888; guest reaches it as 10.0.2.2:8888)
+// Run:  node scripts/emu-proxy.cjs   (listens on 127.0.0.1:8888; guest reaches it as 10.0.2.2:8888)
 const http = require('http'); const net = require('net'); const { URL } = require('url');
 const srv = http.createServer((req, res) => {
   try { const u = new URL(req.url); const p = http.request({ host: u.hostname, port: u.port || 80, method: req.method, path: u.pathname + u.search, headers: req.headers }, (r) => { res.writeHead(r.statusCode, r.headers); r.pipe(res); }); p.on('error', () => res.destroy()); req.pipe(p); } catch { res.destroy(); }

@@ -1203,7 +1203,7 @@ Relayer 100 → **102** (два нові — M2, нижче). Unit — **61**, �
 
 | # | Пункт | Результат |
 | --- | --- | --- |
-| 1 | DNS в AVD | FAIL без проксі (Cloudflare/AAAA-хости) → Mac-проксі `scripts/emu-proxy.js` + `settings put global http_proxy`; гаманці треба перезапускати після виставлення |
+| 1 | DNS в AVD | FAIL без проксі (Cloudflare/AAAA-хости) → Mac-проксі `scripts/emu-proxy.cjs` + `settings put global http_proxy`; гаманці треба перезапускати після виставлення |
 | 3 | SIWS показує «Dexxer» | PASS |
 | 4 | Онбординг-батч одним екраном | PASS (Phantom показує 2 L1-tx в одному промпті; ER-леґ окремо, як задумано) |
 | 5 | ER-леґ на TEE-blockhash | PASS |
@@ -1246,3 +1246,39 @@ Relayer 100 → **102** (два нові — M2, нижче). Unit — **61**, �
 5. Release-збірка: `ASSETLINKS_SHA256_FINGERPRINTS` на власний сертифікат (зараз debug-keystore).
 6. Cost-estimator `/sponsor` симулює зі свіжим blockhash → для nonce-tx повертає лише flat fee (ренту не рахує).
 7. Exit на живому гаманці не проганяли.
+
+## M-K′ — повторний демо-прогін на fakewallet (25.09.2026)
+
+Мета — підняти демо за `docs/emulator-runbook.md` і показати повний цикл. Замість
+цього прогін відкрив чотири дефекти, які вчорашній M-K не бачив, бо вчора
+0-SOL-онбординг на fakewallet ішов ДО nonce-коміту `c4a422f`, а Phantom — self-funded.
+
+### Знайдені й закриті дефекти
+
+| # | Симптом | Корінь | Фікс |
+| --- | --- | --- | --- |
+| 12 | `scripts/emu-proxy.js`: `require is not defined in ES module scope` | `scripts/package.json` має `"type": "module"` | перейменовано на `emu-proxy.cjs`, runbook/CLAUDE.md оновлено |
+| 13 | Trade: «Session expired» → `/onboard` каже «You're set», підписувати нічого | гейт свідомо не дивиться на `sessionExpiry`; `collectBatchLegs` пропускав `set_session`, якщо ключ той самий | Trade веде на `/onboard?reauth=1`; `SESSION_RENEW_MARGIN_SECS = 3600` — `set_session` переставляється, якщо до expiry < 1 год; `refresh()` на mount (раніше ніхто не викликав — усі кроки «waiting») |
+| 14 | Re-authorize видав **новий акаунт** `B3BY…` замість `5Ahk…`; tx з feePayer `5Ahk` підписана чужим ключем | wallet-ui тримає `authToken` у замиканні хука; TEE-логін (`signMessages`) ротував токен, `signTransactions` пішов зі старим → **бібліотечний** fallback `authorizeSession` зробив fresh authorize; fakewallet на fresh authorize мінтить новий акаунт, токен `5Ahk` (HMAC-підписаний, `tid=18`) невідновний | `useMwaSigning` більше не викликає сирі wallet-ui обгортки — кожен підпис через `reauthorizeFresh` (актуальний токен зі store + відмова при зміні акаунта). **Демо-акаунт відтепер `B3BY…iGW7`** (100 dUSDC, 0 SOL, спонсорований шлях) |
+| 15 | Онбординг: `Transaction too large: 1322 > 1232` до промпту гаманця | спонсорований лег `delegateSpl + delegate_user` з `AdvanceNonce` + 2 ComputeBudget; MWA серіалізує з порожніми підписами і падає ще до гаманця | L1b розбито на `delegate_spl` (гейт: eATA вже під Delegation Program) і `delegate_user`; relayer `POST /nonce` тримає **три** nonce (`dn0/dn1/dn2`); один промпт на 4 tx |
+| 16 | Спонсорований депозит на nonce → `Signature verification failed` → blockhash-fallback | dev-лог у `signOwnerL1` робив `serialize()` (перевірка всіх підписів) до того, як relayer доклав свій | `serialize({ requireAllSignatures: false, verifySignatures: false })` |
+
+### Виміряні числа
+
+| Лег (nonce: advance + 2 CB) | Байт |
+| --- | --- |
+| `faucet+init_user` (ATA-create + faucet_init + init_user), спонсорований | 861 |
+| `delegate_spl` (3 ix eSPL), спонсорований | 812 |
+| `delegate_user`, спонсорований | 930 |
+| `delegateSpl + delegate_user` разом (до фіксу) | **1322 > 1232** |
+| `permissions+session` (ER, blockhash) | 608 |
+
+Онбординг `B3BY…`: 4 tx в одному промпті, усі леги долетіли за ~4 с (fakewallet);
+депозит 100 dUSDC — через fallback (fakewallet швидкий), після фіксу #16 nonce-шлях
+не перевірявся повторно. Relayer-тести 121/121 після 3-слотового nonce.
+
+### Відкрите (додатково до списку M-K)
+
+8. `5Ahk…` (299 dUSDC, 4 розкриті трейди) лишився на ланцюгу, але недосяжний з апки — на fakewallet не повернути.
+9. Fallback на живий blockhash досі мовчазний для користувача — на Phantom це «confirm timeout»; після #16 варто прибрати fallback узагалі або показувати попередження.
+10. Кожен виклик підпису тепер має 800 мс `SCENARIO_TEARDOWN_DELAY_MS` перед сесією — можна обнулити для першої спроби.
