@@ -11,7 +11,7 @@
 | AVD `local_phone` | google_apis, без root | fakewallet + dev-client `com.dexxer.app`; демо-гаманець `5Ahk…xf2B` |
 | AVD `phantom_phone` | Play-образ, Google-акаунт | Phantom (devnet mode, «Testnet Mode») + dev-client; гаманець `A3xa…Ad97` |
 | Metro | `app/`, порт 8081 | dev-client бере бандл через `adb reverse` |
-| Проксі | `scripts/emu-proxy.js`, порт 8888 | DNS робить Mac, а не гість |
+| Проксі | `scripts/emu-proxy.cjs`, порт 8888 | DNS робить Mac, а не гість |
 | Relayer | Railway, `https://relayer-production-1ae7.up.railway.app` | завжди онлайн, піднімати не треба |
 
 Один емулятор за раз. Два одночасно — лише зайві питання «чому два».
@@ -22,7 +22,7 @@
 export PATH="$HOME/.nvm/versions/node/v24.18.0/bin:$HOME/Library/Android/sdk/platform-tools:$HOME/Library/Android/sdk/emulator:$PATH"
 
 # 1. Проксі на Mac (лог у /tmp/emuproxy.log)
-nohup node scripts/emu-proxy.js > /tmp/emuproxy.log 2>&1 &
+nohup node scripts/emu-proxy.cjs > /tmp/emuproxy.log 2>&1 &
 
 # 2. Metro (лог у /tmp/metro.log)
 (cd app && nohup npx expo start --dev-client --port 8081 > /tmp/metro.log 2>&1 &)
@@ -86,7 +86,7 @@ Fast Refresh не завжди доносить нові модулі (особ�
 ```bash
 adb emu kill; sleep 4; pkill -f "qemu-system"       # емулятор
 pkill -9 -f "expo start"                             # Metro
-pkill -9 -f "emu-proxy.js"                           # проксі
+pkill -9 -f "emu-proxy.cjs"                           # проксі
 adb devices; lsof -nP -i :8081 -i :8888 | grep LISTEN   # має бути порожньо
 ```
 

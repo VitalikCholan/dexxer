@@ -7,7 +7,7 @@
 // `advance()` runs `runBatchedOnboarding` (`batchOnboarding.ts`) —
 // faucet_init (+ATA-create if missing) + init_user (or
 // init_user_reuse_queue for a returning owner) + delegateSpl +
-// delegate_user collected into two fee_payer-sponsored L1 transactions, and
+// delegate_user collected into three fee_payer-sponsored L1 transactions, and
 // init_permissions + set_session collected into one owner-paid ER
 // transaction, all signed in ONE `mwa.signTransactions([...])` call
 // (week-5 Task 6: no more session-lamports top-up leg — see

@@ -151,7 +151,7 @@ export function TradeScreen() {
         ) : sessionExpired ? (
           <View style={{ gap: space.sm }}>
             <Badge tone="danger">Session expired</Badge>
-            <Button variant="secondary" onPress={() => router.push('/onboard')}>
+            <Button variant="secondary" onPress={() => router.push({ pathname: '/onboard', params: { reauth: '1' } })}>
               Re-authorize session
             </Button>
           </View>

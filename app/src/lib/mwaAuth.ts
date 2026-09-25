@@ -548,55 +548,50 @@ async function reauthorizeFresh<T>(
 
 /**
  * Drop-in replacement for `useMobileWallet()`'s raw `signTransactions`/
- * `signMessages`: tries the raw hook call first (cheap — reuses the cached
- * token when the wallet still accepts `reauthorize`), and on
- * {@link isAuthorizationFailure} falls back to {@link reauthorizeFresh}
- * exactly once (no further retry — a second failure propagates as-is).
+ * `signMessages`. Every call runs through {@link reauthorizeFresh} — it
+ * NEVER calls the library's own wrappers.
+ *
+ * Fix round 5 (25.09.2026, live fakewallet "Re-authorize session"): the
+ * library's `authorizeSession` captures `authToken` in a hook closure. Two
+ * MWA sessions inside one async flow (the TEE login's `signMessages`, then
+ * the ER leg's `signTransactions`) rotate the token on the first — the
+ * second still sends the pre-rotation token, the wallet rejects it, and
+ * wallet-ui's OWN fallback authorizes afresh (`index.native.mjs`'s
+ * `authorizeSession`: `ERROR_AUTHORIZATION_FAILED -> wallet.authorize({chain,
+ * identity})`) before this file's retry ever sees an error. On fakewallet a
+ * fresh authorize mints a NEW account (`B3BY..` replaced the connected
+ * `5Ahk..`, whose token became unrecoverable), which then signed the
+ * `5Ahk`-fee-payer transaction with the wrong key. {@link reauthorizeFresh}
+ * reads the LATEST token from the store at call time and refuses an account
+ * switch — so it is the only path signing may take.
+ *
  * Every real (non-spike) signing/messaging call site should use this
  * instead of destructuring `signTransactions`/`signMessages` straight off
  * `useMobileWallet()`.
  */
 export function useMwaSigning() {
-  const {
-    chain,
-    identity,
-    signTransactions: rawSignTransactions,
-    signMessages: rawSignMessages,
-    store,
-  } = useMobileWallet()
+  const { chain, identity, store } = useMobileWallet()
 
   const signTransactions = useCallback(
     async <K extends Transaction | Transaction[]>(tx: K): Promise<K> => {
-      try {
-        return await rawSignTransactions(tx)
-      } catch (e) {
-        if (!isAuthorizationFailure(e)) throw e
-        console.log('[mwa] signTransactions: reauthorize rejected by the wallet; retrying in a fresh session')
-        const txs = (Array.isArray(tx) ? tx : [tx]) as Transaction[]
-        const signed = await reauthorizeFresh(chain, identity, store, (wallet) =>
-          wallet.signTransactions({ transactions: txs }),
-        )
-        return (Array.isArray(tx) ? signed : signed[0]) as K
-      }
+      const txs = (Array.isArray(tx) ? tx : [tx]) as Transaction[]
+      const signed = await reauthorizeFresh(chain, identity, store, (wallet) =>
+        wallet.signTransactions({ transactions: txs }),
+      )
+      return (Array.isArray(tx) ? signed : signed[0]) as K
     },
-    [rawSignTransactions, chain, identity, store],
+    [chain, identity, store],
   )
 
   const signMessages = useCallback(
     async <K extends Uint8Array | Uint8Array[]>(message: K): Promise<K> => {
-      try {
-        return await rawSignMessages(message)
-      } catch (e) {
-        if (!isAuthorizationFailure(e)) throw e
-        console.log('[mwa] signMessages: reauthorize rejected by the wallet; retrying in a fresh session')
-        const payloads = (Array.isArray(message) ? message : [message]) as Uint8Array[]
-        const signed = await reauthorizeFresh(chain, identity, store, (wallet, account) =>
-          wallet.signMessages({ addresses: payloads.map(() => account.addressBase64), payloads }),
-        )
-        return (Array.isArray(message) ? signed : signed[0]) as K
-      }
+      const payloads = (Array.isArray(message) ? message : [message]) as Uint8Array[]
+      const signed = await reauthorizeFresh(chain, identity, store, (wallet, account) =>
+        wallet.signMessages({ addresses: payloads.map(() => account.addressBase64), payloads }),
+      )
+      return (Array.isArray(message) ? signed : signed[0]) as K
     },
-    [rawSignMessages, chain, identity, store],
+    [chain, identity, store],
   )
 
   return useMemo(() => ({ signTransactions, signMessages }), [signTransactions, signMessages])
