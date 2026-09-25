@@ -14,15 +14,9 @@ import { Skeleton } from '@/src/ui/Skeleton'
 import { EmptyState } from '@/src/ui/EmptyState'
 import { showToast } from '@/src/ui/Toast'
 import { useLiveAccount } from '@/src/lib/live'
-import {
-  closePosition,
-  decodeMarket,
-  decodePosition,
-  decreasePosition,
-  describeTxError,
-  increasePosition,
-  U64_MAX,
-} from '@/src/lib/program'
+import { decodeMarket, decodePosition } from '@/src/lib/codecs'
+import { describeTxError } from '@/src/lib/errors'
+import { closePosition, decreasePosition, increasePosition, U64_MAX } from '@/src/lib/trade'
 import * as math from '@/src/lib/math'
 import { PositionCard } from './PositionCard'
 import { IncreaseSheet } from './IncreaseSheet'

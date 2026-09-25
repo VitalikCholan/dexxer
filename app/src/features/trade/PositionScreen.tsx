@@ -10,7 +10,7 @@
 // once the ws is observed to have failed. `Market.mark` gets the same
 // treatment for the live price. uPnL/liq are read straight off `Position`
 // (liq_price is already computed on-chain by open/increase); uPnL is
-// computed client-side via `program.ts`'s `computeUpnl`, mirroring
+// computed client-side via `trade.ts`'s `computeUpnl`, mirroring
 // `programs/dexxer_core/src/math.rs`'s `upnl` exactly (truncation toward
 // zero).
 //
@@ -22,13 +22,13 @@ import { ScrollView, Text, View } from 'react-native'
 import { AppPage } from '@/components/app-page'
 import { Button } from '@/src/ui/Button'
 import {
-  computeUpnl,
   decodeMarket,
   decodePosition,
   readUserAccountFreeMargin,
   type DecodedMarket,
   type DecodedPosition,
-} from '@/src/lib/program'
+} from '@/src/lib/codecs'
+import { computeUpnl } from '@/src/lib/trade'
 import { useLiveAccount } from '@/src/lib/live'
 import { useTradeSession } from './useTradeSession'
 import { useOnboardingGate } from '../onboard/useOnboardingGate'

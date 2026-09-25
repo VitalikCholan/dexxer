@@ -11,7 +11,7 @@
 //      no reason. Every push (and poll) below is diffed against the last
 //      seen raw bytes (`Buffer.equals`) before decoding/setting state.
 //   2. Since pushes are reliable here (unlike the ER validator's
-//      *confirmation* websocket — see `program.ts`'s `confirmOnConn`, a
+//      *confirmation* websocket — see `trade.ts`'s `confirmOnConn`, a
 //      different subscription kind, still polled), the unconditional 1s
 //      poll from the original (Task-8) version of this file is now a
 //      FALLBACK only: poll every `FALLBACK_POLL_MS` while no push has

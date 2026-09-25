@@ -15,7 +15,7 @@
 //      and resets `Position` to `Empty` in the SAME instruction.
 //      `Position.closed: Option<ClosedRecord>` still exists in the struct
 //      but is always `None` from this app's point of view; it is no longer
-//      a data source (`program.ts`'s `DecodedPosition` doesn't decode it).
+//      a data source (`codecs.ts`'s `DecodedPosition` doesn't decode it).
 //      -> 'pending_commitment'
 //   2. `commit_aggregate`'s `process_disclosure_queue_candidate` /
 //      `pending_commitments` (commit.rs), once this owner's `DisclosureQueue`
@@ -140,7 +140,7 @@ export function formatSessionLeft(expirySec: number, nowSec: number): string {
 
 /**
  * Self-check (no test runner is wired up for this `app/` package — same gap
- * `program.ts`'s `assertLeafGolden`/`assertCommitmentGolden` work around,
+ * `hashes.ts`'s `assertLeafGolden`/`assertCommitmentGolden` work around,
  * same pattern followed here): asserts the four `disclosureStatus` branches,
  * `formatSlotsAsTime`'s edges, and `formatSessionLeft`'s branches match this
  * file's doc comments. Throws on mismatch; called once from `__DEV__`

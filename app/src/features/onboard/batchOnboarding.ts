@@ -100,15 +100,15 @@ import {
   permissionPdaFromAccount,
 } from '@magicblock-labs/ephemeral-rollups-sdk'
 import { baseConn, ER_VALIDATOR } from '@/src/lib/solana'
+import { dexxerCoreProgram, DEXXER_CORE_PROGRAM_ID } from '@/src/lib/anchor'
 import {
-  dexxerCoreProgram,
   readConfigFeePayer,
   readUserAccountExited,
   readUserAccountFreeMargin,
   readUserAccountSessionExpiry,
   readUserAccountSessionKey,
-  DEXXER_CORE_PROGRAM_ID,
-} from '@/src/lib/program'
+} from '@/src/lib/codecs'
+import { describeTxError } from '@/src/lib/errors'
 import { delegationTriple } from '@/src/lib/pdas'
 import { sponsorTx, SponsorError } from '@/src/lib/sponsor'
 import { SELF_FUND_ONBOARDING_MIN_LAMPORTS, canSelfFund } from '@/src/lib/selfFund'
@@ -146,10 +146,14 @@ export const SESSION_EXPIRY_SECS = 86_400
 export const SESSION_RENEW_MARGIN_SECS = 3_600
 export const SESSION_ACTIONS = 20
 
-export function errText(e: unknown): string {
-  const err = e as { message?: string }
-  return err?.message ?? String(e)
-}
+/**
+ * Onboarding's error formatter is `errors.ts`'s `describeTxError`: an
+ * Anchor custom-error code in the message becomes its readable text
+ * (`test/errors.test.ts`). It used to return `e.message` verbatim, so the
+ * flow most likely to fail was the one showing raw `custom program error:
+ * 0x…` strings.
+ */
+export const errText = describeTxError
 
 // L1 send: sign via MWA (sign-only), then submit ourselves on `baseConn`.
 // We deliberately do NOT use the wallet's `signAndSendTransactions`: the

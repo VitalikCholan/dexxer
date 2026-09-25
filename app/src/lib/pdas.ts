@@ -12,7 +12,7 @@ import {
   delegationMetadataPdaFromDelegatedAccount,
   delegationRecordPdaFromDelegatedAccount,
 } from '@magicblock-labs/ephemeral-rollups-sdk'
-import { DEXXER_CORE_PROGRAM_ID } from './program'
+import { DEXXER_CORE_PROGRAM_ID } from './anchor'
 
 const CONFIG_SEED = Buffer.from('config')
 const MARKET_SEED = Buffer.from('market')

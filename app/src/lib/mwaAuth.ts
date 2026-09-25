@@ -519,10 +519,10 @@ async function reauthorizeFresh<T>(
       if (latestToken) {
         try {
           authResult = await wallet.authorize({ identity, chain, auth_token: latestToken })
-          console.log('[mwa] reauthorize with the latest stored token succeeded (stale-closure token was rejected)')
+          if (__DEV__) console.log('[mwa] reauthorize with the latest stored token succeeded (stale-closure token was rejected)')
         } catch (e) {
           if (!isAuthorizationFailure(e)) throw e
-          console.log('[mwa] latest stored token rejected too; authorizing afresh')
+          if (__DEV__) console.log('[mwa] latest stored token rejected too; authorizing afresh')
         }
       }
       if (!authResult) authResult = await wallet.authorize({ identity, chain })
@@ -533,10 +533,10 @@ async function reauthorizeFresh<T>(
       const got = String(authorization.selectedAccount.address)
       if (previouslySelectedAccount && authorization.selectedAccount.addressBase64 !== previouslySelectedAccount.addressBase64) {
         const expected = String(previouslySelectedAccount.address)
-        console.error(`[mwa] wallet authorized a different account: got ${got}, expected ${expected}`)
+        if (__DEV__) console.error(`[mwa] wallet authorized a different account: got ${got}, expected ${expected}`)
         throw new Error(`Wallet returned account ${ellipsifyAddress(got)} instead of the connected ${ellipsifyAddress(expected)} — reconnect the wallet and retry`)
       }
-      console.log(`[mwa] fresh session authorized as ${ellipsifyAddress(got)}; running the signing op`)
+      if (__DEV__) console.log(`[mwa] fresh session authorized as ${ellipsifyAddress(got)}; running the signing op`)
       const result = await op(wallet, authorization.selectedAccount)
       return { authorization, result }
     }),
@@ -599,7 +599,7 @@ export function useMwaSigning() {
 
 /**
  * Self-check (no test runner wired up for `app/` — same gap/pattern as
- * `program.ts`'s golden vectors): asserts `identityHash` is deterministic
+ * `hashes.ts`'s golden vectors): asserts `identityHash` is deterministic
  * (same input -> same output, across separate calls and key orderings) and
  * sensitive to every field, including `undefined` vs. an explicit value
  * normalizing the same way. Throws on mismatch.

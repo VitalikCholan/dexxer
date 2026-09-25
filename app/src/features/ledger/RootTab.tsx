@@ -15,7 +15,7 @@ import { Address } from '@/src/ui/Address'
 import { Skeleton } from '@/src/ui/Skeleton'
 import { EmptyState } from '@/src/ui/EmptyState'
 import { useRootLatest } from '@/src/lib/indexer'
-import { ROOT_LEAVES } from '@/src/lib/program'
+import { ROOT_LEAVES } from '@/src/lib/codecs'
 import { pdas } from '@/src/lib/pdas'
 
 const BALANCES_ROOT_PDA = pdas.balancesRoot()

@@ -16,7 +16,7 @@
 //      next commit cycle. `commit_aggregate` later flips
 //      `commitment_written` to `true` IN PLACE (no more `mark_committed`
 //      hop through `Position.closed` — that source is gone, see
-//      `program.ts`'s `DecodedPosition`/`status.ts`'s file header).
+//      `codecs.ts`'s `DecodedPosition`/`status.ts`'s file header).
 //   2. `Disclosure` accounts on L1 (public, base layer) — the record after
 //      `write_disclosure` runs and pops it out of the queue.
 //      `Disclosure.owner` is always `Pubkey::default()` by design (the
@@ -51,18 +51,18 @@
 // `INDEXER_ENABLED=true` — an exact-pubkey L1 lookup stays the correctness-
 // bearing path for "did MY trade get revealed", independent of the indexer
 // being up), just no longer hand-rolled.
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Connection, PublicKey } from '@solana/web3.js'
 import * as SecureStore from 'expo-secure-store'
 import { useQuery, type UseQueryResult } from '@tanstack/react-query'
 import {
-  commitmentHash,
   decodeDisclosure,
   decodeDisclosureQueue,
   type DecodedClosedRecord,
   type DecodedDisclosure,
   type DecodedDisclosureQueue,
-} from '@/src/lib/program'
+} from '@/src/lib/codecs'
+import { commitmentHash } from '@/src/lib/hashes'
 import { pdas } from '@/src/lib/pdas'
 import { baseConn } from '@/src/lib/solana'
 import { useLiveAccount, type LiveAccount } from '@/src/lib/live'
@@ -207,7 +207,7 @@ export function mergeHistoryRows(
 
 /**
  * Self-check (no test runner is wired up for `app/` — same gap/pattern as
- * `program.ts`'s golden vectors and `status.ts`'s
+ * `hashes.ts`'s golden vectors and `status.ts`'s
  * `assertDisclosureStatusSelfCheck`): feeds ONE synthetic trade present in
  * both sources at once (the exact failure mode Fix round 1 addresses) and
  * asserts `mergeHistoryRows` collapses it to a single row carrying the
@@ -270,6 +270,40 @@ if (__DEV__) {
   }
 }
 
+/**
+ * Solana RPC's `getMultipleAccounts` accepts at most 100 keys per call, and
+ * web3.js's `getMultipleAccountsInfo` is ONE un-chunked RPC request
+ * (`getMultipleAccountsInfoAndContext` in `@solana/web3.js`'s `lib/index.cjs.js`)
+ * — so a device that has remembered more than 100 commitment hashes would
+ * have every revealed-`Disclosure` lookup below rejected outright, and every
+ * revealed row would vanish from History. `chunk` keeps each request under
+ * the cap.
+ */
+export const MAX_ACCOUNTS_PER_RPC = 100
+
+/** Split `items` into consecutive slices of at most `size` (pure; exported for the test runner once `app/` has one). */
+export function chunk<T>(items: readonly T[], size: number): T[][] {
+  if (size <= 0) throw new Error(`chunk: size must be positive, got ${size}`)
+  const out: T[][] = []
+  for (let i = 0; i < items.length; i += size) out.push(items.slice(i, i + size))
+  return out
+}
+
+/**
+ * Revealed `Disclosure`s already found on L1, kept across refetches for the
+ * lifetime of the hook. A `Disclosure` account is written once by
+ * `write_disclosure` (`init`) and is never mutated or closed by any
+ * instruction — so once one is found it never needs to be fetched again.
+ * Without this cache every 5-second poll re-read EVERY remembered hash,
+ * forever: a cost that grew with the device's whole trade history instead
+ * of with the handful of trades still awaiting reveal. Keyed by owner so a
+ * wallet switch starts from an empty map.
+ */
+interface RevealedCache {
+  owner: string | null
+  found: Map<string, RevealedEntry>
+}
+
 export interface UseHistoryRows {
   rows: Row[]
   dq: LiveAccount<DecodedDisclosureQueue>
@@ -315,22 +349,36 @@ export function useHistoryRows(owner: PublicKey | null, conn: Connection | null)
   // scan+filter: `pdas.disclosure(hash)` is deterministic, so every known
   // hash maps to exactly one address regardless of what other traders'
   // rows exist on L1.
+  const revealedCache = useRef<RevealedCache>({ owner: null, found: new Map() })
   const revealedQuery: UseQueryResult<RevealedEntry[]> = useQuery({
     queryKey: ['dexxer-history-revealed', owner?.toBase58()],
     queryFn: async () => {
+      const ownerKey = owner!.toBase58()
+      const cache = revealedCache.current
+      if (cache.owner !== ownerKey) {
+        cache.owner = ownerKey
+        cache.found = new Map()
+      }
       const known = await loadKnownHashes(owner!)
-      if (known.length === 0) return []
-      const pubkeys = known.map((h) => pdas.disclosure(h))
-      const infos = await baseConn.getMultipleAccountsInfo(pubkeys, 'confirmed')
-      const found: RevealedEntry[] = []
-      infos.forEach((info, i) => {
-        // `known[i]` (not re-derived) — the exact hash this pubkey was
-        // looked up by, threaded through so `mergeHistoryRows` can key on it
-        // (see `RevealedEntry`'s doc comment: a `DecodedDisclosure` alone
-        // can't reproduce this hash, it lacks `salt`/`reveal_after_slot`).
-        if (info) found.push({ hash: known[i], pubkey: pubkeys[i], disclosure: decodeDisclosure(info.data) })
+      // Only hashes not yet found on L1 are looked up — see `RevealedCache`.
+      const pending = known.filter((h) => !cache.found.has(h))
+      for (const hashes of chunk(pending, MAX_ACCOUNTS_PER_RPC)) {
+        const pubkeys = hashes.map((h) => pdas.disclosure(h))
+        const infos = await baseConn.getMultipleAccountsInfo(pubkeys, 'confirmed')
+        infos.forEach((info, i) => {
+          // `hashes[i]` (not re-derived) — the exact hash this pubkey was
+          // looked up by, threaded through so `mergeHistoryRows` can key on it
+          // (see `RevealedEntry`'s doc comment: a `DecodedDisclosure` alone
+          // can't reproduce this hash, it lacks `salt`/`reveal_after_slot`).
+          if (info)
+            cache.found.set(hashes[i], { hash: hashes[i], pubkey: pubkeys[i], disclosure: decodeDisclosure(info.data) })
+        })
+      }
+      // Emitted in `known` order (deterministic across refetches); `mergeHistoryRows` sorts by `closedSlot` anyway.
+      return known.flatMap((h) => {
+        const entry = cache.found.get(h)
+        return entry ? [entry] : []
       })
-      return found
     },
     enabled: !!owner,
     refetchInterval: 5000,

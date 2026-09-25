@@ -18,15 +18,9 @@ import { Skeleton } from '@/src/ui/Skeleton'
 import { showToast } from '@/src/ui/Toast'
 import { useLiveAccount } from '@/src/lib/live'
 import { useCandles, useIndexerConnected, useMark } from '@/src/lib/indexer'
-import {
-  decodeMarket,
-  decodePosition,
-  decodeUserAccount,
-  describeTxError,
-  openPosition,
-  readMarket,
-  type SideName,
-} from '@/src/lib/program'
+import { decodeMarket, decodePosition, decodeUserAccount, readMarket, type SideName } from '@/src/lib/codecs'
+import { describeTxError } from '@/src/lib/errors'
+import { openPosition } from '@/src/lib/trade'
 import { PriceChart } from './PriceChart'
 import { TradeHeader } from './TradeHeader'
 import { TradeTicket, type MarketParams } from './TradeTicket'

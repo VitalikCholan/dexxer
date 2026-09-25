@@ -20,7 +20,8 @@ import { Card } from '@/src/ui/Card'
 import { Row } from '@/src/ui/Row'
 import { Button } from '@/src/ui/Button'
 import * as math from '@/src/lib/math'
-import { solSize, usdAmount, type SideName } from '@/src/lib/program'
+import { type SideName } from '@/src/lib/codecs'
+import { solSize, usdAmount } from '@/src/lib/trade'
 
 export interface MarketParams {
   imrBps: bigint
