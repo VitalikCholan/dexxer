@@ -57,13 +57,10 @@ export default function TabLayout() {
           tabBarIcon: ({ color }) => <UiIconSymbol size={28} name="clock.arrow.circlepath" color={color} />,
         }}
       />
-      <Tabs.Screen
-        name="ledger"
-        options={{
-          title: 'Ledger',
-          tabBarIcon: ({ color }) => <UiIconSymbol size={28} name="list.bullet.rectangle.fill" color={color} />,
-        }}
-      />
+      {/* DEMO HIDE (25.09, temporary, user request): `href: null` keeps the route
+          registered (deep link `app://ledger` still works) but drops it from the tab
+          bar. Restore: replace with the title + `list.bullet.rectangle.fill` icon block. */}
+      <Tabs.Screen name="ledger" options={{ href: null, title: 'Ledger' }} />
       <Tabs.Screen
         name="account"
         options={{

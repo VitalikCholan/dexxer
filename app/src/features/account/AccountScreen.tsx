@@ -33,6 +33,9 @@ import { ReceiptSection } from '../receipt/ReceiptSection'
 import { DepositSheet } from './DepositSheet'
 import { WithdrawSheet } from './WithdrawSheet'
 import { ExitSheet, type ExitChecklist } from './ExitSheet'
+
+/** DEMO HIDE (25.09, temporary): Receipt + Exit cards off the Account screen. */
+const DEMO_HIDE_RECEIPT_EXIT = true
 import { buildAccountPdas, depositTx, exitTx, withdrawTx } from './accountTx'
 
 function usd(raw: bigint): string {
@@ -161,14 +164,20 @@ export function AccountScreen() {
               </View>
             </Card>
 
-            <ReceiptSection />
+            {/* DEMO HIDE (25.09, temporary, user request): Receipt and Exit cards.
+                Restore by flipping `DEMO_HIDE_RECEIPT_EXIT` to false. */}
+            {DEMO_HIDE_RECEIPT_EXIT ? null : (
+              <>
+                <ReceiptSection />
 
-            <Card title="Exit">
-              <Text style={{ color: colors.textSecondary }}>Return your private accounts to L1, fields erased.</Text>
-              <Button variant="destructive" onPress={() => setSheet('exit')}>
-                Exit private account
-              </Button>
-            </Card>
+                <Card title="Exit">
+                  <Text style={{ color: colors.textSecondary }}>Return your private accounts to L1, fields erased.</Text>
+                  <Button variant="destructive" onPress={() => setSheet('exit')}>
+                    Exit private account
+                  </Button>
+                </Card>
+              </>
+            )}
           </>
         )}
 
