@@ -21,7 +21,7 @@
 import { useEffect } from 'react'
 import { router, useLocalSearchParams } from 'expo-router'
 import { ScrollView, Text, View } from 'react-native'
-import { AppPage } from '@/components/app-page'
+import { Page } from '@/src/ui/Page'
 import { useTheme } from '@/src/theme'
 import { useTextStyle } from '@/src/ui/styles'
 import { Button } from '@/src/ui/Button'
@@ -57,9 +57,9 @@ export function OnboardScreen() {
 
   if (!owner) {
     return (
-      <AppPage>
+      <Page>
         <ConnectScreen busy={busy} onConnect={() => void connectWallet()} />
-      </AppPage>
+      </Page>
     )
   }
 
@@ -70,7 +70,7 @@ export function OnboardScreen() {
   // onboarding state machine's own (mount-time-only) L1 check.
   if (state === 'SessionSet' || (gate.status === 'ready' && !reauthorizing)) {
     return (
-      <AppPage>
+      <Page>
         <View style={{ flex: 1, justifyContent: 'center', gap: space.lg, paddingHorizontal: space.lg }}>
           <Text style={[title, { color: colors.textPrimary, textAlign: 'center' }]}>You&apos;re set.</Text>
           <Text style={[body, { color: colors.textSecondary, textAlign: 'center' }]}>Session key active for 24h</Text>
@@ -84,14 +84,14 @@ export function OnboardScreen() {
             Go to Trade
           </Button>
         </View>
-      </AppPage>
+      </Page>
     )
   }
 
   const failedStep = batchProgress.phase === 'Failed'
 
   return (
-    <AppPage>
+    <Page>
       <ScrollView contentContainerStyle={{ gap: space.lg, paddingVertical: space.lg }}>
         <Text style={[title, { color: colors.textPrimary }]}>
           {reauthorizing ? 'Re-authorize session' : 'Set up private account'}
@@ -124,6 +124,6 @@ export function OnboardScreen() {
           No SOL needed — rent is sponsored for empty wallets; a wallet holding SOL pays its own (≈0.03 SOL)
         </Text>
       </ScrollView>
-    </AppPage>
+    </Page>
   )
 }

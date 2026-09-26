@@ -8,7 +8,7 @@
 import { useCallback, useState } from 'react'
 import { router } from 'expo-router'
 import { ScrollView } from 'react-native'
-import { AppPage } from '@/components/app-page'
+import { Page } from '@/src/ui/Page'
 import { useTheme } from '@/src/theme'
 import { Skeleton } from '@/src/ui/Skeleton'
 import { EmptyState } from '@/src/ui/EmptyState'
@@ -80,7 +80,7 @@ export function PositionsScreen() {
   )
 
   return (
-    <AppPage>
+    <Page>
       <ScrollView contentContainerStyle={{ gap: space.lg, paddingVertical: space.lg }}>
         {loading ? (
           <Skeleton lines={5} />
@@ -126,6 +126,6 @@ export function PositionsScreen() {
           </>
         ) : null}
       </ScrollView>
-    </AppPage>
+    </Page>
   )
 }

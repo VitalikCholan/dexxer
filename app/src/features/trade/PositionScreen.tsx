@@ -19,7 +19,7 @@
 // screen component.
 import { router } from 'expo-router'
 import { ScrollView, Text, View } from 'react-native'
-import { AppPage } from '@/components/app-page'
+import { Page } from '@/src/ui/Page'
 import { Button } from '@/src/ui/Button'
 import {
   decodeMarket,
@@ -58,7 +58,7 @@ export function PositionScreen() {
   const upnl = isOpen && mark !== null ? computeUpnl(pos.side, pos.size, pos.entry, mark) : null
 
   return (
-    <AppPage>
+    <Page>
       <ScrollView contentContainerStyle={{ gap: 16, paddingVertical: 16 }}>
         <Text style={{ fontSize: 20, fontWeight: '700' }}>Position — SOL-PERP</Text>
 
@@ -111,7 +111,7 @@ export function PositionScreen() {
           <Text>{freeMargin.value !== null ? `$${fmtUsd(freeMargin.value)}` : '—'}</Text>
         </View>
       </ScrollView>
-    </AppPage>
+    </Page>
   )
 }
 

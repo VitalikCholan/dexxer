@@ -1,25 +1,28 @@
-import { AppButton } from '@/components/app-button'
-import { AppView } from '@/components/app-view'
-import { AppText } from '@/components/app-text'
+import { ActivityIndicator, Text, View } from 'react-native'
 import { PublicKey } from '@solana/web3.js'
 import { useMobileWallet } from '@wallet-ui/react-native-web3js'
-import React from 'react'
-import { ActivityIndicator } from 'react-native'
+import { useTheme } from '@/src/theme'
+import { useTextStyle } from '@/src/ui/styles'
+import { Button } from '@/src/ui/Button'
 import { useRequestAirdrop } from '@/components/account/use-request-airdrop'
 
+/** Devnet dev tool (Settings -> Developer): 1 SOL to the connected wallet via the public devnet RPC. */
 export function AccountFeatureAirdrop({ back }: { back: () => void }) {
   const { account } = useMobileWallet()
+  const { colors, space } = useTheme()
+  const heading = useTextStyle('heading')
+  const caption = useTextStyle('caption')
   const amount = 1
   const requestAirdrop = useRequestAirdrop({ address: account?.address as PublicKey })
 
   return (
-    <AppView>
-      <AppText type="subtitle">Request a 1 SOL airdrop to the connected wallet.</AppText>
+    <View style={{ gap: space.md }}>
+      <Text style={[heading, { color: colors.textPrimary }]}>Request a 1 SOL airdrop to the connected wallet.</Text>
       {requestAirdrop.isPending ? (
-        <ActivityIndicator />
+        <ActivityIndicator color={colors.accent} />
       ) : (
-        <AppButton
-          disabled={requestAirdrop.isPending}
+        <Button
+          variant="primary"
           onPress={() => {
             requestAirdrop
               .mutateAsync(amount)
@@ -29,14 +32,13 @@ export function AccountFeatureAirdrop({ back }: { back: () => void }) {
               })
               .catch((err) => console.log(`Error requesting airdrop: ${err}`, err))
           }}
-          variant="filled"
         >
           Request Airdrop
-        </AppButton>
+        </Button>
       )}
       {requestAirdrop.isError ? (
-        <AppText style={{ color: 'red', fontSize: 12 }}>{`${requestAirdrop.error.message}`}</AppText>
+        <Text style={[caption, { color: colors.short }]}>{`${requestAirdrop.error.message}`}</Text>
       ) : null}
-    </AppView>
+    </View>
   )
 }

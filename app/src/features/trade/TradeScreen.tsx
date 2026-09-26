@@ -8,7 +8,7 @@
 import { useCallback, useMemo, useState } from 'react'
 import { router } from 'expo-router'
 import { ScrollView, Text, View } from 'react-native'
-import { AppPage } from '@/components/app-page'
+import { Page } from '@/src/ui/Page'
 import { useTheme } from '@/src/theme'
 import { useTextStyle } from '@/src/ui/styles'
 import { Segment } from '@/src/ui/Segment'
@@ -117,7 +117,7 @@ export function TradeScreen() {
   )
 
   return (
-    <AppPage>
+    <Page>
       <ScrollView contentContainerStyle={{ gap: space.lg, paddingVertical: space.lg }}>
         <TradeHeader markUsdNum={markUsdNum} pctChange={pctChange} dotColor={dotColor} />
 
@@ -184,6 +184,6 @@ export function TradeScreen() {
           />
         )}
       </ScrollView>
-    </AppPage>
+    </Page>
   )
 }

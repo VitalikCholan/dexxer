@@ -1,5 +1,5 @@
 import { useMobileWallet } from '@wallet-ui/react-native-web3js'
-import { BaseButton } from '@/components/solana/base-button'
+import { Button } from '@/src/ui/Button'
 import React, { useState } from 'react'
 import { showError } from '@/utils/show-error'
 import { disconnect as mwaDisconnect } from '@/src/lib/mwa/session'
@@ -26,10 +26,8 @@ export function WalletUiButtonDisconnect({ label = 'Disconnect' }: { label?: str
   }
 
   return (
-    <BaseButton
-      disabled={isDisconnecting}
-      label={isDisconnecting ? 'Disconnecting...' : label}
-      onPress={() => void handleDisconnect()}
-    />
+    <Button variant="secondary" loading={isDisconnecting} onPress={() => void handleDisconnect()}>
+      {isDisconnecting ? 'Disconnecting...' : label}
+    </Button>
   )
 }

@@ -1,8 +1,9 @@
 import { Link } from 'expo-router'
-import { AppText } from '@/components/app-text'
-import { AppView } from '@/components/app-view'
+import { Text, View } from 'react-native'
+import { useTheme } from '@/src/theme'
+import { useTextStyle } from '@/src/ui/styles'
+import { Page } from '@/src/ui/Page'
 import { SettingsUiAccount } from '@/components/settings/settings-ui-account'
-import { AppPage } from '@/components/app-page'
 
 // Task 8 (5-tab layout): `onboard`/`position` dropped out of the tab bar
 // (`href: null` in app/app/(tabs)/_layout.tsx) but stay reachable from here,
@@ -20,17 +21,20 @@ const DEVELOPER_LINKS: {
 ]
 
 export default function TabSettingsScreen() {
+  const { colors, space } = useTheme()
+  const heading = useTextStyle('heading')
+  const link = useTextStyle('body')
   return (
-    <AppPage>
+    <Page>
       <SettingsUiAccount />
-      <AppView>
-        <AppText type="subtitle">Developer</AppText>
-        {DEVELOPER_LINKS.map((link) => (
-          <Link key={link.href} href={link.href} asChild>
-            <AppText type="link">{link.label}</AppText>
+      <View style={{ gap: space.sm }}>
+        <Text style={[heading, { color: colors.textPrimary }]}>Developer</Text>
+        {DEVELOPER_LINKS.map((l) => (
+          <Link key={l.href} href={l.href} asChild>
+            <Text style={[link, { color: colors.accent, lineHeight: 30 }]}>{l.label}</Text>
           </Link>
         ))}
-      </AppView>
-    </AppPage>
+      </View>
+    </Page>
   )
 }

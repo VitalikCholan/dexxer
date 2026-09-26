@@ -1,13 +1,13 @@
 import React, { Fragment } from 'react'
-import { Linking, StyleSheet } from 'react-native'
+import { Linking, StyleSheet, Text } from 'react-native'
 import Clipboard from '@react-native-clipboard/clipboard'
 import { useMobileWallet } from '@wallet-ui/react-native-web3js'
 import { ellipsify } from '@/utils/ellipsify'
 import { UiIconSymbol } from '@/components/ui/ui-icon-symbol'
-import { AppText } from '@/components/app-text'
+import { useTheme } from '@/src/theme'
+import { useTextStyle } from '@/src/ui/styles'
 import * as Dropdown from '@rn-primitives/dropdown-menu'
 import { WalletUiButtonConnect } from './wallet-ui-button-connect'
-import { useWalletUiTheme } from '@/components/solana/use-wallet-ui-theme'
 import { showError } from '@/utils/show-error'
 import { disconnect as mwaDisconnect } from '@/src/lib/mwa/session'
 
@@ -48,7 +48,11 @@ function useDropdownItems() {
 
 export function WalletUiDropdown() {
   const { account } = useMobileWallet()
-  const { backgroundColor, borderColor, textColor } = useWalletUiTheme()
+  const { colors, radius, space } = useTheme()
+  const label = useTextStyle('bodyStrong')
+  const backgroundColor = colors.surfaceAlt
+  const borderColor = colors.border
+  const textColor = colors.textPrimary
 
   const items = useDropdownItems()
 
@@ -58,17 +62,30 @@ export function WalletUiDropdown() {
 
   return (
     <Dropdown.Root>
-      <Dropdown.Trigger style={[styles.trigger, { backgroundColor, borderColor }]}>
+      <Dropdown.Trigger
+        style={[
+          styles.trigger,
+          {
+            backgroundColor,
+            borderColor,
+            borderRadius: radius.pill,
+            paddingHorizontal: space.lg,
+            paddingVertical: space.sm,
+          },
+        ]}
+      >
         <UiIconSymbol name="wallet.pass.fill" color={textColor} />
-        <AppText>{ellipsify(account.address.toString())}</AppText>
+        <Text style={[label, { color: textColor }]}>{ellipsify(account.address.toString())}</Text>
       </Dropdown.Trigger>
       <Dropdown.Portal>
         <Dropdown.Overlay style={StyleSheet.absoluteFill}>
-          <Dropdown.Content style={{ ...styles.list, backgroundColor, borderColor }}>
+          <Dropdown.Content
+            style={{ ...styles.list, backgroundColor, borderColor, borderRadius: radius.lg, marginTop: space.sm }}
+          >
             {items.map((item, index) => (
               <Fragment key={item.label}>
                 <Dropdown.Item onPress={item.onPress} style={[styles.item, { borderColor }]}>
-                  <AppText>{item.label}</AppText>
+                  <Text style={[label, { color: textColor }]}>{item.label}</Text>
                 </Dropdown.Item>
                 {index < items.length - 1 && <Dropdown.Separator style={{ backgroundColor: borderColor, height: 1 }} />}
               </Fragment>
@@ -80,10 +97,11 @@ export function WalletUiDropdown() {
   )
 }
 
+// Token-derived radii/spacing are applied inline where they are used; these are the structural bits.
 export const styles = StyleSheet.create({
   trigger: {
     alignItems: 'center',
-    borderRadius: 50,
+    borderRadius: 999,
     borderWidth: 1,
     flexDirection: 'row',
     gap: 8,

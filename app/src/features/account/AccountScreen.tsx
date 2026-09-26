@@ -10,7 +10,7 @@ import { router } from 'expo-router'
 import { ScrollView, Text, View } from 'react-native'
 import { useMobileWallet } from '@wallet-ui/react-native-web3js'
 import Clipboard from '@react-native-clipboard/clipboard'
-import { AppPage } from '@/components/app-page'
+import { Page } from '@/src/ui/Page'
 import { useTheme } from '@/src/theme'
 import { useTextStyle } from '@/src/ui/styles'
 import { Card } from '@/src/ui/Card'
@@ -96,9 +96,9 @@ export function AccountScreen() {
 
   if (!account) {
     return (
-      <AppPage>
+      <Page>
         <Text style={[heading, { color: colors.textPrimary }]}>Connect your wallet to view your account.</Text>
-      </AppPage>
+      </Page>
     )
   }
 
@@ -120,7 +120,7 @@ export function AccountScreen() {
   const pendingDisclosures = dq.value?.len ?? 0
 
   return (
-    <AppPage>
+    <Page>
       <ScrollView contentContainerStyle={{ gap: space.lg, paddingVertical: space.lg }}>
         <View style={{ gap: space.xs }}>
           <View style={{ flexDirection: 'row', gap: space.sm, alignItems: 'center' }}>
@@ -191,6 +191,6 @@ export function AccountScreen() {
           onConfirm={handleExit}
         />
       </ScrollView>
-    </AppPage>
+    </Page>
   )
 }
