@@ -17,7 +17,7 @@ import {
 } from '../src/lib/mwa/errors'
 import { assertDeriveTicketSelfCheck } from '../src/features/trade/ticketMath'
 import { assertLiqDistancePctSelfCheck } from '../src/features/positions/PositionCard'
-import { assertHistoryMergeSelfCheck, chunk, MAX_ACCOUNTS_PER_RPC } from '../src/features/history/useHistoryRows'
+import { assertHistoryMergeSelfCheck, chunk, MAX_ACCOUNTS_PER_RPC } from '../src/features/history/historyRows'
 
 // --- ports of on-chain math / hashing (golden vectors shared with Rust and tests/er) ---
 test('math.ts matches math.rs vectors', () => assertMathSelfCheck())

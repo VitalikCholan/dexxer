@@ -12,9 +12,9 @@
 // transaction, all signed in ONE `mwa.signTransactions([...])` call
 // (week-5 Task 6: no more session-lamports top-up leg — see
 // `batchOnboarding.ts`'s file header). `credit_deposit` (crediting
-// `free_margin`) is deliberately NOT part of the batch — see
-// `batchOnboarding.ts`'s `runDevDeposit` and the real Deposit screen
-// (`AccountScreen.tsx`).
+// `free_margin`) is deliberately NOT part of the batch — it is the real
+// Deposit screen's job (`AccountScreen.tsx`; the standalone "Deposit (dev)"
+// action was removed in week 6).
 //
 // This file is just the hook wrapper: React state and `buildCtx`. The batch
 // pipeline itself (`collectBatchLegs`/`runBatchedOnboarding`/`BatchLeg`) and
@@ -40,7 +40,6 @@ import { useMwaSigning } from '@/src/lib/mwa/useMwaSigning'
 import {
   IDLE_BATCH_PROGRESS,
   runBatchedOnboarding,
-  runDevDeposit,
   type BatchProgress,
   type Mwa,
   type OnboardCtx,
@@ -80,8 +79,6 @@ export interface UseOnboarding {
   refresh: () => Promise<void>
   /** Runs onboarding forward from wherever it currently stands, all the way to `SessionSet` (or the first failure). */
   advance: () => Promise<void>
-  /** Task 6: standalone "Deposit (dev)" action — `credit_deposit` alone, not part of the batch. See `batchOnboarding.ts`'s `runDevDeposit`. */
-  runDeposit: () => Promise<void>
 }
 
 export function useOnboarding(): UseOnboarding {
@@ -189,23 +186,6 @@ export function useOnboarding(): UseOnboarding {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [owner, connectWallet, buildCtx, appendLog, signAndSendTransaction, signTransactions, getConnection])
 
-  const runDeposit = useCallback(async () => {
-    if (!owner) return
-    setBusy(true)
-    setError(null)
-    try {
-      const l1 = await readOwnerL1(owner)
-      if ('error' in l1) throw new Error(l1.error)
-      const ctx = await buildCtx(owner, l1.mint)
-      await runDevDeposit(ctx, mwa, appendLog, setState)
-    } catch (e) {
-      setError(errText(e))
-    } finally {
-      setBusy(false)
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [owner, buildCtx, appendLog, signTransactions, getConnection])
-
   return {
     owner,
     session: sessionPubkey,
@@ -217,6 +197,5 @@ export function useOnboarding(): UseOnboarding {
     connectWallet,
     refresh,
     advance,
-    runDeposit,
   }
 }

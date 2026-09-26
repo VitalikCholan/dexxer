@@ -1,75 +1,12 @@
 // app/src/features/onboard/batchOnboarding.ts
 //
-// The batched onboarding engine (Task 6, week 4; extracted from
-// useOnboarding.ts in fix round 1, finding E): faucet_init (+ATA-create if
-// missing) + init_user (or init_user_reuse_queue for a returning owner) +
-// delegateSpl + delegate_user collected into two fee_payer-SPONSORED L1
-// transactions, and init_permissions + set_session collected into one
-// owner-paid ER transaction — signed in ONE `mwa.signTransactions([...])`
-// call. `useOnboarding.ts` stays the thin hook wrapper: React state and
-// `buildCtx` live there; this file owns the shared send/confirm primitives
-// and the batch pipeline itself.
-//
-// --- Week-5 Task 6: zero-SOL onboarding ------------------------------------
-//
-// Fix round 1 (week 4, task 6) got `faucet_init`/`init_user`/`delegateSpl`
-// fronted by `fee_payer` but left two costs on the owner: the ATA-create
-// (`createAssociatedTokenAccountIdempotentInstruction`, previously
-// owner-funded) and `delegate_user`'s own `payer` field, which had no
-// distinct-from-`owner` account at all — a genuinely 0-SOL owner could not
-// complete onboarding (real measured minimum ≈0.0033-0.0035 SOL). Week 5
-// closed both gaps program-side (`delegate_user` gained its own `payer`,
-// split from `owner` — week-5 Task 3 P1) and relayer-side
-// (`services/relayer/src/sponsor.ts`'s whitelist now fronts the ATA-create
-// AND `delegate_user`'s rent too, `payer@0`/`payer@1` respectively — see its
-// file header). This file follows: the ATA-create's `payer` and
-// `delegate_user`'s `payer` are now `feePayerPubkey`, not `owner`.
-//
-// The session fee top-up (a plain `SystemProgram.transfer(owner, session,
-// SESSION_LAMPORTS)`, `session.ts`'s former `sessionTopUpIx`) is GONE — not
-// just unsponsored-but-present, removed entirely. It funded the session
-// key's own ER tx fees; `services/relayer/src/sponsor.ts`'s week-5 file
-// header explains why: `fee_payer` cannot pay for an ER transaction it did
-// not itself originate (`InvalidAccountForFee`, measured week 4, finding
-// A.3), and a plain `SystemProgram.transfer` was the ONLY SystemProgram
-// instruction ever on the sponsor whitelist — removing the leg removes that
-// whole drain surface by construction (relayer's own words: "with it goes
-// the only SystemProgram instruction this endpoint ever accepted").
-//
-// `init_user` vs `init_user_reuse_queue` (week-5 Task 2): a fresh owner (no
-// `UserAccount` PDA on L1 yet) gets `init_user`. A RETURNING owner — one
-// who previously called `undelegate_user` and is not yet re-delegated — has
-// a `UserAccount` that already exists, is NOT owned by the Delegation
-// Program, and carries `exited == true`; `init_user`'s `init` constraint
-// would fail outright on that already-initialized PDA, so
-// `init_user_reuse_queue` (same account list, `mut` instead of `init`,
-// gated on `exited`) is used instead. It also requires `DisclosureQueue` to
-// be a plain, non-delegated `dexxer_core`-owned account — which only holds
-// once the relayer's orphan janitor (`close_orphan_queue`) has drained and
-// undelegated a queue that outlived its owner's exit with debt still owed;
-// until then the returning owner's re-onboarding fails with a decode error
-// on `disclosure_queue` (still Delegation-Program-owned) — a known,
-// documented gap, not a bug (see the brief's smoke-test step 8).
-//
-// --- Fix round 1 (task-6 controller ruling) changes, kept for history -----
-//
-// Finding A.1 (program): `faucet_init`/`init_user` gained a `payer` account
-// distinct from `owner` (programs/dexxer_core/src/instructions/user.rs) —
-// `fee_payer` now genuinely fronts PDA rent for the L1a leg, not just the
-// network fee. Verified on real devnet this fix round.
-//
-// Finding A.2 (eSPL): `delegateSpl(..., { payer: feePayerPubkey, ... })` —
-// `fee_payer` fronts the eSPL init/delegate rent for the L1b leg too (the
-// `transferToVaultIx` inside it still moves the OWNER's own dUSDC,
-// unaffected). Verified on real devnet this fix round.
-//
-// Finding A.3 (ER leg) — ATTEMPTED, REVERTED, and now PERMANENT (week 5):
-// sponsoring the permissions+session leg too (`feePayer: feePayerPubkey`,
-// sent on the owner's TEE connection) was tried and rejected outright by
-// devnet-tee — `"InvalidAccountForFee"` — fee_payer is not a valid
-// fee-paying account for a transaction on the ER there. The ER leg stays
-// owner-funded/owner-feePayer; only its (small) network fee remains a
-// non-zero cost, unrelated to rent.
+// The batched onboarding RUNNER (Task 6, week 4; week 6 split): collects the
+// legs still needed (`onboardLegs.ts`), signs them all in ONE
+// `mwa.signTransactions([...])` call, then submits them in order — L1a, L1b,
+// then the ER leg — reporting `BatchProgress` to the screen. Types and
+// constants live in `onboardTypes.ts`, the L1 snapshot in `onboardState.ts`,
+// the send primitives in `src/lib/txSend.ts`. `useOnboarding.ts` is the
+// hook wrapper (React state, `buildCtx`).
 //
 // Finding D (review): blockhashes are fetched immediately before
 // `signTransactions` (not earlier — `collectBatchLegs` below does no RPC
@@ -80,81 +17,23 @@
 // blockhash to expire while waiting. An expired leg is rebuilt with a fresh
 // blockhash and re-signed ALONE (one extra MWA prompt, logged as `re-sign
 // leg i (blockhash expired)`) rather than failing the whole batch.
-import {
-  Connection,
-  PublicKey,
-  SystemProgram,
-  Transaction,
-  type TransactionInstruction,
-  type Keypair,
-} from '@solana/web3.js'
-import { BN } from '@coral-xyz/anchor'
-import { createAssociatedTokenAccountIdempotentInstruction, TOKEN_PROGRAM_ID } from '@solana/spl-token'
-import {
-  DELEGATION_PROGRAM_ID,
-  EPHEMERAL_VAULT_ID,
-  MAGIC_PROGRAM_ID,
-  PERMISSION_PROGRAM_ID,
-  delegateSpl,
-  permissionPdaFromAccount,
-} from '@magicblock-labs/ephemeral-rollups-sdk'
-import { baseConn, ER_VALIDATOR } from '@/src/lib/solana'
-import { dexxerCoreProgram, DEXXER_CORE_PROGRAM_ID } from '@/src/lib/anchor'
-import {
-  readConfigFeePayer,
-  readUserAccountActionsLeft,
-  readUserAccountFreeMargin,
-  readUserAccountSessionExpiry,
-  readUserAccountSessionKey,
-} from '@/src/lib/codecs'
+import { PublicKey, Transaction } from '@solana/web3.js'
+import { baseConn } from '@/src/lib/solana'
+import { readConfigFeePayer } from '@/src/lib/codecs'
 import { describeTxError } from '@/src/lib/errors'
-import { delegationTriple } from '@/src/lib/pdas'
 import { confirmOnConn } from '@/src/lib/confirm'
-import { LOW_SESSION_ACTIONS } from '@/src/lib/session'
+import { signWithLiveBlockhash, waitDelegated, type Mwa } from '@/src/lib/txSend'
 import { sponsorTx, SponsorError } from '@/src/lib/sponsor'
 import { SELF_FUND_ONBOARDING_MIN_LAMPORTS, canSelfFund } from '@/src/lib/selfFund'
-import { fetchNonces, nonceTransaction, type NonceInfo, type NonceSlot } from '@/src/lib/nonce'
-import {
-  eataDelegated,
-  isDelegated,
-  l1KeysFor,
-  needsReuseQueue,
-  readL1Snapshot,
-  sessionFresh,
-  type L1Snapshot,
-} from './onboardState'
+import { fetchNonces, nonceTransaction, type NonceInfo } from '@/src/lib/nonce'
+import { l1KeysFor, readL1Snapshot, type L1Snapshot } from './onboardState'
+import { collectBatchLegs } from './onboardLegs'
+import type { BatchLeg, BatchProgress, OnboardCtx, OnboardState } from './onboardTypes'
 
-export type OnboardState =
-  'Disconnected' | 'NotOnboarded' | 'Funded' | 'Initialized' | 'Delegated' | 'Credited' | 'Permissioned' | 'SessionSet'
-
-export type BatchPhase = 'Idle' | 'Collecting' | 'Signing' | 'Submitting' | 'Done' | 'Failed'
-
-export interface BatchProgress {
-  phase: BatchPhase
-  /** Which leg is in flight/failed — 'faucet+init_user' | 'delegate_spl' | 'delegate_user' | 'permissions+session'. */
-  step: string | null
-  i: number
-  n: number
-}
-
-export const IDLE_BATCH_PROGRESS: BatchProgress = { phase: 'Idle', step: null, i: 0, n: 0 }
-
-/** Faucet/deposit amount — 1,000 dUSDC (6 decimals), same as `tests/er/devnet/01-onboard-private.ts`. */
-export const DEPOSIT = 1_000_000_000n
-// 24h, matching design copy ("Session key active for 24h", OnboardScreen.tsx)
-// — `Config.session_expiry`/`UserAccount.session_expiry` is `i64` unix
-// seconds with no program-side TTL cap (verified in dexxer_core), so this is
-// purely a client-chosen duration.
-export const SESSION_EXPIRY_SECS = 86_400
-/**
- * A session whose on-chain expiry is within this margin is re-set by the next
- * onboarding/re-authorize run even though the key matches — otherwise a
- * device landing on /onboard with a lapsed session had nothing to sign
- * (measured 25.09: `TradeScreen` said "Session expired", `OnboardScreen`
- * said "You're set", `collectBatchLegs` skipped `set_session`).
- */
-export const SESSION_RENEW_MARGIN_SECS = 3_600
-export const SESSION_ACTIONS = 20
+// Re-exported so existing importers (useOnboarding, StepsList, tests) keep working.
+export * from './onboardTypes'
+export { collectBatchLegs } from './onboardLegs'
+export type { Mwa } from '@/src/lib/txSend'
 
 /**
  * Onboarding's error formatter is `errors.ts`'s `describeTxError`: an
@@ -164,482 +43,6 @@ export const SESSION_ACTIONS = 20
  * 0x…` strings.
  */
 export const errText = describeTxError
-
-// L1 send: sign via MWA (sign-only), then submit ourselves on `baseConn`.
-// We deliberately do NOT use the wallet's `signAndSendTransactions`: the
-// reference fakewallet's `SendTransactionsUseCase` throws
-// `InvalidTransactionsException` (JSON-RPC code -2, "payloads invalid for
-// signing") on multi-instruction transactions such as `delegateSpl` (3 eSPL
-// ixs) — reproduced on-device 21.09, while single-ix `faucet_init`/`init_user`
-// sent fine. Own submission to `rpc.magicblock.app/devnet` — the RPC that
-// actually holds the eSPL/dUSDC accounts — mirrors `sendErOwner` and
-// sidesteps the wallet's send path entirely.
-/**
- * Builds `ixs` on a fresh blockhash, has the wallet sign, then checks the
- * blockhash is STILL valid — a wallet prompt can take longer than a devnet
- * blockhash lives (measured with Phantom 24.09: 38 s and 55 s per prompt while
- * the user reads "Advanced"; a tx sent after that is silently dropped and only
- * surfaces as "confirm timeout"). Re-signs up to `attempts` times.
- */
-export async function signWithLiveBlockhash(
-  conn: Connection,
-  feePayer: PublicKey,
-  ixs: TransactionInstruction[],
-  sign: (tx: Transaction) => Promise<Transaction>,
-  appendLog?: (s: string) => void,
-  attempts = 3,
-): Promise<Transaction> {
-  for (let attempt = 1; attempt <= attempts; attempt++) {
-    const tx = new Transaction().add(...ixs)
-    tx.feePayer = feePayer
-    tx.recentBlockhash = (await conn.getLatestBlockhash()).blockhash
-    const signed = await sign(tx)
-    const bh = signed.recentBlockhash
-    const stillValid = bh ? (await conn.isBlockhashValid(bh, { commitment: 'confirmed' })).value : false
-    if (stillValid) return signed
-    appendLog?.(`blockhash expired while the wallet was signing (attempt ${attempt}/${attempts}) — re-signing`)
-  }
-  throw new Error('blockhash kept expiring while the wallet was signing — retry and confirm in the wallet sooner')
-}
-
-export async function sendL1(
-  owner: PublicKey,
-  ixs: TransactionInstruction[],
-  signTransactions: (tx: Transaction) => Promise<Transaction>,
-): Promise<string> {
-  const signed = await signOwnerL1(owner, owner, ixs, signTransactions)
-  const sig = await baseConn.sendRawTransaction(signed.serialize(), { skipPreflight: true })
-  await confirmOnConn(baseConn, sig)
-  return sig
-}
-
-/**
- * Signs an owner L1 transaction on the owner's durable nonce (slot 0,
- * `nonce.ts` — the relayer creates the accounts on first use), so the wallet
- * may take any time to sign; falls back to a live blockhash only if the
- * relayer cannot hand out a nonce.
- */
-export async function signOwnerL1(
-  owner: PublicKey,
-  feePayer: PublicKey,
-  ixs: TransactionInstruction[],
-  sign: (tx: Transaction) => Promise<Transaction>,
-): Promise<Transaction> {
-  try {
-    const [nonce] = await fetchNonces(owner)
-    if (__DEV__) console.log(`[dexxer] signOwnerL1: durable nonce slot 0 ${nonce.account.toBase58()} (${nonce.value.slice(0, 8)}…)`)
-    const signed = await sign(nonceTransaction(feePayer, owner, nonce, ixs))
-    if (__DEV__) {
-      const order = signed.instructions.map((ix) => ix.programId.toBase58().slice(0, 6)).join(',')
-      // `requireAllSignatures: false` — a SPONSORED tx has no fee_payer
-      // signature yet; the default `serialize()` threw `Signature
-      // verification failed` here and sent every 0-SOL deposit down the
-      // live-blockhash fallback (measured 25.09, fakewallet, dev build).
-      const wire = signed.serialize({ requireAllSignatures: false, verifySignatures: false }).toString('base64')
-      console.log(`[dexxer] signOwnerL1: wallet returned ixs=[${order}] blockhash=${signed.recentBlockhash?.slice(0, 8)} tx=${wire}`)
-    }
-    return signed
-  } catch (e) {
-    // Relayer down / rate-limited: fall back to a live blockhash rather than
-    // blocking the user — with a fast wallet it still lands.
-    if (__DEV__) console.log(`[dexxer] signOwnerL1: nonce unavailable (${errText(e)}) — live blockhash`)
-    return signWithLiveBlockhash(baseConn, feePayer, ixs, sign)
-  }
-}
-
-/**
- * Like `sendL1`, but `fee_payer` pays: the owner signs with `tx.feePayer =
- * Config.fee_payer`, the relayer's `POST /sponsor` adds its signature, then
- * we send. Needed for any L1 leg a 0-SOL-onboarded owner runs after
- * onboarding — live fakewallet smoke (24.09, M-K) found Deposit's owner-paid
- * `faucet_mint` silently dropped ("confirm timeout"): the owner had 0 SOL for
- * the network fee. Throws `SponsorError` verbatim when the relayer rejects.
- */
-export async function sendL1Sponsored(
-  owner: PublicKey,
-  config: PublicKey,
-  ixs: TransactionInstruction[],
-  signTransactions: (tx: Transaction) => Promise<Transaction>,
-): Promise<string> {
-  const configInfo = await baseConn.getAccountInfo(config, 'confirmed')
-  if (!configInfo) throw new Error('Config PDA not found — protocol not bootstrapped on this devnet deployment')
-  const signed = await signOwnerL1(owner, readConfigFeePayer(configInfo.data), ixs, signTransactions)
-  const sponsored = await sponsorTx(signed)
-  const sig = await baseConn.sendRawTransaction(sponsored.serialize(), { skipPreflight: true })
-  if (__DEV__) console.log(`[dexxer] sendL1Sponsored: sent ${sig} (feePayer ${sponsored.feePayer?.toBase58()})`)
-  await confirmOnConn(baseConn, sig)
-  return sig
-}
-
-// --- ER send: owner-signed via MWA (ER blockhash — sign then send ourselves, mirrors Check 8). ---
-export async function sendErOwner(
-  conn: Connection,
-  owner: PublicKey,
-  ixs: TransactionInstruction[],
-  signTransactions: (tx: Transaction) => Promise<Transaction>,
-): Promise<string> {
-  const tx = new Transaction().add(...ixs)
-  tx.feePayer = owner
-  tx.recentBlockhash = (await conn.getLatestBlockhash()).blockhash
-  const signed = await signTransactions(tx)
-  const sig = await conn.sendRawTransaction(signed.serialize(), { skipPreflight: true })
-  await confirmOnConn(conn, sig)
-  return sig
-}
-
-export async function waitDelegated(
-  pubkey: PublicKey,
-  label: string,
-  appendLog: (s: string) => void,
-  tries = 60,
-  delayMs = 500,
-): Promise<void> {
-  for (let i = 0; i < tries; i++) {
-    const info = await baseConn.getAccountInfo(pubkey, 'confirmed')
-    if (info && info.owner.equals(DELEGATION_PROGRAM_ID)) {
-      appendLog(`${label} delegated`)
-      return
-    }
-    await new Promise((r) => setTimeout(r, delayMs))
-  }
-  throw new Error(`timeout waiting for ${label} (${pubkey.toBase58()}) to be delegated`)
-}
-
-export interface OnboardCtx {
-  owner: PublicKey
-  config: PublicKey
-  mint: PublicKey
-  market: PublicKey
-  userAccount: PublicKey
-  position: PublicKey
-  disclosureQueue: PublicKey
-  faucetPda: PublicKey
-  mintAuth: PublicKey
-  pool: PublicKey
-  /** Private live pool counters (week 4, Task 1) — `credit_deposit` writes here. */
-  poolLive: PublicKey
-  poolAta: PublicKey
-  ownerAta: PublicKey
-  session: Keypair
-  exitSalt: Uint8Array
-}
-
-export interface Mwa {
-  signAndSendTransaction: (tx: Transaction, minContextSlot: number) => Promise<string>
-  /** Matches `@wallet-ui/react-native-web3js`'s real overload: an array in, an array out, ONE wallet prompt for the whole batch (`use-mobile-wallet.d.ts`). */
-  signTransactions: <K extends Transaction | Transaction[]>(tx: K) => Promise<K>
-  getConnection: (owner: PublicKey) => Promise<Connection>
-}
-
-/**
- * `credit_deposit` alone (ER, owner-signed, unsponsored — not on the /sponsor
- * whitelist and not meant to be: it moves the owner's own dUSDC into the
- * pool, not a rent/fee cost fee_payer should ever front). Task 10 replaces
- * this with the real Deposit screen; kept here as a standalone "Deposit
- * (dev)" action in the meantime. Idempotent: a no-op if `free_margin` is
- * already nonzero.
- */
-export async function runDevDeposit(
-  ctx: OnboardCtx,
-  mwa: Pick<Mwa, 'signTransactions' | 'getConnection'>,
-  appendLog: (s: string) => void,
-  setState: (s: OnboardState) => void,
-): Promise<void> {
-  const { owner, userAccount, pool, poolLive, ownerAta, poolAta } = ctx
-  const ownerTee = await mwa.getConnection(owner)
-  const coreEr = dexxerCoreProgram(ownerTee, owner)
-  const userAccountInfoEr = await ownerTee.getAccountInfo(userAccount, 'confirmed')
-  const freeMargin = userAccountInfoEr ? readUserAccountFreeMargin(userAccountInfoEr.data) : 0n
-  if (freeMargin !== 0n) {
-    appendLog('credit_deposit: free_margin already nonzero, skipped')
-    return
-  }
-  const ix = await coreEr.methods
-    .creditDeposit(new BN(DEPOSIT.toString()))
-    .accounts({ owner, userAccount, pool, poolLive, ownerAta, vaultAta: poolAta, tokenProgram: TOKEN_PROGRAM_ID })
-    .instruction()
-  appendLog(`credit_deposit ${await sendErOwner(ownerTee, owner, [ix], mwa.signTransactions)}`)
-  setState('Credited')
-}
-
-export interface BatchLeg {
-  /** Log/progress label — also `BatchProgress.step` while this leg is in flight. */
-  label: string
-  ixs: TransactionInstruction[]
-  conn: Connection
-  feePayer: PublicKey
-  /** The two L1 legs go through `/sponsor` (fee_payer co-signs, findings A.1/A.2) UNLESS the owner self-funds (`selfFund.ts`, 24.09: Phantom simulation); the ER leg never does — see file header, Finding A.3 (attempted, reverted). */
-  sponsor: boolean
-  /** `OnboardState` to report once this leg lands. */
-  onLanded: OnboardState[]
-  /** Durable nonce backing this leg (L1 legs, `nonce.ts`); absent = plain blockhash (ER leg, or nonce accounts not created yet). */
-  nonce?: NonceInfo
-}
-
-/** Which relayer-created durable nonce (`nonce.ts`, `dn0/dn1/dn2`) backs each L1 leg — by label, never by array position. */
-const LEG_NONCE_SLOT: Record<string, NonceSlot> = {
-  'faucet+init_user': 0,
-  delegate_spl: 1,
-  delegate_user: 2,
-}
-
-/** Everything a leg builder decides from — one L1 snapshot, the owner ctx, who pays. */
-interface LegEnv {
-  ctx: OnboardCtx
-  snap: L1Snapshot
-  feePayer: PublicKey
-  /** `fee_payer` co-signs via `/sponsor` unless the owner self-funds (`selfFund.ts`, `feePayer === owner`). */
-  sponsored: boolean
-  core: ReturnType<typeof dexxerCoreProgram>
-  mwa: Pick<Mwa, 'getConnection'>
-  appendLog: (s: string) => void
-  nonces: (NonceInfo | null)[]
-}
-
-function nonceFor(env: LegEnv, label: string): NonceInfo | undefined {
-  return env.nonces[LEG_NONCE_SLOT[label]] ?? undefined
-}
-
-function l1Leg(env: LegEnv, label: string, ixs: TransactionInstruction[], onLanded: OnboardState[]): BatchLeg | null {
-  if (ixs.length === 0) return null
-  return { label, ixs, conn: baseConn, feePayer: env.feePayer, sponsor: env.sponsored, onLanded, nonce: nonceFor(env, label) }
-}
-
-// --- L1a: [createAta?] + faucet_init + init_user|init_user_reuse_queue ---
-// (fee_payer fronts every bit of this leg's rent — the ATA-create too,
-// week-5 Task 6, on top of fix round 1's faucet_init/init_user coverage.)
-// Measured 25.09 on a nonce (advance + 2 ComputeBudget prepended):
-// faucet part 682 bytes, init_user part 631 — comfortably one tx.
-async function legFaucetInitUser(env: LegEnv): Promise<BatchLeg | null> {
-  const { ctx, snap, feePayer, core, appendLog } = env
-  const { owner, config, mint, market, userAccount, position, disclosureQueue, faucetPda, mintAuth, ownerAta, exitSalt } = ctx
-  const ixs: TransactionInstruction[] = []
-  if (!snap.faucet) {
-    if (!snap.ownerAta) ixs.push(createAssociatedTokenAccountIdempotentInstruction(feePayer, ownerAta, owner, mint))
-    ixs.push(
-      await core.methods
-        .faucetInit(new BN(DEPOSIT.toString()))
-        .accounts({
-          owner,
-          payer: feePayer,
-          config,
-          faucet: faucetPda,
-          dusdcMint: mint,
-          mintAuth,
-          ownerAta,
-          systemProgram: SystemProgram.programId,
-          tokenProgram: TOKEN_PROGRAM_ID,
-        })
-        .instruction(),
-    )
-  } else {
-    appendLog('faucet_init: exists, skipped')
-  }
-  const initAccounts = {
-    owner,
-    payer: feePayer,
-    config,
-    market,
-    userAccount,
-    position,
-    disclosureQueue,
-    systemProgram: SystemProgram.programId,
-  }
-  if (!snap.userAccount) {
-    ixs.push(await core.methods.initUser(Array.from(exitSalt)).accounts(initAccounts).instruction())
-  } else if (needsReuseQueue(snap)) {
-    // Returning owner (week-5 Task 2): the PDA survived a prior exit and is
-    // still `dexxer_core`-owned but `exited == true` — `init_user`'s `init`
-    // constraint would fail on it, so re-initialize in place instead.
-    ixs.push(await core.methods.initUserReuseQueue(Array.from(exitSalt)).accounts(initAccounts).instruction())
-  } else {
-    appendLog('init_user: exists, skipped')
-  }
-  return l1Leg(env, 'faucet+init_user', ixs, ['Funded', 'Initialized'])
-}
-
-// --- L1b: delegateSpl (fee_payer fronts eSPL rent — Finding A.2)  (leg `delegate_spl`) ---
-// --- L1b': delegate_user  (leg `delegate_user`) ---
-// Two transactions since 25.09: together, on a nonce (advance + 2
-// ComputeBudget prepended) they measured 1322 bytes > 1232 (`Transaction
-// too large`, live fakewallet, sponsored 0-SOL wallet — the pre-nonce
-// combined tx fit). Both are still signed in the same wallet prompt — one
-// more tx and one more relayer-held nonce, not one more tap.
-// `delegate_spl` is gated on its own outcome (the eATA under the
-// Delegation Program on L1), so a retry after a failed `delegate_user`
-// doesn't re-run a non-idempotent `delegateSpl`.
-// `snap.userAccount` is `null` both when the account doesn't exist yet
-// (about to be created by L1a) and — irrelevantly here — when it does
-// exist but isn't delegated; either way delegation is still pending.
-async function legDelegateSpl(env: LegEnv): Promise<BatchLeg | null> {
-  const { ctx, snap, feePayer, appendLog } = env
-  if (isDelegated(snap)) return null
-  if (eataDelegated(snap)) {
-    appendLog('delegate_spl: eATA already delegated, skipped')
-    return null
-  }
-  const ixs = await delegateSpl(ctx.owner, ctx.mint, DEPOSIT, {
-    payer: feePayer,
-    validator: ER_VALIDATOR,
-    initVaultIfMissing: false,
-    idempotent: false,
-  })
-  return l1Leg(env, 'delegate_spl', ixs, [])
-}
-
-async function legDelegateUser(env: LegEnv): Promise<BatchLeg | null> {
-  const { ctx, snap, feePayer, core, appendLog } = env
-  if (isDelegated(snap)) {
-    appendLog('delegate: already delegated, skipped')
-    return null
-  }
-  const { owner, config, market, userAccount, position, disclosureQueue } = ctx
-  const ut = delegationTriple(userAccount)
-  const pt = delegationTriple(position)
-  const dt = delegationTriple(disclosureQueue)
-  const ix = await core.methods
-    .delegateUser()
-    .accounts({
-      owner,
-      // Week 5, Task 3 (P1) split this payer out of `owner`; Task 6
-      // sponsors it — `fee_payer` fronts the three delegation records'
-      // rent, closing fix round 1's residual "still ≈0.0033-0.0035 SOL"
-      // gap (see file header).
-      payer: feePayer,
-      config,
-      market,
-      bufferUserAccount: ut.buffer,
-      delegationRecordUserAccount: ut.record,
-      delegationMetadataUserAccount: ut.metadata,
-      userAccount,
-      bufferPosition: pt.buffer,
-      delegationRecordPosition: pt.record,
-      delegationMetadataPosition: pt.metadata,
-      position,
-      bufferDisclosureQueue: dt.buffer,
-      delegationRecordDisclosureQueue: dt.record,
-      delegationMetadataDisclosureQueue: dt.metadata,
-      disclosureQueue,
-      ownerProgram: DEXXER_CORE_PROGRAM_ID,
-      delegationProgram: DELEGATION_PROGRAM_ID,
-      systemProgram: SystemProgram.programId,
-    })
-    .instruction()
-  return l1Leg(env, 'delegate_user', [ix], ['Delegated'])
-}
-
-// --- ER: init_permissions + set_session (owner-paid, unsponsored) ---
-//
-// Cannot be sponsored — `fee_payer` is not a valid fee-paying account for
-// an ER transaction it did not itself originate (`InvalidAccountForFee`,
-// measured on devnet-tee, Finding A.3 — see file header). Stays
-// owner-feePayer; the only remaining cost here is this leg's own (small)
-// ER network fee. Fetches `ownerTee` unconditionally (one MWA
-// `signMessages` prompt) since even a "what's left" check needs it to read
-// ER-side permission/session state once delegation has happened. The two
-// ER reads stay separate `getAccountInfo` calls — see onboardState.ts's
-// header for why they are not batched like the L1 ones.
-async function legPermissionsSession(env: LegEnv): Promise<BatchLeg | null> {
-  const { ctx, snap, mwa, appendLog } = env
-  const { owner, config, market, userAccount, position, disclosureQueue, session } = ctx
-  const ownerTee = await mwa.getConnection(owner)
-  const coreEr = dexxerCoreProgram(ownerTee, owner)
-  const userPermission = permissionPdaFromAccount(userAccount)
-  const permAccounts = {
-    owner,
-    config,
-    market,
-    userAccount,
-    position,
-    disclosureQueue,
-    userPermission,
-    positionPermission: permissionPdaFromAccount(position),
-    dqPermission: permissionPdaFromAccount(disclosureQueue),
-    permissionProgram: PERMISSION_PROGRAM_ID,
-    ephemeralVault: EPHEMERAL_VAULT_ID,
-    magicProgram: MAGIC_PROGRAM_ID,
-  }
-  const setSessionIx = () =>
-    coreEr.methods
-      .setSession(session.publicKey, new BN(Math.floor(Date.now() / 1000) + SESSION_EXPIRY_SECS), SESSION_ACTIONS)
-      .accounts(permAccounts)
-      .instruction()
-  const ixs: TransactionInstruction[] = []
-  if (isDelegated(snap)) {
-    // Already delegated (a previous run got this far) — real ER state exists, check it.
-    const permInfo = await ownerTee.getAccountInfo(userPermission, 'confirmed')
-    if (!permInfo || !permInfo.owner.equals(PERMISSION_PROGRAM_ID)) {
-      ixs.push(await coreEr.methods.initPermissions().accounts(permAccounts).instruction())
-    } else {
-      appendLog('init_permissions: exists, skipped')
-    }
-    const userAccountInfoEr = await ownerTee.getAccountInfo(userAccount, 'confirmed')
-    const er = {
-      sessionKey: userAccountInfoEr ? readUserAccountSessionKey(userAccountInfoEr.data) : PublicKey.default,
-      sessionExpiry: userAccountInfoEr ? readUserAccountSessionExpiry(userAccountInfoEr.data) : 0n,
-      actionsLeft: userAccountInfoEr ? readUserAccountActionsLeft(userAccountInfoEr.data) : 0,
-    }
-    const nowSec = BigInt(Math.floor(Date.now() / 1000))
-    if (!sessionFresh(er, session.publicKey, nowSec, BigInt(SESSION_RENEW_MARGIN_SECS), LOW_SESSION_ACTIONS)) {
-      if (er.sessionKey.equals(session.publicKey))
-        appendLog(
-          `set_session: same key but expiry ${er.sessionExpiry} is past/near or only ${er.actionsLeft} actions left — renewing`,
-        )
-      ixs.push(await setSessionIx())
-    } else {
-      appendLog('set_session: already set to this device session key and fresh, skipped')
-    }
-  } else {
-    // Not delegated yet — the ER validator has nothing to read for these
-    // PDAs until L1b lands, so both steps are unconditionally needed once
-    // it does (this same batch's L1b, in the normal fresh-onboarding case).
-    ixs.push(await coreEr.methods.initPermissions().accounts(permAccounts).instruction())
-    ixs.push(await setSessionIx())
-  }
-  if (ixs.length === 0) return null
-  return { label: 'permissions+session', ixs, conn: ownerTee, feePayer: owner, sponsor: false, onLanded: ['Permissioned', 'SessionSet'] }
-}
-
-/** In send order: L1a before L1b (`delegate_user` needs `init_user` landed), then the ER leg. */
-const LEG_BUILDERS: ((env: LegEnv) => Promise<BatchLeg | null>)[] = [
-  legFaucetInitUser,
-  legDelegateSpl,
-  legDelegateUser,
-  legPermissionsSession,
-]
-
-/**
- * Inspects on-chain state (one L1 snapshot — `onboardState.ts` — plus the
- * ER reads inside the ER leg) and returns only the transaction legs still
- * needed — an already-onboarded wallet gets back an empty array (zero
- * wallet prompts). Pass `l1` to reuse a snapshot the caller already took
- * (`runBatchedOnboarding` does); otherwise one is read here.
- */
-export async function collectBatchLegs(
-  ctx: OnboardCtx,
-  mwa: Pick<Mwa, 'getConnection'>,
-  feePayerPubkey: PublicKey,
-  appendLog: (s: string) => void,
-  nonces: (NonceInfo | null)[] = [null, null, null],
-  l1?: L1Snapshot,
-): Promise<BatchLeg[]> {
-  const env: LegEnv = {
-    ctx,
-    snap: l1 ?? (await readL1Snapshot(baseConn, l1KeysFor(ctx.owner, ctx.mint))),
-    feePayer: feePayerPubkey,
-    sponsored: !feePayerPubkey.equals(ctx.owner),
-    core: dexxerCoreProgram(baseConn, ctx.owner),
-    mwa,
-    appendLog,
-    nonces,
-  }
-  const legs: BatchLeg[] = []
-  for (const build of LEG_BUILDERS) {
-    const leg = await build(env)
-    if (leg) legs.push(leg)
-  }
-  return legs
-}
 
 /**
  * Fetches the owner's three durable nonces from the relayer (`nonce.ts`; the
@@ -709,30 +112,8 @@ export async function runBatchedOnboarding(
     return
   }
 
-  const txs = await Promise.all(
-    legs.map(async (leg) => {
-      if (leg.nonce) return nonceTransaction(leg.feePayer, ctx.owner, leg.nonce, leg.ixs)
-      const tx = new Transaction().add(...leg.ixs)
-      tx.feePayer = leg.feePayer
-      tx.recentBlockhash = (await leg.conn.getLatestBlockhash()).blockhash
-      return tx
-    }),
-  )
-
-  if (__DEV__)
-    for (let i = 0; i < legs.length; i++) {
-      // Wire size BEFORE the wallet sees it — MWA serializes with all
-      // signatures blank, so a >1232-byte leg fails right here, silently
-      // from the wallet's point of view (measured 25.09: `Transaction too
-      // large: 1322 > 1232`, sponsored `faucet+init_user` on a nonce).
-      let size = 'n/a'
-      try {
-        size = String(txs[i].serialize({ requireAllSignatures: false, verifySignatures: false }).length)
-      } catch (e) {
-        size = `ERR ${errText(e)}`
-      }
-      console.log(`[dexxer] leg ${legs[i].label}: ${legs[i].ixs.length} ixs (+${legs[i].nonce ? 'advance+2 CB' : 'blockhash'}), ${size} bytes`)
-    }
+  const txs = await buildLegTransactions(legs, ctx.owner)
+  if (__DEV__) logLegSizes(legs, txs)
   onProgress({ phase: 'Signing', step: null, i: 0, n: legs.length })
   let signed: Transaction[]
   try {
@@ -746,50 +127,7 @@ export async function runBatchedOnboarding(
     const leg = legs[i]
     onProgress({ phase: 'Submitting', step: leg.label, i: i + 1, n: legs.length })
     try {
-      let toSend = signed[i]
-
-      // Finding D: re-validate this leg's blockhash right before it's sent —
-      // an earlier leg's confirmation wait (up to ~15s) may have let this
-      // one's expire.
-      const bh = toSend.recentBlockhash
-      // A nonce-backed leg carries the nonce value as `recentBlockhash` — it
-      // is not a blockhash and never expires by slot; skip the liveness check.
-      const stillValid = leg.nonce ? true : bh ? (await leg.conn.isBlockhashValid(bh, { commitment: 'confirmed' })).value : false
-      if (!stillValid) {
-        appendLog(`re-sign leg ${i + 1} (blockhash expired)`)
-        // Re-checked AFTER signing too — Phantom prompts measured at 38–55 s each (24.09).
-        toSend = await signWithLiveBlockhash(
-          leg.conn,
-          leg.feePayer,
-          leg.ixs,
-          async (tx) => (await mwa.signTransactions([tx]))[0],
-          appendLog,
-        )
-      }
-
-      if (leg.sponsor) {
-        try {
-          toSend = await sponsorTx(toSend)
-        } catch (e) {
-          const msg = e instanceof SponsorError ? `sponsor rejected (${e.status}): ${e.message}` : errText(e)
-          throw new Error(`${leg.label}: ${msg}`)
-        }
-      }
-      const raw = toSend.serialize()
-      if (__DEV__) console.log(`[dexxer] leg ${leg.label}: feePayer=${toSend.feePayer?.toBase58()} ixs=${toSend.instructions.length} bytes=${raw.length} tx=${raw.toString('base64')}`)
-      const sig = await leg.conn.sendRawTransaction(raw, { skipPreflight: true })
-      await confirmOnConn(leg.conn, sig)
-      appendLog(`${leg.label} ${sig}`)
-      // `delegate_user`'s three accounts don't appear as delegated on L1
-      // immediately after the tx confirms — poll BEFORE the next leg (the ER
-      // leg reads these same PDAs on the ER validator, which only clones a
-      // delegated account after L1 shows it delegated), mirroring the
-      // legacy flow's ordering.
-      if (leg.label === 'delegate_user') {
-        await waitDelegated(ctx.userAccount, 'UserAccount', appendLog)
-        await waitDelegated(ctx.position, 'Position', appendLog)
-        await waitDelegated(ctx.disclosureQueue, 'DisclosureQueue', appendLog)
-      }
+      await submitLeg(leg, signed[i], i, ctx, mwa, appendLog)
     } catch (e) {
       onProgress({ phase: 'Failed', step: leg.label, i: i + 1, n: legs.length })
       throw e
@@ -798,4 +136,105 @@ export async function runBatchedOnboarding(
   }
 
   onProgress({ phase: 'Done', step: null, i: legs.length, n: legs.length })
+}
+
+/** One unsigned tx per leg: on the leg's durable nonce when it has one, else on a fresh blockhash from the leg's connection. */
+async function buildLegTransactions(legs: BatchLeg[], owner: PublicKey): Promise<Transaction[]> {
+  return Promise.all(
+    legs.map(async (leg) => {
+      if (leg.nonce) return nonceTransaction(leg.feePayer, owner, leg.nonce, leg.ixs)
+      const tx = new Transaction().add(...leg.ixs)
+      tx.feePayer = leg.feePayer
+      tx.recentBlockhash = (await leg.conn.getLatestBlockhash()).blockhash
+      return tx
+    }),
+  )
+}
+
+/**
+ * Wire size BEFORE the wallet sees it — MWA serializes with all signatures
+ * blank, so a >1232-byte leg fails right there, silently from the wallet's
+ * point of view (measured 25.09: `Transaction too large: 1322 > 1232`,
+ * sponsored `faucet+init_user` on a nonce). Dev builds only.
+ */
+function logLegSizes(legs: BatchLeg[], txs: Transaction[]) {
+  for (let i = 0; i < legs.length; i++) {
+    let size = 'n/a'
+    try {
+      size = String(txs[i].serialize({ requireAllSignatures: false, verifySignatures: false }).length)
+    } catch (e) {
+      size = `ERR ${errText(e)}`
+    }
+    console.log(
+      `[dexxer] leg ${legs[i].label}: ${legs[i].ixs.length} ixs (+${legs[i].nonce ? 'advance+2 CB' : 'blockhash'}), ${size} bytes`,
+    )
+  }
+}
+
+/**
+ * Sends one signed leg and waits for it: re-signs alone if its blockhash
+ * expired while earlier legs confirmed (Finding D), routes sponsored legs
+ * through `/sponsor` first, and after `delegate_user` polls until the three
+ * PDAs show as delegated on L1 (the ER validator only clones a delegated
+ * account after L1 shows it so).
+ */
+async function submitLeg(
+  leg: BatchLeg,
+  signedTx: Transaction,
+  i: number,
+  ctx: OnboardCtx,
+  mwa: Mwa,
+  appendLog: (s: string) => void,
+): Promise<void> {
+  let toSend = signedTx
+
+  // Finding D: re-validate this leg's blockhash right before it's sent —
+  // an earlier leg's confirmation wait (up to ~15s) may have let this
+  // one's expire.
+  const bh = toSend.recentBlockhash
+  // A nonce-backed leg carries the nonce value as `recentBlockhash` — it
+  // is not a blockhash and never expires by slot; skip the liveness check.
+  const stillValid = leg.nonce
+    ? true
+    : bh
+      ? (await leg.conn.isBlockhashValid(bh, { commitment: 'confirmed' })).value
+      : false
+  if (!stillValid) {
+    appendLog(`re-sign leg ${i + 1} (blockhash expired)`)
+    // Re-checked AFTER signing too — Phantom prompts measured at 38–55 s each (24.09).
+    toSend = await signWithLiveBlockhash(
+      leg.conn,
+      leg.feePayer,
+      leg.ixs,
+      async (tx) => (await mwa.signTransactions([tx]))[0],
+      appendLog,
+    )
+  }
+
+  if (leg.sponsor) {
+    try {
+      toSend = await sponsorTx(toSend)
+    } catch (e) {
+      const msg = e instanceof SponsorError ? `sponsor rejected (${e.status}): ${e.message}` : errText(e)
+      throw new Error(`${leg.label}: ${msg}`)
+    }
+  }
+  const raw = toSend.serialize()
+  if (__DEV__)
+    console.log(
+      `[dexxer] leg ${leg.label}: feePayer=${toSend.feePayer?.toBase58()} ixs=${toSend.instructions.length} bytes=${raw.length} tx=${raw.toString('base64')}`,
+    )
+  const sig = await leg.conn.sendRawTransaction(raw, { skipPreflight: true })
+  await confirmOnConn(leg.conn, sig)
+  appendLog(`${leg.label} ${sig}`)
+  // `delegate_user`'s three accounts don't appear as delegated on L1
+  // immediately after the tx confirms — poll BEFORE the next leg (the ER
+  // leg reads these same PDAs on the ER validator, which only clones a
+  // delegated account after L1 shows it delegated), mirroring the
+  // legacy flow's ordering.
+  if (leg.label === 'delegate_user') {
+    await waitDelegated(ctx.userAccount, 'UserAccount', appendLog)
+    await waitDelegated(ctx.position, 'Position', appendLog)
+    await waitDelegated(ctx.disclosureQueue, 'DisclosureQueue', appendLog)
+  }
 }

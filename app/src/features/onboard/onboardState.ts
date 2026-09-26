@@ -19,7 +19,7 @@ import { getAssociatedTokenAddressSync } from '@solana/spl-token'
 import { DELEGATION_PROGRAM_ID, deriveEphemeralAta } from '@magicblock-labs/ephemeral-rollups-sdk'
 import { pdas } from '@/src/lib/pdas'
 import { readUserAccountExited } from '@/src/lib/codecs'
-import type { OnboardState } from './batchOnboarding'
+import type { OnboardState } from './onboardTypes'
 
 export interface L1Keys {
   config: PublicKey
