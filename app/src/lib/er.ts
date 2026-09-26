@@ -9,11 +9,11 @@
 // locally instead.
 //
 // `signMessages`'s raw response isn't reliably the bare 64-byte ed25519
-// signature on every wallet (week-0 finding, `spikes/mwa.ts`'s
+// signature on every wallet (week-0 finding, `mwa/accounts.ts`'s
 // `pickSignature`) — normalized here before it reaches `getAuthToken`.
 import { Connection, PublicKey } from '@solana/web3.js'
 import { getAuthToken } from '@magicblock-labs/ephemeral-rollups-sdk'
-import { pickSignature } from '../spikes/mwa'
+import { pickSignature } from './mwa/accounts'
 import { TEE_RPC, TEE_WS } from './solana'
 import { useMwaSigning } from './mwa/useMwaSigning'
 

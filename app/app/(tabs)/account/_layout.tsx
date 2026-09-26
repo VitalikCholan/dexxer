@@ -5,9 +5,8 @@ export default function Layout() {
   return (
     <Stack screenOptions={{ headerTitle: 'Account', headerRight: () => <WalletUiDropdown /> }}>
       <Stack.Screen name="index" />
-      <Stack.Screen name="airdrop" options={{ headerTitle: 'Airdrop', headerRight: () => null }} />
-      <Stack.Screen name="send" options={{ headerTitle: 'Send', headerRight: () => null }} />
-      <Stack.Screen name="receive" options={{ headerTitle: 'Receive', headerRight: () => null }} />
+      {/* Week 6: kept as a devnet dev tool (self-funded L1 legs need ≥0.05 SOL), reached from Settings → Developer. */}
+      <Stack.Screen name="airdrop" options={{ headerTitle: 'Airdrop (devnet)', headerRight: () => null }} />
     </Stack>
   )
 }

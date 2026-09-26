@@ -3,7 +3,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MobileWalletProvider } from '@wallet-ui/react-native-web3js'
 import { PropsWithChildren } from 'react'
 import { AuthProvider } from '@/components/auth/auth-provider'
-import { ClusterProvider, useCluster } from '@/components/cluster/cluster-provider'
+import { config } from '@/src/lib/config'
 import { AppTheme } from '@/components/app-theme'
 
 // MWA `AppIdentity` (solana-mobile-wallet skill, § provider / AppIdentity):
@@ -27,22 +27,21 @@ export function AppProviders({ children }: PropsWithChildren) {
   return (
     <AppTheme>
       <QueryClientProvider client={queryClient}>
-        <ClusterProvider>
-          <SolanaProvider>
-            <AuthProvider>{children}</AuthProvider>
-          </SolanaProvider>
-        </ClusterProvider>
+        <SolanaProvider>
+          <AuthProvider>{children}</AuthProvider>
+        </SolanaProvider>
       </QueryClientProvider>
     </AppTheme>
   )
 }
 
-// We have this SolanaProvider because of the network switching logic.
-// If you only connect to a single network, use MobileWalletProvider directly.
+// Week 6: one network profile (`src/lib/config.ts`) — the template's cluster
+// switcher is gone. `chain` is fixed to devnet until there is a second
+// deployment to point at; `endpoint` is the PUBLIC devnet RPC on purpose
+// (see `walletRpc`'s doc comment).
 function SolanaProvider({ children }: PropsWithChildren) {
-  const { selectedCluster } = useCluster()
   return (
-    <MobileWalletProvider chain={selectedCluster.id} endpoint={selectedCluster.endpoint} identity={identity}>
+    <MobileWalletProvider chain="solana:devnet" endpoint={config.walletRpc} identity={identity}>
       {children}
     </MobileWalletProvider>
   )

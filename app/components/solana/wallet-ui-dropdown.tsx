@@ -4,7 +4,6 @@ import Clipboard from '@react-native-clipboard/clipboard'
 import { useMobileWallet } from '@wallet-ui/react-native-web3js'
 import { ellipsify } from '@/utils/ellipsify'
 import { UiIconSymbol } from '@/components/ui/ui-icon-symbol'
-import { useCluster } from '@/components/cluster/cluster-provider'
 import { AppText } from '@/components/app-text'
 import * as Dropdown from '@rn-primitives/dropdown-menu'
 import { WalletUiButtonConnect } from './wallet-ui-button-connect'
@@ -12,8 +11,8 @@ import { useWalletUiTheme } from '@/components/solana/use-wallet-ui-theme'
 import { showError } from '@/utils/show-error'
 import { disconnect as mwaDisconnect } from '@/src/lib/mwa/session'
 
+// Week 6: one network profile — explorer links are devnet's (the template's cluster switcher is gone).
 function useDropdownItems() {
-  const { getExplorerUrl } = useCluster()
   const { account, disconnect, store } = useMobileWallet()
   if (!account) {
     return []
@@ -28,8 +27,8 @@ function useDropdownItems() {
     {
       label: 'View in Explorer',
       onPress: () => {
-        Linking.openURL(getExplorerUrl(`account/${account.address.toString()}`)).catch((error: unknown) =>
-          showError('Could not open explorer', error),
+        Linking.openURL(`https://explorer.solana.com/address/${account.address.toString()}?cluster=devnet`).catch(
+          (error: unknown) => showError('Could not open explorer', error),
         )
       },
     },

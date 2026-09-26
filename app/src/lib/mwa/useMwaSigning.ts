@@ -71,7 +71,7 @@ async function reauthorizeFresh<T>(
       if (!authResult) authResult = await wallet.authorize({ identity, chain })
       const authorization = authorizationFromResult(authResult, previouslySelectedAccount)
       // `address` is typed `PublicKey` but is a base58 STRING at runtime once
-      // it round-trips through the store (see `spikes/mwa.ts`'s `toPublicKey`)
+      // it round-trips through the store (see `mwa/accounts.ts`'s `toPublicKey`)
       // — compare the base64 form both sides always carry, print via String().
       const got = String(authorization.selectedAccount.address)
       if (

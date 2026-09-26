@@ -49,10 +49,8 @@
 //     - `useOnboarding.ts`'s `connectWallet` (the onboarding flow's Connect)
 //     - `wallet-ui-button-connect.tsx`'s `WalletUiButtonConnect` (Account tab
 //       header's disconnected fallback, Settings' "Connect your wallet")
-//     - `spikes/Check8.tsx`/`Check10.tsx` (dev-only diagnostics, routed too
-//       so they can't reintroduce the stale-token bug even though they
-//       exercise an unrelated spike program)
-//   `disconnect(mwaDisconnect, store)`:
+//     - (week 6: the `spikes/Check8`/`Check10` diagnostics that were also routed
+//       through it have been deleted)
 //     - `wallet-ui-button-disconnect.tsx`'s `WalletUiButtonDisconnect`
 //       (Settings' "Disconnect" button)
 //     - `wallet-ui-dropdown.tsx`'s "Disconnect" dropdown item (Account tab
