@@ -44,7 +44,7 @@ export const RELAYER_URL = process.env.EXPO_PUBLIC_RELAYER_URL ?? 'https://relay
  * so the identity defaults to the relayer's origin. Must be `https`, origin
  * only (no path). Override with `EXPO_PUBLIC_IDENTITY_URI` once the app has
  * its own domain. Changing it invalidates stored auth tokens by design —
- * `mwaAuth.ts`'s `identityHash` detects the change and deauthorizes.
+ * `mwa/tokenStore.ts`'s `identityHash` detects the change and deauthorizes.
  */
 export const IDENTITY_URI = (process.env.EXPO_PUBLIC_IDENTITY_URI ?? new URL(RELAYER_URL).origin).replace(/\/$/, '')
 /** SIWS `domain` — the identity URI's host, per the SIWS spec (must match `uri`). */

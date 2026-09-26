@@ -21,7 +21,7 @@ import { Address } from '@/src/ui/Address'
 import { Skeleton } from '@/src/ui/Skeleton'
 import { showToast } from '@/src/ui/Toast'
 import { useTeeConnection } from '@/src/lib/er'
-import { useMwaSigning } from '@/src/lib/mwaAuth'
+import { useMwaSigning } from '@/src/lib/mwa/useMwaSigning'
 import { useLiveAccount } from '@/src/lib/live'
 import { decodeDisclosureQueue, decodePosition, decodeUserAccount } from '@/src/lib/codecs'
 import { describeTxError } from '@/src/lib/errors'
@@ -49,7 +49,7 @@ export function AccountScreen() {
   const { account } = useMobileWallet()
   // Retry-wrapped `signTransactions` — a wallet's `reauthorize` rejection
   // (Phantom `-1`) self-heals with one fresh `authorize` prompt instead of
-  // surfacing as `-1 authorization request failed` (`mwaAuth.ts`'s "Phantom
+  // surfacing as `-1 authorization request failed` (`mwa/errors.ts`'s "Phantom
   // reauthorize bug" section).
   const { signTransactions } = useMwaSigning()
   const { getConnection } = useTeeConnection()

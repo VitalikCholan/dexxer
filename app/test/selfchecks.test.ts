@@ -10,11 +10,11 @@ import assert from 'node:assert/strict'
 import { assertMathSelfCheck } from '../src/lib/math'
 import { assertCommitmentGolden, assertLeafGolden } from '../src/lib/hashes'
 import { assertDisclosureStatusSelfCheck } from '../src/lib/status'
+import { assertIdentityHashSelfCheck } from '../src/lib/mwa/tokenStore'
 import {
-  assertIdentityHashSelfCheck,
   assertIsAuthorizationFailureSelfCheck,
   assertIsSessionEstablishmentFailureSelfCheck,
-} from '../src/lib/mwaAuth'
+} from '../src/lib/mwa/errors'
 import { assertDeriveTicketSelfCheck } from '../src/features/trade/TradeTicket'
 import { assertLiqDistancePctSelfCheck } from '../src/features/positions/PositionCard'
 import { assertHistoryMergeSelfCheck, chunk, MAX_ACCOUNTS_PER_RPC } from '../src/features/history/useHistoryRows'

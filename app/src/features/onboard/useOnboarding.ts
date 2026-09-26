@@ -27,7 +27,6 @@
 // the current program/relayer whitelist.
 import { useCallback, useState } from 'react'
 import { PublicKey } from '@solana/web3.js'
-import { DELEGATION_PROGRAM_ID } from '@magicblock-labs/ephemeral-rollups-sdk'
 import { getAssociatedTokenAddressSync } from '@solana/spl-token'
 import { useMobileWallet } from '@wallet-ui/react-native-web3js'
 import { toPublicKey } from '@/src/spikes/mwa'
@@ -36,7 +35,8 @@ import { useTeeConnection } from '@/src/lib/er'
 import { readConfigDusdcMint } from '@/src/lib/codecs'
 import { pdas } from '@/src/lib/pdas'
 import { getOrCreateExitSalt, getOrCreateSessionKeypair, getSessionKeypair } from '@/src/lib/session'
-import { ensureAuthorized, useMwaSigning } from '@/src/lib/mwaAuth'
+import { ensureAuthorized } from '@/src/lib/mwa/session'
+import { useMwaSigning } from '@/src/lib/mwa/useMwaSigning'
 import {
   IDLE_BATCH_PROGRESS,
   runBatchedOnboarding,
@@ -47,26 +47,24 @@ import {
   type OnboardState,
   errText,
 } from './batchOnboarding'
+import { l1KeysFor, l1ProgressFrom, readL1Snapshot, type L1Snapshot } from './onboardState'
 
 export type { BatchPhase, BatchProgress, OnboardState } from './batchOnboarding'
 
-/** Cheap, L1-only progress check — no ER auth prompt, safe to call on mount/owner change. */
-async function checkL1Progress(
-  owner: PublicKey,
-): Promise<{ state: OnboardState; mint: PublicKey } | { error: string }> {
-  const config = pdas.config()
-  const configInfo = await baseConn.getAccountInfo(config, 'confirmed')
+/**
+ * One base-layer read of everything onboarding decides from — the mount-time
+ * gate (`l1ProgressFrom`) and the batch (`runBatchedOnboarding`) share it,
+ * where they used to issue their own sequential `getAccountInfo` calls for
+ * the same accounts. Two round trips: `Config` first (the owner-keyed
+ * accounts derive from its `dusdc_mint`), then the five-account snapshot.
+ * No ER auth prompt — L1 only, safe on mount/owner change.
+ */
+async function readOwnerL1(owner: PublicKey): Promise<{ snap: L1Snapshot; mint: PublicKey } | { error: string }> {
+  const configInfo = await baseConn.getAccountInfo(pdas.config(), 'confirmed')
   if (!configInfo) return { error: 'Config PDA not found — protocol not bootstrapped on this devnet deployment' }
   const mint = readConfigDusdcMint(configInfo.data)
-
-  const faucetInfo = await baseConn.getAccountInfo(pdas.faucet(owner), 'confirmed')
-  if (!faucetInfo) return { state: 'NotOnboarded', mint }
-
-  const userAccount = pdas.userAccount(owner)
-  const userAccountInfo = await baseConn.getAccountInfo(userAccount, 'confirmed')
-  if (!userAccountInfo) return { state: 'Funded', mint }
-  if (userAccountInfo.owner.equals(DELEGATION_PROGRAM_ID)) return { state: 'Delegated', mint }
-  return { state: 'Initialized', mint }
+  const snap = await readL1Snapshot(baseConn, l1KeysFor(owner, mint))
+  return { snap, mint }
 }
 
 export interface UseOnboarding {
@@ -99,7 +97,7 @@ export function useOnboarding(): UseOnboarding {
 
   const owner = account ? toPublicKey(account.address) : null
   // `signTransactions` here is `useMwaSigning()`'s retry-wrapped version, not
-  // the raw hook's — see `mwaAuth.ts`'s "Phantom reauthorize bug" section.
+  // the raw hook's — see `mwa/errors.ts`'s "Phantom reauthorize bug" section.
   const mwa: Mwa = { signAndSendTransaction, signTransactions, getConnection }
 
   const appendLog = useCallback((s: string) => setLog((prev) => [...prev, s]), [])
@@ -107,7 +105,7 @@ export function useOnboarding(): UseOnboarding {
   // Week 5, Task 6: identity-aware auth — `ensureAuthorized` raw-deauthorizes
   // a stored token issued under a DIFFERENT app identity before letting
   // `connect()` authorize fresh, and persists the resulting token's identity
-  // hash for next time. See `mwaAuth.ts`'s file header for why the library's
+  // hash for next time. See `mwa/session.ts`'s file header for why the library's
   // own `connect()` doesn't already do this.
   const connectWallet = useCallback(async () => {
     setError(null)
@@ -124,12 +122,12 @@ export function useOnboarding(): UseOnboarding {
       return
     }
     try {
-      const result = await checkL1Progress(owner)
+      const result = await readOwnerL1(owner)
       if ('error' in result) {
         setError(result.error)
         return
       }
-      setState(result.state)
+      setState(l1ProgressFrom(result.snap))
       const existing = await getSessionKeypair(owner)
       setSessionPubkey(existing?.publicKey ?? null)
     } catch (e) {
@@ -137,11 +135,8 @@ export function useOnboarding(): UseOnboarding {
     }
   }, [owner])
 
-  const buildCtx = useCallback(async (o: PublicKey): Promise<OnboardCtx> => {
+  const buildCtx = useCallback(async (o: PublicKey, mint: PublicKey): Promise<OnboardCtx> => {
     const config = pdas.config()
-    const configInfo = await baseConn.getAccountInfo(config, 'confirmed')
-    if (!configInfo) throw new Error('Config PDA not found — protocol not bootstrapped on this devnet deployment')
-    const mint = readConfigDusdcMint(configInfo.data)
     const market = pdas.market()
     const userAccount = pdas.userAccount(o)
     const position = pdas.position(o, market)
@@ -182,8 +177,10 @@ export function useOnboarding(): UseOnboarding {
     setBusy(true)
     setError(null)
     try {
-      const ctx = await buildCtx(owner)
-      await runBatchedOnboarding(ctx, mwa, appendLog, setState, setBatchProgress)
+      const l1 = await readOwnerL1(owner)
+      if ('error' in l1) throw new Error(l1.error)
+      const ctx = await buildCtx(owner, l1.mint)
+      await runBatchedOnboarding(ctx, mwa, appendLog, setState, setBatchProgress, l1.snap)
     } catch (e) {
       setError(errText(e))
     } finally {
@@ -197,7 +194,9 @@ export function useOnboarding(): UseOnboarding {
     setBusy(true)
     setError(null)
     try {
-      const ctx = await buildCtx(owner)
+      const l1 = await readOwnerL1(owner)
+      if ('error' in l1) throw new Error(l1.error)
+      const ctx = await buildCtx(owner, l1.mint)
       await runDevDeposit(ctx, mwa, appendLog, setState)
     } catch (e) {
       setError(errText(e))

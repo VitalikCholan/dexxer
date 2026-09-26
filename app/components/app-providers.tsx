@@ -16,7 +16,7 @@ import { AppTheme } from '@/components/app-theme'
 //
 // Week 5, Task 6: exported (not just module-private) so it stays the single
 // source of truth this literal object identity feeds — an `auth_token` is
-// bound to the exact `AppIdentity` it was issued under, and `mwaAuth.ts`'s
+// bound to the exact `AppIdentity` it was issued under, and `src/lib/mwa/`'s
 // `identityHash`/`ensureAuthorized`/`disconnect` (wired from
 // `useOnboarding.ts`'s `connectWallet` and
 // `wallet-ui-button-disconnect.tsx`) hash it to detect a change and

@@ -26,7 +26,7 @@ import {
 import { useMobileWallet } from '@wallet-ui/react-native-web3js'
 import { TEE_RPC, baseConn } from '../lib/solana'
 import { pickSignature, toPublicKey } from './mwa'
-import { ensureAuthorized } from '../lib/mwaAuth'
+import { ensureAuthorized } from '../lib/mwa/session'
 
 const PROGRAM_ID = new PublicKey('2DvXCXzp56aFw8JsHrMuiRwZWizZjxwaqzYo2ADKH2W7')
 // Devnet TEE validator identity (spikes/.env, verified by spikes/00-identity.ts).
@@ -63,9 +63,9 @@ export function Check8() {
   const [out, setOut] = useState('Step 1: Onboard (3 MWA prompts). Step 2: Run Check 8.')
   const [busy, setBusy] = useState(false)
 
-  // Week 5, Task 6, fix round 1: routed through `mwaAuth.ensureAuthorized`
+  // Week 5, Task 6, fix round 1: routed through `mwa/session.ts`'s `ensureAuthorized`
   // for the same reason as every other raw `connect()` call site — see
-  // `mwaAuth.ts`'s file header. `typeof connect` still logs the raw hook
+  // `mwa/session.ts`'s file header. `typeof connect` still logs the raw hook
   // function (unaffected — that's what this diagnostic is checking).
   async function withWallet(log: string[]) {
     log.push(`typeof connect=${typeof connect} account=${account ? 'set' : 'undefined'}`)

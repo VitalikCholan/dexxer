@@ -96,14 +96,12 @@ import {
   MAGIC_PROGRAM_ID,
   PERMISSION_PROGRAM_ID,
   delegateSpl,
-  deriveEphemeralAta,
   permissionPdaFromAccount,
 } from '@magicblock-labs/ephemeral-rollups-sdk'
 import { baseConn, ER_VALIDATOR } from '@/src/lib/solana'
 import { dexxerCoreProgram, DEXXER_CORE_PROGRAM_ID } from '@/src/lib/anchor'
 import {
   readConfigFeePayer,
-  readUserAccountExited,
   readUserAccountFreeMargin,
   readUserAccountSessionExpiry,
   readUserAccountSessionKey,
@@ -112,7 +110,16 @@ import { describeTxError } from '@/src/lib/errors'
 import { delegationTriple } from '@/src/lib/pdas'
 import { sponsorTx, SponsorError } from '@/src/lib/sponsor'
 import { SELF_FUND_ONBOARDING_MIN_LAMPORTS, canSelfFund } from '@/src/lib/selfFund'
-import { fetchNonces, nonceTransaction, type NonceInfo } from '@/src/lib/nonce'
+import { fetchNonces, nonceTransaction, type NonceInfo, type NonceSlot } from '@/src/lib/nonce'
+import {
+  eataDelegated,
+  isDelegated,
+  l1KeysFor,
+  needsReuseQueue,
+  readL1Snapshot,
+  sessionFresh,
+  type L1Snapshot,
+} from './onboardState'
 
 export type OnboardState =
   'Disconnected' | 'NotOnboarded' | 'Funded' | 'Initialized' | 'Delegated' | 'Credited' | 'Permissioned' | 'SessionSet'
@@ -388,53 +395,52 @@ export interface BatchLeg {
   nonce?: NonceInfo
 }
 
-/**
- * Inspects on-chain state (L1 + ER) and returns only the transaction legs
- * still needed — an already-onboarded wallet gets back an empty array (zero
- * wallet prompts). Fetches `ownerTee` unconditionally (one MWA
- * `signMessages` prompt) since even a "what's left" check needs it to read
- * ER-side permission/session state once delegation has happened.
- */
-export async function collectBatchLegs(
-  ctx: OnboardCtx,
-  mwa: Pick<Mwa, 'getConnection'>,
-  feePayerPubkey: PublicKey,
-  appendLog: (s: string) => void,
-  nonces: (NonceInfo | null)[] = [null, null, null],
-): Promise<BatchLeg[]> {
-  const {
-    owner,
-    config,
-    mint,
-    market,
-    userAccount,
-    position,
-    disclosureQueue,
-    faucetPda,
-    mintAuth,
-    ownerAta,
-    session,
-    exitSalt,
-  } = ctx
-  const core = dexxerCoreProgram(baseConn, owner)
-  const legs: BatchLeg[] = []
+/** Which relayer-created durable nonce (`nonce.ts`, `dn0/dn1/dn2`) backs each L1 leg — by label, never by array position. */
+const LEG_NONCE_SLOT: Record<string, NonceSlot> = {
+  'faucet+init_user': 0,
+  delegate_spl: 1,
+  delegate_user: 2,
+}
 
-  // --- L1a: [createAta?] + faucet_init + init_user|init_user_reuse_queue ---
-  // (fee_payer fronts every bit of this leg's rent — the ATA-create too,
-  // week-5 Task 6, on top of fix round 1's faucet_init/init_user coverage.)
-  // Measured 25.09 on a nonce (advance + 2 ComputeBudget prepended):
-  // faucet part 682 bytes, init_user part 631 — comfortably one tx.
-  const l1a: TransactionInstruction[] = []
-  const faucetInfo = await baseConn.getAccountInfo(faucetPda, 'confirmed')
-  if (!faucetInfo) {
-    const ataInfo = await baseConn.getAccountInfo(ownerAta, 'confirmed')
-    if (!ataInfo) l1a.push(createAssociatedTokenAccountIdempotentInstruction(feePayerPubkey, ownerAta, owner, mint))
-    l1a.push(
+/** Everything a leg builder decides from — one L1 snapshot, the owner ctx, who pays. */
+interface LegEnv {
+  ctx: OnboardCtx
+  snap: L1Snapshot
+  feePayer: PublicKey
+  /** `fee_payer` co-signs via `/sponsor` unless the owner self-funds (`selfFund.ts`, `feePayer === owner`). */
+  sponsored: boolean
+  core: ReturnType<typeof dexxerCoreProgram>
+  mwa: Pick<Mwa, 'getConnection'>
+  appendLog: (s: string) => void
+  nonces: (NonceInfo | null)[]
+}
+
+function nonceFor(env: LegEnv, label: string): NonceInfo | undefined {
+  return env.nonces[LEG_NONCE_SLOT[label]] ?? undefined
+}
+
+function l1Leg(env: LegEnv, label: string, ixs: TransactionInstruction[], onLanded: OnboardState[]): BatchLeg | null {
+  if (ixs.length === 0) return null
+  return { label, ixs, conn: baseConn, feePayer: env.feePayer, sponsor: env.sponsored, onLanded, nonce: nonceFor(env, label) }
+}
+
+// --- L1a: [createAta?] + faucet_init + init_user|init_user_reuse_queue ---
+// (fee_payer fronts every bit of this leg's rent — the ATA-create too,
+// week-5 Task 6, on top of fix round 1's faucet_init/init_user coverage.)
+// Measured 25.09 on a nonce (advance + 2 ComputeBudget prepended):
+// faucet part 682 bytes, init_user part 631 — comfortably one tx.
+async function legFaucetInitUser(env: LegEnv): Promise<BatchLeg | null> {
+  const { ctx, snap, feePayer, core, appendLog } = env
+  const { owner, config, mint, market, userAccount, position, disclosureQueue, faucetPda, mintAuth, ownerAta, exitSalt } = ctx
+  const ixs: TransactionInstruction[] = []
+  if (!snap.faucet) {
+    if (!snap.ownerAta) ixs.push(createAssociatedTokenAccountIdempotentInstruction(feePayer, ownerAta, owner, mint))
+    ixs.push(
       await core.methods
         .faucetInit(new BN(DEPOSIT.toString()))
         .accounts({
           owner,
-          payer: feePayerPubkey,
+          payer: feePayer,
           config,
           faucet: faucetPda,
           dusdcMint: mint,
@@ -448,156 +454,116 @@ export async function collectBatchLegs(
   } else {
     appendLog('faucet_init: exists, skipped')
   }
-  const userAccountInfo = await baseConn.getAccountInfo(userAccount, 'confirmed')
-  if (!userAccountInfo) {
-    l1a.push(
-      await core.methods
-        .initUser(Array.from(exitSalt))
-        .accounts({
-          owner,
-          payer: feePayerPubkey,
-          config,
-          market,
-          userAccount,
-          position,
-          disclosureQueue,
-          systemProgram: SystemProgram.programId,
-        })
-        .instruction(),
-    )
-  } else if (!userAccountInfo.owner.equals(DELEGATION_PROGRAM_ID) && readUserAccountExited(userAccountInfo.data)) {
+  const initAccounts = {
+    owner,
+    payer: feePayer,
+    config,
+    market,
+    userAccount,
+    position,
+    disclosureQueue,
+    systemProgram: SystemProgram.programId,
+  }
+  if (!snap.userAccount) {
+    ixs.push(await core.methods.initUser(Array.from(exitSalt)).accounts(initAccounts).instruction())
+  } else if (needsReuseQueue(snap)) {
     // Returning owner (week-5 Task 2): the PDA survived a prior exit and is
     // still `dexxer_core`-owned but `exited == true` — `init_user`'s `init`
     // constraint would fail on it, so re-initialize in place instead.
-    l1a.push(
-      await core.methods
-        .initUserReuseQueue(Array.from(exitSalt))
-        .accounts({
-          owner,
-          payer: feePayerPubkey,
-          config,
-          market,
-          userAccount,
-          position,
-          disclosureQueue,
-          systemProgram: SystemProgram.programId,
-        })
-        .instruction(),
-    )
+    ixs.push(await core.methods.initUserReuseQueue(Array.from(exitSalt)).accounts(initAccounts).instruction())
   } else {
     appendLog('init_user: exists, skipped')
   }
-  if (l1a.length > 0)
-    legs.push({
-      label: 'faucet+init_user',
-      ixs: l1a,
-      conn: baseConn,
-      feePayer: feePayerPubkey,
-      sponsor: !feePayerPubkey.equals(owner),
-      onLanded: ['Funded', 'Initialized'],
-      nonce: nonces[0] ?? undefined,
-    })
+  return l1Leg(env, 'faucet+init_user', ixs, ['Funded', 'Initialized'])
+}
 
-  // --- L1b: delegateSpl (fee_payer fronts eSPL rent — Finding A.2)  (leg `delegate_spl`) ---
-  // --- L1b': delegate_user  (leg `delegate_user`) ---
-  // Two transactions since 25.09: together, on a nonce (advance + 2
-  // ComputeBudget prepended) they measured 1322 bytes > 1232 (`Transaction
-  // too large`, live fakewallet, sponsored 0-SOL wallet — the pre-nonce
-  // combined tx fit). Both are still signed in the same wallet prompt — one
-  // more tx and one more relayer-held nonce, not one more tap.
-  // `delegate_spl` is gated on its own outcome (the eATA under the
-  // Delegation Program on L1), so a retry after a failed `delegate_user`
-  // doesn't re-run a non-idempotent `delegateSpl`.
-  // `userAccountInfo` above is `null` both when the account doesn't exist
-  // yet (about to be created by L1a) and — irrelevantly here — when it does
-  // exist but isn't delegated; either way delegation is still pending.
-  const delegated = userAccountInfo !== null && userAccountInfo.owner.equals(DELEGATION_PROGRAM_ID)
-  const l1bSpl: TransactionInstruction[] = []
-  const l1b: TransactionInstruction[] = []
-  if (!delegated) {
-    const [eata] = deriveEphemeralAta(owner, mint)
-    const eataInfo = await baseConn.getAccountInfo(eata, 'confirmed')
-    if (eataInfo !== null && eataInfo.owner.equals(DELEGATION_PROGRAM_ID)) {
-      appendLog('delegate_spl: eATA already delegated, skipped')
-    } else {
-      l1bSpl.push(
-        ...(await delegateSpl(owner, mint, DEPOSIT, {
-          payer: feePayerPubkey,
-          validator: ER_VALIDATOR,
-          initVaultIfMissing: false,
-          idempotent: false,
-        })),
-      )
-    }
-    const ut = delegationTriple(userAccount)
-    const pt = delegationTriple(position)
-    const dt = delegationTriple(disclosureQueue)
-    l1b.push(
-      await core.methods
-        .delegateUser()
-        .accounts({
-          owner,
-          // Week 5, Task 3 (P1) split this payer out of `owner`; Task 6
-          // sponsors it — `fee_payer` fronts the three delegation records'
-          // rent, closing fix round 1's residual "still ≈0.0033-0.0035 SOL"
-          // gap (see file header).
-          payer: feePayerPubkey,
-          config,
-          market,
-          bufferUserAccount: ut.buffer,
-          delegationRecordUserAccount: ut.record,
-          delegationMetadataUserAccount: ut.metadata,
-          userAccount,
-          bufferPosition: pt.buffer,
-          delegationRecordPosition: pt.record,
-          delegationMetadataPosition: pt.metadata,
-          position,
-          bufferDisclosureQueue: dt.buffer,
-          delegationRecordDisclosureQueue: dt.record,
-          delegationMetadataDisclosureQueue: dt.metadata,
-          disclosureQueue,
-          ownerProgram: DEXXER_CORE_PROGRAM_ID,
-          delegationProgram: DELEGATION_PROGRAM_ID,
-          systemProgram: SystemProgram.programId,
-        })
-        .instruction(),
-    )
-  } else {
-    appendLog('delegate: already delegated, skipped')
+// --- L1b: delegateSpl (fee_payer fronts eSPL rent — Finding A.2)  (leg `delegate_spl`) ---
+// --- L1b': delegate_user  (leg `delegate_user`) ---
+// Two transactions since 25.09: together, on a nonce (advance + 2
+// ComputeBudget prepended) they measured 1322 bytes > 1232 (`Transaction
+// too large`, live fakewallet, sponsored 0-SOL wallet — the pre-nonce
+// combined tx fit). Both are still signed in the same wallet prompt — one
+// more tx and one more relayer-held nonce, not one more tap.
+// `delegate_spl` is gated on its own outcome (the eATA under the
+// Delegation Program on L1), so a retry after a failed `delegate_user`
+// doesn't re-run a non-idempotent `delegateSpl`.
+// `snap.userAccount` is `null` both when the account doesn't exist yet
+// (about to be created by L1a) and — irrelevantly here — when it does
+// exist but isn't delegated; either way delegation is still pending.
+async function legDelegateSpl(env: LegEnv): Promise<BatchLeg | null> {
+  const { ctx, snap, feePayer, appendLog } = env
+  if (isDelegated(snap)) return null
+  if (eataDelegated(snap)) {
+    appendLog('delegate_spl: eATA already delegated, skipped')
+    return null
   }
-  if (l1bSpl.length > 0)
-    legs.push({
-      label: 'delegate_spl',
-      ixs: l1bSpl,
-      conn: baseConn,
-      feePayer: feePayerPubkey,
-      sponsor: !feePayerPubkey.equals(owner),
-      onLanded: [],
-      nonce: nonces[1] ?? undefined,
-    })
-  if (l1b.length > 0)
-    legs.push({
-      label: 'delegate_user',
-      ixs: l1b,
-      conn: baseConn,
-      feePayer: feePayerPubkey,
-      sponsor: !feePayerPubkey.equals(owner),
-      onLanded: ['Delegated'],
-      nonce: nonces[2] ?? undefined,
-    })
+  const ixs = await delegateSpl(ctx.owner, ctx.mint, DEPOSIT, {
+    payer: feePayer,
+    validator: ER_VALIDATOR,
+    initVaultIfMissing: false,
+    idempotent: false,
+  })
+  return l1Leg(env, 'delegate_spl', ixs, [])
+}
 
-  // --- ER: init_permissions + set_session (owner-paid, unsponsored) ---
-  //
-  // Cannot be sponsored — `fee_payer` is not a valid fee-paying account for
-  // an ER transaction it did not itself originate (`InvalidAccountForFee`,
-  // measured on devnet-tee, Finding A.3 — see file header). Stays
-  // owner-feePayer; the only remaining cost here is this leg's own (small)
-  // ER network fee.
+async function legDelegateUser(env: LegEnv): Promise<BatchLeg | null> {
+  const { ctx, snap, feePayer, core, appendLog } = env
+  if (isDelegated(snap)) {
+    appendLog('delegate: already delegated, skipped')
+    return null
+  }
+  const { owner, config, market, userAccount, position, disclosureQueue } = ctx
+  const ut = delegationTriple(userAccount)
+  const pt = delegationTriple(position)
+  const dt = delegationTriple(disclosureQueue)
+  const ix = await core.methods
+    .delegateUser()
+    .accounts({
+      owner,
+      // Week 5, Task 3 (P1) split this payer out of `owner`; Task 6
+      // sponsors it — `fee_payer` fronts the three delegation records'
+      // rent, closing fix round 1's residual "still ≈0.0033-0.0035 SOL"
+      // gap (see file header).
+      payer: feePayer,
+      config,
+      market,
+      bufferUserAccount: ut.buffer,
+      delegationRecordUserAccount: ut.record,
+      delegationMetadataUserAccount: ut.metadata,
+      userAccount,
+      bufferPosition: pt.buffer,
+      delegationRecordPosition: pt.record,
+      delegationMetadataPosition: pt.metadata,
+      position,
+      bufferDisclosureQueue: dt.buffer,
+      delegationRecordDisclosureQueue: dt.record,
+      delegationMetadataDisclosureQueue: dt.metadata,
+      disclosureQueue,
+      ownerProgram: DEXXER_CORE_PROGRAM_ID,
+      delegationProgram: DELEGATION_PROGRAM_ID,
+      systemProgram: SystemProgram.programId,
+    })
+    .instruction()
+  return l1Leg(env, 'delegate_user', [ix], ['Delegated'])
+}
+
+// --- ER: init_permissions + set_session (owner-paid, unsponsored) ---
+//
+// Cannot be sponsored — `fee_payer` is not a valid fee-paying account for
+// an ER transaction it did not itself originate (`InvalidAccountForFee`,
+// measured on devnet-tee, Finding A.3 — see file header). Stays
+// owner-feePayer; the only remaining cost here is this leg's own (small)
+// ER network fee. Fetches `ownerTee` unconditionally (one MWA
+// `signMessages` prompt) since even a "what's left" check needs it to read
+// ER-side permission/session state once delegation has happened. The two
+// ER reads stay separate `getAccountInfo` calls — see onboardState.ts's
+// header for why they are not batched like the L1 ones.
+async function legPermissionsSession(env: LegEnv): Promise<BatchLeg | null> {
+  const { ctx, snap, mwa, appendLog } = env
+  const { owner, config, market, userAccount, position, disclosureQueue, session } = ctx
   const ownerTee = await mwa.getConnection(owner)
   const coreEr = dexxerCoreProgram(ownerTee, owner)
   const userPermission = permissionPdaFromAccount(userAccount)
-  const positionPermission = permissionPdaFromAccount(position)
-  const dqPermission = permissionPdaFromAccount(disclosureQueue)
   const permAccounts = {
     owner,
     config,
@@ -606,36 +572,36 @@ export async function collectBatchLegs(
     position,
     disclosureQueue,
     userPermission,
-    positionPermission,
-    dqPermission,
+    positionPermission: permissionPdaFromAccount(position),
+    dqPermission: permissionPdaFromAccount(disclosureQueue),
     permissionProgram: PERMISSION_PROGRAM_ID,
     ephemeralVault: EPHEMERAL_VAULT_ID,
     magicProgram: MAGIC_PROGRAM_ID,
   }
-  const er: TransactionInstruction[] = []
-  if (delegated) {
+  const setSessionIx = () =>
+    coreEr.methods
+      .setSession(session.publicKey, new BN(Math.floor(Date.now() / 1000) + SESSION_EXPIRY_SECS), SESSION_ACTIONS)
+      .accounts(permAccounts)
+      .instruction()
+  const ixs: TransactionInstruction[] = []
+  if (isDelegated(snap)) {
     // Already delegated (a previous run got this far) — real ER state exists, check it.
     const permInfo = await ownerTee.getAccountInfo(userPermission, 'confirmed')
     if (!permInfo || !permInfo.owner.equals(PERMISSION_PROGRAM_ID)) {
-      er.push(await coreEr.methods.initPermissions().accounts(permAccounts).instruction())
+      ixs.push(await coreEr.methods.initPermissions().accounts(permAccounts).instruction())
     } else {
       appendLog('init_permissions: exists, skipped')
     }
     const userAccountInfoEr = await ownerTee.getAccountInfo(userAccount, 'confirmed')
-    const sessionKeyOnChain = userAccountInfoEr ? readUserAccountSessionKey(userAccountInfoEr.data) : PublicKey.default
-    const sessionExpiryOnChain = userAccountInfoEr ? readUserAccountSessionExpiry(userAccountInfoEr.data) : 0n
-    const renewBefore = BigInt(Math.floor(Date.now() / 1000) + SESSION_RENEW_MARGIN_SECS)
-    const sessionFresh = sessionKeyOnChain.equals(session.publicKey) && sessionExpiryOnChain > renewBefore
-    if (!sessionFresh) {
-      if (sessionKeyOnChain.equals(session.publicKey))
-        appendLog(`set_session: same key but expiry ${sessionExpiryOnChain} is past/near — renewing`)
-      const expiry = Math.floor(Date.now() / 1000) + SESSION_EXPIRY_SECS
-      er.push(
-        await coreEr.methods
-          .setSession(session.publicKey, new BN(expiry), SESSION_ACTIONS)
-          .accounts(permAccounts)
-          .instruction(),
-      )
+    const er = {
+      sessionKey: userAccountInfoEr ? readUserAccountSessionKey(userAccountInfoEr.data) : PublicKey.default,
+      sessionExpiry: userAccountInfoEr ? readUserAccountSessionExpiry(userAccountInfoEr.data) : 0n,
+    }
+    const nowSec = BigInt(Math.floor(Date.now() / 1000))
+    if (!sessionFresh(er, session.publicKey, nowSec, BigInt(SESSION_RENEW_MARGIN_SECS))) {
+      if (er.sessionKey.equals(session.publicKey))
+        appendLog(`set_session: same key but expiry ${er.sessionExpiry} is past/near — renewing`)
+      ixs.push(await setSessionIx())
     } else {
       appendLog('set_session: already set to this device session key and fresh, skipped')
     }
@@ -643,32 +609,58 @@ export async function collectBatchLegs(
     // Not delegated yet — the ER validator has nothing to read for these
     // PDAs until L1b lands, so both steps are unconditionally needed once
     // it does (this same batch's L1b, in the normal fresh-onboarding case).
-    er.push(await coreEr.methods.initPermissions().accounts(permAccounts).instruction())
-    const expiry = Math.floor(Date.now() / 1000) + SESSION_EXPIRY_SECS
-    er.push(
-      await coreEr.methods
-        .setSession(session.publicKey, new BN(expiry), SESSION_ACTIONS)
-        .accounts(permAccounts)
-        .instruction(),
-    )
+    ixs.push(await coreEr.methods.initPermissions().accounts(permAccounts).instruction())
+    ixs.push(await setSessionIx())
   }
-  if (er.length > 0)
-    legs.push({
-      label: 'permissions+session',
-      ixs: er,
-      conn: ownerTee,
-      feePayer: owner,
-      sponsor: false,
-      onLanded: ['Permissioned', 'SessionSet'],
-    })
+  if (ixs.length === 0) return null
+  return { label: 'permissions+session', ixs, conn: ownerTee, feePayer: owner, sponsor: false, onLanded: ['Permissioned', 'SessionSet'] }
+}
 
+/** In send order: L1a before L1b (`delegate_user` needs `init_user` landed), then the ER leg. */
+const LEG_BUILDERS: ((env: LegEnv) => Promise<BatchLeg | null>)[] = [
+  legFaucetInitUser,
+  legDelegateSpl,
+  legDelegateUser,
+  legPermissionsSession,
+]
+
+/**
+ * Inspects on-chain state (one L1 snapshot — `onboardState.ts` — plus the
+ * ER reads inside the ER leg) and returns only the transaction legs still
+ * needed — an already-onboarded wallet gets back an empty array (zero
+ * wallet prompts). Pass `l1` to reuse a snapshot the caller already took
+ * (`runBatchedOnboarding` does); otherwise one is read here.
+ */
+export async function collectBatchLegs(
+  ctx: OnboardCtx,
+  mwa: Pick<Mwa, 'getConnection'>,
+  feePayerPubkey: PublicKey,
+  appendLog: (s: string) => void,
+  nonces: (NonceInfo | null)[] = [null, null, null],
+  l1?: L1Snapshot,
+): Promise<BatchLeg[]> {
+  const env: LegEnv = {
+    ctx,
+    snap: l1 ?? (await readL1Snapshot(baseConn, l1KeysFor(ctx.owner, ctx.mint))),
+    feePayer: feePayerPubkey,
+    sponsored: !feePayerPubkey.equals(ctx.owner),
+    core: dexxerCoreProgram(baseConn, ctx.owner),
+    mwa,
+    appendLog,
+    nonces,
+  }
+  const legs: BatchLeg[] = []
+  for (const build of LEG_BUILDERS) {
+    const leg = await build(env)
+    if (leg) legs.push(leg)
+  }
   return legs
 }
 
 /**
- * Fetches the owner's two durable nonces from the relayer (`nonce.ts`; the
+ * Fetches the owner's three durable nonces from the relayer (`nonce.ts`; the
  * relayer creates the accounts on the first call — no wallet prompt).
- * Returns `[null, null]` on failure so onboarding still runs on live
+ * Returns `[null, null, null]` on failure so onboarding still runs on live
  * blockhashes rather than dying on an optional step.
  */
 async function ensureNonceAccounts(owner: PublicKey, appendLog: (s: string) => void): Promise<(NonceInfo | null)[]> {
@@ -709,15 +701,16 @@ export async function runBatchedOnboarding(
   appendLog: (s: string) => void,
   setState: (s: OnboardState) => void,
   onProgress: (p: BatchProgress) => void,
+  l1?: L1Snapshot,
 ): Promise<void> {
   onProgress({ phase: 'Collecting', step: null, i: 0, n: 0 })
-  const configInfo = await baseConn.getAccountInfo(ctx.config, 'confirmed')
-  if (!configInfo) throw new Error('Config PDA not found — protocol not bootstrapped on this devnet deployment')
+  const snap = l1 ?? (await readL1Snapshot(baseConn, l1KeysFor(ctx.owner, ctx.mint)))
+  if (!snap.config) throw new Error('Config PDA not found — protocol not bootstrapped on this devnet deployment')
   // Self-funded when the owner holds enough SOL (Phantom cannot simulate a
   // sponsored tx whose fee_payer signature is still empty — see selfFund.ts);
   // sponsored otherwise. `feePayerPubkey` below is whoever pays: owner or relayer.
   const selfFund = await canSelfFund(ctx.owner, SELF_FUND_ONBOARDING_MIN_LAMPORTS)
-  const feePayerPubkey = selfFund ? ctx.owner : readConfigFeePayer(configInfo.data)
+  const feePayerPubkey = selfFund ? ctx.owner : readConfigFeePayer(snap.config.data)
   appendLog(selfFund ? 'L1 legs: self-funded (owner pays rent + fees)' : 'L1 legs: sponsored by the relayer fee_payer')
 
   // Durable nonces (nonce.ts): the relayer creates the owner's two nonce
@@ -725,7 +718,7 @@ export async function runBatchedOnboarding(
   // no longer expire while the wallet is open.
   const nonces = await ensureNonceAccounts(ctx.owner, appendLog)
 
-  const legs = await collectBatchLegs(ctx, mwa, feePayerPubkey, appendLog, nonces)
+  const legs = await collectBatchLegs(ctx, mwa, feePayerPubkey, appendLog, nonces, snap)
   if (legs.length === 0) {
     appendLog('onboarding: nothing left to do')
     onProgress({ phase: 'Done', step: null, i: 0, n: 0 })

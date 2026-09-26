@@ -3,7 +3,7 @@ import { createContext, type PropsWithChildren, use, useMemo } from 'react'
 import { SignInOutput, useMobileWallet } from '@wallet-ui/react-native-web3js'
 import { AppConfig } from '@/constants/app-config'
 import { useMutation } from '@tanstack/react-query'
-import { disconnect as mwaDisconnect, ensureAuthorized } from '@/src/lib/mwaAuth'
+import { disconnect as mwaDisconnect, ensureAuthorized } from '@/src/lib/mwa/session'
 
 export interface AuthState {
   isAuthenticated: boolean
@@ -27,12 +27,12 @@ export function useAuth() {
 // `app/sign-in.tsx`'s "Connect" button, calling this `signIn`, is the
 // UNAVOIDABLE top-level entry point the moment the wallet is disconnected
 // (confirmed live: the disconnect fix in this same round routes through
-// `mwaAuth.disconnect`, which flips `isAuthenticated` false and lands here,
+// `mwa/session.ts`'s `disconnect`, which flips `isAuthenticated` false and lands here,
 // not on Dexxer's own `ConnectScreen`/`useOnboarding`). `signIn` is a
 // distinct MWA method from `connect` (`authorizeSessionWithSignIn`, not
 // `authorizeSession`) so the original grep for raw `connect()`/`disconnect()`
 // missed it — but it shares the exact same stale-`auth_token`-across-
-// identity-change exposure `mwaAuth.ts` exists to close, since both write
+// identity-change exposure `mwa/session.ts` exists to close, since both write
 // through the same underlying authorization store. Routed through
 // `ensureAuthorized` the same way.
 function useSignInMutation() {
@@ -56,9 +56,9 @@ export function AuthProvider({ children }: PropsWithChildren) {
     () => ({
       signIn: async () => await signInMutation.mutateAsync(),
       // Raw hook `disconnect()` never reaches the wallet's own deauthorize —
-      // see `mwaAuth.ts`'s file header. `signOut` itself isn't wired to any
+      // see `mwa/session.ts`'s file header. `signOut` itself isn't wired to any
       // UI today (the real disconnect entry points, `wallet-ui-dropdown.tsx`
-      // and `wallet-ui-button-disconnect.tsx`, call `mwaAuth.disconnect`
+      // and `wallet-ui-button-disconnect.tsx`, call `mwa/session.ts`'s `disconnect`
       // directly, confirmed live), but fixed here too so it can't
       // reintroduce the bug the moment it is wired up.
       signOut: async () => await mwaDisconnect(disconnect, store),

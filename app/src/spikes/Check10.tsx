@@ -12,7 +12,7 @@ import { getAuthToken } from '@magicblock-labs/ephemeral-rollups-sdk'
 import { useMobileWallet } from '@wallet-ui/react-native-web3js'
 import { pickSignature, toPublicKey } from './mwa'
 import { TEE_RPC } from '../lib/solana'
-import { ensureAuthorized } from '../lib/mwaAuth'
+import { ensureAuthorized } from '../lib/mwa/session'
 
 const PROGRAM_ID = new PublicKey('2DvXCXzp56aFw8JsHrMuiRwZWizZjxwaqzYo2ADKH2W7')
 const TEE_WS = TEE_RPC.replace(/^https/, 'wss')
@@ -47,7 +47,7 @@ export function Check10() {
     setBusy(true)
     setOut('connecting…')
     try {
-      // Week 5, Task 6, fix round 1: routed through `mwaAuth.ensureAuthorized` — see `mwaAuth.ts`'s file header.
+      // Week 5, Task 6, fix round 1: routed through `mwa/session.ts`'s `ensureAuthorized` — see `mwa/session.ts`'s file header.
       const wallet = account ?? (await ensureAuthorized(identity, connect, store))
       const owner = toPublicKey(wallet.address)
       const auth = await getAuthToken(TEE_RPC, owner, async (m) => pickSignature(m, await signMessages(m), owner))

@@ -15,7 +15,7 @@ import { Connection, PublicKey } from '@solana/web3.js'
 import { getAuthToken } from '@magicblock-labs/ephemeral-rollups-sdk'
 import { pickSignature } from '../spikes/mwa'
 import { TEE_RPC, TEE_WS } from './solana'
-import { useMwaSigning } from './mwaAuth'
+import { useMwaSigning } from './mwa/useMwaSigning'
 
 interface CachedTeeConn {
   conn: Connection
@@ -53,7 +53,7 @@ export async function teeConnectionFor(owner: PublicKey, signMessage: SignMessag
  * `signMessages` here is `useMwaSigning()`'s retry-wrapped version (a
  * `reauthorize` rejection self-heals with one fresh `authorize` prompt
  * instead of surfacing as `-1 authorization request failed` — see
- * `mwaAuth.ts`'s "Phantom reauthorize bug" section).
+ * `mwa/errors.ts`'s "Phantom reauthorize bug" section).
  */
 export function useTeeConnection() {
   const { signMessages } = useMwaSigning()
