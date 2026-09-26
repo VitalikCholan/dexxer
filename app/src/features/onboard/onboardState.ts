@@ -91,14 +91,25 @@ export interface ErSession {
   sessionKey: PublicKey
   /** Unix seconds (`UserAccount.session_expiry`, i64). */
   sessionExpiry: bigint
+  /** `UserAccount.actions_left` — spent one per session-signed trade. */
+  actionsLeft: number
 }
 
 /**
- * `true` iff the on-chain session is this device's key AND expires more
- * than `marginSecs` after `nowSec` — a matching key that lapses sooner is
+ * `true` iff the on-chain session is this device's key, expires more than
+ * `marginSecs` after `nowSec`, AND still has more than `lowActions` actions
+ * — a matching key that lapses sooner, or is (nearly) out of actions, is
  * re-set now rather than leaving the device with nothing to sign later
- * (measured 25.09, `SESSION_RENEW_MARGIN_SECS`).
+ * (expiry: measured 25.09, `SESSION_RENEW_MARGIN_SECS`; actions: week 6 —
+ * `set_session` is what refills `actions_left`, so a re-authorize that
+ * skipped it on a key with 0 actions left would change nothing).
  */
-export function sessionFresh(er: ErSession, deviceKey: PublicKey, nowSec: bigint, marginSecs: bigint): boolean {
-  return er.sessionKey.equals(deviceKey) && er.sessionExpiry > nowSec + marginSecs
+export function sessionFresh(
+  er: ErSession,
+  deviceKey: PublicKey,
+  nowSec: bigint,
+  marginSecs: bigint,
+  lowActions: number,
+): boolean {
+  return er.sessionKey.equals(deviceKey) && er.sessionExpiry > nowSec + marginSecs && er.actionsLeft > lowActions
 }

@@ -15,7 +15,7 @@ import {
   assertIsAuthorizationFailureSelfCheck,
   assertIsSessionEstablishmentFailureSelfCheck,
 } from '../src/lib/mwa/errors'
-import { assertDeriveTicketSelfCheck } from '../src/features/trade/TradeTicket'
+import { assertDeriveTicketSelfCheck } from '../src/features/trade/ticketMath'
 import { assertLiqDistancePctSelfCheck } from '../src/features/positions/PositionCard'
 import { assertHistoryMergeSelfCheck, chunk, MAX_ACCOUNTS_PER_RPC } from '../src/features/history/useHistoryRows'
 

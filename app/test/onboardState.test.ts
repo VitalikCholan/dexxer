@@ -120,20 +120,49 @@ test('eataDelegated is true only for an eATA under the Delegation Program', () =
 
 // --- sessionFresh --------------------------------------------------------
 
+// `set_session` hands out a finite action budget (SESSION_ACTIONS); a key
+// that is valid by expiry but (nearly) out of actions must be re-set, or a
+// re-authorize run finds "nothing to do" and the user stays stuck.
+test('sessionFresh: same key, far expiry, but actions at or below the low-water mark -> stale', () => {
+  const key = PublicKey.unique()
+  const now = 1_000_000n
+  assert.equal(
+    sessionFresh({ sessionKey: key, sessionExpiry: now + 86_400n, actionsLeft: 3 }, key, now, 3600n, 3),
+    false,
+  )
+  assert.equal(
+    sessionFresh({ sessionKey: key, sessionExpiry: now + 86_400n, actionsLeft: 0 }, key, now, 3600n, 3),
+    false,
+  )
+  assert.equal(
+    sessionFresh({ sessionKey: key, sessionExpiry: now + 86_400n, actionsLeft: 4 }, key, now, 3600n, 3),
+    true,
+  )
+})
+
 test('sessionFresh: same key and expiry beyond the renew margin', () => {
   const key = PublicKey.unique()
   const now = 1_000_000n
-  assert.equal(sessionFresh({ sessionKey: key, sessionExpiry: now + 7200n }, key, now, 3600n), true)
+  assert.equal(sessionFresh({ sessionKey: key, sessionExpiry: now + 7200n, actionsLeft: 20 }, key, now, 3600n, 3), true)
 })
 test('sessionFresh: same key but expiry inside the renew margin -> stale', () => {
   const key = PublicKey.unique()
   const now = 1_000_000n
-  assert.equal(sessionFresh({ sessionKey: key, sessionExpiry: now + 1800n }, key, now, 3600n), false)
+  assert.equal(
+    sessionFresh({ sessionKey: key, sessionExpiry: now + 1800n, actionsLeft: 20 }, key, now, 3600n, 3),
+    false,
+  )
 })
 test('sessionFresh: a different key is never fresh, whatever the expiry', () => {
   const now = 1_000_000n
   assert.equal(
-    sessionFresh({ sessionKey: PublicKey.unique(), sessionExpiry: now + 86_400n }, PublicKey.unique(), now, 3600n),
+    sessionFresh(
+      { sessionKey: PublicKey.unique(), sessionExpiry: now + 86_400n, actionsLeft: 20 },
+      PublicKey.unique(),
+      now,
+      3600n,
+      3,
+    ),
     false,
   )
 })

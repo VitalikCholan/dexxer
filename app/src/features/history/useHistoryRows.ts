@@ -51,7 +51,7 @@
 // `INDEXER_ENABLED=true` — an exact-pubkey L1 lookup stays the correctness-
 // bearing path for "did MY trade get revealed", independent of the indexer
 // being up), just no longer hand-rolled.
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { Connection, PublicKey } from '@solana/web3.js'
 import * as SecureStore from 'expo-secure-store'
 import { useQuery, type UseQueryResult } from '@tanstack/react-query'
@@ -304,6 +304,8 @@ interface RevealedCache {
   found: Map<string, RevealedEntry>
 }
 
+const NO_REVEALED: RevealedEntry[] = []
+
 export interface UseHistoryRows {
   rows: Row[]
   dq: LiveAccount<DecodedDisclosureQueue>
@@ -335,7 +337,9 @@ export function useHistoryRows(owner: PublicKey | null, conn: Connection | null)
   // string (not the decoded objects, which are fresh references on every
   // push/poll) so this only re-runs when the actual set of pending records
   // changes.
-  const dqHashes = dq.value ? dq.value.records.map(recordHash) : []
+  // keccak once per queue change (`dq.value` is a fresh object only when the
+  // bytes changed — `live.ts` byte-diffs), not once per render.
+  const dqHashes = useMemo(() => (dq.value ? dq.value.records.map(recordHash) : []), [dq.value])
   const hashKey = dqHashes.join(',')
   useEffect(() => {
     if (!owner || !hashKey) return
@@ -383,7 +387,8 @@ export function useHistoryRows(owner: PublicKey | null, conn: Connection | null)
     enabled: !!owner,
     refetchInterval: 5000,
   })
-  const revealed = revealedQuery.data ?? []
+  // Stable fallback: a fresh `[]` per render would invalidate the `rows` memo below every time.
+  const revealed = revealedQuery.data ?? NO_REVEALED
   const revealedError = revealedQuery.error
     ? revealedQuery.error instanceof Error
       ? revealedQuery.error.message
@@ -391,13 +396,26 @@ export function useHistoryRows(owner: PublicKey | null, conn: Connection | null)
     : null
 
   const [refreshing, setRefreshing] = useState(false)
+  const mounted = useRef(true)
+  useEffect(() => {
+    mounted.current = true
+    return () => {
+      mounted.current = false
+    }
+  }, [])
   const onRefresh = async () => {
     setRefreshing(true)
-    await revealedQuery.refetch()
-    setRefreshing(false)
+    try {
+      await revealedQuery.refetch()
+    } finally {
+      // A pull-to-refresh that outlives the screen must not set state on an unmounted hook.
+      if (mounted.current) setRefreshing(false)
+    }
   }
 
-  const rows = mergeHistoryRows(dq.value?.records ?? [], revealed, slot)
+  // Merge (another keccak pass per queue record) only when an input changed —
+  // `slot` ticks every 2 s, the other two only on real data changes.
+  const rows = useMemo(() => mergeHistoryRows(dq.value?.records ?? [], revealed, slot), [dq.value, revealed, slot])
 
   return { rows, dq, revealedError, refreshing, onRefresh }
 }

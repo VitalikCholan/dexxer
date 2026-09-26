@@ -248,10 +248,16 @@ export function readUserAccountExitSalt(data: Buffer): Uint8Array {
  * — both already fixed-offset per the block above.
  */
 const USER_ACCOUNT_SESSION_EXPIRY_OFFSET = USER_ACCOUNT_SESSION_KEY_OFFSET + 32
+/** `UserAccount.actions_left` (u32): right after `session_expiry`(8) — the session-signed action budget `set_session` hands out. */
+const USER_ACCOUNT_ACTIONS_LEFT_OFFSET = USER_ACCOUNT_SESSION_EXPIRY_OFFSET + 8
 const USER_ACCOUNT_LOCKED_MARGIN_OFFSET = USER_ACCOUNT_FREE_MARGIN_OFFSET + 8
 
 export function readUserAccountSessionExpiry(data: Buffer): bigint {
   return data.readBigInt64LE(USER_ACCOUNT_SESSION_EXPIRY_OFFSET)
+}
+
+export function readUserAccountActionsLeft(data: Buffer): number {
+  return data.readUInt32LE(USER_ACCOUNT_ACTIONS_LEFT_OFFSET)
 }
 
 export function readUserAccountLockedMargin(data: Buffer): bigint {
@@ -291,6 +297,8 @@ export interface DecodedUserAccount {
   sessionKey: PublicKey
   /** Unix seconds — compare against `Math.floor(Date.now() / 1000)`. */
   sessionExpiry: bigint
+  /** Session-signed actions remaining — `set_session` grants `SESSION_ACTIONS`, every trade spends one (week 6: surfaced so the app can warn before error 6021). */
+  actionsLeft: number
   freeMargin: bigint
   lockedMargin: bigint
   exitSalt: Uint8Array
@@ -301,6 +309,7 @@ export function decodeUserAccount(data: Buffer): DecodedUserAccount {
   return {
     sessionKey: readUserAccountSessionKey(data),
     sessionExpiry: readUserAccountSessionExpiry(data),
+    actionsLeft: readUserAccountActionsLeft(data),
     freeMargin: readUserAccountFreeMargin(data),
     lockedMargin: readUserAccountLockedMargin(data),
     exitSalt: readUserAccountExitSalt(data),

@@ -102,12 +102,15 @@ import { baseConn, ER_VALIDATOR } from '@/src/lib/solana'
 import { dexxerCoreProgram, DEXXER_CORE_PROGRAM_ID } from '@/src/lib/anchor'
 import {
   readConfigFeePayer,
+  readUserAccountActionsLeft,
   readUserAccountFreeMargin,
   readUserAccountSessionExpiry,
   readUserAccountSessionKey,
 } from '@/src/lib/codecs'
 import { describeTxError } from '@/src/lib/errors'
 import { delegationTriple } from '@/src/lib/pdas'
+import { confirmOnConn } from '@/src/lib/confirm'
+import { LOW_SESSION_ACTIONS } from '@/src/lib/session'
 import { sponsorTx, SponsorError } from '@/src/lib/sponsor'
 import { SELF_FUND_ONBOARDING_MIN_LAMPORTS, canSelfFund } from '@/src/lib/selfFund'
 import { fetchNonces, nonceTransaction, type NonceInfo, type NonceSlot } from '@/src/lib/nonce'
@@ -266,28 +269,6 @@ export async function sendL1Sponsored(
   if (__DEV__) console.log(`[dexxer] sendL1Sponsored: sent ${sig} (feePayer ${sponsored.feePayer?.toBase58()})`)
   await confirmOnConn(baseConn, sig)
   return sig
-}
-
-// Poll `getSignatureStatuses` instead of `Connection.confirmTransaction` — found
-// on-device (task-7 emulator verification) that `rpc.magicblock.app/devnet`'s
-// websocket doesn't reliably deliver `signatureSubscribe` notifications
-// (`Tried to call a JSON-RPC method 'signatureSubscribe' but the socket was
-// not 'CONNECTING' or 'OPEN'`, retried forever), hanging `confirmTransaction`
-// indefinitely even though the L1 transaction had already landed. Same root
-// cause/fix as `tests/er/lib/env.ts`'s `confirmSignature` (documented there
-// for the ER validator specifically) — this app hits it on the BASE
-// connection too, so both `sendL1` and `sendErOwner` below poll instead.
-export async function confirmOnConn(conn: Connection, sig: string, tries = 100, delayMs = 150): Promise<void> {
-  for (let i = 0; i < tries; i++) {
-    const { value } = await conn.getSignatureStatuses([sig])
-    const status = value[0]
-    if (status) {
-      if (status.err) throw new Error(`tx ${sig} failed: ${JSON.stringify(status.err)}`)
-      if (status.confirmationStatus === 'confirmed' || status.confirmationStatus === 'finalized') return
-    }
-    await new Promise((r) => setTimeout(r, delayMs))
-  }
-  throw new Error(`confirm timeout waiting for ${sig}`)
 }
 
 // --- ER send: owner-signed via MWA (ER blockhash — sign then send ourselves, mirrors Check 8). ---
@@ -596,11 +577,14 @@ async function legPermissionsSession(env: LegEnv): Promise<BatchLeg | null> {
     const er = {
       sessionKey: userAccountInfoEr ? readUserAccountSessionKey(userAccountInfoEr.data) : PublicKey.default,
       sessionExpiry: userAccountInfoEr ? readUserAccountSessionExpiry(userAccountInfoEr.data) : 0n,
+      actionsLeft: userAccountInfoEr ? readUserAccountActionsLeft(userAccountInfoEr.data) : 0,
     }
     const nowSec = BigInt(Math.floor(Date.now() / 1000))
-    if (!sessionFresh(er, session.publicKey, nowSec, BigInt(SESSION_RENEW_MARGIN_SECS))) {
+    if (!sessionFresh(er, session.publicKey, nowSec, BigInt(SESSION_RENEW_MARGIN_SECS), LOW_SESSION_ACTIONS)) {
       if (er.sessionKey.equals(session.publicKey))
-        appendLog(`set_session: same key but expiry ${er.sessionExpiry} is past/near — renewing`)
+        appendLog(
+          `set_session: same key but expiry ${er.sessionExpiry} is past/near or only ${er.actionsLeft} actions left — renewing`,
+        )
       ixs.push(await setSessionIx())
     } else {
       appendLog('set_session: already set to this device session key and fresh, skipped')

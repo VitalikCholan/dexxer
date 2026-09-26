@@ -60,13 +60,14 @@ async function userAccountData(o: {
   sessionKey?: PublicKey
   sessionExpiry?: number
   exited?: boolean
+  actionsLeft?: number
 }) {
   return encodeAccount('UserAccount', {
     version: 2,
     owner: o.owner,
     session_key: o.sessionKey ?? PublicKey.default,
     session_expiry: new BN(o.sessionExpiry ?? 0),
-    actions_left: 20,
+    actions_left: o.actionsLeft ?? 20,
     free_margin: new BN(0),
     locked_margin: new BN(0),
     nonce: new BN(0),
@@ -332,6 +333,35 @@ test('delegated, permissions present, session key matches but expires within the
     [['permissions+session', ['set_session'], false, null]],
   )
   assert.ok(log.some((s) => s.includes('renewing')))
+})
+
+test('delegated, key and expiry fresh but the action budget nearly spent: set_session alone', async () => {
+  const ctx = makeCtx()
+  const base = new Map([
+    [ctx.faucetPda.toBase58(), info(DEXXER_CORE_PROGRAM_ID)],
+    [ctx.userAccount.toBase58(), info(DELEGATION_PROGRAM_ID)],
+  ])
+  const tee = new Map([
+    [permissionPdaFromAccount(ctx.userAccount).toBase58(), info(PERMISSION_PROGRAM_ID)],
+    [
+      ctx.userAccount.toBase58(),
+      info(
+        DELEGATION_PROGRAM_ID,
+        await userAccountData({
+          owner: ctx.owner,
+          sessionKey: ctx.session.publicKey,
+          sessionExpiry: nowSec() + SESSION_EXPIRY_SECS,
+          actionsLeft: 2,
+        }),
+      ),
+    ],
+  ])
+  const { legs, log } = await collect(ctx, base, tee)
+  assert.deepEqual(
+    legs.map((l) => [l.label, l.ixs]),
+    [['permissions+session', ['set_session']]],
+  )
+  assert.ok(log.some((s) => s.includes('2 actions left — renewing')))
 })
 
 test('delegated but permissions missing on the ER and a different session key: both ER instructions', async () => {

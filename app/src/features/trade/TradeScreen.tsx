@@ -25,6 +25,7 @@ import { PriceChart } from './PriceChart'
 import { TradeHeader } from './TradeHeader'
 import { TradeTicket, type MarketParams } from './TradeTicket'
 import { useTradeSession } from './useTradeSession'
+import { LOW_SESSION_ACTIONS } from '@/src/lib/session'
 import { useOnboardingGate } from '../onboard/useOnboardingGate'
 
 type Tf = '1m' | '5m' | '15m'
@@ -82,6 +83,12 @@ export function TradeScreen() {
   const now = Math.floor(Date.now() / 1000)
   const sessionExpired =
     userLive.value !== null && userLive.value.sessionExpiry > 0n && userLive.value.sessionExpiry < BigInt(now)
+  // Week 6: the session's action budget — spent one per trade, refilled only
+  // by `set_session`. 0 is as blocking as an expiry (error 6021); at or below
+  // `LOW_SESSION_ACTIONS` the user is warned while trading still works.
+  const actionsLeft = userLive.value?.actionsLeft ?? null
+  const sessionUsedUp = !sessionExpired && actionsLeft === 0
+  const sessionLow = !sessionExpired && actionsLeft !== null && actionsLeft > 0 && actionsLeft <= LOW_SESSION_ACTIONS
 
   const marketParams: MarketParams | null = marketLive.value
     ? {
@@ -92,14 +99,14 @@ export function TradeScreen() {
     : null
 
   const handleOpen = useCallback(
-    async (side: SideName, sizeSol: number, marginUsd: number, limitUsd: number) => {
+    async (side: SideName, size: bigint, margin: bigint, limitPrice: bigint) => {
       if (!conn || !session || !accounts) return
       setBusy(true)
       try {
         const mkt = await readMarket(conn, accounts.market)
         if (!mkt || mkt.mark === 0n) throw new Error('Market has no mark price yet')
-        await openPosition(conn, session, accounts, side === 'Long' ? 'long' : 'short', sizeSol, marginUsd, limitUsd)
-        showToast({ tone: 'success', text: `Opened ${side} ${sizeSol} SOL` })
+        await openPosition(conn, session, accounts, side === 'Long' ? 'long' : 'short', size, margin, limitPrice)
+        showToast({ tone: 'success', text: `Opened ${side} ${Number(size) / 1_000_000_000} SOL` })
       } catch (e) {
         showToast({ tone: 'danger', text: describeTxError(e) })
       } finally {
@@ -142,9 +149,16 @@ export function TradeScreen() {
               Set up private account
             </Button>
           </View>
-        ) : sessionExpired ? (
+        ) : sessionExpired || sessionUsedUp ? (
           <View style={{ gap: space.sm }}>
-            <Badge tone="danger">Session expired</Badge>
+            <Badge tone="danger">{sessionUsedUp ? 'Session used up' : 'Session expired'}</Badge>
+            <Button variant="secondary" onPress={() => router.push({ pathname: '/onboard', params: { reauth: '1' } })}>
+              Re-authorize session
+            </Button>
+          </View>
+        ) : sessionLow ? (
+          <View style={{ gap: space.sm }}>
+            <Badge tone="warning">{`Session key: ${actionsLeft} action${actionsLeft === 1 ? '' : 's'} left`}</Badge>
             <Button variant="secondary" onPress={() => router.push({ pathname: '/onboard', params: { reauth: '1' } })}>
               Re-authorize session
             </Button>
@@ -165,7 +179,7 @@ export function TradeScreen() {
             freeMarginUsd={userLive.value?.freeMargin ?? null}
             hasOpenPosition={hasOpenPosition}
             busy={busy}
-            disabled={tradingPaused || sessionExpired || !session}
+            disabled={tradingPaused || sessionExpired || sessionUsedUp || !session}
             onOpen={handleOpen}
           />
         )}

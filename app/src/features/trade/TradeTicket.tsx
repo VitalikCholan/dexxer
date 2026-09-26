@@ -8,7 +8,8 @@
 // either changes again — `open_position` only ever sees the Margin field's
 // current value, leverage is a UI convenience, not a program argument.
 // Insufficient-margin gate (post-launch smoke-test fix, 23.09.2026): see
-// `deriveTicket`'s doc comment.
+// `deriveTicket`'s doc comment in `ticketMath.ts` (week 6: the pure math
+// moved there so it runs under `npm test`; this file is render-only).
 import { useState } from 'react'
 import { Text, View } from 'react-native'
 import { useTheme } from '@/src/theme'
@@ -20,6 +21,8 @@ import { Card } from '@/src/ui/Card'
 import { Row } from '@/src/ui/Row'
 import { Button } from '@/src/ui/Button'
 import * as math from '@/src/lib/math'
+import { formatUsd2 } from '@/src/lib/status'
+import { deriveTicket, impliedLeverage, safeLiq } from './ticketMath'
 import { type SideName } from '@/src/lib/codecs'
 import { solSize, usdAmount } from '@/src/lib/trade'
 
@@ -36,121 +39,8 @@ export interface TradeTicketProps {
   hasOpenPosition: boolean
   busy: boolean
   disabled?: boolean
-  onOpen: (side: SideName, sizeSol: number, marginUsd: number, limitUsd: number) => Promise<void>
-}
-
-function usd(raw: bigint): string {
-  return (Number(raw) / 1_000_000).toFixed(2)
-}
-
-function safeLiq(side: SideName, entry: bigint, size: bigint, margin: bigint, mmrBps: bigint): bigint | null {
-  try {
-    return math.liqPrice(side, entry, size, margin, mmrBps)
-  } catch {
-    return null
-  }
-}
-
-export interface DerivedTicket {
-  /** Margin required at the current (size, leverage), 2-decimal USD string — `'0.00'` while size/mark aren't ready yet. */
-  marginUsd: string
-  /** `true` iff the derived margin exceeds `available` — `false` (never blocking) while `available` is still `null`/loading. */
-  insufficient: boolean
-}
-
-/**
- * Pure margin math for the ticket's Margin field, extracted so it can run
- * through a `__DEV__` self-check below (this `app/` package has no test
- * runner wired up — same gap `lib/status.ts`/`lib/math.ts` work around).
- *
- * Bug this fixes (observed live, smoke test 23.09.2026): Size 2 SOL,
- * leverage 2×, Available 100 dUSDC — derived margin ≈$116.71 > 100, but the
- * Margin field showed a malformed `00.00` and "Open Long" stayed enabled.
- * Two separate defects: (1) the old render-time sync only recomputed Margin
- * when the LEVERAGE slider moved (`leverage !== prevLeverage`) — typing a
- * new Size at the already-selected default leverage left the field's text
- * state stale/unsynced from the real required margin, and a `ntl === null`
- * mid-keystroke (Size field momentarily empty/`0`) could set the text to a
- * bare `'0.00'` that then collided with the leftover characters RN's
- * Android decimal-pad `TextInput` was still composing, rendering the two
- * concatenated (`'0'` + `'0.00'` → `'00.00'`); (2) nothing ever compared
- * the margin against `freeMarginUsd`, so Open never blocked on
- * undercollateralization. `deriveTicket` is now the single source of truth
- * for both — one pure computation, always 2-decimal formatted, called
- * fresh every render (see the render-time sync below), so there is no
- * stale text to concatenate with.
- */
-export function deriveTicket(args: {
-  sizeSol: number
-  leverage: number
-  markUsd: bigint | null
-  available: bigint | null
-}): DerivedTicket {
-  const { sizeSol, leverage, markUsd, available } = args
-  const sizeBig = sizeSol > 0 ? solSize(sizeSol) : 0n
-  if (markUsd === null || sizeBig === 0n) {
-    return { marginUsd: '0.00', insufficient: false }
-  }
-  const ntl = math.notional(sizeBig, markUsd)
-  const marginBig = math.marginForLeverage(ntl, leverage)
-  return {
-    marginUsd: usd(marginBig),
-    insufficient: available !== null && marginBig > available,
-  }
-}
-
-/**
- * Self-check, `lib/status.ts`'s style: asserts `deriveTicket` against the
- * live-observed repro (Size 2 SOL / 2× / mark $116.71 / available $100 →
- * insufficient, NOT `00.00`) plus the not-ready and sufficient-margin
- * branches. Throws on mismatch; called once from `__DEV__` startup logging
- * below.
- */
-export function assertDeriveTicketSelfCheck(): void {
-  const MARK = 116_710_000n // $116.71 (the smoke-test mark for both this bug and PositionCard's)
-  const cases: [DerivedTicket, DerivedTicket][] = [
-    // not ready: no mark yet -> '0.00', never blocking
-    [
-      deriveTicket({ sizeSol: 2, leverage: 2, markUsd: null, available: 100_000_000n }),
-      { marginUsd: '0.00', insufficient: false },
-    ],
-    // not ready: no size yet -> '0.00', never blocking
-    [
-      deriveTicket({ sizeSol: 0, leverage: 2, markUsd: MARK, available: 100_000_000n }),
-      { marginUsd: '0.00', insufficient: false },
-    ],
-    // the observed repro: 2 SOL @ 2x @ $116.71 -> $116.71 margin, > $100 available
-    [
-      deriveTicket({ sizeSol: 2, leverage: 2, markUsd: MARK, available: 100_000_000n }),
-      { marginUsd: '116.71', insufficient: true },
-    ],
-    // same size/mark at 5x -> $46.68 margin, <= $50 available -> not insufficient
-    [
-      deriveTicket({ sizeSol: 2, leverage: 5, markUsd: MARK, available: 50_000_000n }),
-      { marginUsd: '46.68', insufficient: false },
-    ],
-    // available unknown (still loading) -> never blocks, regardless of margin size
-    [
-      deriveTicket({ sizeSol: 2, leverage: 2, markUsd: MARK, available: null }),
-      { marginUsd: '116.71', insufficient: false },
-    ],
-  ]
-  for (const [got, expected] of cases) {
-    if (got.marginUsd !== expected.marginUsd || got.insufficient !== expected.insufficient) {
-      throw new Error(
-        `assertDeriveTicketSelfCheck: mismatch — got ${JSON.stringify(got)}, expected ${JSON.stringify(expected)}`,
-      )
-    }
-  }
-}
-
-if (__DEV__) {
-  try {
-    assertDeriveTicketSelfCheck()
-    console.log('[dexxer] assertDeriveTicketSelfCheck: deriveTicket OK')
-  } catch (e) {
-    console.error('[dexxer] assertDeriveTicketSelfCheck FAILED', e)
-  }
+  /** Raw program units: size 1e9, margin/limit 1e6 — no number round trip on the way to `openPosition`. */
+  onOpen: (side: SideName, size: bigint, margin: bigint, limitPrice: bigint) => Promise<void>
 }
 
 export function TradeTicket({
@@ -204,7 +94,7 @@ export function TradeTicket({
       : null
   const limit = markUsd !== null ? math.openSlippageLimit(sideName, markUsd) : null
 
-  const availableUsd = freeMarginUsd !== null ? usd(freeMarginUsd) : '—'
+  const availableUsd = freeMarginUsd !== null ? formatUsd2(freeMarginUsd) : '—'
 
   // MAX: margin = available, then pick the smallest integer leverage (1..10,
   // `LeverageSlider`'s step) whose derived margin doesn't exceed it —
@@ -214,9 +104,9 @@ export function TradeTicket({
   // re-derive over this and undo it.
   function handleMax() {
     if (freeMarginUsd === null) return
-    setMarginUsd(usd(freeMarginUsd))
+    setMarginUsd(formatUsd2(freeMarginUsd))
     if (ntl !== null && freeMarginUsd > 0n) {
-      const implied = Math.min(10, Math.max(1, Math.ceil(Number(ntl) / Number(freeMarginUsd))))
+      const implied = impliedLeverage(ntl, freeMarginUsd)
       setLeverage(implied)
       setPrevLeverage(implied)
     }
@@ -271,15 +161,15 @@ export function TradeTicket({
       ) : null}
       <LeverageSlider value={leverage} onChange={setLeverage} />
       <View style={{ gap: space.xs }}>
-        <Row label="Entry ≈" value={markUsd !== null ? `$${usd(markUsd)}` : '—'} />
-        <Row label="Liq. price" value={liq !== null ? `$${usd(liq)}` : '—'} />
-        <Row label="Fee" value={feeUsd !== null ? `${usd(feeUsd)} dUSDC` : '—'} />
-        <Row label="Slippage limit" value={limit !== null ? `$${usd(limit)}` : '—'} />
+        <Row label="Entry ≈" value={markUsd !== null ? `$${formatUsd2(markUsd)}` : '—'} />
+        <Row label="Liq. price" value={liq !== null ? `$${formatUsd2(liq)}` : '—'} />
+        <Row label="Fee" value={feeUsd !== null ? `${formatUsd2(feeUsd)} dUSDC` : '—'} />
+        <Row label="Slippage limit" value={limit !== null ? `$${formatUsd2(limit)}` : '—'} />
       </View>
       <Button
         variant={side === 'long' ? 'primary' : 'destructive'}
         disabled={disabled || busy || markUsd === null || derived.insufficient}
-        onPress={() => void onOpen(sideName, sizeNum, marginNum, limit !== null ? Number(limit) / 1_000_000 : 0)}
+        onPress={() => void onOpen(sideName, sizeBig, marginBig, limit ?? 0n)}
       >
         {busy ? 'Signing with session key…' : side === 'long' ? 'Open Long' : 'Open Short'}
       </Button>

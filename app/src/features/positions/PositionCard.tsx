@@ -13,6 +13,7 @@
 // no longer even carries the field — `codecs.ts`). That pending window is
 // HistoryScreen's job now (`useHistoryRows.ts`'s `pending_commitment` row).
 import { Text, View } from 'react-native'
+import { formatUsd2 } from '@/src/lib/status'
 import { useTheme } from '@/src/theme'
 import { useTextStyle } from '@/src/ui/styles'
 import { Card } from '@/src/ui/Card'
@@ -23,9 +24,6 @@ import { type DecodedPosition, type SideName } from '@/src/lib/codecs'
 import { computeUpnl } from '@/src/lib/trade'
 import { notional } from '@/src/lib/math'
 
-function usd(raw: bigint): string {
-  return (Number(raw) / 1_000_000).toFixed(2)
-}
 function sol(raw: bigint): string {
   return (Number(raw) / 1_000_000_000).toFixed(4)
 }
@@ -120,19 +118,19 @@ export function PositionCard({ position: p, mark, busy, onClose, onIncrease, onD
         <Badge tone={p.side === 'Long' ? 'success' : 'danger'}>{p.side}</Badge>
       </View>
       <Row label="Size" value={`${sol(p.size)} SOL`} />
-      <Row label="Entry" value={`$${usd(p.entry)}`} mono />
-      <Row label="Mark" value={mark !== null ? `$${usd(mark)}` : '—'} mono />
+      <Row label="Entry" value={`$${formatUsd2(p.entry)}`} mono />
+      <Row label="Mark" value={mark !== null ? `$${formatUsd2(mark)}` : '—'} mono />
       <Row
         label="Unrealized PnL"
         value={
           upnl !== null
-            ? `${upnl >= 0n ? '+' : ''}$${usd(upnl)}${upnlPct !== null ? ` (${upnlPct >= 0 ? '+' : ''}${upnlPct.toFixed(1)}%)` : ''}`
+            ? `${upnl >= 0n ? '+' : ''}$${formatUsd2(upnl)}${upnlPct !== null ? ` (${upnlPct >= 0 ? '+' : ''}${upnlPct.toFixed(1)}%)` : ''}`
             : '—'
         }
         tone={upnl === null ? undefined : upnl >= 0n ? 'success' : 'danger'}
       />
-      <Row label="Margin" value={`$${usd(p.margin)}`} />
-      <Row label="Liq. price" value={`$${usd(p.liqPrice)}`} />
+      <Row label="Margin" value={`$${formatUsd2(p.margin)}`} />
+      <Row label="Liq. price" value={`$${formatUsd2(p.liqPrice)}`} />
       {liqPct !== null ? (
         <View style={{ gap: space.xs }}>
           <View style={{ height: 4, borderRadius: 2, backgroundColor: colors.surfaceAlt, overflow: 'hidden' }}>

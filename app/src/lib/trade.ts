@@ -9,6 +9,7 @@ import { BN } from '@coral-xyz/anchor'
 import { Connection, Keypair, PublicKey, Transaction, type TransactionInstruction } from '@solana/web3.js'
 import { dexxerCoreProgram } from './anchor'
 import { readPosition, type SideName } from './codecs'
+import { confirmOnConn } from './confirm'
 
 /** u64::MAX — the permissive ("no slippage protection") limit for a Short close (mirrors `tests/er/lib/trader.ts`'s `U64_MAX`). */
 export const U64_MAX = 18_446_744_073_709_551_615n
@@ -65,24 +66,6 @@ export interface TradeAccounts {
   liqCrankSigner: PublicKey
 }
 
-// Poll `getSignatureStatuses` instead of `Connection.confirmTransaction` —
-// same finding as `useOnboarding.ts`'s `confirmOnConn` / `tests/er/lib/env.ts`'s
-// `confirmSignature`: the ER validator's confirmation websocket doesn't
-// reliably deliver `signatureSubscribe` notifications on-device, so
-// `confirmTransaction` can hang indefinitely even after the tx has landed.
-async function confirmOnConn(conn: Connection, sig: string, tries = 100, delayMs = 150): Promise<void> {
-  for (let i = 0; i < tries; i++) {
-    const { value } = await conn.getSignatureStatuses([sig])
-    const status = value[0]
-    if (status) {
-      if (status.err) throw new Error(`tx ${sig} failed: ${JSON.stringify(status.err)}`)
-      if (status.confirmationStatus === 'confirmed' || status.confirmationStatus === 'finalized') return
-    }
-    await new Promise((r) => setTimeout(r, delayMs))
-  }
-  throw new Error(`confirm timeout waiting for ${sig}`)
-}
-
 /** Sign with the session `Keypair` locally (no MWA prompt) and send+confirm on `conn` — fee payer = session, per file header/Task 8 brief. */
 async function sendSessionTx(conn: Connection, session: Keypair, ixs: TransactionInstruction[]): Promise<string> {
   const tx = new Transaction().add(...ixs)
@@ -94,23 +77,31 @@ async function sendSessionTx(conn: Connection, session: Keypair, ixs: Transactio
   return sig
 }
 
+// Week 6: every trade instruction below takes RAW program units — `bigint`
+// at 1e9 (size) / 1e6 (USD, price), exactly what goes on the wire. Text
+// inputs convert ONCE at the UI edge (`solSize`/`usdAmount`); prices that
+// already are bigints (mark, slippage limits, `U64_MAX`) are passed through.
+// The previous `number` API re-scaled inside, so `Number(U64_MAX) / 1e6`
+// came back as 2^64 and the Short-decrease-without-mark path threw at
+// encode time ("byte array longer than desired length"; `test/trade.test.ts`).
+
 /** `open_position` on the ER, signed ONLY by `session` — no MWA prompt (mirrors `tests/er/lib/trader.ts`'s `openPosition` / `01-onboard-private.ts`'s session-signed open). */
 export async function openPosition(
   conn: Connection,
   session: Keypair,
   accounts: TradeAccounts,
   side: 'long' | 'short',
-  sizeSol: number,
-  marginUsd: number,
-  limitUsdPrice: number,
+  size: bigint,
+  margin: bigint,
+  limitPrice: bigint,
 ): Promise<string> {
   const core = dexxerCoreProgram(conn, session.publicKey)
   const ix = await core.methods
     .openPosition(
       side === 'long' ? { long: {} } : { short: {} },
-      new BN(solSize(sizeSol).toString()),
-      new BN(usdAmount(marginUsd).toString()),
-      new BN(usdAmount(limitUsdPrice).toString()),
+      new BN(size.toString()),
+      new BN(margin.toString()),
+      new BN(limitPrice.toString()),
     )
     .accounts({ signer: session.publicKey, ...accounts })
     .instruction()
@@ -118,8 +109,8 @@ export async function openPosition(
 }
 
 /**
- * `close_position` on the ER, signed ONLY by `session`. `limitUsdPrice`
- * defaults to 0, a "no slippage protection" sentinel — `close_position`'s
+ * `close_position` on the ER, signed ONLY by `session`. `limitPrice`
+ * defaults to `0n`, a "no slippage protection" sentinel — `close_position`'s
  * Short branch requires `exec_price <= limit_price`, so a literal 0 would
  * always reject a short close; this reads the position's side first and
  * maps the sentinel to the permissive bound for that side (0 for Long,
@@ -129,12 +120,12 @@ export async function closePosition(
   conn: Connection,
   session: Keypair,
   accounts: TradeAccounts,
-  limitUsdPrice = 0,
+  limitPrice = 0n,
 ): Promise<string> {
   const posState = await readPosition(conn, accounts.position)
   if (!posState) throw new Error('closePosition: Position account not found')
   const isShort = posState.side === 'Short'
-  const limitArg = limitUsdPrice === 0 ? (isShort ? U64_MAX : 0n) : usdAmount(limitUsdPrice)
+  const limitArg = limitPrice === 0n ? (isShort ? U64_MAX : 0n) : limitPrice
   const core = dexxerCoreProgram(conn, session.publicKey)
   const ix = await core.methods
     .closePosition(new BN(limitArg.toString()))
@@ -153,17 +144,13 @@ export async function increasePosition(
   conn: Connection,
   session: Keypair,
   accounts: TradeAccounts,
-  addSizeSol: number,
-  addMarginUsd: number,
-  limitUsdPrice: number,
+  addSize: bigint,
+  addMargin: bigint,
+  limitPrice: bigint,
 ): Promise<string> {
   const core = dexxerCoreProgram(conn, session.publicKey)
   const ix = await core.methods
-    .increasePosition(
-      new BN(solSize(addSizeSol).toString()),
-      new BN(usdAmount(addMarginUsd).toString()),
-      new BN(usdAmount(limitUsdPrice).toString()),
-    )
+    .increasePosition(new BN(addSize.toString()), new BN(addMargin.toString()), new BN(limitPrice.toString()))
     .accounts({ signer: session.publicKey, ...accounts })
     .instruction()
   return sendSessionTx(conn, session, [ix])
@@ -179,12 +166,12 @@ export async function decreasePosition(
   conn: Connection,
   session: Keypair,
   accounts: TradeAccounts,
-  closeSizeSol: number,
-  limitUsdPrice: number,
+  closeSize: bigint,
+  limitPrice: bigint,
 ): Promise<string> {
   const core = dexxerCoreProgram(conn, session.publicKey)
   const ix = await core.methods
-    .decreasePosition(new BN(solSize(closeSizeSol).toString()), new BN(usdAmount(limitUsdPrice).toString()))
+    .decreasePosition(new BN(closeSize.toString()), new BN(limitPrice.toString()))
     .accounts({ signer: session.publicKey, ...accounts })
     .instruction()
   return sendSessionTx(conn, session, [ix])

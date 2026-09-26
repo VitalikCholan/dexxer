@@ -1,4 +1,9 @@
 import { Connection, PublicKey } from '@solana/web3.js'
+import { config } from './config'
+
+// Week 6: every value below comes from `config.ts`'s network profile
+// (devnet by default, `EXPO_PUBLIC_*` overrides) — this module keeps the
+// names the rest of the app imports.
 
 /**
  * Base L1 devnet connection (web3.js v1). Used for anything that reads or
@@ -7,16 +12,16 @@ import { Connection, PublicKey } from '@solana/web3.js'
  * Do not use this for ER/PER reads or writes — those go through the
  * MagicBlock Oracle / TEE RPC (see TEE_RPC below).
  */
-export const baseConn = new Connection('https://rpc.magicblock.app/devnet', 'confirmed')
+export const baseConn = new Connection(config.baseRpc, 'confirmed')
 
 /**
  * MagicBlock PER (Intel TDX) TEE RPC endpoint for devnet. Ephemeral
  * position accounts live here, not on L1 — see docs/dexxer-architecture.md.
  */
-export const TEE_RPC = 'https://devnet-tee.magicblock.app'
+export const TEE_RPC = config.teeRpc
 
 /** TEE RPC's websocket sibling (accountSubscribe etc.), same auth token. */
-export const TEE_WS = TEE_RPC.replace(/^https/, 'wss')
+export const TEE_WS = config.teeWs
 
 /**
  * devnet-tee's ER validator identity — the address PDAs are delegated *to*
@@ -24,7 +29,7 @@ export const TEE_WS = TEE_RPC.replace(/^https/, 'wss')
  * `tests/er/lib/env.ts`'s `devnet` profile / week2-results.md §Task 1 M1
  * (this is the TEE validator's own key, not a program-derived signer).
  */
-export const ER_VALIDATOR = new PublicKey('MTEWGuqxUpYZGFJQcp8tLN7x5v9BSeoFHYWQQ3n3xzo')
+export const ER_VALIDATOR = new PublicKey(config.erValidator)
 
 /**
  * Task 6 (week 4): the relayer's own domain — `services/relayer`, holding
@@ -33,7 +38,7 @@ export const ER_VALIDATOR = new PublicKey('MTEWGuqxUpYZGFJQcp8tLN7x5v9BSeoFHYWQQ
  * build the same way any other `expo-constants`-style env var would be;
  * unset in normal dev, so this falls back to the live Railway deployment.
  */
-export const RELAYER_URL = process.env.EXPO_PUBLIC_RELAYER_URL ?? 'https://relayer-production-1ae7.up.railway.app'
+export const RELAYER_URL = config.relayerUrl
 
 /**
  * MWA dApp identity URI (24.09.2026, live Phantom smoke). Wallets verify the
@@ -46,6 +51,6 @@ export const RELAYER_URL = process.env.EXPO_PUBLIC_RELAYER_URL ?? 'https://relay
  * its own domain. Changing it invalidates stored auth tokens by design —
  * `mwa/tokenStore.ts`'s `identityHash` detects the change and deauthorizes.
  */
-export const IDENTITY_URI = (process.env.EXPO_PUBLIC_IDENTITY_URI ?? new URL(RELAYER_URL).origin).replace(/\/$/, '')
+export const IDENTITY_URI = config.identityUri
 /** SIWS `domain` — the identity URI's host, per the SIWS spec (must match `uri`). */
-export const IDENTITY_DOMAIN = new URL(IDENTITY_URI).host
+export const IDENTITY_DOMAIN = config.identityDomain

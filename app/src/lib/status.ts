@@ -127,15 +127,18 @@ export function formatUsd2(raw1e6: bigint): string {
  * distinct from an elapsed one) — `formatSessionLeft` special-cases it to
  * 'No session' rather than 'Session expired'.
  */
-export function formatSessionLeft(expirySec: number, nowSec: number): string {
+export function formatSessionLeft(expirySec: number, nowSec: number, actionsLeft?: number): string {
   if (expirySec === 0) return 'No session'
   if (expirySec <= nowSec) return 'Session expired'
+  // Week 6: the action budget is as hard a limit as the expiry (error 6021 past it).
+  if (actionsLeft === 0) return 'Session used up'
+  const actions = actionsLeft === undefined ? '' : ` · ${actionsLeft} action${actionsLeft === 1 ? '' : 's'}`
   const secsLeft = expirySec - nowSec
   const hoursLeft = Math.floor(secsLeft / 3600)
-  if (hoursLeft >= 1) return `Session active · ${hoursLeft}h left`
+  if (hoursLeft >= 1) return `Session active · ${hoursLeft}h left${actions}`
   // floor + min 1 so 3599s reads "59m" (not "60m") and 30s still reads "1m"
   const minsLeft = Math.max(1, Math.floor(secsLeft / 60))
-  return `Session active · ${minsLeft}m left`
+  return `Session active · ${minsLeft}m left${actions}`
 }
 
 /**
