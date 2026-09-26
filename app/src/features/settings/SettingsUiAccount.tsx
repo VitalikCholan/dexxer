@@ -3,8 +3,8 @@ import { useMobileWallet } from '@wallet-ui/react-native-web3js'
 import { ellipsify } from '@/utils/ellipsify'
 import { useTheme } from '@/src/theme'
 import { useTextStyle } from '@/src/ui/styles'
-import { WalletUiButtonConnect } from '@/components/solana/wallet-ui-button-connect'
-import { WalletUiButtonDisconnect } from '@/components/solana/wallet-ui-button-disconnect'
+import { WalletUiButtonConnect } from '@/src/features/wallet/WalletUiButtonConnect'
+import { WalletUiButtonDisconnect } from '@/src/features/wallet/WalletUiButtonDisconnect'
 
 export function SettingsUiAccount() {
   const { account } = useMobileWallet()

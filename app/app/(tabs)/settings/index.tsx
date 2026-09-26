@@ -3,7 +3,7 @@ import { Text, View } from 'react-native'
 import { useTheme } from '@/src/theme'
 import { useTextStyle } from '@/src/ui/styles'
 import { Page } from '@/src/ui/Page'
-import { SettingsUiAccount } from '@/components/settings/settings-ui-account'
+import { SettingsUiAccount } from '@/src/features/settings/SettingsUiAccount'
 
 // Task 8 (5-tab layout): `onboard`/`position` dropped out of the tab bar
 // (`href: null` in app/app/(tabs)/_layout.tsx) but stay reachable from here,

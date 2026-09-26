@@ -25,7 +25,7 @@ export interface StoredAuth {
 
 /**
  * Stable hash of an `Identity`, order-independent (sorted keys) so field
- * reordering in a future edit of `app-providers.tsx`'s `identity` literal
+ * reordering in a future edit of `AppProviders.tsx`'s `identity` literal
  * can never silently change the hash. `undefined` fields normalize to
  * `null` so `{name}` and `{name, uri: undefined}` hash identically. Hex
  * output (not raw bytes) — this is a comparison/storage key, not a

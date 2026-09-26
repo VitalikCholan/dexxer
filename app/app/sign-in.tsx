@@ -1,6 +1,6 @@
 import { router } from 'expo-router'
 import { useState } from 'react'
-import { useAuth } from '@/components/auth/auth-provider'
+import { useAuth } from '@/src/shell/AuthProvider'
 import { ConnectScreen } from '@/src/features/onboard/ConnectScreen'
 import { showError } from '@/utils/show-error'
 

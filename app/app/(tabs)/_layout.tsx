@@ -1,6 +1,6 @@
 import { Tabs } from 'expo-router'
 import React from 'react'
-import { UiIconSymbol } from '@/components/ui/ui-icon-symbol'
+import { UiIconSymbol } from '@/src/ui/UiIconSymbol'
 import { useTheme } from '@/src/theme'
 
 // Visible order (task-8, Claude Design 5-tab layout): trade, positions,

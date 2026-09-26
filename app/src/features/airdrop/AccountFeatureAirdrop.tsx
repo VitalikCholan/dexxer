@@ -4,7 +4,7 @@ import { useMobileWallet } from '@wallet-ui/react-native-web3js'
 import { useTheme } from '@/src/theme'
 import { useTextStyle } from '@/src/ui/styles'
 import { Button } from '@/src/ui/Button'
-import { useRequestAirdrop } from '@/components/account/use-request-airdrop'
+import { useRequestAirdrop } from '@/src/features/airdrop/useRequestAirdrop'
 
 /** Devnet dev tool (Settings -> Developer): 1 SOL to the connected wallet via the public devnet RPC. */
 export function AccountFeatureAirdrop({ back }: { back: () => void }) {

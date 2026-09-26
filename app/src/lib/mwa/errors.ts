@@ -58,7 +58,7 @@ import {
 // round 1 retry (`withAuthRetry`: catch the -1, `store.persist(null)`,
 // re-run the SAME call) was necessary but landed on the wrong strategy for
 // the SIGNING path: clearing the store empties `accounts`, and
-// `auth-provider.tsx`'s root gate (`isAuthenticated: accounts.length > 0`,
+// `AuthProvider.tsx`'s root gate (`isAuthenticated: accounts.length > 0`,
 // `app/_layout.tsx`) reads an empty `accounts` as "disconnected" and
 // navigates to `/sign-in` — observed live on commit 921a1cb: reauthorize
 // -1 -> store cleared -> root gate bounces to `/sign-in` mid-onboarding ->

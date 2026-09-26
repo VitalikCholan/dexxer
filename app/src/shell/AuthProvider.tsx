@@ -40,7 +40,7 @@ function useSignInMutation() {
 
   return useMutation({
     // Fix round 2 (24.09.2026): `uri`/`domain` must describe the same dApp
-    // identity as MWA's own `identity.uri` (`app-providers.tsx`) — a
+    // identity as MWA's own `identity.uri` (`AppProviders.tsx`) — a
     // mismatched SIWS uri was still the template placeholder
     // `https://example.com` (logcat: `sign_in_payload: {"uri":"..."}`).
     mutationFn: async () =>
@@ -57,8 +57,8 @@ export function AuthProvider({ children }: PropsWithChildren) {
       signIn: async () => await signInMutation.mutateAsync(),
       // Raw hook `disconnect()` never reaches the wallet's own deauthorize —
       // see `mwa/session.ts`'s file header. `signOut` itself isn't wired to any
-      // UI today (the real disconnect entry points, `wallet-ui-dropdown.tsx`
-      // and `wallet-ui-button-disconnect.tsx`, call `mwa/session.ts`'s `disconnect`
+      // UI today (the real disconnect entry points, `WalletUiDropdown.tsx`
+      // and `WalletUiButtonDisconnect.tsx`, call `mwa/session.ts`'s `disconnect`
       // directly, confirmed live), but fixed here too so it can't
       // reintroduce the bug the moment it is wired up.
       signOut: async () => await mwaDisconnect(disconnect, store),

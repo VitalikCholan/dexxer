@@ -3,11 +3,11 @@ import { Linking, StyleSheet, Text } from 'react-native'
 import Clipboard from '@react-native-clipboard/clipboard'
 import { useMobileWallet } from '@wallet-ui/react-native-web3js'
 import { ellipsify } from '@/utils/ellipsify'
-import { UiIconSymbol } from '@/components/ui/ui-icon-symbol'
+import { UiIconSymbol } from '@/src/ui/UiIconSymbol'
 import { useTheme } from '@/src/theme'
 import { useTextStyle } from '@/src/ui/styles'
 import * as Dropdown from '@rn-primitives/dropdown-menu'
-import { WalletUiButtonConnect } from './wallet-ui-button-connect'
+import { WalletUiButtonConnect } from './WalletUiButtonConnect'
 import { showError } from '@/utils/show-error'
 import { disconnect as mwaDisconnect } from '@/src/lib/mwa/session'
 
@@ -37,7 +37,7 @@ function useDropdownItems() {
       // Week 5, Task 6, fix round 1: this is a real entry point (Account tab
       // header) that called the raw hook `disconnect()` directly, bypassing
       // `mwa/session.ts`'s raw-deauthorize-on-the-wallet's-side step — see
-      // `wallet-ui-button-disconnect.tsx` for the same fix and `mwa/session.ts`'s
+      // `WalletUiButtonDisconnect.tsx` for the same fix and `mwa/session.ts`'s
       // file header for why the raw hook alone never reaches the wallet.
       onPress: () => {
         mwaDisconnect(disconnect, store).catch((error: unknown) => showError('Could not disconnect wallet', error))
