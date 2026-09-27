@@ -33,6 +33,7 @@ import { useMobileWallet } from '@wallet-ui/react-native-web3js'
 import { toPublicKey } from '@/src/spikes/mwa'
 import { baseConn } from '@/src/lib/solana'
 import { useTeeConnection } from '@/src/lib/er'
+import { useRelayerSession } from '@/src/lib/relayerAuth'
 import { readConfigDusdcMint } from '@/src/lib/program'
 import { pdas } from '@/src/lib/pdas'
 import { getOrCreateExitSalt, getOrCreateSessionKeypair, getSessionKeypair } from '@/src/lib/session'
@@ -90,6 +91,7 @@ export function useOnboarding(): UseOnboarding {
   const { account, connect, identity, store, signAndSendTransaction } = useMobileWallet()
   const { signTransactions } = useMwaSigning()
   const { getConnection } = useTeeConnection()
+  const { ensureRelayerSession } = useRelayerSession()
   const [state, setState] = useState<OnboardState>('Disconnected')
   const [busy, setBusy] = useState(false)
   const [log, setLog] = useState<string[]>([])
@@ -100,7 +102,7 @@ export function useOnboarding(): UseOnboarding {
   const owner = account ? toPublicKey(account.address) : null
   // `signTransactions` here is `useMwaSigning()`'s retry-wrapped version, not
   // the raw hook's — see `mwaAuth.ts`'s "Phantom reauthorize bug" section.
-  const mwa: Mwa = { signAndSendTransaction, signTransactions, getConnection }
+  const mwa: Mwa = { signAndSendTransaction, signTransactions, getConnection, ensureRelayerSession }
 
   const appendLog = useCallback((s: string) => setLog((prev) => [...prev, s]), [])
 
@@ -190,7 +192,16 @@ export function useOnboarding(): UseOnboarding {
       setBusy(false)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [owner, connectWallet, buildCtx, appendLog, signAndSendTransaction, signTransactions, getConnection])
+  }, [
+    owner,
+    connectWallet,
+    buildCtx,
+    appendLog,
+    signAndSendTransaction,
+    signTransactions,
+    getConnection,
+    ensureRelayerSession,
+  ])
 
   const runDeposit = useCallback(async () => {
     if (!owner) return
@@ -205,7 +216,7 @@ export function useOnboarding(): UseOnboarding {
       setBusy(false)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [owner, buildCtx, appendLog, signTransactions, getConnection])
+  }, [owner, buildCtx, appendLog, signTransactions, getConnection, ensureRelayerSession])
 
   return {
     owner,

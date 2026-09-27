@@ -22,6 +22,7 @@ import { Skeleton } from '@/src/ui/Skeleton'
 import { showToast } from '@/src/ui/Toast'
 import { useTeeConnection } from '@/src/lib/er'
 import { useMwaSigning } from '@/src/lib/mwaAuth'
+import { useRelayerSession } from '@/src/lib/relayerAuth'
 import { useLiveAccount } from '@/src/lib/live'
 import { decodeDisclosureQueue, decodePosition, decodeUserAccount, describeTxError } from '@/src/lib/program'
 import { formatSessionLeft } from '@/src/lib/status'
@@ -52,9 +53,13 @@ export function AccountScreen() {
   // reauthorize bug" section).
   const { signTransactions } = useMwaSigning()
   const { getConnection } = useTeeConnection()
+  const { ensureRelayerSession } = useRelayerSession()
   const { owner, conn, accounts, loading, error } = useTradeSession()
   const gate = useOnboardingGate()
-  const mwa = useMemo(() => ({ signTransactions, getConnection }), [signTransactions, getConnection])
+  const mwa = useMemo(
+    () => ({ signTransactions, getConnection, ensureRelayerSession }),
+    [signTransactions, getConnection, ensureRelayerSession],
+  )
 
   const dqPubkey = owner ? pdas.disclosureQueue(owner) : null
   const user = useLiveAccount(conn, accounts?.userAccount ?? null, decodeUserAccount)

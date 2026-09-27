@@ -6,6 +6,18 @@ import type { AddressInfo } from "node:net";
 import { Keypair, NONCE_ACCOUNT_LENGTH, PublicKey, SystemProgram, Transaction } from "@solana/web3.js";
 import { createNonceInstructions, createWithSeedSync, nonceAccountsFor, nonceRouter, nonceSeedFor, type NonceConn } from "../src/nonce.js";
 import type { SponsorStore } from "../src/sponsor.js";
+import { memAuthStore } from "./memAuthStore.js";
+
+/** Relayer SIWS sessions (spec §2.7) — the owner comes from the session. */
+const AUTH = memAuthStore();
+
+function postNonce(url: string, sessionOwner: PublicKey | null, body: unknown): Promise<Response> {
+  return fetch(`${url}/nonce`, {
+    method: "POST",
+    headers: { "content-type": "application/json", ...(sessionOwner ? { authorization: `Bearer ${AUTH.sessionFor(sessionOwner.toBase58())}` } : {}) },
+    body: JSON.stringify(body),
+  });
+}
 
 test("nonceSeedFor: ≤ 32 bytes, distinct per slot, deterministic", () => {
   const owner = Keypair.generate().publicKey;
@@ -101,8 +113,8 @@ test("POST /nonce: creates both accounts once (fee_payer-signed, authority=owner
   const existing = new Set<string>();
   const conn = fakeConn(existing, owner.publicKey);
   const store = fakeStore();
-  await withServer(nonceRouter({ conn, feePayer, store, dailyBudgetLamports: 500_000_000 }), async (url) => {
-    const r1 = await fetch(`${url}/nonce`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ owner: owner.publicKey.toBase58() }) });
+  await withServer(nonceRouter({ conn, feePayer, store, dailyBudgetLamports: 500_000_000, authStore: AUTH }), async (url) => {
+    const r1 = await postNonce(url, owner.publicKey, { owner: owner.publicKey.toBase58() });
     assert.equal(r1.status, 200);
     const b1 = (await r1.json()) as { created: boolean; nonces: { account: string; nonce: string | null }[] };
     assert.equal(b1.created, true);
@@ -116,7 +128,7 @@ test("POST /nonce: creates both accounts once (fee_payer-signed, authority=owner
     assert.equal(store.reserved, 1);
     assert.equal(store.finalized, 1);
 
-    const r2 = await fetch(`${url}/nonce`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ owner: owner.publicKey.toBase58() }) });
+    const r2 = await postNonce(url, owner.publicKey, { owner: owner.publicKey.toBase58() });
     const b2 = (await r2.json()) as { created: boolean };
     assert.equal(r2.status, 200);
     assert.equal(b2.created, false);
@@ -131,11 +143,41 @@ test("POST /nonce: 400 on a bad owner; 429 when the owner's sponsor slots are ex
   const conn = fakeConn(new Set(), owner.publicKey);
   const store = fakeStore();
   store.reserve = async () => null;
-  await withServer(nonceRouter({ conn, feePayer, store, dailyBudgetLamports: 500_000_000 }), async (url) => {
-    const bad = await fetch(`${url}/nonce`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ owner: "nope" }) });
+  await withServer(nonceRouter({ conn, feePayer, store, dailyBudgetLamports: 500_000_000, authStore: AUTH }), async (url) => {
+    const bad = await postNonce(url, owner.publicKey, { owner: "nope" });
     assert.equal(bad.status, 400);
-    const limited = await fetch(`${url}/nonce`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ owner: owner.publicKey.toBase58() }) });
+    const limited = await postNonce(url, owner.publicKey, { owner: owner.publicKey.toBase58() });
     assert.equal(limited.status, 429);
     assert.equal(conn.sent.length, 0);
+  });
+});
+
+test("POST /nonce: 401 without a relayer session — nothing reserved, nothing sent", async () => {
+  const feePayer = Keypair.generate();
+  const owner = Keypair.generate();
+  const conn = fakeConn(new Set(), owner.publicKey);
+  const store = fakeStore();
+  await withServer(nonceRouter({ conn, feePayer, store, dailyBudgetLamports: 500_000_000, authStore: AUTH }), async (url) => {
+    const res = await postNonce(url, null, { owner: owner.publicKey.toBase58() });
+    assert.equal(res.status, 401);
+    assert.equal(store.reserved, 0);
+    assert.equal(conn.sent.length, 0);
+  });
+});
+
+test("POST /nonce: owner comes from the session; a different body.owner is 403", async () => {
+  const feePayer = Keypair.generate();
+  const owner = Keypair.generate();
+  const conn = fakeConn(new Set(), owner.publicKey);
+  const store = fakeStore();
+  await withServer(nonceRouter({ conn, feePayer, store, dailyBudgetLamports: 500_000_000, authStore: AUTH }), async (url) => {
+    const foreign = await postNonce(url, owner.publicKey, { owner: Keypair.generate().publicKey.toBase58() });
+    assert.equal(foreign.status, 403);
+    assert.equal(conn.sent.length, 0);
+    const implicit = await postNonce(url, owner.publicKey, {});
+    assert.equal(implicit.status, 200);
+    const b = (await implicit.json()) as { owner: string; created: boolean };
+    assert.equal(b.owner, owner.publicKey.toBase58());
+    assert.equal(b.created, true);
   });
 });

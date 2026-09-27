@@ -235,7 +235,7 @@ export async function sendL1Sponsored(
   const configInfo = await baseConn.getAccountInfo(config, 'confirmed')
   if (!configInfo) throw new Error('Config PDA not found — protocol not bootstrapped on this devnet deployment')
   const signed = await signOwnerL1(owner, readConfigFeePayer(configInfo.data), ixs, signTransactions)
-  const sponsored = await sponsorTx(signed)
+  const sponsored = await sponsorTx(signed, owner)
   const sig = await baseConn.sendRawTransaction(sponsored.serialize(), { skipPreflight: true })
   if (__DEV__) console.log(`[dexxer] sendL1Sponsored: sent ${sig} (feePayer ${sponsored.feePayer?.toBase58()})`)
   await confirmOnConn(baseConn, sig)
@@ -322,6 +322,8 @@ export interface Mwa {
   /** Matches `@wallet-ui/react-native-web3js`'s real overload: an array in, an array out, ONE wallet prompt for the whole batch (`use-mobile-wallet.d.ts`). */
   signTransactions: <K extends Transaction | Transaction[]>(tx: K) => Promise<K>
   getConnection: (owner: PublicKey) => Promise<Connection>
+  /** Relayer session before any relayer call (spec §2.7) — see `relayerAuth.ts`. */
+  ensureRelayerSession: (owner: PublicKey) => Promise<void>
 }
 
 /**
@@ -657,6 +659,10 @@ export async function runBatchedOnboarding(
   setState: (s: OnboardState) => void,
   onProgress: (p: BatchProgress) => void,
 ): Promise<void> {
+  // Before the first wallet prompt: `/nonce` and `/sponsor` need the owner's
+  // relayer session, and a late 401 on `/nonce` would silently fall back to a
+  // live blockhash (Phantom: "confirm timeout") — spec §2.7.
+  await mwa.ensureRelayerSession(ctx.owner)
   onProgress({ phase: 'Collecting', step: null, i: 0, n: 0 })
   const configInfo = await baseConn.getAccountInfo(ctx.config, 'confirmed')
   if (!configInfo) throw new Error('Config PDA not found — protocol not bootstrapped on this devnet deployment')
@@ -725,7 +731,7 @@ export async function runBatchedOnboarding(
 
       if (leg.sponsor) {
         try {
-          toSend = await sponsorTx(toSend)
+          toSend = await sponsorTx(toSend, ctx.owner)
         } catch (e) {
           const msg = e instanceof SponsorError ? `sponsor rejected (${e.status}): ${e.message}` : errText(e)
           throw new Error(`${leg.label}: ${msg}`)

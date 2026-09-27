@@ -23,11 +23,16 @@
 //
 // Privacy: touches only System accounts derived from a public owner key;
 // no private state, no keys other than the relayer's own `fee_payer`.
+//
+// Week 6 (spec §2.7): the owner is the relayer SIWS session's owner —
+// `body.owner` is optional and must match it; an unauthenticated POST no
+// longer spends SOL.
 import express from "express";
 import type { Router } from "express";
 import { createHash } from "node:crypto";
 import { NONCE_ACCOUNT_LENGTH, PublicKey, SystemProgram, Transaction } from "@solana/web3.js";
 import type { Connection, Keypair, TransactionInstruction } from "@solana/web3.js";
+import { requireSession, type AuthStore } from "./auth.js";
 import type { SponsorStore } from "./sponsor.js";
 
 export const NONCE_SEED_PREFIXES = ["dn0-", "dn1-"] as const;
@@ -118,18 +123,28 @@ export interface NonceRouterDeps {
   /** Same trailing-24h cap as /sponsor, in lamports. */
   dailyBudgetLamports: number;
   now?: () => number;
+  /** Relayer session store (auth.ts) — the owner comes from the session (spec §2.7). */
+  authStore: AuthStore;
 }
 
 export function nonceRouter(deps: NonceRouterDeps): Router {
   const router = express.Router();
   const now = deps.now ?? (() => Date.now());
-  router.post("/nonce", express.json({ limit: "4kb" }), async (req, res) => {
-    let owner: PublicKey;
-    try {
-      owner = new PublicKey(String((req.body as { owner?: unknown } | undefined)?.owner ?? ""));
-    } catch {
-      res.status(400).json({ error: "body.owner must be a base58 public key" });
-      return;
+  router.post("/nonce", requireSession(deps.authStore, now), express.json({ limit: "4kb" }), async (req, res) => {
+    const owner = res.locals.sessionOwner as PublicKey;
+    const rawOwner = (req.body as { owner?: unknown } | undefined)?.owner;
+    if (rawOwner !== undefined) {
+      let bodyOwner: PublicKey;
+      try {
+        bodyOwner = new PublicKey(String(rawOwner));
+      } catch {
+        res.status(400).json({ error: "body.owner must be a base58 public key" });
+        return;
+      }
+      if (!bodyOwner.equals(owner)) {
+        res.status(403).json({ error: "body.owner does not match the relayer session owner" });
+        return;
+      }
     }
     const before = await readNonceStates(deps.conn, deps.feePayer.publicKey, owner);
     const missing = ([0, 1] as const).filter((slot) => before[slot].nonce === null);

@@ -159,6 +159,10 @@
 // fields actually route to `fee_payer` (see Finding A above; previously
 // this was flagged in the task-6 report as sponsoring only the network
 // fee — no longer true after this fix round's program/app changes).
+//
+// Week 6 (spec §2.7): gated on a relayer SIWS session (`auth.ts`) — no
+// session → 401 before any parsing or slot reservation; the session owner
+// must be the tx's owner signer (403 otherwise).
 
 import express from "express";
 import type { Router } from "express";
@@ -168,6 +172,7 @@ import bs58 from "bs58";
 import { EPHEMERAL_SPL_TOKEN_PROGRAM_ID } from "@magicblock-labs/ephemeral-rollups-sdk";
 import { ASSOCIATED_TOKEN_PROGRAM_ID } from "@solana/spl-token";
 import { DEXXER_CORE_IDL, DEXXER_CORE_PROGRAM_ID } from "../../../tests/er/lib/program.js";
+import { requireSession, type AuthStore } from "./auth.js";
 import type { DbPool } from "./db.js";
 import { nonceAccountsFor } from "./nonce.js";
 
@@ -647,6 +652,8 @@ export interface SponsorDeps {
   maxCuPriceMicroLamports?: number;
   /** Injectable clock, defaults to `Date.now` — tests pin it. */
   now?: () => number;
+  /** Relayer session store (auth.ts) — `/sponsor` answers 401 without a live session and 403 when its owner is not the tx signer. */
+  authStore: AuthStore;
 }
 
 export interface SponsorSnapshot {
@@ -674,7 +681,7 @@ export function sponsorRouter(deps: SponsorDeps): Router {
   const maxCuPriceMicroLamports = deps.maxCuPriceMicroLamports ?? DEFAULT_SPONSOR_MAX_CU_PRICE_MICROLAMPORTS;
   const now = deps.now ?? Date.now;
 
-  router.post("/sponsor", express.json(), async (req, res) => {
+  router.post("/sponsor", requireSession(deps.authStore, now), express.json(), async (req, res) => {
     const body = req.body as { tx?: unknown } | undefined;
     if (!body || typeof body.tx !== "string" || body.tx.length === 0) {
       res.status(400).json({ error: "body.tx (base64-encoded transaction) is required" });
@@ -692,6 +699,11 @@ export function sponsorRouter(deps: SponsorDeps): Router {
     const check = checkWhitelist(tx, deps.feePayer.publicKey, deps.dusdcMint, maxCuPriceMicroLamports);
     if (!check.ok) {
       res.status(400).json({ error: check.error });
+      return;
+    }
+    const sessionOwner = res.locals.sessionOwner as PublicKey;
+    if (!check.owner.equals(sessionOwner)) {
+      res.status(403).json({ error: `session owner ${sessionOwner.toBase58()} does not match the transaction's signer ${check.owner.toBase58()}` });
       return;
     }
     const ownerStr = check.owner.toBase58();

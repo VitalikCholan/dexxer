@@ -22,7 +22,11 @@
 // onboarding signs its two L1 legs in ONE wallet prompt and each needs its
 // own nonce; every later single L1 tx (Deposit's `faucet_mint`, …) uses
 // slot 0. The call is idempotent and free once the accounts exist.
+//
+// Needs the owner's relayer session (spec §2.7, `relayerAuth.ts`); a 401
+// clears the stored token so the next flow run signs in again.
 import { ComputeBudgetProgram, PublicKey, SystemProgram, Transaction, type TransactionInstruction } from '@solana/web3.js'
+import { clearRelayerToken, relayerAuthHeaders } from './relayerAuth'
 import { RELAYER_URL } from './solana'
 
 export type NonceSlot = 0 | 1
@@ -53,13 +57,14 @@ export async function fetchNonces(owner: PublicKey): Promise<NonceInfo[]> {
   try {
     res = await fetch(`${RELAYER_URL}/nonce`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: { 'content-type': 'application/json', ...(await relayerAuthHeaders(owner)) },
       body: JSON.stringify({ owner: owner.toBase58() }),
     })
   } catch (e) {
     throw new Error(`nonce: could not reach relayer: ${e instanceof Error ? e.message : String(e)}`)
   }
   const body = (await res.json().catch(() => ({}))) as NonceResponse
+  if (res.status === 401) await clearRelayerToken(owner)
   if (!res.ok) throw new Error(body.error ?? `nonce: /nonce returned ${res.status}`)
   const list = body.nonces ?? []
   if (list.length !== 2 || list.some((n) => !n.nonce)) throw new Error('nonce: relayer returned an incomplete nonce set')

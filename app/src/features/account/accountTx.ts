@@ -67,9 +67,11 @@ export async function buildAccountPdas(owner: PublicKey): Promise<AccountPdas> {
  */
 export async function depositTx(
   p: AccountPdas,
-  mwa: Pick<Mwa, 'signTransactions' | 'getConnection'>,
+  mwa: Pick<Mwa, 'signTransactions' | 'getConnection' | 'ensureRelayerSession'>,
   amountUsd: number,
 ): Promise<{ mintSig: string; creditSig: string }> {
+  // `faucet_mint` rides on a relayer nonce (and may be sponsored): session first, before the wallet prompt (spec §2.7).
+  await mwa.ensureRelayerSession(p.owner)
   const amount = usdAmount(amountUsd)
   const coreL1 = dexxerCoreProgram(baseConn, p.owner)
   const mintIx = await coreL1.methods
