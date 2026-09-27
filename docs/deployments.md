@@ -51,6 +51,8 @@ program id) і ролі ключів.
 | `COMMIT_MAX_ACTIONS` **(week 5)** | бюджет дій на один бандл, який relayer **передає в програму** аргументом `commit_aggregate(max_actions)` (апгрейд #3) і яким же обмежує вибір черг; дефолт і **живе значення `4`**, clamp `[1, 8]` (8 — програмна СТЕЛЯ `MAX_ACTIONS_PER_COMMIT`, не кількість дій у бандлі); halve-and-retry на `0xA0000002` халвить і аргумент, і бюджет вибірки. Реальний бридж MagicBlock відхиляє 8 реальних дій за раз, 4 проходять (виміряно на живому беклозі, `week5-results.md` §Task 7). **До апгрейду #3** цей env обирав лише *які* черги йдуть у бандл — програма емітила до 8 дій на чергу незалежно від нього, через що одна повна черга ніколи не комітилася | — |
 | `QUARANTINE_CYCLES` **(week 5)** | скільки циклів ізолювати `DisclosureQueue`, що впала 2 рази поспіль на `0xA0000002`; дефолт **10** (не виставлявся окремо, лишено дефолтним) | — |
 | ~~`SPONSOR_ALLOW_SESSION_TOPUP`~~ **видалено (week 5)** | гілка session-lamports top-up через `/sponsor` прибрана разом з env-змінною — devnet-tee відхиляє чужого `fee_payer` як платника не-ним-ініційованої ER-tx (`InvalidAccountForFee`), тож ця гілка була недосяжна для чесного клієнта й досяжна лише для атакера | — |
+| `SIWS_DOMAIN` **(week 6, обов'язковий)** | домен MWA identity app (`IDENTITY_DOMAIN`; зараз = хост relayer-а, тобто **`relayer-production-1ae7.up.railway.app`**). SIWS-повідомлення з іншим `domain` або з `uri` на іншому хості відхиляються. **Без цієї змінної `/auth/*`, `/sponsor` і `/nonce` не монтуються** (fail-closed, лог `sponsor: … SIWS_DOMAIN is not set`) — онбординг і депозит 0-SOL-гаманців зупиняються. Якщо app отримає власний домен (`EXPO_PUBLIC_IDENTITY_URI`), `SIWS_DOMAIN` змінюється разом із ним | — |
+| `AUTH_SESSION_TTL_HOURS` **(week 6)** | тривалість SIWS-сесії relayer-а; дефолт **168** (7 діб), невалідне/≤0 → дефолт. У `auth_sessions` зберігається лише `sha256(token)` | — |
 
 Обидва ключі закодовано локально через `bs58.encode(Uint8Array.from(JSON.parse(readFileSync(...))))`
 і встановлені через Railway API — значення ніколи не потрапляли в git чи в
@@ -83,6 +85,14 @@ railway up --service relayer --ci   # build context = repo root, див. service
 MCP, або `railway variables set` через CLI) виставляються один раз і не
 входять у деплой-скрипт.
 
+**Розкатка SIWS-гейту (week 6, spec §2.7) — порядок має значення:**
+
+1. `railway variables set SIWS_DOMAIN=relayer-production-1ae7.up.railway.app --service relayer` — **до** деплою (інакше `/sponsor`/`/nonce` зникнуть, fail-closed).
+2. Деплой relayer-а (`railway up …` вище). У лозі старту має бути `sponsor: /sponsor enabled (… SIWS domain relayer-production-1ae7.up.railway.app, session TTL 168 h)` і `db: applying migration 006_auth.sql`.
+3. Смоук: `curl -X POST https://relayer-production-1ae7.up.railway.app/auth/challenge` → 200 з `nonce`; `curl -X POST …/nonce` без токена → 401.
+4. Новий APK. Старий APK після кроку 2: `/sponsor` → 401 (онбординг 0-SOL падає з помилкою), `/nonce` → 401 → мовчазний відкат на живий blockhash (Phantom — «confirm timeout»). Зворотний порядок безпечний: новий APK проти старого relayer-а (без `/auth`, 404) працює як раніше — сесія просто не береться.
+5. Живий чекліст на пристрої (fakewallet, потім Phantom): Connect — **один** SIWS-промпт, у лозі relayer-а `auth: session issued for <owner>`; онбординг 0-SOL і Deposit — без 401 у лозі relayer-а й без додаткового промпту; вже підключений до оновлення гаманець — рівно один додатковий `signMessage`-промпт на першому онбордингу/депозиті. Якщо гаманець ігнорує переданий `nonce` у `signIn` — Connect усе одно проходить (лог `relayer session not issued at Connect`), сесію видає `ensureRelayerSession` окремим промптом.
+
 ### Відомі спостереження
 
 - Кілька застарілих `UserAccount` з попередніх тестових прогонів (старий
@@ -110,6 +120,8 @@ RPC), ніколи `crank`/`fee_payer`-ключі. REST + WS ендпоінти 
 | `GET /pool/latest` | `{"slot":335177389,"ts":1790106155570,"capital_total":"24100000000","protocol_liquidity":"9900000000","locked_total":"100000000","fees_accrued":"0","insurance":"0","bad_debt_total":"0"}` |
 | `GET /disclosures?limit=3` | масив із 3 записів закритих позицій (реальні devnet-угоди тижнів 3-4) |
 | `GET /root/latest` | `{"root_slot":335228040,"filled":11,"leavesHex":[...64 hex-рядки...]}` |
+| `GET /disclosures?limit=2&market=…` **(week 6)** | масив + заголовок `X-Next-Cursor: 348880561.2F4jr1u2…`; кожен запис має `market` (`1347yiBY…` — PDA SOL-ринку). Фільтри `side`/`reason`/`market`/`from`/`to`, курсор — `services/relayer/README.md` «Pagination, filters, stats» |
+| `GET /stats?window=all` **(week 6)** | `{"window":"all","market":null,"trades":42,"longs":41,"shorts":1,"liquidations":4,"wins":21,"volume_quote":"4945668443","pnl_total":"1433766","fees_total":"7214965","win_rate":0.5,…}` (локальний indexer проти devnet, 27.09.2026) |
 | `wss://…/ws` | `{"type":"mark","price":"118284685","ts":1790106415146}` кожну секунду (throttle) |
 
 Повна специфікація ендпоінтів, формат чисел (bigint-поля як рядки) і
@@ -118,6 +130,13 @@ RPC), ніколи `crank`/`fee_payer`-ключі. REST + WS ендпоінти 
 Міграція `services/relayer/migrations/001_indexer.sql` (таблиці `ticks`,
 `pool_snapshots`, `disclosures`, `roots`) застосувалась автоматично на
 рестарті (той самий `migrate()`, що й `000_meta.sql` у Task 4).
+
+**Тиждень 6:** `007_disclosures_market.sql` (колонка `market` + індекси
+keyset/`ts`/`market`) застосується так само на першому рестарті після деплою;
+вже проіндексовані розкриття отримають `market` протягом ≈30 с (наступний
+poll), без повторного WS-broadcast. Перевірка після деплою:
+`curl …/stats?window=all` → `trades > 0`, `curl -D - "…/disclosures?limit=1"` →
+заголовок `X-Next-Cursor` і непорожній `market`.
 
 `/healthz` тепер несе й `indexer: { ticks, lastTickTs, lastPoolSlot,
 disclosures, wsClients }` — перевірено live:

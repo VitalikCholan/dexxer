@@ -43,6 +43,7 @@ import type { IndexerStats } from "./indexer/accounts.js";
 import { ORACLE_STALE_MS, isStale } from "./indexer/prices.js";
 import { DEFAULT_ASSETLINKS_PACKAGE, assetlinksRouter, parseFingerprintsEnv } from "./assetlinks.js";
 import { nonceRouter } from "./nonce.js";
+import { DEFAULT_SESSION_TTL_HOURS, authRouter, pgAuthStore } from "./auth.js";
 import {
   DEFAULT_DAILY_BUDGET_SOL,
   DEFAULT_SPONSOR_MAX_CU_PRICE_MICROLAMPORTS,
@@ -86,6 +87,14 @@ const sponsorDailyBudgetSol = Number(process.env.SPONSOR_DAILY_SOL ?? DEFAULT_DA
 // Fix (live Phantom smoke, 24.09): Phantom prepends ComputeBudget ixs to
 // legacy transactions it signs — see sponsor.ts's DEFAULT_SPONSOR_MAX_CU_PRICE_MICROLAMPORTS doc comment for the bound this caps.
 const sponsorMaxCuPriceMicroLamports = Number(process.env.SPONSOR_MAX_CU_PRICE_MICROLAMPORTS ?? DEFAULT_SPONSOR_MAX_CU_PRICE_MICROLAMPORTS);
+// Week 6 (spec §2.7): SIWS sessions gate /sponsor and /nonce. SIWS_DOMAIN is
+// the app's MWA identity domain (IDENTITY_DOMAIN — today the relayer's own
+// host); without it the gate cannot verify anything, so the write endpoints
+// stay unmounted (fail-closed) rather than silently open.
+const siwsDomain = process.env.SIWS_DOMAIN?.trim() || null;
+const authSessionTtlHours = Number(process.env.AUTH_SESSION_TTL_HOURS ?? DEFAULT_SESSION_TTL_HOURS);
+const authSessionTtlMs =
+  (Number.isFinite(authSessionTtlHours) && authSessionTtlHours > 0 ? authSessionTtlHours : DEFAULT_SESSION_TTL_HOURS) * 60 * 60 * 1000;
 // Task 7: default true so this is a no-op change for every existing
 // deployment — set `CRANK_ENABLED=false` only to measure the MagicBlock
 // scheduler's own `crank_tick` (schedule-eternal.ts) as the SOLE thing
@@ -164,8 +173,12 @@ const baseConn = new Connection(cfg.baseRpc, "confirmed");
 let getSponsorHealthSnapshot: (() => Promise<{ today_sol: number; count_today: number; maxCuPriceMicroLamports: number }>) | undefined;
 if (cfg.sponsorEnabled && !pool) {
   console.warn("sponsor: SPONSOR_ENABLED=true but no DATABASE_URL — /sponsor disabled (needs Postgres for the rate-limit store)");
-} else if (cfg.sponsorEnabled && pool) {
+} else if (cfg.sponsorEnabled && pool && !siwsDomain) {
+  console.error("sponsor: SPONSOR_ENABLED=true but SIWS_DOMAIN is not set — /auth, /sponsor and /nonce NOT mounted (fail-closed, spec §2.7)");
+} else if (cfg.sponsorEnabled && pool && siwsDomain) {
   const store = pgSponsorStore(pool);
+  const authStore = pgAuthStore(pool);
+  app.use(authRouter({ store: authStore, domain: siwsDomain, sessionTtlMs: authSessionTtlMs }));
   // Week-5 final review M2: the only mint a sponsored ATA may be created for.
   // Read once at boot from the public base `Config` (no secret involved, same
   // source crank.ts uses for the `Pool` PDAs). If this read fails the endpoint
@@ -186,6 +199,7 @@ if (cfg.sponsorEnabled && !pool) {
       dailyBudgetSol: sponsorDailyBudgetSol,
       dusdcMint,
       maxCuPriceMicroLamports: sponsorMaxCuPriceMicroLamports,
+      authStore,
     }),
   );
   // Durable-nonce accounts for owners (nonce.ts) — same store/rate limit/budget as /sponsor.
@@ -195,11 +209,12 @@ if (cfg.sponsorEnabled && !pool) {
       feePayer: cfg.feePayer,
       store,
       dailyBudgetLamports: Math.round(sponsorDailyBudgetSol * 1e9),
+      authStore,
     }),
   );
   getSponsorHealthSnapshot = sponsorSnapshot(store, sponsorMaxCuPriceMicroLamports);
   console.log(
-    `sponsor: /sponsor enabled (daily budget ${sponsorDailyBudgetSol} SOL, dUSDC mint ${dusdcMint ? dusdcMint.toBase58() : "UNKNOWN — ATA refused"}, max CU price ${sponsorMaxCuPriceMicroLamports} µL)`,
+    `sponsor: /sponsor enabled (daily budget ${sponsorDailyBudgetSol} SOL, dUSDC mint ${dusdcMint ? dusdcMint.toBase58() : "UNKNOWN — ATA refused"}, max CU price ${sponsorMaxCuPriceMicroLamports} µL, SIWS domain ${siwsDomain}, session TTL ${authSessionTtlMs / 3_600_000} h)`,
   );
 }
 

@@ -41,6 +41,10 @@ import {
 } from "../src/sponsor.js";
 import { nonceAccountsFor, nonceSeedFor } from "../src/nonce.js";
 import { dexxerCoreProgram, DEXXER_CORE_PROGRAM_ID } from "../../../tests/er/lib/program.js";
+import { memAuthStore } from "./memAuthStore.js";
+
+/** Relayer SIWS sessions (spec §2.7) — `send` mints one for the tx's owner signer. */
+const AUTH = memAuthStore();
 
 const FAKE_BLOCKHASH = Keypair.generate().publicKey.toBase58();
 /**
@@ -204,10 +208,17 @@ async function buildDelegateSplTx(owner: Keypair, feePayer: PublicKey, payer: Pu
   return tx;
 }
 
-async function send(url: string, tx: Transaction): Promise<Response> {
+function ownerOf(tx: Transaction): PublicKey | null {
+  return tx.signatures.find((s) => !tx.feePayer || !s.publicKey.equals(tx.feePayer))?.publicKey ?? null;
+}
+
+/** POSTs `tx` with a relayer session — by default the tx's owner signer's (a random owner's when the tx has none). */
+async function send(url: string, tx: Transaction, token: string | null = null): Promise<Response> {
+  const owner = ownerOf(tx) ?? Keypair.generate().publicKey;
+  const bearer = token ?? AUTH.sessionFor(owner.toBase58());
   return fetch(`${url}/sponsor`, {
     method: "POST",
-    headers: { "content-type": "application/json" },
+    headers: { "content-type": "application/json", authorization: `Bearer ${bearer}` },
     body: JSON.stringify({ tx: tx.serialize({ requireAllSignatures: false, verifySignatures: false }).toString("base64") }),
   });
 }
@@ -727,7 +738,7 @@ async function withServer(
   dailyBudgetSol = DEFAULT_DAILY_BUDGET_SOL,
 ): Promise<void> {
   const app = express();
-  app.use(sponsorRouter({ feePayer, store, estimateLamports, dailyBudgetSol, dusdcMint: DUSDC_MINT }));
+  app.use(sponsorRouter({ feePayer, store, estimateLamports, dailyBudgetSol, dusdcMint: DUSDC_MINT, authStore: AUTH }));
   const server = app.listen(0);
   await new Promise<void>((resolve) => server.once("listening", resolve));
   const { port } = server.address() as AddressInfo;
@@ -741,7 +752,11 @@ async function withServer(
 test("POST /sponsor: 400 on missing body", async () => {
   const feePayer = Keypair.generate();
   await withServer(feePayer, fakeStore(), async (url) => {
-    const res = await fetch(`${url}/sponsor`, { method: "POST", headers: { "content-type": "application/json" }, body: "{}" });
+    const res = await fetch(`${url}/sponsor`, {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: `Bearer ${AUTH.sessionFor(Keypair.generate().publicKey.toBase58())}` },
+      body: "{}",
+    });
     assert.equal(res.status, 400);
     const body = (await res.json()) as { error: string };
     assert.match(body.error, /tx.*required/);
@@ -871,4 +886,47 @@ test("POST /sponsor: 400 when the daily budget would be exceeded, and the reserv
     },
     fixedEstimate,
   );
+});
+
+// --- relayer SIWS session gate (spec §2.7) ---
+
+test("POST /sponsor: 401 without a relayer session — no slot is reserved", async () => {
+  const feePayer = Keypair.generate();
+  const owner = Keypair.generate();
+  let reserved = 0;
+  const store = fakeStore({
+    reserve: async (o, ts) => {
+      reserved++;
+      return { owner: o, ts, window: 0, slot: 0 };
+    },
+  });
+  await withServer(feePayer, store, async (url) => {
+    const tx = await buildInitUserTx(owner, feePayer.publicKey);
+    const res = await fetch(`${url}/sponsor`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ tx: tx.serialize({ requireAllSignatures: false, verifySignatures: false }).toString("base64") }),
+    });
+    assert.equal(res.status, 401);
+    assert.equal(reserved, 0);
+  });
+});
+
+test("POST /sponsor: 403 when the session belongs to someone other than the tx signer — no slot is reserved", async () => {
+  const feePayer = Keypair.generate();
+  const owner = Keypair.generate();
+  let reserved = 0;
+  const store = fakeStore({
+    reserve: async (o, ts) => {
+      reserved++;
+      return { owner: o, ts, window: 0, slot: 0 };
+    },
+  });
+  await withServer(feePayer, store, async (url) => {
+    const tx = await buildInitUserTx(owner, feePayer.publicKey);
+    const res = await send(url, tx, AUTH.sessionFor(Keypair.generate().publicKey.toBase58()));
+    assert.equal(res.status, 403);
+    assert.match(((await res.json()) as { error: string }).error, /session owner/);
+    assert.equal(reserved, 0);
+  });
 });

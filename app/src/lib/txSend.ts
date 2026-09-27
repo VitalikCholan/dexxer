@@ -23,6 +23,8 @@ export interface Mwa {
   /** Matches `@wallet-ui/react-native-web3js`'s real overload: an array in, an array out, ONE wallet prompt for the whole batch (`use-mobile-wallet.d.ts`). */
   signTransactions: <K extends Transaction | Transaction[]>(tx: K) => Promise<K>
   getConnection: (owner: PublicKey) => Promise<Connection>
+  /** Relayer session before any relayer call (spec §2.7) — see `relayerAuth.ts`. */
+  ensureRelayerSession: (owner: PublicKey) => Promise<void>
 }
 
 // L1 send: sign via MWA (sign-only), then submit ourselves on `baseConn`.
@@ -129,7 +131,7 @@ export async function sendL1Sponsored(
   const configInfo = await baseConn.getAccountInfo(config, 'confirmed')
   if (!configInfo) throw new Error('Config PDA not found — protocol not bootstrapped on this devnet deployment')
   const signed = await signOwnerL1(owner, readConfigFeePayer(configInfo.data), ixs, signTransactions)
-  const sponsored = await sponsorTx(signed)
+  const sponsored = await sponsorTx(signed, owner)
   const sig = await baseConn.sendRawTransaction(sponsored.serialize(), { skipPreflight: true })
   if (__DEV__) console.log(`[dexxer] sendL1Sponsored: sent ${sig} (feePayer ${sponsored.feePayer?.toBase58()})`)
   await confirmOnConn(baseConn, sig)

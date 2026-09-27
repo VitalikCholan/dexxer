@@ -90,6 +90,10 @@ export async function runBatchedOnboarding(
   onProgress: (p: BatchProgress) => void,
   l1?: L1Snapshot,
 ): Promise<void> {
+  // Before the first wallet prompt: `/nonce` and `/sponsor` need the owner's
+  // relayer session, and a late 401 on `/nonce` would silently fall back to a
+  // live blockhash (Phantom: "confirm timeout") — spec §2.7.
+  await mwa.ensureRelayerSession(ctx.owner)
   onProgress({ phase: 'Collecting', step: null, i: 0, n: 0 })
   const snap = l1 ?? (await readL1Snapshot(baseConn, l1KeysFor(ctx.owner, ctx.mint)))
   if (!snap.config) throw new Error('Config PDA not found — protocol not bootstrapped on this devnet deployment')
@@ -213,7 +217,7 @@ async function submitLeg(
 
   if (leg.sponsor) {
     try {
-      toSend = await sponsorTx(toSend)
+      toSend = await sponsorTx(toSend, ctx.owner)
     } catch (e) {
       const msg = e instanceof SponsorError ? `sponsor rejected (${e.status}): ${e.message}` : errText(e)
       throw new Error(`${leg.label}: ${msg}`)

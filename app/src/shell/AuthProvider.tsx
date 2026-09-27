@@ -4,6 +4,8 @@ import { SignInOutput, useMobileWallet } from '@wallet-ui/react-native-web3js'
 import { AppConfig } from '@/constants/app-config'
 import { useMutation } from '@tanstack/react-query'
 import { disconnect as mwaDisconnect, ensureAuthorized } from '@/src/lib/mwa/session'
+import { pickSignature, toPublicKey } from '@/src/lib/mwa/accounts'
+import { exchangeSiws, fetchChallenge, siwsPayload } from '@/src/lib/relayerAuth'
 
 export interface AuthState {
   isAuthenticated: boolean
@@ -43,8 +45,26 @@ function useSignInMutation() {
     // identity as MWA's own `identity.uri` (`AppProviders.tsx`) — a
     // mismatched SIWS uri was still the template placeholder
     // `https://example.com` (logcat: `sign_in_payload: {"uri":"..."}`).
-    mutationFn: async () =>
-      await ensureAuthorized(identity, () => signIn({ uri: AppConfig.uri, domain: IDENTITY_DOMAIN }), store),
+    mutationFn: async () => {
+      // spec §2.7: a relayer nonce in the SAME SIWS prompt yields a relayer
+      // session for free. Relayer unreachable → plain SIWS as before; flows
+      // fetch the session later via `ensureRelayerSession`.
+      const challenge = await fetchChallenge().catch((e) => {
+        if (__DEV__) console.log(`[dexxer] relayer challenge unavailable — ${String(e)}`)
+        return null
+      })
+      const payload = challenge ? siwsPayload(challenge) : { uri: AppConfig.uri, domain: IDENTITY_DOMAIN }
+      const out = await ensureAuthorized(identity, () => signIn(payload), store)
+      if (challenge) {
+        const owner = toPublicKey(out.account.address)
+        try {
+          await exchangeSiws(owner, out.signedMessage, pickSignature(out.signedMessage, out.signature, owner))
+        } catch (e) {
+          if (__DEV__) console.log(`[dexxer] relayer session not issued at Connect — ${String(e)}`)
+        }
+      }
+      return out
+    },
   })
 }
 

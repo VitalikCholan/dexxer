@@ -6,8 +6,11 @@
 // added. The app never treats a non-2xx response as anything but a hard
 // failure — no retry loop here, `useOnboarding.ts` surfaces the server's
 // `error` string as-is (it's already specific: "not in whitelist", "rate
-// limit", "daily sponsor budget exceeded", etc.).
-import { Transaction } from '@solana/web3.js'
+// limit", "daily sponsor budget exceeded", etc.). Needs the owner's relayer
+// session (spec §2.7, `relayerAuth.ts`): a 401 clears the stored token so the
+// next flow run signs in again.
+import { PublicKey, Transaction } from '@solana/web3.js'
+import { clearRelayerToken, relayerAuthHeaders } from './relayerAuth'
 import { RELAYER_URL } from './solana'
 
 export class SponsorError extends Error {
@@ -27,7 +30,7 @@ export class SponsorError extends Error {
  * (400/429/5xx) — the caller decides how to surface it (`useOnboarding.ts`'s
  * `Failed(step)` state).
  */
-export async function sponsorTx(tx: Transaction): Promise<Transaction> {
+export async function sponsorTx(tx: Transaction, owner: PublicKey): Promise<Transaction> {
   const body = JSON.stringify({
     tx: tx.serialize({ requireAllSignatures: false, verifySignatures: false }).toString('base64'),
   })
@@ -35,13 +38,14 @@ export async function sponsorTx(tx: Transaction): Promise<Transaction> {
   try {
     res = await fetch(`${RELAYER_URL}/sponsor`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: { 'content-type': 'application/json', ...(await relayerAuthHeaders(owner)) },
       body,
     })
   } catch (e) {
     throw new SponsorError(`could not reach relayer: ${e instanceof Error ? e.message : String(e)}`, 0)
   }
   const payload = (await res.json().catch(() => ({}))) as { tx?: string; error?: string }
+  if (res.status === 401) await clearRelayerToken(owner)
   if (!res.ok) {
     throw new SponsorError(payload.error ?? `/sponsor returned ${res.status}`, res.status)
   }
