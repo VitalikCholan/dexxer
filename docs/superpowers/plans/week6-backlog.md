@@ -57,7 +57,16 @@ Phantom (24.09), доки MagicBlock (fees, runtime limits, magic actions), дж
 
 ## C. Продукт (~15%, якщо A/B вкладуться)
 
-1. Мульти-маркет (кілька одночасних позицій — окрема `Position` per market або масив).
+1. **Мульти-маркет** (уточнено 27.09): додати **BTC-PERP, ETH-PERP, HYPE-PERP, ZEC-PERP** до
+   SOL-PERP, кілька одночасних позицій на трейдера (`Position` per market — сіди
+   `[b"position", owner, market]` уже це дозволяють). Це друга половина перп-ядра, не UI-фіча;
+   відкриті питання перед дизайном (brainstorming → spec): (а) чи публікує оракул MagicBlock
+   фіди Pyth Lazer для HYPE і ZEC — перевірити першим; (б) крос-маржа vs ізольована —
+   `UserAccount` зараз тримає одну маржу під одну позицію; (в) ліквідація на рівні акаунта
+   при крос-маржі — `liquidation_check` per position недостатньо; (г) `BalancesRoot`/`Pool`-знімок
+   і `SNAPSHOT_STEP` для кількох ринків; (д) стейлнес окремо на кожен фід; (е) UI — вибір ринку
+   на Trade, список позицій замість однієї картки, колонка ринку в History; (є) міграція лейауту
+   devnet-акаунтів (перетинається з B).
 2. Відео/пітч, тег `v0.4-mvp`.
 3. Тех-борг тижня 5 (Task 9): `permissions.rs`-модуль, `Toast`/`Sheet` таймери, WS ping/pong,
    `listBaseOwners` O(n) → індекс по `exited`.
