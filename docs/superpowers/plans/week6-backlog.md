@@ -142,6 +142,26 @@ Phantom (24.09), доки MagicBlock (fees, runtime limits, magic actions), дж
 
    Порядок: A після C.4 (один спринт UI), B.Borrow Rate разом із C.4-«фандинг», B.умовні
    ордери — окремий тиждень після мульти-маркету або замість нього (продуктове рішення).
+7. **Інформація по активу — вкладка «Token information» (додано 27.09; референс — Aster).**
+   На екрані ринку три вкладки: **Chart / Token information / Trading rules**; хедер із
+   значком активу, тікером, бейджем `Perp`, кнопками share / alert / favorite.
+   Зміст Token information:
+   - назва, тікер, ранг (`#1`), дата запуску;
+   - Overview / Utility and Mechanics / Ecosystem — короткий опис зі згортанням («Show less»);
+   - картки **All-time high / All-time low** з датами;
+   - таблиця: Market cap, Fully diluted market cap, 24h volume (спотовий, ринковий — не наш),
+     Market dominance, Circulating supply, Max. supply, Total supply, Circulating rate;
+   - кнопки-посилання Website / Whitepaper / Explorer / GitHub;
+   - дисклеймер про джерело даних («sourced from CoinMarketCap … as is»).
+   **Trading rules** (третя вкладка) — параметри саме нашого ринку: макс. плече, IMR/MMR,
+   мін./макс. розмір позиції, крок ціни, комісія відкриття, ліміт OI, borrow rate, поріг
+   стейлнесу оракула, `SNAPSHOT_STEP`; усе це вже є в `Market`/`MarketRisk`/`Config`.
+   **Реалізація:** relayer — новий публічний ендпоінт `/assets/:symbol` (кеш 5–15 хв) поверх
+   CoinGecko (безкоштовний, без ключа) або CoinMarketCap (ключ, як у референсі); статичні
+   описи/посилання — JSON у репо (`docs/design/assets.json` або в relayer-і), щоб не залежати
+   від зовнішнього API для тексту. Апка — екран `AssetInfoScreen` із трьома вкладками,
+   Long/Short знизу. Дані ринкові й публічні, приватності не торкаються. Залежить від C.1
+   (список активів BTC/ETH/HYPE/ZEC), для SOL можна зробити одразу.
 
 ## Не робимо (без нової причини)
 Seeker Connect (web-only), ZK-знімок, iOS.
