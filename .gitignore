@@ -60,3 +60,6 @@ magicblock-test-storage/
 # itself is excluded, git won't look inside it for `!`-negated files.
 keys/*
 !keys/README.md
+
+# /brag launch-video output (rendered mp4, third-party music, generated audio data)
+brag-output/
