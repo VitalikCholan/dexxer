@@ -48,6 +48,7 @@ import type { Program } from "@coral-xyz/anchor";
 import { EPHEMERAL_VAULT_ID, MAGIC_CONTEXT_ID, MAGIC_PROGRAM_ID, PERMISSION_PROGRAM_ID, permissionPdaFromAccount } from "@magicblock-labs/ephemeral-rollups-sdk";
 import { sendAndConfirmIx } from "../../../tests/er/lib/env.js";
 import { DQ_DISC, USER_DISC, pdas } from "../../../tests/er/lib/program.js";
+import { decodeOrSkip } from "./disclosure.js";
 
 /** One `DisclosureQueue` as the crank sees it in the ER. */
 export interface OrphanQueueRow {
@@ -217,15 +218,8 @@ export function orphanDeps(w: OrphanWiring): OrphanCycleDeps {
       });
       const rows: OrphanQueueRow[] = [];
       for (const a of accs) {
-        try {
-          const dq = decode(w.erProg, "disclosureQueue", a.account.data);
-          rows.push({ key: a.pubkey, owner: new PublicKey(dq.owner), len: Number(dq.len) });
-        } catch (e) {
-          // Legacy-layout leftovers from weeks 1-2 testing share the
-          // discriminator but not the byte layout — skip, never crash the
-          // cycle (same policy as disclosure.ts's `decodeOrSkip`).
-          console.log(`orphan: skipped legacy queue ${a.pubkey.toBase58()} len=${a.account.data.length} (${String(e)})`);
-        }
+        const dq = decodeOrSkip(a.pubkey, a.account.data, () => decode(w.erProg, "disclosureQueue", a.account.data), "orphan: skipped legacy queue");
+        if (dq) rows.push({ key: a.pubkey, owner: new PublicKey(dq.owner), len: Number(dq.len) });
       }
       // Drop the ones already handed back to L1 — see `stillDelegatedOnBase`.
       // Only the drained ones are worth the base round-trip: a queue with

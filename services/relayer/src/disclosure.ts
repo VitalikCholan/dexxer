@@ -278,11 +278,11 @@ function decodeDisclosureQueue(prog: Program, data: Buffer): any {
  * fail cleanly. Filters them out of the candidate set instead of crashing the
  * whole cycle, logging every skip (Task 8b).
  */
-function decodeOrSkip<T>(pubkey: PublicKey, data: Buffer, decode: () => T): T | null {
+export function decodeOrSkip<T>(pubkey: PublicKey, data: Buffer, decode: () => T, logPrefix = "skipped legacy:"): T | null {
   try {
     return decode();
   } catch (e) {
-    console.log(`skipped legacy: ${pubkey.toBase58()} len=${data.length} (${String(e)})`);
+    console.log(`${logPrefix} ${pubkey.toBase58()} len=${data.length} (${String(e)})`);
     return null;
   }
 }
