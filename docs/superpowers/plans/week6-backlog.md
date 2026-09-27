@@ -71,6 +71,12 @@ Phantom (24.09), доки MagicBlock (fees, runtime limits, magic actions), дж
    - алерт «Approaching liquidation» → одразу на Add margin: серверний push неможливий
      (сервер не бачить приватну позицію) — лише локальні нотифікації з апки у фоні через
      `accountSubscribe`.
+5. **Графік як у TradingView** (додано 27.09): замість власного `PriceChart` — повноцінний
+   свічковий графік з масштабуванням/прокруткою, crosshair із ціною і часом, таймфреймами
+   1m/5m/15m/1h/4h/1D, лініями entry/liq-price/mark поверх свічок, обсягом і базовими
+   індикаторами (EMA, VWAP). Кандидат — `lightweight-charts` (TradingView, Apache-2.0) у
+   WebView або `react-native-wagmi-charts`/Skia-порт; дані — з indexer-а relayer-а
+   (`/prices`, свічки вже агрегуються). Рішення про бібліотеку — окремий спайк.
 
 ## Не робимо (без нової причини)
 Seeker Connect (web-only), ZK-знімок, iOS.
