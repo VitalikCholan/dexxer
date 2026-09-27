@@ -60,3 +60,6 @@ magicblock-test-storage/
 # itself is excluded, git won't look inside it for `!`-negated files.
 keys/*
 !keys/README.md
+
+# personal Claude Code settings (auto-commit hook, etc.) — not team policy
+.claude/settings.local.json
