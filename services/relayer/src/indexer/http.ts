@@ -20,7 +20,8 @@ import type { Server } from "http";
 import type { DbPool } from "../db.js";
 import { aggregateCandles, tfMsOf } from "./candles.js";
 import { ORACLE_STALE_MS, isStale } from "./prices.js";
-import { latestPoolSnapshot, latestRoot, latestTick, listDisclosures, listPoolSnapshots, listTicks } from "./store.js";
+import { disclosureStats, latestPoolSnapshot, latestRoot, latestTick, listDisclosures, listPoolSnapshots, listTicks } from "./store.js";
+import { disclosureCursor, parseDisclosureQuery, parsePoolHistoryQuery, parseStatsQuery } from "./query.js";
 import type { WsMessage } from "./accounts.js";
 
 function clampLimit(raw: unknown, def: number, max: number): number {
@@ -29,8 +30,14 @@ function clampLimit(raw: unknown, def: number, max: number): number {
   return Math.min(Math.trunc(n), max);
 }
 
-export function indexerRouter(pool: DbPool): Router {
+export interface IndexerRouterOpts {
+  /** Clock for `/stats` windows — tests pin it. */
+  now?: () => number;
+}
+
+export function indexerRouter(pool: DbPool, opts: IndexerRouterOpts = {}): Router {
   const router = express.Router();
+  const now = opts.now ?? Date.now;
 
   router.get("/prices", async (req, res) => {
     const tf = String(req.query.tf ?? "1m");
@@ -69,18 +76,44 @@ export function indexerRouter(pool: DbPool): Router {
     );
   });
 
+  // Paginated backwards in time: `X-Next-Cursor` (a slot) is set only when the
+  // page is full; pass it back as `?cursor=` for the next-older page.
   router.get("/pool/history", async (req, res) => {
-    const limit = clampLimit(req.query.limit, 100, 1000);
-    res.json(await listPoolSnapshots(pool, limit));
+    const q = parsePoolHistoryQuery(req.query);
+    if (!q.ok) {
+      res.status(400).json({ error: q.error });
+      return;
+    }
+    const items = await listPoolSnapshots(pool, q.value);
+    if (items.length === q.value.limit) res.setHeader("X-Next-Cursor", String(items[0].slot));
+    res.json(items);
   });
 
   router.get("/pool/latest", async (_req, res) => {
     res.json(await latestPoolSnapshot(pool));
   });
 
+  // Filters: side, reason, market, from/to (ms, on indexed-at `ts`) — see query.ts.
   router.get("/disclosures", async (req, res) => {
-    const limit = clampLimit(req.query.limit, 100, 1000);
-    res.json(await listDisclosures(pool, limit));
+    const q = parseDisclosureQuery(req.query);
+    if (!q.ok) {
+      res.status(400).json({ error: q.error });
+      return;
+    }
+    const items = await listDisclosures(pool, q.value);
+    if (items.length === q.value.limit) res.setHeader("X-Next-Cursor", disclosureCursor(items[items.length - 1]));
+    res.json(items);
+  });
+
+  // Aggregates of the PUBLIC disclosure feed over a window — never open
+  // interest: that lives in the private `MarketRisk` (risk #24).
+  router.get("/stats", async (req, res) => {
+    const q = parseStatsQuery(req.query, now());
+    if (!q.ok) {
+      res.status(400).json({ error: q.error });
+      return;
+    }
+    res.json({ window: q.value.window, market: q.value.market, from: q.value.from, to: q.value.to, ...(await disclosureStats(pool, q.value)) });
   });
 
   router.get("/root/latest", async (_req, res) => {

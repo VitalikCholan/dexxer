@@ -315,6 +315,7 @@ export function startIndexer(deps: IndexerDeps): () => void {
     }
     const row: DisclosureRow = {
       pubkey: pubkey.toBase58(),
+      market: new PublicKey(d.market).toBase58(),
       side: sideToString(d.side),
       size: BigInt(d.size.toString()),
       entry: BigInt(d.entry.toString()),
@@ -343,6 +344,7 @@ export function startIndexer(deps: IndexerDeps): () => void {
       broadcast({
         type: "disclosure",
         pubkey: row.pubkey,
+        market: row.market,
         side: row.side,
         size: row.size.toString(),
         entry: row.entry.toString(),

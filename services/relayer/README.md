@@ -69,9 +69,10 @@ All endpoints return JSON. Base URL: the relayer's own domain.
 | --- | --- | --- |
 | `GET /prices` | `tf` (`1m`\|`5m`\|`15m`, default `1m`), `limit` (default 300, max 1000) | `{ tf, candles: [{ t, o, h, l, c }] }` — `t` unix ms, `o/h/l/c` are plain numbers (SOL/USD price, 1e6 scale) |
 | `GET /mark` | — | `{ price, slot, ts, publishTime, stale }` — `price` is a **string** (see Numbers below), or all-`null`/`stale:true` if no tick has landed yet. `publishTime` is the ORACLE's own `publish_time` in epoch ms; `stale = now - publishTime > ORACLE_STALE_MS` (30s) — see "Oracle staleness" below |
-| `GET /pool/history` | `limit` (default 100, max 1000) | array of Pool snapshot rows, oldest→newest |
+| `GET /pool/history` | `limit` (default 100, max 1000), `cursor` (a slot) | array of Pool snapshot rows, oldest→newest within the page; `cursor` returns the page strictly older than that slot |
 | `GET /pool/latest` | — | one Pool snapshot row, or `null` |
-| `GET /disclosures` | `limit` (default 100, max 1000) | array of closed-trade disclosure rows, newest `closed_slot` first |
+| `GET /disclosures` | `limit` (default 100, max 1000), `cursor` (`<closed_slot>.<pubkey>`), `side` (`long`\|`short`), `reason` (`user`\|`liquidated`), `market` (base58), `from`/`to` (ms, inclusive, on `ts`) | array of closed-trade disclosure rows, newest `closed_slot` first (ties by `pubkey`) |
+| `GET /stats` | `window` (`24h`\|`7d`\|`30d`\|`all`, default `24h`), `market` (base58) | `{ window, market, from, to, trades, longs, shorts, liquidations, wins, win_rate, volume_quote, pnl_total, fees_total }` over disclosures whose `ts` is in `[from, to]` — see "Pagination, filters, stats" below |
 | `GET /root/latest` | — | `{ root_slot, filled, leavesHex }`, or `null` |
 | `GET /healthz` | — | (Task 4) health payload, now also carrying `commitIntervalTicks` and `indexer: { ticks, lastTickTs, lastPublishTimeMs, lastPoolSlot, disclosures, wsClients, oracleStale }` |
 | `GET /ws` (WebSocket, not REST) | — | pushes `{type:"mark",price,ts,publishTime,stale}` (throttled to ≤1/s while live; exactly one extra `stale:true` frame when the feed transitions to stale — see below), `{type:"pool",...}` on a new Pool snapshot, `{type:"disclosure",...}` on a newly discovered Disclosure |
@@ -109,10 +110,36 @@ looks perfectly live by arrival time. `publish_time` is stored per tick
 - `/prices` (candle history) is unaffected — it doesn't claim to be "now".
 
 A Pool snapshot row: `{ slot, ts, capital_total, protocol_liquidity, locked_total, fees_accrued, insurance, bad_debt_total }`.
-A disclosure row: `{ pubkey, side, size, entry, exit, pnl, fees, reason, opened_slot, closed_slot, nonce, ts }`.
+A disclosure row: `{ pubkey, market, side, size, entry, exit, pnl, fees, reason, opened_slot, closed_slot, nonce, ts }`.
+`market` is the L1 `Disclosure.market` (week 6, migration `007`; `null` on a
+row ingested earlier until the next 30-s poll backfills it — silently, no WS
+re-broadcast). The trader is never in it: the program writes
+`Disclosure.owner` as all-zero.
 `ts` on a disclosure row is **ingestion time**, not `closed_slot`'s block
 time — an extra `getBlockTime` per discovered account wasn't judged worth
 the RPC cost for what is a rolling public archive, not a precise ledger.
+
+### Pagination, filters, stats (week 6)
+
+- **Keyset pagination, backward compatible.** Responses stay plain arrays.
+  When a page is full (`length == limit`) the response carries an
+  `X-Next-Cursor` header; pass it back as `?cursor=` for the next page
+  (`/disclosures`: next-older `(closed_slot, pubkey)`; `/pool/history`:
+  next-older slots). A client may also build the cursor from the last item.
+- **Filters** (`/disclosures`) combine with `AND`. `from`/`to` and every
+  `/stats` window are on `ts` — indexed-at ≈ reveal time, **not** trade time
+  (with a 30-day product disclosure delay, "24h" means trades revealed in
+  the last 24h).
+- **Bad parameters are a 400** with `{ error }` (unknown `side`/`reason`/
+  `window`, malformed `cursor`/`market`, `from > to`, a parameter given
+  twice). Parsing lives in `src/indexer/query.ts` (pure, unit-tested).
+- **`/stats`** aggregates the public disclosure feed only: `wins` = trades
+  with `pnl > 0`, `win_rate` = `wins / trades` (`null` at zero trades),
+  `volume_quote` = Σ `ceil(size · entry / 1e9)` — the opening notional in
+  quote base units, same rounding as `math.rs::notional`; `pnl_total`/
+  `fees_total` are sums of the raw fields. Big sums are **strings** (see
+  Numbers). There is deliberately **no open interest**: OI lives in the
+  private `MarketRisk` (risk #24) and this service reads only public accounts.
 
 ### Numbers
 
@@ -142,11 +169,40 @@ nobody. See `src/sponsor.ts`'s header comment for the full rationale.
 
 ```
 POST /sponsor
+Authorization: Bearer <relayer session token>          # week 6 — see "Relayer sessions (SIWS)"
 { "tx": "<base64 Transaction, owner already signed, tx.feePayer = fee_payer>" }
 -> 200 { "tx": "<base64, now also fee_payer-signed>" }
 -> 400 { "error": "<specific reason>" }   # not whitelisted / bad signature / budget exceeded / ...
+-> 401 { "error": "relayer session required ..." }  # no/invalid/expired session — checked before anything else
+-> 403 { "error": "session owner ... does not match ..." }  # session belongs to someone other than the tx's owner signer
 -> 429 { "error": "...", "retryAfterMs": N }  # rate limit — see below
 ```
+
+### Relayer sessions (SIWS, week 6 — spec §2.7)
+
+`/sponsor` and `/nonce` need a session of the owner, obtained with Sign-In
+With Solana (`src/auth.ts`):
+
+```
+POST /auth/challenge
+-> 200 { nonce, issuedAt, expirationTime, domain, uri, statement, version }   # single-use nonce, 5 min
+-> 503 when > 10 000 challenges are open (guard on the one unauthenticated DB write)
+
+POST /auth/siws
+{ "address": "<base58>", "signedMessage": "<base64 SIWS text>", "signature": "<base64, 64 bytes>" }
+-> 200 { token, owner, expiresAt }       # session TTL AUTH_SESSION_TTL_HOURS (default 168)
+-> 400 not a SIWS message / malformed body
+-> 401 domain or uri host != SIWS_DOMAIN, address mismatch, issuedAt off by > 5 min,
+       expired / not-yet-valid message, bad or non-64-byte signature,
+       unknown / used / expired nonce (consumed only AFTER the signature verifies)
+```
+
+Only `sha256(token)` is stored (`auth_sessions`, migration `006`); tokens are
+never logged. `chainId` is not checked. The session opens only this API — it
+is not a TEE token. This proves control of a key, **not** uniqueness of a
+person: fresh keys are free, so Sybil drain of the sponsor budget (#27) stays
+open. Without `SIWS_DOMAIN` the relayer mounts none of `/auth/*`, `/sponsor`,
+`/nonce` (fail-closed).
 
 The relayer never calls `sendRawTransaction` for a sponsored tx — the
 caller submits it themselves, same as every other owner-signed step in
@@ -228,6 +284,8 @@ enforced ComputeBudget `SetComputeUnitPrice` ceiling.
 | `INDEXER_ENABLED` | no (default `false`) | Task 5: starts the public-data indexer (see above) — needs `DATABASE_URL`, disabled with a warning if it's unset |
 | `SPONSOR_ENABLED` | no (default `false`) | Task 6: starts `POST /sponsor` (see below) — needs `DATABASE_URL`, disabled with a warning if it's unset |
 | `SPONSOR_DAILY_SOL` | no (default `0.5`) | rolling 24h cap on sponsored lamports across all owners |
+| `SIWS_DOMAIN` | yes when `SPONSOR_ENABLED=true` | week 6: the app's MWA identity domain (today the relayer's own host). SIWS messages must name it as `domain` and as the `uri` host. Unset → `/auth/*`, `/sponsor`, `/nonce` are **not mounted** (fail-closed, logged) |
+| `AUTH_SESSION_TTL_HOURS` | no (default `168`) | week 6: relayer session lifetime; non-positive/unparseable → default |
 | `SPONSOR_MAX_CU_PRICE_MICROLAMPORTS` | no (default `500000`) | fix (Phantom smoke 24.09): ceiling on a wallet-prepended ComputeBudget `SetComputeUnitPrice` this endpoint will co-sign. At the 1.4M CU transaction max the default caps the sponsor-paid priority fee at 700 000 lamports ≈ 0.0007 SOL/tx. `SetComputeUnitLimit` has no such cap — it cannot cost `fee_payer` more than the tx's own CU budget. Reported by `/healthz`'s `sponsor.maxCuPriceMicroLamports` |
 | `ASSETLINKS_PACKAGE` | no (default `com.dexxer.app`) | Android package name published in `GET /.well-known/assetlinks.json` (MWA identity verification, 24.09) |
 | `ASSETLINKS_SHA256_FINGERPRINTS` | no (default: Android debug keystore cert of the dev-client) | comma-separated SHA-256 signing-cert fingerprints for that statement; a release build MUST set its own (`keytool -list -v -keystore <ks> -alias <alias>` → `SHA256:`). Boot fails on a malformed value |
@@ -271,10 +329,30 @@ npm test        # node:test — keypairFromEnv b58 round-trip, health-payload st
                  # candles.ts bucketing (pure), prices.ts::decodeFeed (golden vectors vs oracle.rs),
                  # prices.ts::isStale (publish_time staleness predicate), sponsor.ts::checkWhitelist
                  # (every accept/reject shape) + the /sponsor router, orphan.ts::runOrphanCycle
-                 # (the whole decision table, with injected readers — no network)
+                 # (the whole decision table, with injected readers — no network),
+                 # auth.ts (SIWS verification, challenge/siws/requireSession),
+                 # the /sponsor + /nonce session gate, indexer/query.ts (pure parsing)
                  # Needs DEXXER_IDL_DIR=$PWD/../../app/src/idl (as CI sets it).
 npx tsc --noEmit
 ```
+
+Run on the Node version in the repo's `.nvmrc` (24.18, as CI does): on 24.10
+`test/sponsor.test.ts` fails to load on `import { BN } from "@coral-xyz/anchor"`
+(CJS named-export detection) — environment, not code.
+
+`test/indexerDb.test.ts` runs the indexer's SQL (pagination, filters,
+`/stats`, the `market` backfill, the HTTP routes) against a **real Postgres**
+and is skipped unless `TEST_DATABASE_URL` is set — CI has no Postgres, so
+there those 10 tests show as skipped. Locally:
+
+```sh
+docker run -d --rm --name idx-pg -e POSTGRES_PASSWORD=pw -p 127.0.0.1:55432:5432 postgres:16-alpine
+TEST_DATABASE_URL=postgres://postgres:pw@127.0.0.1:55432/postgres DEXXER_IDL_DIR=$PWD/../../app/src/idl npm test
+docker stop idx-pg
+```
+
+It creates and drops its own scratch database, so it never touches the
+database named in the URL.
 
 ## Durable nonces — `POST /nonce`
 
@@ -292,6 +370,12 @@ System-акаунти `createWithSeed(fee_payer, "dn<slot>-" + base58(owner)[0:2
 (~0.00145 SOL кожен; рахується в rate-limit і денний бюджет `/sponsor`), і
 повертає `{ nonces: [{account, nonce}] }` з поточними значеннями. Повторний
 виклик — безкоштовний і без резервації.
+
+**Тиждень 6:** лише з `Authorization: Bearer` SIWS-сесії (розділ «Relayer
+sessions» вище); власник — із сесії, `body.owner` необов'язковий і, якщо
+переданий, мусить збігатися (інакше 403). Без сесії — 401, нічого не
+резервується й не надсилається: анонімний POST випадкових pubkey більше не
+витрачає SOL.
 
 Апка (`app/src/lib/nonce.ts`) перед кожною owner-L1-tx бере свіжі значення,
 будує tx з `AdvanceNonceAccount` першою інструкцією та **власними**

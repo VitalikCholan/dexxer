@@ -120,6 +120,8 @@ RPC), ніколи `crank`/`fee_payer`-ключі. REST + WS ендпоінти 
 | `GET /pool/latest` | `{"slot":335177389,"ts":1790106155570,"capital_total":"24100000000","protocol_liquidity":"9900000000","locked_total":"100000000","fees_accrued":"0","insurance":"0","bad_debt_total":"0"}` |
 | `GET /disclosures?limit=3` | масив із 3 записів закритих позицій (реальні devnet-угоди тижнів 3-4) |
 | `GET /root/latest` | `{"root_slot":335228040,"filled":11,"leavesHex":[...64 hex-рядки...]}` |
+| `GET /disclosures?limit=2&market=…` **(week 6)** | масив + заголовок `X-Next-Cursor: 348880561.2F4jr1u2…`; кожен запис має `market` (`1347yiBY…` — PDA SOL-ринку). Фільтри `side`/`reason`/`market`/`from`/`to`, курсор — `services/relayer/README.md` «Pagination, filters, stats» |
+| `GET /stats?window=all` **(week 6)** | `{"window":"all","market":null,"trades":42,"longs":41,"shorts":1,"liquidations":4,"wins":21,"volume_quote":"4945668443","pnl_total":"1433766","fees_total":"7214965","win_rate":0.5,…}` (локальний indexer проти devnet, 27.09.2026) |
 | `wss://…/ws` | `{"type":"mark","price":"118284685","ts":1790106415146}` кожну секунду (throttle) |
 
 Повна специфікація ендпоінтів, формат чисел (bigint-поля як рядки) і
@@ -128,6 +130,13 @@ RPC), ніколи `crank`/`fee_payer`-ключі. REST + WS ендпоінти 
 Міграція `services/relayer/migrations/001_indexer.sql` (таблиці `ticks`,
 `pool_snapshots`, `disclosures`, `roots`) застосувалась автоматично на
 рестарті (той самий `migrate()`, що й `000_meta.sql` у Task 4).
+
+**Тиждень 6:** `007_disclosures_market.sql` (колонка `market` + індекси
+keyset/`ts`/`market`) застосується так само на першому рестарті після деплою;
+вже проіндексовані розкриття отримають `market` протягом ≈30 с (наступний
+poll), без повторного WS-broadcast. Перевірка після деплою:
+`curl …/stats?window=all` → `trades > 0`, `curl -D - "…/disclosures?limit=1"` →
+заголовок `X-Next-Cursor` і непорожній `market`.
 
 `/healthz` тепер несе й `indexer: { ticks, lastTickTs, lastPoolSlot,
 disclosures, wsClients }` — перевірено live:

@@ -12,6 +12,7 @@
 // exceed 2^53 (capital_total etc, as USDC volume grows). See README.
 
 import type { DbPool } from "../db.js";
+import type { DisclosureQuery, PoolHistoryQuery, StatsQuery } from "./query.js";
 
 export interface TickRow {
   ts: number;
@@ -34,6 +35,8 @@ export interface PoolSnapshotRow {
 
 export interface DisclosureRow {
   pubkey: string;
+  /** L1 `Disclosure.market` (base58). The trader is never disclosed (`Disclosure.owner` is always zero). */
+  market: string;
   side: string;
   size: bigint;
   entry: bigint;
@@ -117,10 +120,13 @@ function poolRowToJson(r: any): Record<string, unknown> {
   };
 }
 
-export async function listPoolSnapshots(pool: DbPool, limit: number): Promise<Record<string, unknown>[]> {
+/** The `q.limit` snapshots newest-first by slot (strictly older than `q.cursor` when set), returned oldest-first. */
+export async function listPoolSnapshots(pool: DbPool, q: PoolHistoryQuery): Promise<Record<string, unknown>[]> {
+  const params: unknown[] = [];
+  const where = q.cursor === null ? "" : `WHERE slot < $${params.push(q.cursor.toString())}`;
   const { rows } = await pool.query(
-    "SELECT slot, ts, capital_total, protocol_liquidity, locked_total, fees_accrued, insurance, bad_debt_total FROM pool_snapshots ORDER BY slot DESC LIMIT $1",
-    [limit],
+    `SELECT slot, ts, capital_total, protocol_liquidity, locked_total, fees_accrued, insurance, bad_debt_total FROM pool_snapshots ${where} ORDER BY slot DESC LIMIT $${params.push(q.limit)}`,
+    params,
   );
   return rows.reverse().map(poolRowToJson);
 }
@@ -132,11 +138,14 @@ export async function latestPoolSnapshot(pool: DbPool): Promise<Record<string, u
   return rows[0] ? poolRowToJson(rows[0]) : null;
 }
 
-/** Returns `true` only the first time this `pubkey` is inserted — `accounts.ts` uses that to decide whether to broadcast over WS (a resubscribe/re-poll re-seeing an already-known Disclosure must not re-broadcast it). */
+/**
+ * Returns `true` only the first time this `pubkey` is inserted — `accounts.ts` uses that to decide whether to broadcast over WS (a resubscribe/re-poll re-seeing an already-known Disclosure must not re-broadcast it).
+ * A re-seen row still missing `market` (ingested before migration 007) gets it backfilled, silently.
+ */
 export async function insertDisclosure(pool: DbPool, row: DisclosureRow): Promise<boolean> {
   const { rowCount } = await pool.query(
-    `INSERT INTO disclosures (pubkey, side, size, entry, exit, pnl, fees, reason, opened_slot, closed_slot, nonce, ts)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+    `INSERT INTO disclosures (pubkey, side, size, entry, exit, pnl, fees, reason, opened_slot, closed_slot, nonce, ts, market)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
      ON CONFLICT (pubkey) DO NOTHING`,
     [
       row.pubkey,
@@ -151,15 +160,19 @@ export async function insertDisclosure(pool: DbPool, row: DisclosureRow): Promis
       row.closedSlot.toString(),
       row.nonce.toString(),
       row.ts,
+      row.market,
     ],
   );
-  return (rowCount ?? 0) > 0;
+  if ((rowCount ?? 0) > 0) return true;
+  await pool.query("UPDATE disclosures SET market = $2 WHERE pubkey = $1 AND market IS NULL", [row.pubkey, row.market]);
+  return false;
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function disclosureRowToJson(r: any): Record<string, unknown> {
   return {
     pubkey: r.pubkey,
+    market: r.market,
     side: r.side,
     size: r.size,
     entry: r.entry,
@@ -174,12 +187,67 @@ function disclosureRowToJson(r: any): Record<string, unknown> {
   };
 }
 
-export async function listDisclosures(pool: DbPool, limit: number): Promise<Record<string, unknown>[]> {
+/** Newest `closed_slot` first (ties by `pubkey`), after `q.cursor` when set, narrowed by `q`'s filters. */
+export async function listDisclosures(pool: DbPool, q: DisclosureQuery): Promise<Record<string, unknown>[]> {
+  const params: unknown[] = [];
+  const p = (v: unknown) => `$${params.push(v)}`;
+  const where: string[] = [];
+  if (q.cursor) where.push(`(closed_slot, pubkey) < (${p(q.cursor.closedSlot.toString())}::bigint, ${p(q.cursor.pubkey)})`);
+  if (q.side) where.push(`side = ${p(q.side)}`);
+  if (q.reason) where.push(`reason = ${p(q.reason)}`);
+  if (q.market) where.push(`market = ${p(q.market)}`);
+  if (q.from !== null) where.push(`ts >= ${p(q.from)}`);
+  if (q.to !== null) where.push(`ts <= ${p(q.to)}`);
   const { rows } = await pool.query(
-    "SELECT pubkey, side, size, entry, exit, pnl, fees, reason, opened_slot, closed_slot, nonce, ts FROM disclosures ORDER BY closed_slot DESC LIMIT $1",
-    [limit],
+    `SELECT pubkey, market, side, size, entry, exit, pnl, fees, reason, opened_slot, closed_slot, nonce, ts FROM disclosures
+     ${where.length > 0 ? `WHERE ${where.join(" AND ")}` : ""}
+     ORDER BY closed_slot DESC, pubkey DESC LIMIT ${p(q.limit)}`,
+    params,
   );
   return rows.map(disclosureRowToJson);
+}
+
+export interface DisclosureStats {
+  trades: number;
+  longs: number;
+  shorts: number;
+  liquidations: number;
+  /** Trades with `pnl > 0`. */
+  wins: number;
+  /** `wins / trades`; `null` when there are no trades in the window. */
+  win_rate: number | null;
+  /** Σ opening notional in quote base units — `ceil(size · entry / 1e9)` per trade, the same rounding as `math.rs::notional`. */
+  volume_quote: string;
+  pnl_total: string;
+  fees_total: string;
+}
+
+/** Aggregates over the public disclosure feed only — never the private `MarketRisk`/`PoolLive` (CLAUDE.md: servers read only public accounts). */
+export async function disclosureStats(pool: DbPool, q: StatsQuery): Promise<DisclosureStats> {
+  const { rows } = await pool.query<{
+    trades: number;
+    longs: number;
+    shorts: number;
+    liquidations: number;
+    wins: number;
+    volume_quote: string;
+    pnl_total: string;
+    fees_total: string;
+  }>(
+    `SELECT COUNT(*)::int AS trades,
+            COUNT(*) FILTER (WHERE side = 'long')::int AS longs,
+            COUNT(*) FILTER (WHERE side = 'short')::int AS shorts,
+            COUNT(*) FILTER (WHERE reason = 'liquidated')::int AS liquidations,
+            COUNT(*) FILTER (WHERE pnl > 0)::int AS wins,
+            COALESCE(SUM(CEIL(size::numeric * entry / 1000000000)), 0)::text AS volume_quote,
+            COALESCE(SUM(pnl::numeric), 0)::text AS pnl_total,
+            COALESCE(SUM(fees::numeric), 0)::text AS fees_total
+     FROM disclosures
+     WHERE ts >= $1 AND ts <= $2 AND ($3::text IS NULL OR market = $3)`,
+    [q.from, q.to, q.market],
+  );
+  const r = rows[0];
+  return { ...r, win_rate: r.trades > 0 ? r.wins / r.trades : null };
 }
 
 export async function insertRoot(pool: DbPool, row: RootRow): Promise<void> {
