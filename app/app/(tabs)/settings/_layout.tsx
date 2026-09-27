@@ -1,4 +1,4 @@
-import { WalletUiDropdown } from '@/components/solana/wallet-ui-dropdown'
+import { WalletUiDropdown } from '@/src/features/wallet/WalletUiDropdown'
 import { Stack } from 'expo-router'
 import React from 'react'
 

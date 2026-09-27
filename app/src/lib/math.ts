@@ -16,7 +16,7 @@
 // divide 10_000 evenly (1, 2, 4, 5, 10 — not 3/6/7/8/9, where this rounds up
 // slightly more aggressively than that exact bps form would; still pool-
 // favoring, so never under-collateralizes).
-import type { SideName } from './program'
+import type { SideName } from './codecs'
 
 export const PRICE_SCALE = 1_000_000n
 export const SIZE_SCALE = 1_000_000_000n
@@ -100,6 +100,13 @@ export function assertMathSelfCheck(): void {
   const S = 10_000_000_000n // 10 SOL
   const cases: [bigint, bigint][] = [
     [notional(S, P), 1_500_000_000n], // notional_10_sol_at_150
+    // 1.000000001 SOL @ $1.00 -> raw 1_000_000_001_000_000 / 1e9 = 1_000_000.001,
+    // which must round UP to 1_000_001 (truncation gives 1_000_000). No other
+    // vector here divides unevenly, so without this one a `notional` that
+    // silently switched to floor passed every check (found by breaking it on
+    // purpose under `npm test`). `math.rs` has no counterpart yet — see
+    // `notional_10_sol_at_150`'s own "divides evenly" note there.
+    [notional(1_000_000_001n, 1_000_000n), 1_000_001n],
     [fee(1_000_001n, 6n), 601n], // fee_rounds_up
     [requiredMargin(1_500_000_000n, 1000n), 150_000_000n], // required_margin_10x
     [liqPrice('Long', P, S, 150_000_000n, 500n), 142_500_000n], // liq_price_long_10x_mmr5

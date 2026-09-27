@@ -15,7 +15,8 @@ import { Input } from '@/src/ui/Input'
 import { Row } from '@/src/ui/Row'
 import { Button } from '@/src/ui/Button'
 import * as math from '@/src/lib/math'
-import { solSize, type DecodedPosition } from '@/src/lib/program'
+import { type DecodedPosition } from '@/src/lib/codecs'
+import { solSize } from '@/src/lib/trade'
 
 export interface IncreaseSheetProps {
   open: boolean

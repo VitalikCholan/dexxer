@@ -1,24 +1,21 @@
 import { router } from 'expo-router'
-import { AppButton } from '@/components/app-button'
-import { useAuth } from '@/components/auth/auth-provider'
-import { AppText } from '@/components/app-text'
-import { AppView } from '@/components/app-view'
-import { AppConfig } from '@/constants/app-config'
-import { SafeAreaView } from 'react-native-safe-area-context'
-import { View } from 'react-native'
-import { Image } from 'expo-image'
 import { useState } from 'react'
+import { useAuth } from '@/src/shell/AuthProvider'
+import { ConnectScreen } from '@/src/features/onboard/ConnectScreen'
 import { showError } from '@/utils/show-error'
 
+// Root gate's screen (`app/_layout.tsx`'s `Stack.Protected`): shown while
+// no wallet account is authorized. Week 6: renders the product
+// `ConnectScreen` (Dexxer branding, `src/ui` tokens) instead of the
+// template's "app" + placeholder icon — one connect UI for gate and
+// onboarding. The gate itself (wallet-ui `accounts.length > 0`) is unchanged.
 export default function SignIn() {
   const { signIn } = useAuth()
   const [isSigningIn, setIsSigningIn] = useState(false)
 
   // Sign-in goes through the wallet, which can decline or fail the request.
   async function handleSignIn() {
-    if (isSigningIn) {
-      return
-    }
+    if (isSigningIn) return
     setIsSigningIn(true)
     try {
       await signIn()
@@ -31,37 +28,5 @@ export default function SignIn() {
     }
   }
 
-  return (
-    <AppView
-      style={{
-        flex: 1,
-        justifyContent: 'center',
-        alignItems: 'stretch',
-      }}
-    >
-      <SafeAreaView
-        style={{
-          flex: 1,
-          justifyContent: 'space-between',
-        }}
-      >
-        {/* Dummy view to push the next view to the center. */}
-        <View />
-        <View style={{ alignItems: 'center', gap: 16 }}>
-          <AppText type="title">{AppConfig.name}</AppText>
-          <Image source={require('../assets/images/icon.png')} style={{ width: 128, height: 128 }} />
-        </View>
-        <View style={{ marginBottom: 16 }}>
-          <AppButton
-            variant="filled"
-            style={{ marginHorizontal: 16 }}
-            disabled={isSigningIn}
-            onPress={() => void handleSignIn()}
-          >
-            {isSigningIn ? 'Connecting...' : 'Connect'}
-          </AppButton>
-        </View>
-      </SafeAreaView>
-    </AppView>
-  )
+  return <ConnectScreen busy={isSigningIn} onConnect={() => void handleSignIn()} />
 }

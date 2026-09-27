@@ -10,7 +10,7 @@ import { router } from 'expo-router'
 import { ScrollView, Text, View } from 'react-native'
 import { useMobileWallet } from '@wallet-ui/react-native-web3js'
 import Clipboard from '@react-native-clipboard/clipboard'
-import { AppPage } from '@/components/app-page'
+import { Page } from '@/src/ui/Page'
 import { useTheme } from '@/src/theme'
 import { useTextStyle } from '@/src/ui/styles'
 import { Card } from '@/src/ui/Card'
@@ -21,10 +21,11 @@ import { Address } from '@/src/ui/Address'
 import { Skeleton } from '@/src/ui/Skeleton'
 import { showToast } from '@/src/ui/Toast'
 import { useTeeConnection } from '@/src/lib/er'
-import { useMwaSigning } from '@/src/lib/mwaAuth'
+import { useMwaSigning } from '@/src/lib/mwa/useMwaSigning'
 import { useLiveAccount } from '@/src/lib/live'
-import { decodeDisclosureQueue, decodePosition, decodeUserAccount, describeTxError } from '@/src/lib/program'
-import { formatSessionLeft } from '@/src/lib/status'
+import { decodeDisclosureQueue, decodePosition, decodeUserAccount } from '@/src/lib/codecs'
+import { describeTxError } from '@/src/lib/errors'
+import { formatSessionLeft, formatUsd2 } from '@/src/lib/status'
 import { pdas } from '@/src/lib/pdas'
 import { useTradeSession } from '../trade/useTradeSession'
 import { useOnboardingGate } from '../onboard/useOnboardingGate'
@@ -35,10 +36,6 @@ import { WithdrawSheet } from './WithdrawSheet'
 import { ExitSheet, type ExitChecklist } from './ExitSheet'
 import { buildAccountPdas, depositTx, exitTx, withdrawTx } from './accountTx'
 
-function usd(raw: bigint): string {
-  return (Number(raw) / 1_000_000).toFixed(2)
-}
-
 type OpenSheet = 'deposit' | 'withdraw' | 'exit' | null
 
 export function AccountScreen() {
@@ -48,7 +45,7 @@ export function AccountScreen() {
   const { account } = useMobileWallet()
   // Retry-wrapped `signTransactions` — a wallet's `reauthorize` rejection
   // (Phantom `-1`) self-heals with one fresh `authorize` prompt instead of
-  // surfacing as `-1 authorization request failed` (`mwaAuth.ts`'s "Phantom
+  // surfacing as `-1 authorization request failed` (`mwa/errors.ts`'s "Phantom
   // reauthorize bug" section).
   const { signTransactions } = useMwaSigning()
   const { getConnection } = useTeeConnection()
@@ -99,9 +96,9 @@ export function AccountScreen() {
 
   if (!account) {
     return (
-      <AppPage>
+      <Page>
         <Text style={[heading, { color: colors.textPrimary }]}>Connect your wallet to view your account.</Text>
-      </AppPage>
+      </Page>
     )
   }
 
@@ -110,8 +107,9 @@ export function AccountScreen() {
   // eslint-disable-next-line react-hooks/purity
   const now = Math.floor(Date.now() / 1000)
   const expirySec = user.value ? Number(user.value.sessionExpiry) : 0
-  const sessionActive = expirySec > now
-  const sessionLabel = formatSessionLeft(expirySec, now)
+  const actionsLeft = user.value?.actionsLeft
+  const sessionActive = expirySec > now && actionsLeft !== 0
+  const sessionLabel = formatSessionLeft(expirySec, now, actionsLeft)
 
   const checklist: ExitChecklist = {
     noOpenPosition: position.value === null || position.value.state === 'Empty',
@@ -122,7 +120,7 @@ export function AccountScreen() {
   const pendingDisclosures = dq.value?.len ?? 0
 
   return (
-    <AppPage>
+    <Page>
       <ScrollView contentContainerStyle={{ gap: space.lg, paddingVertical: space.lg }}>
         <View style={{ gap: space.xs }}>
           <View style={{ flexDirection: 'row', gap: space.sm, alignItems: 'center' }}>
@@ -145,8 +143,8 @@ export function AccountScreen() {
         ) : (
           <>
             <Card title="Balances">
-              <Row label="Available" value={user.value ? `${usd(user.value.freeMargin)} dUSDC` : '—'} mono />
-              <Row label="Locked" value={user.value ? `${usd(user.value.lockedMargin)} dUSDC` : '—'} mono />
+              <Row label="Available" value={user.value ? `${formatUsd2(user.value.freeMargin)} dUSDC` : '—'} mono />
+              <Row label="Locked" value={user.value ? `${formatUsd2(user.value.lockedMargin)} dUSDC` : '—'} mono />
               <View style={{ flexDirection: 'row', gap: space.sm }}>
                 <View style={{ flex: 1 }}>
                   <Button variant="primary" onPress={() => setSheet('deposit')}>
@@ -180,7 +178,7 @@ export function AccountScreen() {
         <WithdrawSheet
           open={sheet === 'withdraw'}
           onClose={() => setSheet(null)}
-          availableUsd={user.value ? usd(user.value.freeMargin) : '0.00'}
+          availableUsd={user.value ? formatUsd2(user.value.freeMargin) : '0.00'}
           busy={busy}
           onSubmit={handleWithdraw}
         />
@@ -193,6 +191,6 @@ export function AccountScreen() {
           onConfirm={handleExit}
         />
       </ScrollView>
-    </AppPage>
+    </Page>
   )
 }

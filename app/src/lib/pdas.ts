@@ -12,7 +12,8 @@ import {
   delegationMetadataPdaFromDelegatedAccount,
   delegationRecordPdaFromDelegatedAccount,
 } from '@magicblock-labs/ephemeral-rollups-sdk'
-import { DEXXER_CORE_PROGRAM_ID } from './program'
+import { DEXXER_CORE_PROGRAM_ID } from './anchor'
+import { config } from './config'
 
 const CONFIG_SEED = Buffer.from('config')
 const MARKET_SEED = Buffer.from('market')
@@ -44,7 +45,7 @@ export const SOL_SYMBOL = Buffer.from([83, 79, 76, 0, 0, 0, 0, 0]) // b"SOL\0\0\
 const FEED_SEED = Buffer.from('price_feed')
 const LAZER_SEED = Buffer.from('pyth-lazer')
 /** SOL/USD Lazer feed id the devnet market was `init_market`'d with — matches `tests/er/lib/admin.ts`'s `LAZER_FEED_ID`. */
-export const LAZER_FEED_ID = '6'
+export const LAZER_FEED_ID = config.lazerFeedId
 
 function pda(seeds: (Buffer | Uint8Array)[], programId: PublicKey): PublicKey {
   return PublicKey.findProgramAddressSync(seeds, programId)[0]

@@ -34,7 +34,7 @@ interface StepDef {
 
 const STEPS: StepDef[] = [
   { label: 'Create private accounts (L1)', doneAt: 'Initialized', legs: ['faucet+init_user'] },
-  { label: 'Move them into the private enclave (L1)', doneAt: 'Delegated', legs: ['delegate'] },
+  { label: 'Move them into the private enclave (L1)', doneAt: 'Delegated', legs: ['delegate_spl', 'delegate_user'] },
   { label: 'Activate session key (enclave)', doneAt: 'SessionSet', legs: ['permissions+session'] },
 ]
 

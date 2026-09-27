@@ -18,6 +18,15 @@ import nacl from 'tweetnacl'
 import { getAuthToken } from '@magicblock-labs/ephemeral-rollups-sdk'
 import { TEE_RPC, TEE_WS } from './solana'
 
+/**
+ * Week 6: a session key is considered (nearly) spent at this many remaining
+ * `actions_left`. One threshold for both sides of the UX: Trade/Account warn
+ * from here down, and a re-authorize run re-issues `set_session` from here
+ * down (`onboardState.ts`'s `sessionFresh`) — so the "Re-authorize" button
+ * shown with the warning actually does something.
+ */
+export const LOW_SESSION_ACTIONS = 3
+
 function storageKey(owner: PublicKey): string {
   return `dexxer.session.${owner.toBase58()}`
 }

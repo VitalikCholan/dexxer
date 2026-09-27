@@ -30,8 +30,14 @@ import { NONCE_ACCOUNT_LENGTH, PublicKey, SystemProgram, Transaction } from "@so
 import type { Connection, Keypair, TransactionInstruction } from "@solana/web3.js";
 import type { SponsorStore } from "./sponsor.js";
 
-export const NONCE_SEED_PREFIXES = ["dn0-", "dn1-"] as const;
-export type NonceSlot = 0 | 1;
+// Three per owner (25.09.2026): a sponsored fresh onboarding needs three L1
+// legs — `faucet+init_user`, `delegate_spl`, `delegate_user` — the last two
+// used to share one tx and overflowed the 1232-byte packet once the nonce
+// advance + ComputeBudget pair were prepended (`Transaction too large:
+// 1322 > 1232`, live fakewallet, 0-SOL wallet).
+export const NONCE_SEED_PREFIXES = ["dn0-", "dn1-", "dn2-"] as const;
+export type NonceSlot = 0 | 1 | 2;
+export const NONCE_SLOTS: readonly NonceSlot[] = [0, 1, 2];
 
 /** `"dn<slot>-" + base58(owner)[0:28]` — 32 bytes, the System Program's seed maximum. */
 export function nonceSeedFor(owner: PublicKey, slot: NonceSlot): string {
@@ -44,9 +50,9 @@ export function createWithSeedSync(base: PublicKey, seed: string): PublicKey {
   return new PublicKey(h);
 }
 
-/** The owner's two nonce accounts, as the relayer with `feePayer` derives them. */
-export function nonceAccountsFor(feePayer: PublicKey, owner: PublicKey): [PublicKey, PublicKey] {
-  return [createWithSeedSync(feePayer, nonceSeedFor(owner, 0)), createWithSeedSync(feePayer, nonceSeedFor(owner, 1))];
+/** The owner's nonce accounts (one per `NONCE_SLOTS` entry), as the relayer with `feePayer` derives them. */
+export function nonceAccountsFor(feePayer: PublicKey, owner: PublicKey): PublicKey[] {
+  return NONCE_SLOTS.map((slot) => createWithSeedSync(feePayer, nonceSeedFor(owner, slot)));
 }
 
 export interface NonceState {
@@ -132,7 +138,7 @@ export function nonceRouter(deps: NonceRouterDeps): Router {
       return;
     }
     const before = await readNonceStates(deps.conn, deps.feePayer.publicKey, owner);
-    const missing = ([0, 1] as const).filter((slot) => before[slot].nonce === null);
+    const missing = NONCE_SLOTS.filter((slot) => before[slot].nonce === null);
     if (missing.length === 0) {
       res.status(200).json({ owner: owner.toBase58(), created: false, nonces: before });
       return;

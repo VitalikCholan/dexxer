@@ -1,13 +1,14 @@
 import { Tabs } from 'expo-router'
 import React from 'react'
-import { UiIconSymbol } from '@/components/ui/ui-icon-symbol'
+import { UiIconSymbol } from '@/src/ui/UiIconSymbol'
 import { useTheme } from '@/src/theme'
 
 // Visible order (task-8, Claude Design 5-tab layout): trade, positions,
 // history, ledger, account. Everything else (`index`, `onboard`, `position`,
 // `demo`, `spikes`, `settings`) is `href: null` — out of the tab bar but
 // still reachable via router.push, and linked from Account → Settings →
-// Developer (see app/app/(tabs)/settings/index.tsx).
+// Developer (see app/app/(tabs)/settings/index.tsx). Week 6: the template's
+// `demo`/`spikes` screens are gone; `account/airdrop` stays as a dev tool.
 
 // Cold-start fix (observed live): expo-router's <Tabs> otherwise opens the
 // first declared `Tabs.Screen` ('trade') regardless of declaration order in
@@ -77,8 +78,6 @@ export default function TabLayout() {
       <Tabs.Screen name="onboard" options={{ href: null, title: 'Onboard' }} />
       <Tabs.Screen name="position" options={{ href: null, title: 'Position' }} />
       <Tabs.Screen name="settings" options={{ href: null, title: 'Settings' }} />
-      <Tabs.Screen name="demo" options={{ href: null, title: 'Demo' }} />
-      <Tabs.Screen name="spikes" options={{ href: null, title: 'Spikes' }} />
     </Tabs>
   )
 }

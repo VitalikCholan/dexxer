@@ -1,5 +1,8 @@
 // app/src/features/history/useHistoryRows.ts
 //
+// Week 6: the hook only — pure row/merge logic is in `historyRows.ts`, the
+// persisted hash set in `hashStore.ts`.
+//
 // Week 5, Task 6: split out of HistoryScreen.tsx (which had grown past what
 // belongs in a render component) — every data concern History needs: the
 // live `DisclosureQueue` subscription, the current-slot poll, the persisted
@@ -16,7 +19,7 @@
 //      next commit cycle. `commit_aggregate` later flips
 //      `commitment_written` to `true` IN PLACE (no more `mark_committed`
 //      hop through `Position.closed` — that source is gone, see
-//      `program.ts`'s `DecodedPosition`/`status.ts`'s file header).
+//      `codecs.ts`'s `DecodedPosition`/`status.ts`'s file header).
 //   2. `Disclosure` accounts on L1 (public, base layer) — the record after
 //      `write_disclosure` runs and pops it out of the queue.
 //      `Disclosure.owner` is always `Pubkey::default()` by design (the
@@ -51,224 +54,32 @@
 // `INDEXER_ENABLED=true` — an exact-pubkey L1 lookup stays the correctness-
 // bearing path for "did MY trade get revealed", independent of the indexer
 // being up), just no longer hand-rolled.
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { Connection, PublicKey } from '@solana/web3.js'
-import * as SecureStore from 'expo-secure-store'
 import { useQuery, type UseQueryResult } from '@tanstack/react-query'
-import {
-  commitmentHash,
-  decodeDisclosure,
-  decodeDisclosureQueue,
-  type DecodedClosedRecord,
-  type DecodedDisclosure,
-  type DecodedDisclosureQueue,
-} from '@/src/lib/program'
+import { decodeDisclosure, decodeDisclosureQueue, type DecodedDisclosureQueue } from '@/src/lib/codecs'
 import { pdas } from '@/src/lib/pdas'
 import { baseConn } from '@/src/lib/solana'
 import { useLiveAccount, type LiveAccount } from '@/src/lib/live'
-import { disclosureStatus, formatSlotsAsTime, type DisclosureStatus } from '@/src/lib/status'
-import type { Tone } from '@/src/ui/styles'
-
-function hashStoreKey(owner: PublicKey): string {
-  return `dexxer.hashes.${owner.toBase58()}`
-}
-
-async function loadKnownHashes(owner: PublicKey): Promise<string[]> {
-  const raw = await SecureStore.getItemAsync(hashStoreKey(owner))
-  if (!raw) return []
-  try {
-    return JSON.parse(raw) as string[]
-  } catch {
-    return []
-  }
-}
-
-/** Merge `hashes` (lowercase hex) into the persisted set for `owner`, writing back only if it actually grew. */
-async function rememberHashes(owner: PublicKey, hashes: string[]): Promise<void> {
-  const existing = await loadKnownHashes(owner)
-  const set = new Set(existing)
-  let changed = false
-  for (const h of hashes) {
-    if (!set.has(h)) {
-      set.add(h)
-      changed = true
-    }
-  }
-  if (changed) {
-    await SecureStore.setItemAsync(hashStoreKey(owner), JSON.stringify(Array.from(set)))
-  }
-}
-
-/** `commitmentHash(args, salt)` for a still-pending `DisclosureQueue` entry, hex-encoded — see file header (Task 8b). */
-function recordHash(r: DecodedClosedRecord): string {
-  const { salt, commitmentWritten: _commitmentWritten, ...args } = r
-  return Buffer.from(commitmentHash(args, salt)).toString('hex')
-}
-
-const STATUS_LABEL: Record<DisclosureStatus, string> = {
-  pending_commitment: 'Committing…',
-  committed: 'Committed — awaiting crank',
-  reveals_in: 'Reveals in',
-  revealed: 'Revealed ✓',
-}
-const STATUS_TONE: Record<DisclosureStatus, Tone> = {
-  pending_commitment: 'pending',
-  committed: 'pending',
-  reveals_in: 'warning',
-  revealed: 'success',
-}
-
-/** `slot === null && status === 'committed'` specifically means "already past its first commit, just don't know the current slot yet" — 'Checking…' is more accurate than the generic 'committed' label (which implies still-awaiting-crank, already false by definition here). */
-function rowStatusText(status: DisclosureStatus, revealAfterSlot: bigint, slot: bigint | null): string {
-  if (status === 'committed' && slot === null) return 'Checking…'
-  if (status === 'reveals_in' && slot !== null) return `Reveals in ${formatSlotsAsTime(revealAfterSlot - slot)}`
-  return STATUS_LABEL[status]
-}
-
-export interface Row {
-  key: string
-  side: string
-  size: bigint
-  entry: bigint
-  exit: bigint
-  pnl: bigint
-  closedSlot: bigint
-  status: DisclosureStatus
-  statusText: string
-  tone: Tone
-  /** Revealed rows only — the public `Disclosure` account's own address, for an explorer link. */
-  explorerPubkey?: string
-}
-
-/** `hash` (the commitment hash — see `mergeHistoryRows`) becomes the row's React `key` too, so a row stays visually stable across a status transition instead of remounting. */
-function queuePendingRow(hash: string, r: DecodedClosedRecord, slot: bigint | null): Row {
-  const status = disclosureStatus(r, slot)
-  return {
-    key: hash,
-    side: r.side,
-    size: r.size,
-    entry: r.entry,
-    exit: r.exit,
-    pnl: r.pnl,
-    closedSlot: r.closedSlot,
-    status,
-    statusText: rowStatusText(status, r.revealAfterSlot, slot),
-    tone: STATUS_TONE[status],
-  }
-}
-
-function revealedRow(hash: string, d: DecodedDisclosure, pubkey: PublicKey): Row {
-  return {
-    key: hash,
-    side: d.side,
-    size: d.size,
-    entry: d.entry,
-    exit: d.exit,
-    pnl: d.pnl,
-    closedSlot: d.closedSlot,
-    status: 'revealed',
-    statusText: STATUS_LABEL.revealed,
-    tone: STATUS_TONE.revealed,
-    explorerPubkey: pubkey.toBase58(),
-  }
-}
-
-/** One revealed `Disclosure` plus the commitment hash it was fetched by — `DecodedDisclosure` itself carries no `salt`/`reveal_after_slot`, so the hash can't be recomputed from it; it has to be threaded through from the `pdas.disclosure(hash)` lookup that found it (see `useRevealedDisclosures` below). */
-export interface RevealedEntry {
-  hash: string
-  pubkey: PublicKey
-  disclosure: DecodedDisclosure
-}
+import { loadKnownHashes, rememberHashes } from './hashStore'
+import { chunk, MAX_ACCOUNTS_PER_RPC, mergeHistoryRows, recordHash, type RevealedEntry, type Row } from './historyRows'
 
 /**
- * Merge the two live sources into one row per commitment hash — see the
- * file header's "Fix round 1" note for why dedup is needed (independently-
- * paced subscriptions can transiently disagree about a trade's stage) and
- * why precedence is `queue` < `revealed` (a later `Map.set` call for the
- * same key wins, so the higher-stage source always overwrites the lower
- * one). Exported (pure, no hooks) so `assertHistoryMergeSelfCheck` below can
- * exercise it directly.
+ * Revealed `Disclosure`s already found on L1, kept across refetches for the
+ * lifetime of the hook. A `Disclosure` account is written once by
+ * `write_disclosure` (`init`) and is never mutated or closed by any
+ * instruction — so once one is found it never needs to be fetched again.
+ * Without this cache every 5-second poll re-read EVERY remembered hash,
+ * forever: a cost that grew with the device's whole trade history instead
+ * of with the handful of trades still awaiting reveal. Keyed by owner so a
+ * wallet switch starts from an empty map.
  */
-export function mergeHistoryRows(
-  queueRecords: DecodedClosedRecord[],
-  revealed: RevealedEntry[],
-  slot: bigint | null,
-): Row[] {
-  const merged = new Map<string, Row>()
-  for (const r of queueRecords) {
-    const hash = recordHash(r)
-    merged.set(hash, queuePendingRow(hash, r, slot))
-  }
-  for (const { hash, disclosure, pubkey } of revealed) {
-    merged.set(hash, revealedRow(hash, disclosure, pubkey))
-  }
-  return Array.from(merged.values()).sort((a, b) => Number(b.closedSlot - a.closedSlot))
+interface RevealedCache {
+  owner: string | null
+  found: Map<string, RevealedEntry>
 }
 
-/**
- * Self-check (no test runner is wired up for `app/` — same gap/pattern as
- * `program.ts`'s golden vectors and `status.ts`'s
- * `assertDisclosureStatusSelfCheck`): feeds ONE synthetic trade present in
- * both sources at once (the exact failure mode Fix round 1 addresses) and
- * asserts `mergeHistoryRows` collapses it to a single row carrying the
- * highest-stage status (`revealed`), not two rows. `RED` per the task-6
- * brief: unlike the old three-source version, this no longer accepts (or
- * needs) a `Position.closed` input at all — that source is gone. Throws on
- * mismatch.
- */
-export function assertHistoryMergeSelfCheck(): void {
-  const market = new PublicKey(new Uint8Array(32).fill(7))
-  const rec: DecodedClosedRecord = {
-    market,
-    side: 'Long',
-    size: 1_000_000_000n,
-    entry: 150_000_000n,
-    exit: 151_000_000n,
-    pnl: 1_000_000n,
-    fees: 100n,
-    reason: 'User',
-    openedSlot: 10n,
-    closedSlot: 20n,
-    salt: new Uint8Array(32).fill(9),
-    nonce: 3n,
-    revealAfterSlot: 25n,
-    commitmentWritten: true,
-  }
-  const hash = recordHash(rec)
-  const disclosure: DecodedDisclosure = {
-    market,
-    side: rec.side,
-    size: rec.size,
-    entry: rec.entry,
-    exit: rec.exit,
-    pnl: rec.pnl,
-    fees: rec.fees,
-    reason: rec.reason,
-    openedSlot: rec.openedSlot,
-    closedSlot: rec.closedSlot,
-    nonce: rec.nonce,
-  }
-  const revealedEntry: RevealedEntry = { hash, pubkey: new PublicKey(new Uint8Array(32).fill(5)), disclosure }
-
-  const rows = mergeHistoryRows([rec], [revealedEntry], 100n)
-  if (rows.length !== 1) {
-    throw new Error(
-      `assertHistoryMergeSelfCheck: expected exactly 1 merged row for one trade in both sources, got ${rows.length}`,
-    )
-  }
-  if (rows[0].status !== 'revealed') {
-    throw new Error(`assertHistoryMergeSelfCheck: expected highest-stage status 'revealed', got '${rows[0].status}'`)
-  }
-}
-
-if (__DEV__) {
-  try {
-    assertHistoryMergeSelfCheck()
-    console.log('[dexxer] assertHistoryMergeSelfCheck: History merge dedupe OK (queue+revealed, no Position source)')
-  } catch (e) {
-    console.error('[dexxer] assertHistoryMergeSelfCheck FAILED', e)
-  }
-}
+const NO_REVEALED: RevealedEntry[] = []
 
 export interface UseHistoryRows {
   rows: Row[]
@@ -301,7 +112,9 @@ export function useHistoryRows(owner: PublicKey | null, conn: Connection | null)
   // string (not the decoded objects, which are fresh references on every
   // push/poll) so this only re-runs when the actual set of pending records
   // changes.
-  const dqHashes = dq.value ? dq.value.records.map(recordHash) : []
+  // keccak once per queue change (`dq.value` is a fresh object only when the
+  // bytes changed — `live.ts` byte-diffs), not once per render.
+  const dqHashes = useMemo(() => (dq.value ? dq.value.records.map(recordHash) : []), [dq.value])
   const hashKey = dqHashes.join(',')
   useEffect(() => {
     if (!owner || !hashKey) return
@@ -315,27 +128,42 @@ export function useHistoryRows(owner: PublicKey | null, conn: Connection | null)
   // scan+filter: `pdas.disclosure(hash)` is deterministic, so every known
   // hash maps to exactly one address regardless of what other traders'
   // rows exist on L1.
+  const revealedCache = useRef<RevealedCache>({ owner: null, found: new Map() })
   const revealedQuery: UseQueryResult<RevealedEntry[]> = useQuery({
     queryKey: ['dexxer-history-revealed', owner?.toBase58()],
     queryFn: async () => {
+      const ownerKey = owner!.toBase58()
+      const cache = revealedCache.current
+      if (cache.owner !== ownerKey) {
+        cache.owner = ownerKey
+        cache.found = new Map()
+      }
       const known = await loadKnownHashes(owner!)
-      if (known.length === 0) return []
-      const pubkeys = known.map((h) => pdas.disclosure(h))
-      const infos = await baseConn.getMultipleAccountsInfo(pubkeys, 'confirmed')
-      const found: RevealedEntry[] = []
-      infos.forEach((info, i) => {
-        // `known[i]` (not re-derived) — the exact hash this pubkey was
-        // looked up by, threaded through so `mergeHistoryRows` can key on it
-        // (see `RevealedEntry`'s doc comment: a `DecodedDisclosure` alone
-        // can't reproduce this hash, it lacks `salt`/`reveal_after_slot`).
-        if (info) found.push({ hash: known[i], pubkey: pubkeys[i], disclosure: decodeDisclosure(info.data) })
+      // Only hashes not yet found on L1 are looked up — see `RevealedCache`.
+      const pending = known.filter((h) => !cache.found.has(h))
+      for (const hashes of chunk(pending, MAX_ACCOUNTS_PER_RPC)) {
+        const pubkeys = hashes.map((h) => pdas.disclosure(h))
+        const infos = await baseConn.getMultipleAccountsInfo(pubkeys, 'confirmed')
+        infos.forEach((info, i) => {
+          // `hashes[i]` (not re-derived) — the exact hash this pubkey was
+          // looked up by, threaded through so `mergeHistoryRows` can key on it
+          // (see `RevealedEntry`'s doc comment: a `DecodedDisclosure` alone
+          // can't reproduce this hash, it lacks `salt`/`reveal_after_slot`).
+          if (info)
+            cache.found.set(hashes[i], { hash: hashes[i], pubkey: pubkeys[i], disclosure: decodeDisclosure(info.data) })
+        })
+      }
+      // Emitted in `known` order (deterministic across refetches); `mergeHistoryRows` sorts by `closedSlot` anyway.
+      return known.flatMap((h) => {
+        const entry = cache.found.get(h)
+        return entry ? [entry] : []
       })
-      return found
     },
     enabled: !!owner,
     refetchInterval: 5000,
   })
-  const revealed = revealedQuery.data ?? []
+  // Stable fallback: a fresh `[]` per render would invalidate the `rows` memo below every time.
+  const revealed = revealedQuery.data ?? NO_REVEALED
   const revealedError = revealedQuery.error
     ? revealedQuery.error instanceof Error
       ? revealedQuery.error.message
@@ -343,13 +171,26 @@ export function useHistoryRows(owner: PublicKey | null, conn: Connection | null)
     : null
 
   const [refreshing, setRefreshing] = useState(false)
+  const mounted = useRef(true)
+  useEffect(() => {
+    mounted.current = true
+    return () => {
+      mounted.current = false
+    }
+  }, [])
   const onRefresh = async () => {
     setRefreshing(true)
-    await revealedQuery.refetch()
-    setRefreshing(false)
+    try {
+      await revealedQuery.refetch()
+    } finally {
+      // A pull-to-refresh that outlives the screen must not set state on an unmounted hook.
+      if (mounted.current) setRefreshing(false)
+    }
   }
 
-  const rows = mergeHistoryRows(dq.value?.records ?? [], revealed, slot)
+  // Merge (another keccak pass per queue record) only when an input changed —
+  // `slot` ticks every 2 s, the other two only on real data changes.
+  const rows = useMemo(() => mergeHistoryRows(dq.value?.records ?? [], revealed, slot), [dq.value, revealed, slot])
 
   return { rows, dq, revealedError, refreshing, onRefresh }
 }
