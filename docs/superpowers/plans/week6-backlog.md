@@ -86,7 +86,16 @@ Phantom (24.09), доки MagicBlock (fees, runtime limits, magic actions), дж
    **Таймфрейми (уточнено 27.09):** 1s, 1m, 5m, 15m, 30m, 1h, 2h, 4h, 6h, 8h, 12h, 24h, 2D, 5D,
    1W, 1M. Наслідок для indexer-а relayer-а: свічки зараз агрегуються з тіків оракула в памʼяті
    (зараз 1m/5m/15m) — 1s потребує зберігати сирі тіки, а 1W/1M — довгострокове сховище
-   (Postgres уже є) і бекфіл історії, бо оракул не віддає минуле; ці два краї — окремі задачі. Кандидат — `lightweight-charts` (TradingView, Apache-2.0) у
+   (Postgres уже є) і бекфіл історії, бо оракул не віддає минуле; ці два краї — окремі задачі.
+   **Типи графіка (уточнено 27.09, як у TradingView):** Bars, Candles, Hollow candles, Line,
+   Line with markers, Step line, Area, HLC area, Baseline, Columns, High-low, Heikin Ashi —
+   перемикач у тулбарі поряд із таймфреймами, обрані типи можна «зірочкою» винести в швидкий
+   доступ. Також з референсу: панель обсягу під ціною, лінія останньої ціни з ярликом на осі,
+   ярлики High/Low за видимий діапазон, OHLC-рядок над графіком, перемикач A/L (auto/log
+   шкала), чекбокс «Positions on chart» (entry/liq поверх свічок) і Close All. Усі 12 типів —
+   лише різні рендери одних OHLCV-свічок, тож даних більше не потрібно; `lightweight-charts`
+   покриває Bars/Candles/Line/Area/Baseline/Histogram нативно, решта — обчислювані серії
+   (Heikin Ashi, HLC area, Step line) або кастомний рендер. Кандидат — `lightweight-charts` (TradingView, Apache-2.0) у
    WebView або `react-native-wagmi-charts`/Skia-порт; дані — з indexer-а relayer-а
    (`/prices`, свічки вже агрегуються). Рішення про бібліотеку — окремий спайк.
 
