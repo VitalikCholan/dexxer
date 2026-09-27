@@ -20,11 +20,11 @@ import { Badge } from '@/src/ui/Badge'
 import { Skeleton } from '@/src/ui/Skeleton'
 import {
   decodeBalancesRoot,
-  leafHex,
   readUserAccountExitSalt,
   readUserAccountFreeMargin,
   type DecodedBalancesRoot,
-} from '@/src/lib/program'
+} from '@/src/lib/codecs'
+import { leafHex } from '@/src/lib/hashes'
 import { pdas } from '@/src/lib/pdas'
 import { baseConn } from '@/src/lib/solana'
 import { useLiveAccount, type LiveAccount } from '@/src/lib/live'

@@ -8,7 +8,9 @@
 // (`indexer/http.ts`'s header comment: never `Number(...)`-coerced there,
 // since e.g. `capital_total` could exceed 2^53 as USDC volume grows) — this
 // file is the one place those strings become real `bigint`s for the rest of
-// the app.
+// the app — via `indexerCodec.ts` (week 6): every REST body and WS frame is
+// validated against the relayer's shape and rejected BY FIELD NAME, so a
+// backend rename fails loudly instead of as `BigInt(undefined)` in a hook.
 //
 // One shared WS connection (module-level singleton, RN's global
 // `WebSocket` — not the `ws` package the relayer itself uses) patches the
@@ -20,51 +22,17 @@
 import { useEffect, useState } from 'react'
 import { useQuery, useQueryClient, type QueryClient, type UseQueryResult } from '@tanstack/react-query'
 import { RELAYER_URL } from './solana'
+import { IndexerShapeError, parseCandles, parseDisclosure, parseMark, parsePoolSnapshot, parseRootLatest, parseWsFrame } from './indexerCodec'
 
 const WS_URL = `${RELAYER_URL.replace(/^http/, 'ws')}/ws`
 
-// --- REST response shapes (services/relayer/src/indexer/http.ts) ---
-
+/** `GET /prices` candle — o/h/l/c are plain numbers (relayer convention). */
 export interface Candle {
   t: number
   o: number
   h: number
   l: number
   c: number
-}
-interface PricesResponse {
-  tf: string
-  candles: Candle[]
-}
-interface MarkResponse {
-  price: string | null
-  slot: number | null
-  ts: number | null
-  stale: boolean
-}
-interface PoolSnapshotJson {
-  slot: number
-  ts: number
-  capital_total: string
-  protocol_liquidity: string
-  locked_total: string
-  fees_accrued: string
-  insurance: string
-  bad_debt_total: string
-}
-interface DisclosureJson {
-  pubkey: string
-  side: string
-  size: string
-  entry: string
-  exit: string
-  pnl: string
-  fees: string
-  reason: string
-  opened_slot: string
-  closed_slot: string
-  nonce: string
-  ts: number
 }
 export interface RootLatest {
   root_slot: number
@@ -105,45 +73,14 @@ export interface Disclosure {
   ts: number
 }
 
-function toMark(j: MarkResponse): Mark {
-  return { price: j.price !== null ? BigInt(j.price) : null, slot: j.slot, ts: j.ts, stale: j.stale }
-}
-function toPoolSnapshot(j: PoolSnapshotJson): PoolSnapshot {
-  return {
-    slot: j.slot,
-    ts: j.ts,
-    capitalTotal: BigInt(j.capital_total),
-    protocolLiquidity: BigInt(j.protocol_liquidity),
-    lockedTotal: BigInt(j.locked_total),
-    feesAccrued: BigInt(j.fees_accrued),
-    insurance: BigInt(j.insurance),
-    badDebtTotal: BigInt(j.bad_debt_total),
-  }
-}
-function toDisclosure(j: DisclosureJson): Disclosure {
-  return {
-    pubkey: j.pubkey,
-    side: j.side,
-    size: BigInt(j.size),
-    entry: BigInt(j.entry),
-    exit: BigInt(j.exit),
-    pnl: BigInt(j.pnl),
-    fees: BigInt(j.fees),
-    reason: j.reason,
-    openedSlot: BigInt(j.opened_slot),
-    closedSlot: BigInt(j.closed_slot),
-    nonce: BigInt(j.nonce),
-    ts: j.ts,
-  }
-}
-
-async function getJson<T>(path: string): Promise<T> {
+/** Fetch + validate: `parse` is one of `indexerCodec.ts`'s parsers, so a shape mismatch throws `IndexerShapeError` here (surfacing as the query's `error`), never later. */
+async function getJson<T>(path: string, parse: (body: unknown) => T): Promise<T> {
   const res = await fetch(`${RELAYER_URL}${path}`)
   if (!res.ok) throw new Error(`${path}: HTTP ${res.status}`)
-  return (await res.json()) as T
+  return parse(await res.json())
 }
 
-const QK = {
+export const QK = {
   mark: ['indexer', 'mark'] as const,
   candles: (tf: string) => ['indexer', 'candles', tf] as const,
   poolHistory: ['indexer', 'poolHistory'] as const,
@@ -156,7 +93,7 @@ export function useMark(): UseQueryResult<Mark> {
   useIndexerWs()
   return useQuery({
     queryKey: QK.mark,
-    queryFn: async () => toMark(await getJson<MarkResponse>('/mark')),
+    queryFn: () => getJson('/mark', parseMark),
     staleTime: 5_000,
     refetchInterval: 5_000,
   })
@@ -167,7 +104,7 @@ export function useCandles(tf: '1m' | '5m' | '15m' = '1m', limit = 300): UseQuer
   useIndexerWs()
   return useQuery({
     queryKey: QK.candles(tf),
-    queryFn: async () => (await getJson<PricesResponse>(`/prices?tf=${tf}&limit=${limit}`)).candles,
+    queryFn: () => getJson(`/prices?tf=${tf}&limit=${limit}`, parseCandles),
     staleTime: 30_000,
   })
 }
@@ -177,7 +114,7 @@ export function usePoolHistory(limit = 100): UseQueryResult<PoolSnapshot[]> {
   useIndexerWs()
   return useQuery({
     queryKey: QK.poolHistory,
-    queryFn: async () => (await getJson<PoolSnapshotJson[]>(`/pool/history?limit=${limit}`)).map(toPoolSnapshot),
+    queryFn: () => getJson(`/pool/history?limit=${limit}`, (b) => (Array.isArray(b) ? b.map(parsePoolSnapshot) : [])),
     staleTime: 30_000,
   })
 }
@@ -187,7 +124,7 @@ export function useDisclosures(limit = 100): UseQueryResult<Disclosure[]> {
   useIndexerWs()
   return useQuery({
     queryKey: QK.disclosures,
-    queryFn: async () => (await getJson<DisclosureJson[]>(`/disclosures?limit=${limit}`)).map(toDisclosure),
+    queryFn: () => getJson(`/disclosures?limit=${limit}`, (b) => (Array.isArray(b) ? b.map(parseDisclosure) : [])),
     staleTime: 15_000,
   })
 }
@@ -197,134 +134,216 @@ export function useRootLatest(): UseQueryResult<RootLatest | null> {
   useIndexerWs()
   return useQuery({
     queryKey: QK.rootLatest,
-    queryFn: () => getJson<RootLatest | null>('/root/latest'),
+    queryFn: () => getJson('/root/latest', parseRootLatest),
     staleTime: 30_000,
   })
 }
 
 // --- shared WS connection ---
-
-type WsFrame =
-  | { type: 'mark'; price: string | null; ts: number; stale: boolean }
-  | ({ type: 'pool' } & PoolSnapshotJson)
-  | ({ type: 'disclosure' } & DisclosureJson)
+//
+// Week 6: a class with an injected socket factory and timers instead of
+// module-level `let`s — `test/indexerWs.test.ts` drives reconnects, cache
+// patches and the history cap without a network. One instance per app
+// (`defaultIndexerWs`); the hooks below are thin wrappers over it.
 
 type ConnState = 'connecting' | 'open' | 'closed'
 
-const listeners = new Set<(s: ConnState) => void>()
-let connState: ConnState = 'closed'
-let socket: WebSocket | null = null
-let reconnectAttempt = 0
-let reconnectTimer: ReturnType<typeof setTimeout> | null = null
-let queryClientRef: QueryClient | null = null
-let refCount = 0
+export const MAX_BACKOFF_MS = 15_000
+/** Upper bound on the `poolHistory` cache the WS keeps appending to — a long session must not grow it without limit. */
+export const POOL_HISTORY_MAX = 200
 
-const MAX_BACKOFF_MS = 15_000
-
-function setConnState(s: ConnState) {
-  connState = s
-  for (const l of listeners) l(s)
+/** Reconnect delay for the n-th consecutive failed attempt: 1 s, 2 s, 4 s, … capped. */
+export function backoffMs(attempt: number): number {
+  return Math.min(1000 * 2 ** attempt, MAX_BACKOFF_MS)
 }
 
-function handleFrame(frame: WsFrame) {
-  const qc = queryClientRef
-  if (!qc) return
-  if (frame.type === 'mark') {
-    qc.setQueryData<Mark>(QK.mark, (prev) => ({
-      price: frame.price !== null ? BigInt(frame.price) : null,
-      // The `mark` WS frame carries no slot (see accounts.ts's broadcast
-      // call) — keep whatever the last REST fetch/poll observed rather than
-      // clobbering it with null on every push.
-      slot: prev?.slot ?? null,
-      ts: frame.ts,
-      stale: frame.stale,
-    }))
-  } else if (frame.type === 'pool') {
-    const next = toPoolSnapshot(frame)
-    qc.setQueryData<PoolSnapshot[]>(QK.poolHistory, (prev) => [...(prev ?? []).filter((p) => p.slot !== next.slot), next])
-  } else if (frame.type === 'disclosure') {
-    const next = toDisclosure(frame)
-    qc.setQueryData<Disclosure[]>(QK.disclosures, (prev) => {
-      const list = prev ?? []
-      if (list.some((d) => d.pubkey === next.pubkey)) return list
-      return [next, ...list]
+/** The subset of a `WebSocket` the client uses (RN's global one, or a fake). */
+export interface SocketLike {
+  onopen: (() => void) | null
+  onmessage: ((ev: { data: unknown }) => void) | null
+  onerror: (() => void) | null
+  onclose: (() => void) | null
+  close(): void
+}
+export interface IndexerWsDeps {
+  connect: (url: string) => SocketLike
+  setTimeout: (fn: () => void, ms: number) => unknown
+  clearTimeout: (handle: unknown) => void
+}
+/** The one method of `QueryClient` the WS needs. */
+export type CacheLike = Pick<QueryClient, 'setQueryData'>
+
+export class IndexerWs {
+  private state: ConnState = 'closed'
+  private socket: SocketLike | null = null
+  private attempt = 0
+  private timer: unknown = null
+  private cache: CacheLike | null = null
+  private refCount = 0
+  private readonly listeners = new Set<(s: ConnState) => void>()
+  /** `/ws` frames the codec rejected (or non-JSON) since construction. */
+  shapeErrors = 0
+
+  constructor(
+    private readonly url: string,
+    private readonly deps: IndexerWsDeps,
+  ) {}
+
+  get connState(): ConnState {
+    return this.state
+  }
+  attach(cache: CacheLike) {
+    this.cache = cache
+  }
+  subscribe(l: (s: ConnState) => void): () => void {
+    this.listeners.add(l)
+    return () => this.listeners.delete(l)
+  }
+  /**
+   * Ensures the socket is connected while at least one consumer is mounted.
+   * Deliberately does NOT tear the socket down at `refCount === 0` — cheap
+   * to hold open across a screen swap, and avoids a reconnect storm from
+   * quick mount/unmount churn; it just stops scheduling reconnects once
+   * nothing needs it (`scheduleReconnect`'s guard).
+   */
+  retain() {
+    this.refCount += 1
+    this.connect()
+  }
+  release() {
+    this.refCount = Math.max(0, this.refCount - 1)
+  }
+
+  private setState(s: ConnState) {
+    this.state = s
+    for (const l of this.listeners) l(s)
+  }
+
+  private connect() {
+    if (this.socket || this.state === 'connecting') return
+    this.setState('connecting')
+    let ws: SocketLike
+    try {
+      ws = this.deps.connect(this.url)
+    } catch {
+      this.setState('closed')
+      this.scheduleReconnect()
+      return
+    }
+    this.socket = ws
+    ws.onopen = () => {
+      this.attempt = 0
+      this.setState('open')
+    }
+    ws.onmessage = (ev) => {
+      let raw: unknown
+      try {
+        raw = JSON.parse(String(ev.data))
+      } catch {
+        this.shapeErrors += 1
+        if (__DEV__) console.warn('[dexxer] indexer ws: frame is not JSON')
+        return
+      }
+      this.handleFrame(raw) // shape errors are counted + warned inside; anything else propagates
+    }
+    ws.onerror = () => {
+      // RN's WebSocket fires `close` right after `error` — reconnect is scheduled there.
+    }
+    ws.onclose = () => {
+      this.socket = null
+      this.setState('closed')
+      this.scheduleReconnect()
+    }
+  }
+
+  private scheduleReconnect() {
+    if (this.timer || this.refCount === 0) return
+    const delay = backoffMs(this.attempt)
+    this.attempt += 1
+    this.timer = this.deps.setTimeout(() => {
+      this.timer = null
+      if (this.refCount > 0) this.connect()
+    }, delay)
+  }
+
+  /** Apply one parsed `/ws` frame to the query cache — the same shapes the REST hooks fill. */
+  handleFrame(raw: unknown) {
+    const qc = this.cache
+    if (!qc) return
+    let frame
+    try {
+      frame = parseWsFrame(raw)
+    } catch (e) {
+      if (e instanceof IndexerShapeError) {
+        this.shapeErrors += 1
+        if (__DEV__) console.warn('[dexxer] indexer ws: frame rejected —', e.message)
+        return
+      }
+      throw e
+    }
+    if (frame === null) return // a frame type this build does not know
+    if (frame.type === 'mark') {
+      qc.setQueryData<Mark>(QK.mark, (prev) => ({
+        price: frame.price,
+        // The `mark` WS frame carries no slot (see accounts.ts's broadcast
+        // call) — keep whatever the last REST fetch/poll observed rather than
+        // clobbering it with null on every push.
+        slot: prev?.slot ?? null,
+        ts: frame.ts,
+        stale: frame.stale,
+      }))
+    } else if (frame.type === 'pool') {
+      const { type: _t, ...next } = frame
+      qc.setQueryData<PoolSnapshot[]>(QK.poolHistory, (prev) =>
+        [...(prev ?? []).filter((p) => p.slot !== next.slot), next].slice(-POOL_HISTORY_MAX),
+      )
+    } else if (frame.type === 'disclosure') {
+      const { type: _t, ...next } = frame
+      qc.setQueryData<Disclosure[]>(QK.disclosures, (prev) => {
+        const list = prev ?? []
+        if (list.some((d) => d.pubkey === next.pubkey)) return list
+        return [next, ...list]
+      })
+    }
+  }
+}
+
+/** The app's instance: RN's global `WebSocket` and timers. Created lazily so importing this module never opens a socket. */
+let defaultWs: IndexerWs | null = null
+function defaultIndexerWs(): IndexerWs {
+  if (!defaultWs) {
+    defaultWs = new IndexerWs(WS_URL, {
+      connect: (url) => {
+        if (typeof WebSocket === 'undefined') throw new Error('WebSocket unavailable')
+        return new WebSocket(url) as unknown as SocketLike
+      },
+      setTimeout: (fn, ms) => setTimeout(fn, ms),
+      clearTimeout: (h) => clearTimeout(h as ReturnType<typeof setTimeout>),
     })
   }
+  return defaultWs
 }
 
-function connectWs() {
-  if (socket || connState === 'connecting' || typeof WebSocket === 'undefined') return
-  setConnState('connecting')
-  let ws: WebSocket
-  try {
-    ws = new WebSocket(WS_URL)
-  } catch {
-    setConnState('closed')
-    scheduleReconnect()
-    return
-  }
-  socket = ws
-  ws.onopen = () => {
-    reconnectAttempt = 0
-    setConnState('open')
-  }
-  ws.onmessage = (ev) => {
-    try {
-      handleFrame(JSON.parse(String(ev.data)) as WsFrame)
-    } catch {
-      // malformed/unknown frame — ignore, the next one retries
-    }
-  }
-  ws.onerror = () => {
-    // RN's WebSocket fires `close` right after `error` — reconnect is scheduled there.
-  }
-  ws.onclose = () => {
-    socket = null
-    setConnState('closed')
-    scheduleReconnect()
-  }
-}
-
-function scheduleReconnect() {
-  if (reconnectTimer || refCount === 0) return
-  const delay = Math.min(1000 * 2 ** reconnectAttempt, MAX_BACKOFF_MS)
-  reconnectAttempt += 1
-  reconnectTimer = setTimeout(() => {
-    reconnectTimer = null
-    if (refCount > 0) connectWs()
-  }, delay)
-}
-
-/**
- * Ensures the shared WS is connected while at least one consumer is
- * mounted, and returns its live connection state. Deliberately does NOT
- * tear the socket down at `refCount === 0` — cheap to hold open across a
- * screen swap within the same tab bar, and avoids a reconnect storm from
- * quick mount/unmount churn; it just stops scheduling reconnects once
- * nothing needs it (`scheduleReconnect`'s `refCount === 0` guard).
- */
+/** Ensures the shared WS is connected while at least one consumer is mounted, and returns its live connection state. */
 function useIndexerWs(): ConnState {
   const qc = useQueryClient()
-  const [state, setState] = useState<ConnState>(connState)
+  const ws = defaultIndexerWs()
+  const [state, setState] = useState<ConnState>(ws.connState)
   useEffect(() => {
-    queryClientRef = qc
-    refCount += 1
-    connectWs()
-    const listener = (s: ConnState) => setState(s)
-    listeners.add(listener)
-    // Catch a `connState` transition that happened between this hook's
-    // initial `useState(connState)` render and the listener above actually
-    // being attached (e.g. another consumer's `connectWs()` already
-    // resolved) — same "reconcile with an external system on mount"
-    // justification `live.ts`/`useTradeSession.ts` already use elsewhere in
-    // this app for this exact lint rule.
+    ws.attach(qc)
+    ws.retain()
+    const unsubscribe = ws.subscribe(setState)
+    // Catch a state transition that happened between this hook's initial
+    // `useState` render and the listener above actually being attached —
+    // same "reconcile with an external system on mount" justification
+    // `live.ts`/`useTradeSession.ts` use for this exact lint rule.
     /* eslint-disable-next-line react-hooks/set-state-in-effect */
-    setState(connState)
+    setState(ws.connState)
     return () => {
-      listeners.delete(listener)
-      refCount = Math.max(0, refCount - 1)
+      unsubscribe()
+      ws.release()
     }
-  }, [qc])
+  }, [qc, ws])
   return state
 }
 

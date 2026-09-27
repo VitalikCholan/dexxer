@@ -12,7 +12,8 @@ import { Sheet } from '@/src/ui/Sheet'
 import { Input } from '@/src/ui/Input'
 import { Row } from '@/src/ui/Row'
 import { Button } from '@/src/ui/Button'
-import { computeUpnl, solSize, type DecodedPosition } from '@/src/lib/program'
+import { type DecodedPosition } from '@/src/lib/codecs'
+import { computeUpnl, solSize } from '@/src/lib/trade'
 
 export interface DecreaseSheetProps {
   open: boolean

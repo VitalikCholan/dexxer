@@ -119,11 +119,12 @@ test("POST /nonce: creates both accounts once (fee_payer-signed, authority=owner
     const b1 = (await r1.json()) as { created: boolean; nonces: { account: string; nonce: string | null }[] };
     assert.equal(b1.created, true);
     assert.equal(conn.sent.length, 1);
-    assert.equal(conn.sent[0].instructions.length, 4);
+    assert.equal(conn.sent[0].instructions.length, 6); // 3 × (createWithSeed + initialize)
     assert.ok(conn.sent[0].feePayer?.equals(feePayer.publicKey));
     assert.ok(conn.sent[0].verifySignatures());
-    const [acc0, acc1] = nonceAccountsFor(feePayer.publicKey, owner.publicKey);
-    assert.deepEqual(b1.nonces.map((n) => n.account), [acc0.toBase58(), acc1.toBase58()]);
+    const accounts = nonceAccountsFor(feePayer.publicKey, owner.publicKey);
+    assert.equal(accounts.length, 3);
+    assert.deepEqual(b1.nonces.map((n) => n.account), accounts.map((a) => a.toBase58()));
     assert.ok(b1.nonces.every((n) => n.nonce !== null));
     assert.equal(store.reserved, 1);
     assert.equal(store.finalized, 1);

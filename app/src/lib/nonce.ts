@@ -29,7 +29,9 @@ import { ComputeBudgetProgram, PublicKey, SystemProgram, Transaction, type Trans
 import { clearRelayerToken, relayerAuthHeaders } from './relayerAuth'
 import { RELAYER_URL } from './solana'
 
-export type NonceSlot = 0 | 1
+export type NonceSlot = 0 | 1 | 2
+/** How many nonce accounts the relayer keeps per owner (`services/relayer/src/nonce.ts`'s `NONCE_SLOTS`). */
+export const NONCE_SLOT_COUNT = 3
 
 export interface NonceInfo {
   slot: NonceSlot
@@ -47,7 +49,7 @@ interface NonceResponse {
 }
 
 /**
- * Asks the relayer for the owner's two nonce accounts (creating them on the
+ * Asks the relayer for the owner's nonce accounts (creating them on the
  * first call) and returns their CURRENT nonce values — always call right
  * before building a tx; a value is single-use. Throws on any relayer
  * failure; callers decide whether to fall back to a live blockhash.
@@ -67,7 +69,7 @@ export async function fetchNonces(owner: PublicKey): Promise<NonceInfo[]> {
   if (res.status === 401) await clearRelayerToken(owner)
   if (!res.ok) throw new Error(body.error ?? `nonce: /nonce returned ${res.status}`)
   const list = body.nonces ?? []
-  if (list.length !== 2 || list.some((n) => !n.nonce)) throw new Error('nonce: relayer returned an incomplete nonce set')
+  if (list.length < NONCE_SLOT_COUNT || list.some((n) => !n.nonce)) throw new Error('nonce: relayer returned an incomplete nonce set')
   if (__DEV__ && body.created) console.log(`[dexxer] nonce: relayer created the nonce accounts (${body.signature})`)
   return list.map((n, i) => ({ slot: i as NonceSlot, account: new PublicKey(n.account), value: n.nonce as string }))
 }

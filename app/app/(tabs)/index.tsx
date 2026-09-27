@@ -1,6 +1,6 @@
 import React from 'react'
 import { Redirect } from 'expo-router'
-import { AppPage } from '@/components/app-page'
+import { Page } from '@/src/ui/Page'
 import { Skeleton } from '@/src/ui/Skeleton'
 import { useOnboardingGate } from '@/src/features/onboard/useOnboardingGate'
 
@@ -14,9 +14,9 @@ export default function TabsIndexScreen() {
 
   if (status === 'loading') {
     return (
-      <AppPage>
+      <Page>
         <Skeleton lines={4} />
-      </AppPage>
+      </Page>
     )
   }
   if (status === 'ready') {

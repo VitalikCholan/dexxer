@@ -5,7 +5,7 @@
 // three tabs read the relayer's public indexer (`indexer.ts`, Task 9), never
 // a permissioned owner/session account.
 import { useState } from 'react'
-import { AppPage } from '@/components/app-page'
+import { Page } from '@/src/ui/Page'
 import { Segment } from '@/src/ui/Segment'
 import { DisclosuresTab } from './DisclosuresTab'
 import { PoolTab } from './PoolTab'
@@ -17,7 +17,7 @@ export function LedgerScreen() {
   const [tab, setTab] = useState<LedgerTab>('disclosures')
 
   return (
-    <AppPage>
+    <Page>
       <Segment
         value={tab}
         onChange={setTab}
@@ -28,6 +28,6 @@ export function LedgerScreen() {
         ]}
       />
       {tab === 'disclosures' ? <DisclosuresTab /> : tab === 'pool' ? <PoolTab /> : <RootTab />}
-    </AppPage>
+    </Page>
   )
 }

@@ -19,9 +19,11 @@ import {
   permissionPdaFromAccount,
 } from '@magicblock-labs/ephemeral-rollups-sdk'
 import { baseConn, ER_VALIDATOR } from '@/src/lib/solana'
-import { dexxerCoreProgram, readConfigDusdcMint, usdAmount } from '@/src/lib/program'
+import { dexxerCoreProgram } from '@/src/lib/anchor'
+import { readConfigDusdcMint } from '@/src/lib/codecs'
+import { usdAmount } from '@/src/lib/trade'
 import { pdas } from '@/src/lib/pdas'
-import { sendErOwner, sendL1, sendL1Sponsored, type Mwa } from '../onboard/batchOnboarding'
+import { sendErOwner, sendL1, sendL1Sponsored, type Mwa } from '@/src/lib/txSend'
 import { SELF_FUND_TX_MIN_LAMPORTS, canSelfFund } from '@/src/lib/selfFund'
 
 export interface AccountPdas {

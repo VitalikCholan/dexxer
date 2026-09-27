@@ -63,3 +63,6 @@ keys/*
 
 # personal Claude Code settings (auto-commit hook, etc.) — not team policy
 .claude/settings.local.json
+
+# /brag launch-video output (rendered mp4, third-party music, generated audio data)
+brag-output/

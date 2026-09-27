@@ -8,21 +8,15 @@
 import { useCallback, useState } from 'react'
 import { router } from 'expo-router'
 import { ScrollView } from 'react-native'
-import { AppPage } from '@/components/app-page'
+import { Page } from '@/src/ui/Page'
 import { useTheme } from '@/src/theme'
 import { Skeleton } from '@/src/ui/Skeleton'
 import { EmptyState } from '@/src/ui/EmptyState'
 import { showToast } from '@/src/ui/Toast'
 import { useLiveAccount } from '@/src/lib/live'
-import {
-  closePosition,
-  decodeMarket,
-  decodePosition,
-  decreasePosition,
-  describeTxError,
-  increasePosition,
-  U64_MAX,
-} from '@/src/lib/program'
+import { decodeMarket, decodePosition } from '@/src/lib/codecs'
+import { describeTxError } from '@/src/lib/errors'
+import { closePosition, decreasePosition, increasePosition, solSize, U64_MAX, usdAmount } from '@/src/lib/trade'
 import * as math from '@/src/lib/math'
 import { PositionCard } from './PositionCard'
 import { IncreaseSheet } from './IncreaseSheet'
@@ -68,7 +62,7 @@ export function PositionsScreen() {
       if (!conn || !session || !accounts || !position || mark === null) return Promise.resolve()
       const limit = math.openSlippageLimit(position.side, mark)
       return run('Increase', () =>
-        increasePosition(conn, session, accounts, addSizeSol, addMarginUsd, Number(limit) / 1_000_000),
+        increasePosition(conn, session, accounts, solSize(addSizeSol), usdAmount(addMarginUsd), limit),
       )
     },
     [conn, session, accounts, position, mark, run],
@@ -77,19 +71,16 @@ export function PositionsScreen() {
   const handleDecrease = useCallback(
     (closeSizeSol: number) => {
       if (!conn || !session || !accounts || !position) return Promise.resolve()
-      const limitUsd =
-        mark !== null
-          ? Number(math.closeSlippageLimit(position.side, mark)) / 1_000_000
-          : position.side === 'Long'
-            ? 0
-            : Number(U64_MAX) / 1_000_000
-      return run('Decrease', () => decreasePosition(conn, session, accounts, closeSizeSol, limitUsd))
+      // Raw price units end to end — `Number(U64_MAX) / 1e6` used to come back as 2^64 (see trade.ts).
+      const limitPrice =
+        mark !== null ? math.closeSlippageLimit(position.side, mark) : position.side === 'Long' ? 0n : U64_MAX
+      return run('Decrease', () => decreasePosition(conn, session, accounts, solSize(closeSizeSol), limitPrice))
     },
     [conn, session, accounts, position, mark, run],
   )
 
   return (
-    <AppPage>
+    <Page>
       <ScrollView contentContainerStyle={{ gap: space.lg, paddingVertical: space.lg }}>
         {loading ? (
           <Skeleton lines={5} />
@@ -135,6 +126,6 @@ export function PositionsScreen() {
           </>
         ) : null}
       </ScrollView>
-    </AppPage>
+    </Page>
   )
 }

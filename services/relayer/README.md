@@ -364,8 +364,10 @@ fee-оцінка ретраїть 429 від `api.devnet.solana.com` до тог
 nonce-акаунта, tx валідна до наступного advance.
 
 Створити nonce-акаунт власник теж не може (той самий повільний гаманець),
-тому створює **relayer**: `POST /nonce {owner}` → ідемпотентно створює два
-System-акаунти `createWithSeed(fee_payer, "dn<slot>-" + base58(owner)[0:28])`
+тому створює **relayer**: `POST /nonce {owner}` → ідемпотентно створює три
+System-акаунти (по одному на L1-лег онбордингу: `faucet+init_user`,
+`delegate_spl`, `delegate_user` — з 25.09, бо спонсорований `delegateSpl +
+delegate_user` в одній tx з advance і ComputeBudget важив 1322 > 1232 байт) `createWithSeed(fee_payer, "dn<slot>-" + base58(owner)[0:28])`
 з **authority = owner** (лише власник може ними користуватись), фронтує rent
 (~0.00145 SOL кожен; рахується в rate-limit і денний бюджет `/sponsor`), і
 повертає `{ nonces: [{account, nonce}] }` з поточними значеннями. Повторний

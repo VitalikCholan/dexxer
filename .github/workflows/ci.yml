@@ -116,3 +116,4 @@ jobs:
           npm ci
           npx tsc --noEmit
           npm run lint:check
+          npm test

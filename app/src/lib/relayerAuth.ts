@@ -16,8 +16,8 @@ import * as SecureStore from 'expo-secure-store'
 import { createSignInMessage } from '@solana/wallet-standard-util'
 import { useCallback } from 'react'
 import { IDENTITY_DOMAIN, IDENTITY_URI, RELAYER_URL } from './solana'
-import { useMwaSigning } from './mwaAuth'
-import { pickSignature } from '../spikes/mwa'
+import { useMwaSigning } from './mwa/useMwaSigning'
+import { pickSignature } from './mwa/accounts'
 
 /** Renew this long before the relayer's `expiresAt`, so a flow never starts on a token about to lapse. */
 const REFRESH_SKEW_MS = 5 * 60 * 1000

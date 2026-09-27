@@ -18,9 +18,10 @@
 // (`InvalidAccountForFee`, `batchOnboarding.ts`'s file header) — but that
 // is not SOL rent, and the ER leg is funded from the shared ephemeral
 // vault, not the owner's L1 balance.
-import { router } from 'expo-router'
+import { useEffect } from 'react'
+import { router, useLocalSearchParams } from 'expo-router'
 import { ScrollView, Text, View } from 'react-native'
-import { AppPage } from '@/components/app-page'
+import { Page } from '@/src/ui/Page'
 import { useTheme } from '@/src/theme'
 import { useTextStyle } from '@/src/ui/styles'
 import { Button } from '@/src/ui/Button'
@@ -36,14 +37,29 @@ export function OnboardScreen() {
   const body = useTextStyle('body')
   const caption = useTextStyle('caption')
 
-  const { owner, session, state, busy, error, batchProgress, connectWallet, advance } = useOnboarding()
+  const { owner, session, state, busy, error, batchProgress, connectWallet, refresh, advance } = useOnboarding()
   const gate = useOnboardingGate()
+  // `reauth=1` (TradeScreen's "Re-authorize session"): the device IS set up,
+  // but `UserAccount.sessionExpiry` lapsed — skip the "You're set" short-cut
+  // and run the batch, which now re-issues `set_session` for a stale expiry
+  // (`batchOnboarding.ts`'s `SESSION_RENEW_MARGIN_SECS`).
+  const { reauth } = useLocalSearchParams<{ reauth?: string }>()
+  const reauthorizing = reauth === '1'
+
+  // Cheap L1-only progress read so the steps list reflects reality on mount
+  // (without it `state` stays 'Disconnected' and every step shows "waiting"
+  // even on a fully delegated device).
+  const ownerKey = owner?.toBase58() ?? null
+  useEffect(() => {
+    if (ownerKey) void refresh()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ownerKey])
 
   if (!owner) {
     return (
-      <AppPage>
+      <Page>
         <ConnectScreen busy={busy} onConnect={() => void connectWallet()} />
-      </AppPage>
+      </Page>
     )
   }
 
@@ -52,9 +68,9 @@ export function OnboardScreen() {
   // that was already set up in an earlier session — the gate re-derives
   // readiness from L1 + the stored session key without replaying the
   // onboarding state machine's own (mount-time-only) L1 check.
-  if (state === 'SessionSet' || gate.status === 'ready') {
+  if (state === 'SessionSet' || (gate.status === 'ready' && !reauthorizing)) {
     return (
-      <AppPage>
+      <Page>
         <View style={{ flex: 1, justifyContent: 'center', gap: space.lg, paddingHorizontal: space.lg }}>
           <Text style={[title, { color: colors.textPrimary, textAlign: 'center' }]}>You&apos;re set.</Text>
           <Text style={[body, { color: colors.textSecondary, textAlign: 'center' }]}>Session key active for 24h</Text>
@@ -68,16 +84,23 @@ export function OnboardScreen() {
             Go to Trade
           </Button>
         </View>
-      </AppPage>
+      </Page>
     )
   }
 
   const failedStep = batchProgress.phase === 'Failed'
 
   return (
-    <AppPage>
+    <Page>
       <ScrollView contentContainerStyle={{ gap: space.lg, paddingVertical: space.lg }}>
-        <Text style={[title, { color: colors.textPrimary }]}>Set up private account</Text>
+        <Text style={[title, { color: colors.textPrimary }]}>
+          {reauthorizing ? 'Re-authorize session' : 'Set up private account'}
+        </Text>
+        {reauthorizing ? (
+          <Text style={[body, { color: colors.textSecondary }]}>
+            Your session key expired. One enclave signature renews it for 24h — no SOL needed.
+          </Text>
+        ) : null}
 
         <View style={{ gap: space.xs }}>
           <Text style={[caption, { color: colors.textSecondary }]}>Owner</Text>
@@ -101,6 +124,6 @@ export function OnboardScreen() {
           No SOL needed — rent is sponsored for empty wallets; a wallet holding SOL pays its own (≈0.03 SOL)
         </Text>
       </ScrollView>
-    </AppPage>
+    </Page>
   )
 }

@@ -9,7 +9,7 @@
 // model retired it).
 import { useState } from 'react'
 import { Pressable, RefreshControl, ScrollView, Text, View } from 'react-native'
-import { AppPage } from '@/components/app-page'
+import { Page } from '@/src/ui/Page'
 import { useTheme } from '@/src/theme'
 import { useTextStyle } from '@/src/ui/styles'
 import { Card } from '@/src/ui/Card'
@@ -37,7 +37,7 @@ export function HistoryScreen() {
   const caption = useTextStyle('caption')
 
   return (
-    <AppPage>
+    <Page>
       <ScrollView
         contentContainerStyle={{ gap: space.lg, paddingVertical: space.lg }}
         refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => void onRefresh()} />}
@@ -89,6 +89,6 @@ export function HistoryScreen() {
           </View>
         )}
       </ScrollView>
-    </AppPage>
+    </Page>
   )
 }
