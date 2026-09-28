@@ -5,14 +5,15 @@
 // Long/Short — session-signed, no MWA prompt), stale-oracle and
 // session-expired banners. Close/Increase/Decrease moved to the Positions
 // screen (Task 10); week 6 (C.4) brings partial/full close back as the
-// ticket's Close tab (`decrease_position`).
+// ticket's Close tab (`decrease_position`). Week 6 (C.6-A): the chart
+// collapses (`ChartSection`), and Positions (n) / Open Orders (n) sit
+// under the ticket (`TradeActivity`).
 import { useCallback, useMemo, useState } from 'react'
 import { router } from 'expo-router'
 import { ScrollView, Text, View } from 'react-native'
 import { Page } from '@/src/ui/Page'
 import { useTheme } from '@/src/theme'
 import { useTextStyle } from '@/src/ui/styles'
-import { Segment } from '@/src/ui/Segment'
 import { Badge } from '@/src/ui/Badge'
 import { Button } from '@/src/ui/Button'
 import { Skeleton } from '@/src/ui/Skeleton'
@@ -23,7 +24,8 @@ import { decodePosition, decodeUserAccount, readMarket, type SideName } from '@/
 import { describeTxError } from '@/src/lib/errors'
 import { decreasePosition, openPosition } from '@/src/lib/trade'
 import * as math from '@/src/lib/math'
-import { PriceChart } from './PriceChart'
+import { ChartSection, type Tf } from './ChartSection'
+import { TradeActivity } from './TradeActivity'
 import { TradeHeader } from './TradeHeader'
 import { MarketInfoCard } from './MarketInfoCard'
 import { maxLeverage, rangeStats } from './headerStats'
@@ -32,8 +34,6 @@ import { decodeTicketMarket } from './marketLimits'
 import { useTradeSession } from './useTradeSession'
 import { LOW_SESSION_ACTIONS } from '@/src/lib/session'
 import { useOnboardingGate } from '../onboard/useOnboardingGate'
-
-type Tf = '1m' | '5m' | '15m'
 
 export function TradeScreen() {
   const { colors, space } = useTheme()
@@ -156,19 +156,7 @@ export function TradeScreen() {
           poolLiquidity={pool.data?.length ? pool.data[pool.data.length - 1].capitalTotal : null}
         />
 
-        <View style={{ gap: space.sm }}>
-          <PriceChart tf={tf} markUsd={markUsdNum} />
-          <Segment
-            compact
-            value={tf}
-            onChange={setTf}
-            options={[
-              { value: '1m', label: '1m' },
-              { value: '5m', label: '5m' },
-              { value: '15m', label: '15m' },
-            ]}
-          />
-        </View>
+        <ChartSection tf={tf} onTfChange={setTf} markUsd={markUsdNum} />
 
         {oracle.reason === 'loading' ? (
           <Skeleton lines={1} />
@@ -219,6 +207,8 @@ export function TradeScreen() {
             onClose={handleClose}
           />
         )}
+
+        <TradeActivity position={position} markUsd={markUsd} />
 
         <MarketInfoCard market={marketLive.value} />
       </ScrollView>
