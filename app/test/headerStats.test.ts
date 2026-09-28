@@ -1,7 +1,7 @@
 // test/headerStats.test.ts — the market header's pure numbers (`src/features/trade/headerStats.ts`).
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { formatCompactUsd, maxLeverage, rangeStats } from '../src/features/trade/headerStats'
+import { formatBps, formatCompactUsd, maxLeverage, rangeStats } from '../src/features/trade/headerStats'
 
 const H = 3_600_000
 
@@ -35,4 +35,12 @@ test('formatCompactUsd', () => {
   assert.equal(formatCompactUsd(10_000_000_000n), '$10.0K')
   assert.equal(formatCompactUsd(12_345_000_000n), '$12.3K')
   assert.equal(formatCompactUsd(4_560_000_000_000n), '$4.56M')
+})
+
+test('formatBps', () => {
+  assert.equal(formatBps(6), '0.06%')
+  assert.equal(formatBps(500), '5%')
+  assert.equal(formatBps(100), '1%')
+  assert.equal(formatBps(15), '0.15%')
+  assert.equal(formatBps(250), '2.5%')
 })

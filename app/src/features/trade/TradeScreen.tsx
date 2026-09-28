@@ -25,6 +25,7 @@ import { decreasePosition, openPosition } from '@/src/lib/trade'
 import * as math from '@/src/lib/math'
 import { PriceChart } from './PriceChart'
 import { TradeHeader } from './TradeHeader'
+import { MarketInfoCard } from './MarketInfoCard'
 import { maxLeverage, rangeStats } from './headerStats'
 import { TradeTicket, type MarketParams } from './TradeTicket'
 import { decodeTicketMarket } from './marketLimits'
@@ -218,6 +219,8 @@ export function TradeScreen() {
             onClose={handleClose}
           />
         )}
+
+        <MarketInfoCard market={marketLive.value} />
       </ScrollView>
     </Page>
   )

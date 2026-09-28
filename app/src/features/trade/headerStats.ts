@@ -45,3 +45,9 @@ export function formatCompactUsd(raw1e6: bigint): string {
   if (n >= 1e3) return `$${(n / 1e3).toFixed(1)}K`
   return `$${n.toFixed(0)}`
 }
+
+/** Basis points -> percent text: 6 -> `0.06%`, 500 -> `5%`, 100 -> `1%`. */
+export function formatBps(bps: number): string {
+  const pct = bps / 100
+  return `${Number.isInteger(pct) ? pct.toFixed(0) : pct.toFixed(2).replace(/0$/, '')}%`
+}

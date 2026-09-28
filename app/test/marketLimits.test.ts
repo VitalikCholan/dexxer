@@ -7,7 +7,7 @@ import { PublicKey } from '@solana/web3.js'
 import { DEXXER_CORE_IDL } from '../src/lib/anchor'
 import { decodeTicketMarket } from '../src/features/trade/marketLimits'
 
-test('decodeTicketMarket: min_size plus the shared decodeMarket fields', async () => {
+test('decodeTicketMarket: min_size, liq_fee_bps plus the shared decodeMarket fields', async () => {
   const data = await new BorshAccountsCoder(DEXXER_CORE_IDL).encode('Market', {
     version: 1,
     symbol: [...Buffer.from('SOL-PERP')],
@@ -17,7 +17,7 @@ test('decodeTicketMarket: min_size plus the shared decodeMarket fields', async (
     mmr_bps: 500,
     open_fee_bps: 6,
     close_fee_bps: 7,
-    liq_fee_bps: 100,
+    liq_fee_bps: 123,
     oi_cap: new BN(0),
     max_position: new BN('100000000000'),
     min_size: new BN(10_000_000),
@@ -35,6 +35,7 @@ test('decodeTicketMarket: min_size plus the shared decodeMarket fields', async (
   })
   const m = decodeTicketMarket(data)
   assert.equal(m.minSize, 10_000_000n)
+  assert.equal(m.liqFeeBps, 123)
   assert.equal(m.mark, 151_234_567n)
   assert.equal(m.mmrBps, 500)
   assert.equal(m.closeFeeBps, 7)
