@@ -28,6 +28,7 @@ import { decodeDisclosureQueue, decodePosition, decodeUserAccount } from '@/src/
 import { describeTxError } from '@/src/lib/errors'
 import { formatSessionLeft, formatUsd2 } from '@/src/lib/status'
 import { pdas } from '@/src/lib/pdas'
+import { FEATURES } from '@/src/lib/features'
 import { useTradeSession } from '../trade/useTradeSession'
 import { useOnboardingGate } from '../onboard/useOnboardingGate'
 import { SetupAccountCard } from '../onboard/SetupAccountCard'
@@ -164,14 +165,17 @@ export function AccountScreen() {
               </View>
             </Card>
 
-            <ReceiptSection />
+            {/* Receipt and Exit are temporarily hidden — `src/lib/features.ts`. */}
+            {FEATURES.receipt ? <ReceiptSection /> : null}
 
-            <Card title="Exit">
-              <Text style={{ color: colors.textSecondary }}>Return your private accounts to L1, fields erased.</Text>
-              <Button variant="destructive" onPress={() => setSheet('exit')}>
-                Exit private account
-              </Button>
-            </Card>
+            {FEATURES.exit ? (
+              <Card title="Exit">
+                <Text style={{ color: colors.textSecondary }}>Return your private accounts to L1, fields erased.</Text>
+                <Button variant="destructive" onPress={() => setSheet('exit')}>
+                  Exit private account
+                </Button>
+              </Card>
+            ) : null}
           </>
         )}
 
@@ -188,7 +192,7 @@ export function AccountScreen() {
           onSubmit={handleWithdraw}
         />
         <ExitSheet
-          open={sheet === 'exit'}
+          open={FEATURES.exit && sheet === 'exit'}
           onClose={() => setSheet(null)}
           checklist={checklist}
           pendingDisclosures={pendingDisclosures}

@@ -11,6 +11,7 @@ import { useState } from 'react'
 import { Pressable, RefreshControl, ScrollView, Text, View } from 'react-native'
 import { Page } from '@/src/ui/Page'
 import { useTheme } from '@/src/theme'
+import { FEATURES } from '@/src/lib/features'
 import { useTextStyle } from '@/src/ui/styles'
 import { Card } from '@/src/ui/Card'
 import { Row as UiRow } from '@/src/ui/Row'
@@ -44,16 +45,19 @@ export function HistoryScreen() {
       >
         <Text style={[heading, { color: colors.textPrimary }]}>History</Text>
 
-        <Pressable onPress={() => setExplainerOpen((v) => !v)}>
-          <Text style={[caption, { color: colors.textSecondary }]}>
-            {explainerOpen ? '▾' : '▸'} Why do trades become public?
-          </Text>
-          {explainerOpen ? (
-            <Text style={[caption, { color: colors.textTertiary, marginTop: 4 }]}>
-              Your trades become public only after the delay — without your address.
+        {/* Commit-reveal is temporarily hidden from the UI — `src/lib/features.ts`. */}
+        {FEATURES.commitReveal ? (
+          <Pressable onPress={() => setExplainerOpen((v) => !v)}>
+            <Text style={[caption, { color: colors.textSecondary }]}>
+              {explainerOpen ? '▾' : '▸'} Why do trades become public?
             </Text>
-          ) : null}
-        </Pressable>
+            {explainerOpen ? (
+              <Text style={[caption, { color: colors.textTertiary, marginTop: 4 }]}>
+                Your trades become public only after the delay — without your address.
+              </Text>
+            ) : null}
+          </Pressable>
+        ) : null}
 
         {sessionError || dq.error || revealedError ? (
           <Text selectable style={{ color: colors.short }}>
@@ -75,7 +79,7 @@ export function HistoryScreen() {
                   <Text style={[body, { color: colors.textPrimary, fontWeight: '600' }]}>
                     {r.side} {fmtSol(r.size)} SOL
                   </Text>
-                  <Badge tone={r.tone}>{r.statusText}</Badge>
+                  {FEATURES.commitReveal ? <Badge tone={r.tone}>{r.statusText}</Badge> : null}
                 </View>
                 <UiRow label="Entry → Exit" value={`$${formatUsd2(r.entry)} → $${formatUsd2(r.exit)}`} mono />
                 <UiRow
@@ -83,7 +87,7 @@ export function HistoryScreen() {
                   value={`${r.pnl >= 0n ? '+' : ''}$${formatUsd2(r.pnl)}`}
                   tone={r.pnl >= 0n ? 'success' : 'danger'}
                 />
-                {r.explorerPubkey ? <Address pubkey={r.explorerPubkey} explorer /> : null}
+                {FEATURES.commitReveal && r.explorerPubkey ? <Address pubkey={r.explorerPubkey} explorer /> : null}
               </Card>
             ))}
           </View>

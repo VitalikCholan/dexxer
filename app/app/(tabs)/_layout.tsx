@@ -2,6 +2,7 @@ import { Tabs } from 'expo-router'
 import React from 'react'
 import { UiIconSymbol } from '@/src/ui/UiIconSymbol'
 import { useTheme } from '@/src/theme'
+import { FEATURES } from '@/src/lib/features'
 
 // Visible order (task-8, Claude Design 5-tab layout): trade, positions,
 // history, ledger, account. Everything else (`index`, `onboard`, `position`,
@@ -61,6 +62,8 @@ export default function TabLayout() {
       <Tabs.Screen
         name="ledger"
         options={{
+          // Temporarily hidden — `src/lib/features.ts`.
+          href: FEATURES.ledger ? undefined : null,
           title: 'Ledger',
           tabBarIcon: ({ color }) => <UiIconSymbol size={28} name="list.bullet.rectangle.fill" color={color} />,
         }}
