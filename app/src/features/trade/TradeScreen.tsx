@@ -4,7 +4,8 @@
 // Lazer freshness badge), PriceChart (1m/5m/15m), TradeTicket (Open
 // Long/Short — session-signed, no MWA prompt), stale-oracle and
 // session-expired banners. Close/Increase/Decrease moved to the Positions
-// screen (Task 10) — this screen only opens.
+// screen (Task 10); week 6 (C.4) brings partial/full close back as the
+// ticket's Close tab (`decrease_position`).
 import { useCallback, useMemo, useState } from 'react'
 import { router } from 'expo-router'
 import { ScrollView, Text, View } from 'react-native'
@@ -18,12 +19,14 @@ import { Skeleton } from '@/src/ui/Skeleton'
 import { showToast } from '@/src/ui/Toast'
 import { useLiveAccount } from '@/src/lib/live'
 import { useCandles, useIndexerConnected, useMark } from '@/src/lib/indexer'
-import { decodeMarket, decodePosition, decodeUserAccount, readMarket, type SideName } from '@/src/lib/codecs'
+import { decodePosition, decodeUserAccount, readMarket, type SideName } from '@/src/lib/codecs'
 import { describeTxError } from '@/src/lib/errors'
-import { openPosition } from '@/src/lib/trade'
+import { decreasePosition, openPosition } from '@/src/lib/trade'
+import * as math from '@/src/lib/math'
 import { PriceChart } from './PriceChart'
 import { TradeHeader } from './TradeHeader'
 import { TradeTicket, type MarketParams } from './TradeTicket'
+import { decodeTicketMarket } from './marketLimits'
 import { useTradeSession } from './useTradeSession'
 import { LOW_SESSION_ACTIONS } from '@/src/lib/session'
 import { useOnboardingGate } from '../onboard/useOnboardingGate'
@@ -40,13 +43,13 @@ export function TradeScreen() {
   const [busy, setBusy] = useState(false)
 
   const positionLive = useLiveAccount(conn, accounts?.position ?? null, decodePosition)
-  const marketLive = useLiveAccount(conn, accounts?.market ?? null, decodeMarket)
+  const marketLive = useLiveAccount(conn, accounts?.market ?? null, decodeTicketMarket)
   const userLive = useLiveAccount(conn, accounts?.userAccount ?? null, decodeUserAccount)
   const mark = useMark()
   const change24h = useCandles('15m', 96)
   const indexerConnected = useIndexerConnected()
 
-  const hasOpenPosition = positionLive.value?.state === 'Open'
+  const position = positionLive.value
   const marketMark = marketLive.value?.mark ?? null
   const markUsd = mark.data?.price ?? marketMark
   const markUsdNum = markUsd !== null ? Number(markUsd) / 1e6 : null
@@ -95,6 +98,8 @@ export function TradeScreen() {
         imrBps: BigInt(marketLive.value.imrBps),
         mmrBps: BigInt(marketLive.value.mmrBps),
         openFeeBps: BigInt(marketLive.value.openFeeBps),
+        closeFeeBps: BigInt(marketLive.value.closeFeeBps),
+        minSize: marketLive.value.minSize,
       }
     : null
 
@@ -114,6 +119,26 @@ export function TradeScreen() {
       }
     },
     [conn, session, accounts],
+  )
+
+  const handleClose = useCallback(
+    async (closeSize: bigint) => {
+      if (!conn || !session || !accounts || !position || markUsd === null) return
+      setBusy(true)
+      try {
+        const limit = math.closeSlippageLimit(position.side, markUsd)
+        await decreasePosition(conn, session, accounts, closeSize, limit)
+        showToast({
+          tone: 'success',
+          text: closeSize === position.size ? 'Position closed' : `Closed ${Number(closeSize) / 1_000_000_000} SOL`,
+        })
+      } catch (e) {
+        showToast({ tone: 'danger', text: describeTxError(e) })
+      } finally {
+        setBusy(false)
+      }
+    },
+    [conn, session, accounts, position, markUsd],
   )
 
   return (
@@ -177,10 +202,11 @@ export function TradeScreen() {
             markUsd={markUsd}
             market={marketParams}
             freeMarginUsd={userLive.value?.freeMargin ?? null}
-            hasOpenPosition={hasOpenPosition}
+            position={position}
             busy={busy}
             disabled={tradingPaused || sessionExpired || sessionUsedUp || !session}
             onOpen={handleOpen}
+            onClose={handleClose}
           />
         )}
       </ScrollView>

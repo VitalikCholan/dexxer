@@ -130,3 +130,50 @@ export function impliedLeverage(ntl: bigint, available: bigint): number {
   const q = (ntl + available - 1n) / available
   return Number(q < 1n ? 1n : q > 10n ? 10n : q)
 }
+
+// --- Close tab and Add margin (C.4) ---
+
+export type CloseBlock = 'no_size' | 'exceeds' | 'remainder_below_min' | null
+
+/** `decrease_position`'s requires: `0 < close ≤ size`, and a partial close must leave at least `min_size`. */
+export function closeBlock(closeSize: bigint, posSize: bigint, minSize: bigint | null): CloseBlock {
+  if (closeSize <= 0n) return 'no_size'
+  if (closeSize > posSize) return 'exceeds'
+  if (closeSize < posSize && minSize !== null && posSize - closeSize < minSize) return 'remainder_below_min'
+  return null
+}
+
+/**
+ * What closing `closeSize` at `mark` realizes: PnL (`math.rs::decrease_pnl`
+ * is `upnl` on the closed part, truncated toward zero), the close fee, and
+ * the margin released pro rata, floored — the remainder keeps the rounding
+ * (`trade.rs::decrease_position`).
+ */
+export function closePreview(
+  side: SideName,
+  closeSize: bigint,
+  posSize: bigint,
+  entry: bigint,
+  margin: bigint,
+  mark: bigint,
+  closeFeeBps: bigint,
+): { pnl: bigint; fee: bigint; released: bigint } {
+  const diff = side === 'Long' ? mark - entry : entry - mark
+  return {
+    pnl: (closeSize * diff) / math.SIZE_SCALE,
+    fee: math.fee(math.notional(closeSize, mark), closeFeeBps),
+    released: posSize > 0n ? (margin * closeSize) / posSize : 0n,
+  }
+}
+
+/** `add_margin` recomputes liq at the same entry/size with the bigger margin (`trade.rs`). Null = no liq price (below 1×). */
+export function liqAfterAddMargin(
+  side: SideName,
+  entry: bigint,
+  size: bigint,
+  margin: bigint,
+  add: bigint,
+  mmrBps: bigint,
+): bigint | null {
+  return safeLiq(side, entry, size, margin + add, mmrBps)
+}
