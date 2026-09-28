@@ -156,7 +156,14 @@ export function TradeScreen() {
           poolLiquidity={pool.data?.length ? pool.data[pool.data.length - 1].capitalTotal : null}
         />
 
-        <ChartSection tf={tf} onTfChange={setTf} markUsd={markUsd} position={position} />
+        <ChartSection
+          tf={tf}
+          onTfChange={setTf}
+          markUsd={markUsd}
+          position={position}
+          market={marketLive.value}
+          poolCapital={pool.data?.length ? pool.data[pool.data.length - 1].capitalTotal : null}
+        />
 
         {oracle.reason === 'loading' ? (
           <Skeleton lines={1} />
