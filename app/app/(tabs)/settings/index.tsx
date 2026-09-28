@@ -1,5 +1,5 @@
 import { Link } from 'expo-router'
-import { Text, View } from 'react-native'
+import { StyleSheet, Text, View } from 'react-native'
 import { useTheme } from '@/src/theme'
 import { useTextStyle } from '@/src/ui/styles'
 import { Page } from '@/src/ui/Page'
@@ -31,7 +31,7 @@ export default function TabSettingsScreen() {
         <Text style={[heading, { color: colors.textPrimary }]}>Developer</Text>
         {DEVELOPER_LINKS.map((l) => (
           <Link key={l.href} href={l.href} asChild>
-            <Text style={[link, { color: colors.accent, lineHeight: 30 }]}>{l.label}</Text>
+            <Text style={StyleSheet.flatten([link, { color: colors.accent, lineHeight: 30 }])}>{l.label}</Text>
           </Link>
         ))}
       </View>
