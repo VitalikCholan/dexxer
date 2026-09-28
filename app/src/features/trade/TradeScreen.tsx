@@ -18,13 +18,14 @@ import { Button } from '@/src/ui/Button'
 import { Skeleton } from '@/src/ui/Skeleton'
 import { showToast } from '@/src/ui/Toast'
 import { useLiveAccount } from '@/src/lib/live'
-import { useCandles, useIndexerConnected, useMark } from '@/src/lib/indexer'
+import { useCandles, useIndexerConnected, useMark, usePoolHistory } from '@/src/lib/indexer'
 import { decodePosition, decodeUserAccount, readMarket, type SideName } from '@/src/lib/codecs'
 import { describeTxError } from '@/src/lib/errors'
 import { decreasePosition, openPosition } from '@/src/lib/trade'
 import * as math from '@/src/lib/math'
 import { PriceChart } from './PriceChart'
 import { TradeHeader } from './TradeHeader'
+import { maxLeverage, rangeStats } from './headerStats'
 import { TradeTicket, type MarketParams } from './TradeTicket'
 import { decodeTicketMarket } from './marketLimits'
 import { useTradeSession } from './useTradeSession'
@@ -47,6 +48,7 @@ export function TradeScreen() {
   const userLive = useLiveAccount(conn, accounts?.userAccount ?? null, decodeUserAccount)
   const mark = useMark()
   const change24h = useCandles('15m', 96)
+  const pool = usePoolHistory(1)
   const indexerConnected = useIndexerConnected()
 
   const position = positionLive.value
@@ -144,7 +146,14 @@ export function TradeScreen() {
   return (
     <Page>
       <ScrollView contentContainerStyle={{ gap: space.lg, paddingVertical: space.lg }}>
-        <TradeHeader markUsdNum={markUsdNum} pctChange={pctChange} dotColor={dotColor} />
+        <TradeHeader
+          markUsdNum={markUsdNum}
+          pctChange={pctChange}
+          dotColor={dotColor}
+          maxLeverage={marketLive.value ? maxLeverage(marketLive.value.maxLevBps, marketLive.value.imrBps) : null}
+          range={rangeStats(change24h.data, now * 1000)}
+          poolLiquidity={pool.data?.length ? pool.data[pool.data.length - 1].capitalTotal : null}
+        />
 
         <View style={{ gap: space.sm }}>
           <PriceChart tf={tf} markUsd={markUsdNum} />
