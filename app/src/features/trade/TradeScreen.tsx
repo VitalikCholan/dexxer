@@ -1,7 +1,7 @@
 // app/src/features/trade/TradeScreen.tsx
 //
 // Task 10: full Trade screen per design — header (mark + 24h change + Pyth
-// Lazer freshness badge), PriceChart (1m/5m/15m), TradeTicket (Open
+// Lazer freshness badge), the chart (C.5: `chart/TradingChart`), TradeTicket (Open
 // Long/Short — session-signed, no MWA prompt), stale-oracle and
 // session-expired banners. Close/Increase/Decrease moved to the Positions
 // screen (Task 10); week 6 (C.4) brings partial/full close back as the
@@ -156,7 +156,7 @@ export function TradeScreen() {
           poolLiquidity={pool.data?.length ? pool.data[pool.data.length - 1].capitalTotal : null}
         />
 
-        <ChartSection tf={tf} onTfChange={setTf} markUsd={markUsdNum} />
+        <ChartSection tf={tf} onTfChange={setTf} markUsd={markUsd} position={position} />
 
         {oracle.reason === 'loading' ? (
           <Skeleton lines={1} />
