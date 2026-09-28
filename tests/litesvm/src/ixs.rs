@@ -1,6 +1,6 @@
 use crate::{
     apk, pdas, pk,
-    setup::{Trader, World},
+    setup::{Mkt, Trader, World},
     token_ix::{ata, ATA_PROGRAM, RENT, SYSTEM, TOKEN},
 };
 use anchor_lang::InstructionData;
@@ -62,8 +62,13 @@ pub fn init_config(
         .data(),
     }
 }
-pub fn init_market(admin: &Pubkey, params: MarketParams, lazer_feed_id: &str) -> Instruction {
-    let m = pdas::market();
+pub fn init_market(
+    admin: &Pubkey,
+    symbol: [u8; 8],
+    params: MarketParams,
+    lazer_feed_id: &str,
+) -> Instruction {
+    let m = pdas::market_for(&symbol);
     Instruction {
         program_id: prog(),
         accounts: vec![
@@ -74,10 +79,153 @@ pub fn init_market(admin: &Pubkey, params: MarketParams, lazer_feed_id: &str) ->
             r(&SYSTEM),
         ],
         data: ix::InitMarket {
+            symbol,
             params,
             lazer_feed_id: lazer_feed_id.to_string(),
         }
         .data(),
+    }
+}
+
+pub fn dlp() -> Pubkey {
+    pk(anchor_lang::prelude::Pubkey::new_from_array(
+        ephemeral_rollups_sdk::consts::DELEGATION_PROGRAM_ID.to_bytes(),
+    ))
+}
+
+/// The `[buffer, delegation_record, delegation_metadata, account]` quadruple the
+/// `#[delegate]` macro expands each `del` field into (see `delegate_user`).
+pub fn delegation_quad(acc: &Pubkey) -> [AccountMeta; 4] {
+    use ephemeral_rollups_sdk::pda::{
+        DELEGATE_BUFFER_TAG, DELEGATION_METADATA_TAG, DELEGATION_RECORD_TAG,
+    };
+    let buffer = Pubkey::find_program_address(&[DELEGATE_BUFFER_TAG, acc.as_ref()], &prog()).0;
+    let record = Pubkey::find_program_address(&[DELEGATION_RECORD_TAG, acc.as_ref()], &dlp()).0;
+    let meta = Pubkey::find_program_address(&[DELEGATION_METADATA_TAG, acc.as_ref()], &dlp()).0;
+    [w(&buffer), w(&record), w(&meta), w(acc)]
+}
+
+pub fn init_position(owner: &Pubkey, payer: &Pubkey, m: &Mkt) -> Instruction {
+    Instruction {
+        program_id: prog(),
+        accounts: vec![
+            rs(owner),
+            s(payer),
+            r(&m.market),
+            r(&pdas::user(owner)),
+            w(&pdas::position(owner, &m.market)),
+            r(&SYSTEM),
+        ],
+        data: ix::InitPosition { symbol: m.symbol }.data(),
+    }
+}
+
+pub fn delegate_position(owner: &Pubkey, payer: &Pubkey, wd: &World, m: &Mkt) -> Instruction {
+    let mut accounts = vec![
+        rs(owner),
+        s(payer),
+        r(&wd.config),
+        r(&m.market),
+        r(&pdas::user(owner)),
+    ];
+    accounts.extend(delegation_quad(&pdas::position(owner, &m.market)));
+    accounts.extend([r(&prog()), r(&dlp()), r(&SYSTEM)]);
+    Instruction {
+        program_id: prog(),
+        accounts,
+        data: ix::DelegatePosition { symbol: m.symbol }.data(),
+    }
+}
+
+pub fn init_position_permission(
+    signer: &Pubkey,
+    wd: &World,
+    owner: &Pubkey,
+    m: &Mkt,
+) -> Instruction {
+    let pos = pdas::position(owner, &m.market);
+    Instruction {
+        program_id: prog(),
+        accounts: vec![
+            rs(signer),
+            r(&wd.config),
+            w(&pos),
+            r(&pdas::user(owner)),
+            w(&pdas::permission(&pos)),
+            r(&pdas::permission_program()),
+            w(&pdas::ephemeral_vault()),
+            r(&pdas::magic_program()),
+        ],
+        data: ix::InitPositionPermission {}.data(),
+    }
+}
+
+/// `set_session` plus `[position, permission]` pairs for the owner's positions
+/// on other markets (spec §2.8.2).
+pub fn set_session_with(
+    signer: &Pubkey,
+    t: &Trader,
+    session: &Pubkey,
+    expiry: i64,
+    actions: u32,
+    extra_positions: &[Pubkey],
+) -> Instruction {
+    let mut ix = set_session(signer, t, session, expiry, actions);
+    for p in extra_positions {
+        ix.accounts.push(w(p));
+        ix.accounts.push(w(&pdas::permission(p)));
+    }
+    ix
+}
+
+pub fn undelegate_position(signer: &Pubkey, wd: &World, owner: &Pubkey, m: &Mkt) -> Instruction {
+    let pos = pdas::position(owner, &m.market);
+    Instruction {
+        program_id: prog(),
+        accounts: vec![
+            rs(signer),
+            r(&wd.config),
+            w(&pos),
+            r(&pdas::user(owner)),
+            w(&pdas::permission(&pos)),
+            w(&pdas::ephemeral_vault()),
+            r(&pdas::permission_program()),
+            w(&wd.fee_escrow),
+            w(&wd.magic_fee_vault),
+            w(&pdas::magic_context()),
+            r(&pdas::magic_program()),
+        ],
+        data: ix::UndelegatePosition {}.data(),
+    }
+}
+
+pub fn close_exited_position(
+    fee_payer: &Pubkey,
+    wd: &World,
+    owner: &Pubkey,
+    m: &Mkt,
+) -> Instruction {
+    Instruction {
+        program_id: prog(),
+        accounts: vec![
+            s(fee_payer),
+            r(&wd.config),
+            w(&pdas::position(owner, &m.market)),
+            r(&pdas::user(owner)),
+        ],
+        data: ix::CloseExitedPosition {}.data(),
+    }
+}
+
+pub fn delegate_market(admin: &Pubkey, wd: &World, m: &Mkt) -> Instruction {
+    let mut accounts = vec![s(admin), r(&wd.config)];
+    accounts.extend(delegation_quad(&m.market));
+    accounts.extend(delegation_quad(&m.risk));
+    accounts.extend([r(&prog()), r(&dlp()), r(&SYSTEM)]);
+    Instruction {
+        program_id: prog(),
+        accounts,
+        data: ix::DelegateMarket { symbol: m.symbol }.data(),
     }
 }
 pub fn init_pool(admin: &Pubkey, mint: &Pubkey) -> Instruction {
@@ -327,6 +475,42 @@ pub fn open_position(
         .data(),
     }
 }
+#[allow(clippy::too_many_arguments)]
+pub fn open_position_on(
+    signer: &Pubkey,
+    t: &Trader,
+    wd: &World,
+    m: &Mkt,
+    side: Side,
+    size: u64,
+    margin: u64,
+    limit_price: u64,
+) -> Instruction {
+    Instruction {
+        program_id: prog(),
+        accounts: t.trade_accounts_on(wd, m, signer),
+        data: ix::OpenPosition {
+            side,
+            size,
+            margin,
+            limit_price,
+        }
+        .data(),
+    }
+}
+pub fn close_position_on(
+    signer: &Pubkey,
+    t: &Trader,
+    wd: &World,
+    m: &Mkt,
+    limit_price: u64,
+) -> Instruction {
+    Instruction {
+        program_id: prog(),
+        accounts: t.trade_accounts_on(wd, m, signer),
+        data: ix::ClosePosition { limit_price }.data(),
+    }
+}
 pub fn add_margin(signer: &Pubkey, t: &Trader, w: &World, amount: u64) -> Instruction {
     Instruction {
         program_id: prog(),
@@ -381,18 +565,21 @@ pub fn decrease_position(
 /// DisclosureQueue]` (week-5 Task 1: a liquidation is a close, and a close
 /// pushes its record into the owner's queue).
 pub fn crank_tick(crank: &Pubkey, wd: &World, candidates: &[&Trader]) -> Instruction {
+    crank_tick_on(crank, wd, &wd.sol(), candidates)
+}
+pub fn crank_tick_on(crank: &Pubkey, wd: &World, m: &Mkt, candidates: &[&Trader]) -> Instruction {
     // `crank: Signer<'info>` in `CrankTick` carries no `#[account(mut)]`, so the
     // client-side meta must be a readonly signer, not writable (`s`).
     let mut accounts = vec![
         rs(crank),
         r(&wd.config),
-        w(&wd.market),
-        w(&wd.risk),
+        w(&m.market),
+        w(&m.risk),
         w(&wd.pool_live),
-        r(&wd.feed),
+        r(&m.feed),
     ];
     for t in candidates {
-        accounts.push(w(&t.position));
+        accounts.push(w(&t.position_on(m)));
         accounts.push(w(&t.user));
         accounts.push(w(&t.dq));
     }

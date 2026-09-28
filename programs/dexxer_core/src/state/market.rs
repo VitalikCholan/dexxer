@@ -89,3 +89,55 @@ impl MarketParams {
 
 // `oi_cap: 0` means "30% of capital", computed in `risk.rs` from `Pool.capital_total`
 // when `oi_cap == 0`; an explicit value is an absolute limit.
+
+/// A market symbol: 1–8 bytes of `A-Z0-9`, left-aligned and zero-padded
+/// (`b"BTC\0\0\0\0\0"`). It is a PDA seed, so a lowercase twin or a stray byte
+/// after the padding would mint a second address for "the same" market.
+pub fn validate_symbol(symbol: &[u8; 8]) -> bool {
+    let len = symbol.iter().position(|&b| b == 0).unwrap_or(symbol.len());
+    len > 0
+        && symbol[..len]
+            .iter()
+            .all(|b| b.is_ascii_uppercase() || b.is_ascii_digit())
+        && symbol[len..].iter().all(|&b| b == 0)
+}
+
+/// The SOL market's address. The SOL position is the one `init_user` /
+/// `init_user_reuse_queue` pin to the `UserAccount`, so it enters and leaves
+/// with it (`undelegate_user`, `close_exited_user`); every other market's
+/// position uses the per-market instructions (`instructions/positions.rs`).
+pub fn sol_market_key() -> Pubkey {
+    Pubkey::find_program_address(&[super::MARKET_SEED, &super::SOL_SYMBOL], &crate::ID).0
+}
+
+#[cfg(test)]
+mod symbol_tests {
+    use super::validate_symbol;
+
+    fn sym(s: &str) -> [u8; 8] {
+        let mut b = [0u8; 8];
+        b[..s.len()].copy_from_slice(s.as_bytes());
+        b
+    }
+
+    #[test]
+    fn accepts_uppercase_and_digits_zero_padded() {
+        for s in ["SOL", "BTC", "HYPE", "ZEC", "ABCDEFGH", "1INCH"] {
+            assert!(validate_symbol(&sym(s)), "{s}");
+        }
+    }
+
+    #[test]
+    fn rejects_empty_lowercase_and_punctuation() {
+        for s in ["", "btc", "Btc", "BTC-", "B C", "ÄB"] {
+            assert!(!validate_symbol(&sym(s)), "{s:?}");
+        }
+    }
+
+    #[test]
+    fn rejects_bytes_after_the_padding() {
+        let mut b = sym("BTC");
+        b[4] = b'X';
+        assert!(!validate_symbol(&b));
+    }
+}
