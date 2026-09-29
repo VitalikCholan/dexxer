@@ -10,7 +10,7 @@
 // are in a sheet), auto/log scale, EMA(20) and entry / liq lines of the open
 // position. Only 1m / 5m / 15m: longer timeframes need the relayer.
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { Pressable, ScrollView, Text, View } from 'react-native'
+import { Linking, Pressable, ScrollView, Text, View } from 'react-native'
 import { WebView, type WebViewMessageEvent } from 'react-native-webview'
 import { useTheme } from '@/src/theme'
 import { useTextStyle } from '@/src/ui/styles'
@@ -182,6 +182,14 @@ export function TradingChart({ tf, onTfChange, markUsd, position }: TradingChart
           originWhitelist={['*']}
           source={{ html }}
           onMessage={onMessage}
+          // The page is inline HTML: any http(s) navigation is a link out of
+          // the chart — send it to the system browser, never load it here.
+          onShouldStartLoadWithRequest={(req) => {
+            if (!/^https?:/i.test(req.url)) return true
+            void Linking.openURL(req.url).catch(() => undefined)
+            return false
+          }}
+          setSupportMultipleWindows={false}
           javaScriptEnabled
           // chrome://inspect on a dev build; release builds keep it off.
           webviewDebuggingEnabled={__DEV__}

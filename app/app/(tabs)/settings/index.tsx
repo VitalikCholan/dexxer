@@ -4,6 +4,7 @@ import { useTheme } from '@/src/theme'
 import { useTextStyle } from '@/src/ui/styles'
 import { Page } from '@/src/ui/Page'
 import { SettingsUiAccount } from '@/src/features/settings/SettingsUiAccount'
+import { SettingsAbout } from '@/src/features/settings/SettingsAbout'
 
 // Task 8 (5-tab layout): `onboard`/`position` dropped out of the tab bar
 // (`href: null` in app/app/(tabs)/_layout.tsx) but stay reachable from here,
@@ -35,6 +36,7 @@ export default function TabSettingsScreen() {
           </Link>
         ))}
       </View>
+      <SettingsAbout />
     </Page>
   )
 }
