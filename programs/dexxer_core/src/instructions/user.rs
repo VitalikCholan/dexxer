@@ -300,8 +300,8 @@ pub struct SetSession<'info> {
     #[account(address = MAGIC_PROGRAM_ID)]
     pub magic_program: UncheckedAccount<'info>,
 }
-pub fn set_session(
-    ctx: Context<SetSession>,
+pub fn set_session<'info>(
+    ctx: Context<'info, SetSession<'info>>,
     session_key: Pubkey,
     expiry: i64,
     actions: u32,
@@ -356,6 +356,46 @@ pub fn set_session(
             },
         }
         .invoke_signed(&[seeds.as_slice()])?;
+    }
+    // Spec §2.8.2: the owner's positions on other markets, as
+    // `[position, position_permission]` pairs in `remaining_accounts`. They
+    // arrive untyped, so each is checked by hand — otherwise a foreign account
+    // could slip itself into this owner's member list.
+    let rem = ctx.remaining_accounts;
+    require!(rem.len() % 2 == 0, DexxerError::InvalidInput);
+    for pair in rem.chunks(2) {
+        let (pos_ai, perm_ai) = (&pair[0], &pair[1]);
+        require_keys_eq!(*pos_ai.owner, crate::ID, DexxerError::InvalidInput);
+        let pos = Position::try_deserialize(&mut &pos_ai.try_borrow_data()?[..])?;
+        require_keys_eq!(pos.owner, o, DexxerError::Unauthorized);
+        let (expected, _) = Pubkey::find_program_address(
+            &[PERMISSION_SEED, pos_ai.key.as_ref()],
+            &PERMISSION_PROGRAM_ID,
+        );
+        require_keys_eq!(*perm_ai.key, expected, DexxerError::InvalidInput);
+        if perm_ai.owner != &PERMISSION_PROGRAM_ID {
+            continue;
+        }
+        UpdateEphemeralPermissionCpi {
+            payer: pos_ai.clone(),
+            permissioned_account: pos_ai.clone(),
+            permission: perm_ai.clone(),
+            vault: ctx.accounts.ephemeral_vault.to_account_info(),
+            magic_program: ctx.accounts.magic_program.to_account_info(),
+            permission_program: ctx.accounts.permission_program.to_account_info(),
+            authority: pos_ai.clone(),
+            authority_is_signer: false,
+            args: EphemeralMembersArgs {
+                is_private: true,
+                members: members.clone(),
+            },
+        }
+        .invoke_signed(&[&[
+            POSITION_SEED,
+            o.as_ref(),
+            pos.market.as_ref(),
+            &[pos.bump],
+        ]])?;
     }
     Ok(())
 }
@@ -875,7 +915,7 @@ pub struct UndelegateUser<'info> {
 /// path the permission may simply not exist yet (same guard `set_session`
 /// uses for the identical reason).
 #[inline(never)]
-fn close_permission_if_present<'info>(
+pub(crate) fn close_permission_if_present<'info>(
     acc: &AccountInfo<'info>,
     perm: &AccountInfo<'info>,
     vault: &AccountInfo<'info>,
@@ -920,6 +960,13 @@ fn close_permission_if_present<'info>(
 /// sensitive is left in the bytes that land publicly on L1.
 pub fn undelegate_user<'info>(ctx: Context<'info, UndelegateUser<'info>>) -> Result<()> {
     let a = ctx.accounts;
+    // Only the SOL position leaves with the user (spec §2.8.2) — checked here,
+    // not as a constraint: `try_accounts` is at the SBF frame limit (below).
+    require_keys_eq!(
+        a.position.market,
+        sol_market_key(),
+        DexxerError::PrimaryPositionMismatch
+    );
     require!(
         a.position.state == PositionState::Empty,
         DexxerError::HasOpenPosition
@@ -1277,6 +1324,13 @@ pub struct CloseExitedUser<'info> {
     pub dq: Box<Account<'info, DisclosureQueue>>,
 }
 pub fn close_exited_user(ctx: Context<CloseExitedUser>) -> Result<()> {
+    // The SOL position is the one `init_user_reuse_queue` needs back; any
+    // other market's position closes via `close_exited_position`.
+    require_keys_eq!(
+        ctx.accounts.position.market,
+        sol_market_key(),
+        DexxerError::PrimaryPositionMismatch
+    );
     // Every queue that reaches L1 arrives scrubbed (`undelegate_user` and
     // `close_orphan_queue` both empty it before committing), so this can only
     // fire on operator error — and the cost of getting it wrong is destroying

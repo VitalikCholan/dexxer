@@ -64,12 +64,13 @@ pub fn init_config(
 }
 
 #[derive(Accounts)]
+#[instruction(symbol: [u8; 8])]
 pub struct InitMarket<'info> {
     #[account(mut)]
     pub admin: Signer<'info>,
     #[account(seeds = [CONFIG_SEED], bump = config.bump, has_one = admin @ DexxerError::Unauthorized)]
     pub config: Account<'info, Config>,
-    #[account(init, payer = admin, space = 8 + Market::INIT_SPACE, seeds = [MARKET_SEED, &SOL_SYMBOL], bump)]
+    #[account(init, payer = admin, space = 8 + Market::INIT_SPACE, seeds = [MARKET_SEED, &symbol], bump)]
     pub market: Account<'info, Market>,
     #[account(init, payer = admin, space = 8 + MarketRisk::INIT_SPACE, seeds = [RISK_SEED, market.key().as_ref()], bump)]
     pub market_risk: Account<'info, MarketRisk>,
@@ -77,13 +78,15 @@ pub struct InitMarket<'info> {
 }
 pub fn init_market(
     ctx: Context<InitMarket>,
+    symbol: [u8; 8],
     params: MarketParams,
     lazer_feed_id: String,
 ) -> Result<()> {
+    require!(validate_symbol(&symbol), DexxerError::InvalidSymbol);
     require!(params.validate(), DexxerError::InvalidParams);
     let m = &mut ctx.accounts.market;
     m.version = 1;
-    m.symbol = SOL_SYMBOL;
+    m.symbol = symbol;
     m.feed = feed_pda(&ctx.accounts.config.oracle_program, &lazer_feed_id);
     apply_params(m, &params);
     m.mark = 0;
@@ -297,23 +300,24 @@ pub fn seed_pool(ctx: Context<SeedPool>, amount: u64) -> Result<()> {
 // account is created for them here — market data stays readable to the crank.
 #[delegate]
 #[derive(Accounts)]
+#[instruction(symbol: [u8; 8])]
 pub struct DelegateMarket<'info> {
     #[account(mut)]
     pub admin: Signer<'info>,
     #[account(seeds = [CONFIG_SEED], bump = config.bump, has_one = admin @ DexxerError::Unauthorized)]
     pub config: Account<'info, Config>,
     /// CHECK: delegated PDA
-    #[account(mut, del, seeds = [MARKET_SEED, &SOL_SYMBOL], bump)]
+    #[account(mut, del, seeds = [MARKET_SEED, &symbol], bump)]
     pub market: UncheckedAccount<'info>,
     /// CHECK: delegated PDA
     #[account(mut, del, seeds = [RISK_SEED, market.key().as_ref()], bump)]
     pub market_risk: UncheckedAccount<'info>,
 }
-pub fn delegate_market(ctx: Context<DelegateMarket>) -> Result<()> {
+pub fn delegate_market(ctx: Context<DelegateMarket>, symbol: [u8; 8]) -> Result<()> {
     let market_key = ctx.accounts.market.key();
     ctx.accounts.delegate_market(
         &ctx.accounts.admin,
-        &[MARKET_SEED, &SOL_SYMBOL],
+        &[MARKET_SEED, &symbol],
         DelegateConfig {
             validator: Some(ctx.accounts.config.tee_validator),
             ..Default::default()

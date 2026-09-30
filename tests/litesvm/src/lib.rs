@@ -143,6 +143,29 @@ pub fn assert_invariant(h: &Harness, w: &setup::World, traders: &[&setup::Trader
 /// Same as `assert_invariant`, but every assertion message is prefixed with `ctx`
 /// (e.g. `"step {step}: "`) so a randomized-sequence failure names the failing step.
 pub fn assert_invariant_ctx(h: &Harness, w: &setup::World, traders: &[&setup::Trader], ctx: &str) {
+    assert_invariant_markets_ctx(h, w, traders, &[w.market], ctx);
+}
+
+/// `assert_invariant` across several markets: each trader's open margin is
+/// summed over their position on every market in `markets` (spec §2.8).
+pub fn assert_invariant_markets(
+    h: &Harness,
+    w: &setup::World,
+    traders: &[&setup::Trader],
+    markets: &[Pubkey],
+) {
+    assert_invariant_markets_ctx(h, w, traders, markets, "");
+}
+
+/// protocol_liquidity + fees + insurance + Σ free + Σ open margins (every
+/// market) == capital_total == vault balance.
+pub fn assert_invariant_markets_ctx(
+    h: &Harness,
+    w: &setup::World,
+    traders: &[&setup::Trader],
+    markets: &[Pubkey],
+    ctx: &str,
+) {
     // week-4 Task 1: trading writes PoolLive now, not the public Pool (only
     // commit_aggregate publishes a rounded Pool snapshot) — the invariant must
     // read the live counters to see per-action state.
@@ -151,17 +174,22 @@ pub fn assert_invariant_ctx(h: &Harness, w: &setup::World, traders: &[&setup::Tr
     let mut locked_sum: u64 = 0;
     for t in traders {
         let u: dexxer_core::state::UserAccount = h.account(&t.user);
-        let p: dexxer_core::state::Position = h.account(&t.position);
-        let open_margin = if p.state == dexxer_core::state::PositionState::Open {
-            p.margin
-        } else {
-            0
-        };
+        let mut open_margin = 0u64;
+        for m in markets {
+            let key = pdas::position(&t.kp.pubkey(), m);
+            if h.svm.get_account(&key).is_none_or(|a| a.data.is_empty()) {
+                continue;
+            }
+            let p: dexxer_core::state::Position = h.account(&key);
+            if p.state == dexxer_core::state::PositionState::Open {
+                open_margin += p.margin;
+            }
+        }
         sum += u.free_margin + open_margin;
         locked_sum += open_margin;
         assert_eq!(
             u.locked_margin, open_margin,
-            "{ctx}user.locked_margin != position.margin for {}",
+            "{ctx}user.locked_margin != Σ open margins for {}",
             t.user
         );
     }

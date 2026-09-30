@@ -11,8 +11,11 @@ pub fn config() -> Pubkey {
 pub fn mint_auth() -> Pubkey {
     pda(&[MINT_AUTH_SEED])
 }
+pub fn market_for(symbol: &[u8; 8]) -> Pubkey {
+    pda(&[MARKET_SEED, symbol])
+}
 pub fn market() -> Pubkey {
-    pda(&[MARKET_SEED, &SOL_SYMBOL])
+    market_for(&SOL_SYMBOL)
 }
 pub fn risk(market: &Pubkey) -> Pubkey {
     pda(&[RISK_SEED, market.as_ref()])
@@ -50,8 +53,15 @@ pub fn commitment(hash: &[u8; 32]) -> Pubkey {
 pub fn disclosure(hash: &[u8; 32]) -> Pubkey {
     pda(&[DISCLOSURE_SEED, hash])
 }
+pub fn feed_for(oracle_program: &Pubkey, lazer_feed_id: &str) -> Pubkey {
+    Pubkey::find_program_address(
+        &[b"price_feed", b"pyth-lazer", lazer_feed_id.as_bytes()],
+        oracle_program,
+    )
+    .0
+}
 pub fn feed(oracle_program: &Pubkey) -> Pubkey {
-    Pubkey::find_program_address(&[b"price_feed", b"pyth-lazer", b"6"], oracle_program).0
+    feed_for(oracle_program, "6")
 }
 
 /// `crank_signer_pda(fee_escrow)` — the signer the scheduler gives a

@@ -116,6 +116,16 @@ pub enum DexxerError {
     NotExited,
     #[msg("disclosure queue still has pending records")]
     QueueStillPending,
+    #[msg("market symbol must be 1-8 bytes of A-Z0-9, zero-padded")]
+    InvalidSymbol,
+    #[msg("owner has not onboarded (no UserAccount)")]
+    NotOnboarded,
+    #[msg("user account has exited")]
+    UserExited,
+    #[msg("market does not exist")]
+    MarketNotFound,
+    #[msg("the SOL position moves with the user account; other markets use the *_position instructions")]
+    PrimaryPositionMismatch,
 }
 
 impl From<MathError> for anchor_lang::error::Error {
