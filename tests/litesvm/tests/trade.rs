@@ -176,7 +176,7 @@ fn wrong_feed_account_rejected() {
     let t = w.new_trader(&mut h, 1_000_000_000);
     let mut ix = ixs::open_position(&t.kp.pubkey(), &t, &w, Side::Long, SOL10, M150, P150);
     // `feed` is index 7 of `Trader::trade_accounts` — no longer the last account
-    // (week-5 Task 1 appended dq / fee_escrow / task_context / magic_program).
+    // (fee_escrow / task_context / magic_program / liq_crank_signer follow it).
     ix.accounts[7].pubkey = w.market; // any other account in place of the feed
     let r = h.send(&[ix], &[&t.kp]);
     assert_custom_error(&r, 6000 + DexxerError::WrongFeed as u32);
@@ -284,21 +284,26 @@ fn close_with_profit_pays_from_protocol_liquidity() {
     assert_eq!(u.locked_margin, 0);
     let p: Position = h.account(&t.position);
     assert_eq!(p.state, PositionState::Empty);
-    assert!(p.closed.is_none());
-    let rec = h.account::<DisclosureQueue>(&t.dq).records[0];
-    assert_eq!(rec.pnl, 150_000_000);
-    assert_eq!(rec.reason, CloseReason::User);
-    assert_eq!(rec.exit, 165_000_000);
-    assert_eq!(rec.reveal_after_slot, rec.closed_slot + 100);
+    assert_eq!(
+        (
+            p.size,
+            p.entry,
+            p.margin,
+            p.liq_price,
+            p.oi_notional,
+            p.liq_ticks,
+            p.opened_slot
+        ),
+        (0, 0, 0, 0, 0, 0, 0),
+        "every trade field is reset, nothing left behind for the next open"
+    );
     let pool: PoolLive = h.account(&w.pool_live);
     assert_eq!(pool.protocol_liquidity, SEED_AMOUNT - 150_000_000);
     assert_eq!(pool.fees_accrued, 900_000 + 990_000);
     assert_eq!(pool.locked_total, 0);
     assert_eq!(h.account::<MarketRisk>(&w.risk).oi_long, 0);
-    // Closing again is a no-op error: the position is `Empty` now, not `Closed`
-    // (week-5 Task 1). Reopening straight away is covered by
-    // `disclosure.rs::reopen_immediately_after_close_keeps_invariant`, which
-    // does it at a price the deviation guard accepts.
+    // Closing again is a no-op error: the position is `Empty` now. Reopening
+    // straight away is covered by `nine_closes_in_a_row_all_succeed`.
     let r = h.send(&[ixs::close_position(&t.kp.pubkey(), &t, &w, 0)], &[&t.kp]);
     assert_custom_error(&r, 6000 + DexxerError::PositionNotOpen as u32);
 }
@@ -392,4 +397,37 @@ fn deviation_guard_blocks_open_not_close() {
         PositionState::Empty
     );
     assert_invariant(&h, &w, &[&t, &t2]);
+}
+
+#[test]
+fn nine_closes_in_a_row_all_succeed() {
+    let mut h = Harness::new();
+    let w = world_with_price(&mut h);
+    let t = w.new_trader(&mut h, 1_000_000_000);
+    let o = t.kp.pubkey();
+    for i in 0..9u64 {
+        // Distinct slots keep each transaction's bytes unique.
+        h.warp(9_200 + i * 2, NOW);
+        w.set_price(&mut h, P150, 5, NOW, 100);
+        h.send(
+            &[ixs::open_position(
+                &o,
+                &t,
+                &w,
+                Side::Long,
+                SOL10,
+                M150,
+                P150,
+            )],
+            &[&t.kp],
+        )
+        .unwrap();
+        h.warp(9_201 + i * 2, NOW);
+        w.set_price(&mut h, P150, 5, NOW, 100);
+        h.send(&[ixs::close_position(&o, &t, &w, P150)], &[&t.kp])
+            .unwrap_or_else(|e| panic!("close #{i} failed: {e:?}"));
+        assert_invariant(&h, &w, &[&t]);
+    }
+    let p: Position = h.account(&t.position);
+    assert_eq!(p.state, PositionState::Empty);
 }

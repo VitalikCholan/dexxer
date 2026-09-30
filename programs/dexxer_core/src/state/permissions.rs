@@ -1,7 +1,7 @@
 // programs/dexxer_core/src/state/permissions.rs
 //
-// Membership rules for the three per-user ER `EphemeralPermission` accounts
-// (UserAccount, Position, DisclosureQueue). Week 2 (spec §8 Q2): flip from
+// Membership rules for the per-user ER `EphemeralPermission` accounts
+// (UserAccount, Position). Week 2 (spec §8 Q2): flip from
 // week-1 public permissions to private, member-gated ones — owner always has
 // full authority flags, the session key (when issued) and the crank get
 // viewer-only flags (visibility for trading/liquidation, no ability to
@@ -63,19 +63,6 @@ pub fn build_admin_members(crank: Pubkey, admin: Pubkey) -> Vec<Member> {
     ]
 }
 
-/// Week-5 Task 2 (spec §2.6.3): membership for a `DisclosureQueue` its owner
-/// has exited and left behind. The owner is gone and the session key is dead,
-/// so the crank — the only party that still touches the queue, through
-/// `commit_aggregate`'s reveals and then `close_orphan_queue` — is the single
-/// member, with full authority flags (nobody else is left to reassign
-/// membership).
-pub fn build_crank_only(crank: Pubkey) -> Vec<Member> {
-    vec![Member {
-        flags: OWNER_FLAGS,
-        pubkey: compat_pubkey(crank),
-    }]
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -126,15 +113,5 @@ mod tests {
         assert_eq!(members[1].pubkey, compat_pubkey(pk(2)));
         assert_eq!(members[1].flags, VIEWER_FLAGS);
         assert_eq!(members[1].flags & AUTHORITY_FLAG, 0);
-    }
-
-    // Week-5 Task 2: an orphaned `DisclosureQueue` has exactly one member left.
-    #[test]
-    fn build_crank_only_is_a_single_authoritative_member() {
-        let members = build_crank_only(pk(7));
-        assert_eq!(members.len(), 1);
-        assert_eq!(members[0].pubkey, compat_pubkey(pk(7)));
-        assert_eq!(members[0].flags, OWNER_FLAGS);
-        assert_eq!(members[0].flags & AUTHORITY_FLAG, AUTHORITY_FLAG);
     }
 }

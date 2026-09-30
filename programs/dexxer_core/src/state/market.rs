@@ -102,10 +102,10 @@ pub fn validate_symbol(symbol: &[u8; 8]) -> bool {
         && symbol[len..].iter().all(|&b| b == 0)
 }
 
-/// The SOL market's address. The SOL position is the one `init_user` /
-/// `init_user_reuse_queue` pin to the `UserAccount`, so it enters and leaves
-/// with it (`undelegate_user`, `close_exited_user`); every other market's
-/// position uses the per-market instructions (`instructions/positions.rs`).
+/// The SOL market's address. The SOL position is the one `init_user` pins to
+/// the `UserAccount`, so it enters and leaves with it (`undelegate_user`,
+/// `close_exited_user`); every other market's position uses the per-market
+/// instructions (`instructions/positions.rs`).
 pub fn sol_market_key() -> Pubkey {
     Pubkey::find_program_address(&[super::MARKET_SEED, &super::SOL_SYMBOL], &crate::ID).0
 }

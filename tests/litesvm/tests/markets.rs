@@ -686,7 +686,7 @@ fn close_exited_position_only_for_empty_positions_of_owners_who_left() {
         "closed"
     );
 
-    // Owner fully gone (close_exited_user already reclaimed UserAccount/SOL/queue).
+    // Owner fully gone (close_exited_user already reclaimed UserAccount/SOL position).
     let c = w.new_trader(&mut h, 0);
     let oc = c.kp.pubkey();
     h.send(&[ixs::init_position(&oc, &oc, &btc)], &[&c.kp])
@@ -889,11 +889,9 @@ fn measure_new_instructions() {
     );
 }
 
-/// `init_user`/`init_user_reuse_queue` pin the SOL position to the
-/// `UserAccount`, so its whole lifecycle must stay with it: the triple exits
-/// only with the SOL position, and the per-market exits never take it. Either
-/// mix-up strands an account — a closed SOL position blocks re-onboarding
-/// (`init_user` finds `UserAccount`, `init_user_reuse_queue` misses the position).
+/// `init_user` pins the SOL position to the `UserAccount`, so its whole
+/// lifecycle must stay with it: the user exits only with the SOL position, and
+/// the per-market exits never take it. Either mix-up strands an account.
 #[test]
 fn the_sol_position_moves_only_with_the_user_account() {
     let mut h = Harness::new();
@@ -914,7 +912,7 @@ fn the_sol_position_moves_only_with_the_user_account() {
     let btc_pos = t.position_on(&btc);
     let mut wrong = ixs::undelegate_user(&o, &t, &w);
     wrong.accounts[3].pubkey = btc_pos;
-    wrong.accounts[6].pubkey = pdas::permission(&btc_pos);
+    wrong.accounts[5].pubkey = pdas::permission(&btc_pos);
     let r = h.send(&[wrong], &[&t.kp]);
     assert_custom_error(&r, mismatch);
     h.send(&[ixs::undelegate_user(&o, &t, &w)], &[&t.kp])

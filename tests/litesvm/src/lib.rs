@@ -68,27 +68,6 @@ impl Harness {
         T::try_deserialize(&mut acc.data.as_slice()).expect("deserialize")
     }
 
-    /// Replace `key` with an empty, system-owned account — LiteSVM's stand-in
-    /// for "this account is not in the ER clone (any more)". Needed because no
-    /// Magic program is deployed here, so `commit_and_undelegate` is skipped
-    /// and an undelegated account never actually leaves the ledger; week-5
-    /// Task 2's `close_orphan_queue` reads exactly that absence as its
-    /// orphan signal. Same lever `World::set_price` uses for the oracle feed.
-    pub fn blank_account(&mut self, key: &Pubkey) {
-        self.svm
-            .set_account(
-                *key,
-                solana_account::Account {
-                    lamports: 0,
-                    data: vec![],
-                    owner: solana_system_interface::program::ID,
-                    executable: false,
-                    rent_epoch: 0,
-                },
-            )
-            .unwrap();
-    }
-
     pub fn warp(&mut self, slot: u64, unix_ts: i64) {
         self.svm.warp_to_slot(slot);
         let mut c: solana_clock::Clock = self.svm.get_sysvar();

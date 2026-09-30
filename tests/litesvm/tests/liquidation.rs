@@ -81,8 +81,7 @@ fn liquidation_check_liquidates_underwater_position() {
         assert_eq!(pos.liq_ticks, expected);
     }
 
-    // The tick that meets the gate: liquidated, and the record lands in the
-    // owner's ring in the same instruction (week-5 Task 1's queue-first close).
+    // The tick that meets the gate: liquidated in the same instruction.
     h.send(
         &[ixs::liquidation_check(&w.crank.pubkey(), &w, &t)],
         &[&w.crank],
@@ -91,10 +90,6 @@ fn liquidation_check_liquidates_underwater_position() {
     let pos: Position = h.account(&t.position);
     assert_eq!(pos.state, PositionState::Empty);
     assert_eq!(pos.size, 0);
-    let dq: DisclosureQueue = h.account(&t.dq);
-    assert_eq!(dq.len, 1);
-    assert_eq!(dq.records[0].reason, CloseReason::Liquidated);
-    assert_eq!(dq.records[0].exit, 142_000_000);
 
     // Same settlement arithmetic the crank path produces for this position:
     // pnl = 10 * (142 - 150) = -80 $, liq fee 1 % of 1420 $ = 14.2 $,
@@ -139,7 +134,6 @@ fn liquidation_check_noop_when_healthy_or_stale() {
     let pos: Position = h.account(&t.position);
     assert_eq!(pos.state, PositionState::Open);
     assert_eq!(pos.liq_ticks, 0);
-    assert_eq!(h.account::<DisclosureQueue>(&t.dq).len, 0);
     assert_invariant(&h, &w, &[&t]);
 }
 

@@ -1,14 +1,8 @@
-use crate::{
-    errors::DexxerError,
-    instructions::disclosure::{due_reveals, pending_commitments},
-    state::*,
-};
+use crate::{errors::DexxerError, state::*};
 use anchor_lang::prelude::*;
-use anchor_lang::{Discriminator, InstructionData};
 use ephemeral_rollups_sdk::{
     consts::{MAGIC_CONTEXT_ID, MAGIC_PROGRAM_ID},
-    ephem::{CallHandler, FoldableIntentBuilder, MagicIntentBundleBuilder},
-    ActionArgs, ShortAccountMeta,
+    ephem::{FoldableIntentBuilder, MagicIntentBundleBuilder},
 };
 
 // spec §8 Q2 / week-2 controller ruling task-4 #5: batch-commit the public
@@ -35,12 +29,9 @@ use ephemeral_rollups_sdk::{
 // is skipped rather than failing.
 #[derive(Accounts)]
 pub struct CommitAggregate<'info> {
-    // Boxed (as `trade.rs` does for its larger accounts): `commit_aggregate`'s
-    // remaining_accounts loop already carries several `Position`/`DisclosureQueue`
-    // locals plus a `Vec<CallHandler>`, and `Config` alone is the biggest account
-    // read here — keeping it on the heap is what keeps the function's stack
-    // frame under the SBF 4096-byte limit (autofixer/build flagged the overflow
-    // before this box).
+    // Boxed (as `trade.rs` does for its larger accounts): `Config` is the
+    // biggest account read here, and keeping it on the heap keeps the
+    // function's stack frame well under the SBF 4096-byte limit.
     #[account(seeds = [CONFIG_SEED], bump = config.bump)]
     pub config: Box<Account<'info, Config>>,
     #[account(constraint = payer.key() == config.fee_payer @ DexxerError::Unauthorized)]
@@ -70,132 +61,11 @@ pub struct CommitAggregate<'info> {
     #[account(address = MAGIC_PROGRAM_ID)]
     pub magic_program: UncheckedAccount<'info>,
 }
-// anchor-lang 1.0.2's single-lifetime `Context<'info, T>` (see `crank_tick`'s
-// comment above `CrankTick`) — `remaining_accounts` is a list of
-// `DisclosureQueue` accounts (owner- and seeds-checked below), each producing
-// zero or more post-commit actions: first a `write_commitment` per record whose
-// commitment has not been scheduled yet, then a `write_disclosure` per record
-// that is both committed and past its reveal slot. Commitment actions are
-// pushed BEFORE disclosure actions because `WriteDisclosure` reads the
-// `Commitment` PDA the matching `WriteCommitment` creates, and the delegation
-// program executes a bundle's actions in order — so with
-// `disclosure_delay_slots == 0` a record is committed and revealed in the same
-// bundle, in that order.
-//
-// Week-5 Task 1 retired the `Position` candidate kind: a close now queues its
-// record immediately (`finalize_close`), so a `Position` never carries one and
-// is rejected here as `InvalidCandidate` along with any other account kind.
-// Both mutations (flip `commitment_written`, pop the queue) happen in the same
-// ER tx that schedules the action, so a failed/replayed bundle can never
-// re-emit the same action (nonce reuse hard-fails `write_commitment`'s L1
-// `init` — week-3 controller ruling 7).
 
-/// Split out of `commit_aggregate` and marked `#[inline(never)]` so its local
-/// `DisclosureQueue` (up to 1300 B, `state/mod.rs`'s `print_sizes_for_spec_q3`
-/// bound) lives in its own call frame rather than `commit_aggregate`'s, which
-/// would otherwise blow the SBF 4096-byte stack limit.
-#[inline(never)]
-fn process_disclosure_queue_candidate<'info>(
-    ai: &AccountInfo<'info>,
-    slot: u64,
-    config_key: Pubkey,
-    payer: &AccountInfo<'info>,
-    system_program: Pubkey,
-    // Caller-chosen per-bundle action budget, already clamped to
-    // `[1, MAX_ACTIONS_PER_COMMIT]` by `commit_aggregate` (week-5 final review
-    // C1). Before this argument existed `room` came straight off the constant,
-    // so a SINGLE queue with a full ring always emitted up to 8 actions no
-    // matter what the client asked for — and 8 real actions is a measured
-    // bridge `0xA0000002` FAIL, which is what made a full ring permanently
-    // undrainable (and therefore a position neither closable nor liquidatable).
-    budget: usize,
-    actions: &mut Vec<CallHandler<'info>>,
-) -> Result<()> {
-    let mut dq = DisclosureQueue::try_deserialize(&mut &ai.try_borrow_data()?[..])?;
-    let (exp, _) = Pubkey::find_program_address(&[DQ_SEED, dq.owner.as_ref()], &crate::ID);
-    require!(ai.key() == exp, DexxerError::InvalidCandidate);
-
-    // (1) commitments first — see the ordering comment above.
-    let room = budget.saturating_sub(actions.len());
-    for (nonce, hash) in pending_commitments(&mut dq, room)? {
-        // Hash-seeded (ruling 9): `nonce` is per-user, `hash` is globally unique.
-        let (commitment, _) = Pubkey::find_program_address(&[COMMIT_SEED, &hash], &crate::ID);
-        let data = crate::instruction::WriteCommitment { nonce, hash }.data();
-        actions.push(CallHandler {
-            destination_program: crate::ID,
-            accounts: vec![
-                ShortAccountMeta {
-                    pubkey: commitment.to_bytes().into(),
-                    is_writable: true,
-                },
-                ShortAccountMeta {
-                    pubkey: config_key.to_bytes().into(),
-                    is_writable: false,
-                },
-                ShortAccountMeta {
-                    pubkey: system_program.to_bytes().into(),
-                    is_writable: false,
-                },
-            ],
-            args: ActionArgs::new(data),
-            escrow_authority: payer.clone(),
-            compute_units: 100_000,
-        });
-    }
-
-    // (2) then reveals, out of whatever budget the commitments left.
-    let room = budget.saturating_sub(actions.len());
-    for (args, salt) in due_reveals(&mut dq, slot, room)? {
-        // Hash-seeded (ruling 9), same hash as WriteDisclosure recomputes from (args, salt).
-        let hash = commitment_hash(&args, &salt);
-        let (disclosure, _) = Pubkey::find_program_address(&[DISCLOSURE_SEED, &hash], &crate::ID);
-        let (commitment, _) = Pubkey::find_program_address(&[COMMIT_SEED, &hash], &crate::ID);
-        let data = crate::instruction::WriteDisclosure { args, salt }.data();
-        actions.push(CallHandler {
-            destination_program: crate::ID,
-            accounts: vec![
-                ShortAccountMeta {
-                    pubkey: disclosure.to_bytes().into(),
-                    is_writable: true,
-                },
-                ShortAccountMeta {
-                    pubkey: commitment.to_bytes().into(),
-                    is_writable: false,
-                },
-                ShortAccountMeta {
-                    pubkey: config_key.to_bytes().into(),
-                    is_writable: false,
-                },
-                ShortAccountMeta {
-                    pubkey: system_program.to_bytes().into(),
-                    is_writable: false,
-                },
-            ],
-            args: ActionArgs::new(data),
-            escrow_authority: payer.clone(),
-            compute_units: 120_000,
-        });
-    }
-    // No explicit budget check: both loops above draw from `room`, which is
-    // `budget` minus what earlier candidates already took, so `actions.len()`
-    // cannot exceed the requested budget (itself <= `MAX_ACTIONS_PER_COMMIT`)
-    // by construction — for one candidate as much as for many.
-    dq.try_serialize(&mut &mut ai.try_borrow_mut_data()?[..])?;
-    Ok(())
-}
-
-/// `max_actions` is the caller's per-bundle post-commit action budget, clamped
-/// here to `[1, MAX_ACTIONS_PER_COMMIT]`: `MAX_ACTIONS_PER_COMMIT` stays the
-/// program's hard ceiling, but the count that actually goes into one bundle is
-/// now chosen by the client (the relayer's `COMMIT_MAX_ACTIONS` env, week-5
-/// final review C1) so the measured-safe number can be tuned without a redeploy.
-/// `0` clamps UP to 1 rather than meaning "no actions": a caller that wants a
-/// bare `Pool`+`BalancesRoot` commit passes no `remaining_accounts` at all.
-pub fn commit_aggregate<'info>(
-    ctx: Context<'info, CommitAggregate<'info>>,
-    max_actions: u8,
-) -> Result<()> {
-    let budget = max_actions.clamp(1, MAX_ACTIONS_PER_COMMIT as u8) as usize;
+/// Commits the public `Pool` snapshot and `BalancesRoot` — nothing else. Trades
+/// are not disclosed any more (spec §2.9), so the bundle carries no post-commit
+/// actions and the instruction takes no `remaining_accounts`.
+pub fn commit_aggregate(ctx: Context<CommitAggregate>) -> Result<()> {
     let clock = Clock::get()?;
     // Step-rounded snapshot (week-4 Task 1), set before the commit CPI so the
     // committed bytes carry it: assets down, liabilities up, `last_commit_slot`
@@ -204,49 +74,13 @@ pub fn commit_aggregate<'info>(
         .pool_live
         .snapshot_into(&mut ctx.accounts.pool, clock.slot)?;
 
-    let mut actions: Vec<CallHandler> = Vec::new();
-    let system_program = anchor_lang::system_program::ID;
-    let config_key = ctx.accounts.config.key();
-    let payer_ai = ctx.accounts.payer.to_account_info();
-    for ai in ctx.remaining_accounts.iter() {
-        require!(
-            ai.owner == &crate::ID && ai.is_writable,
-            DexxerError::InvalidCandidate
-        );
-        let disc: [u8; 8] = {
-            let data = ai.try_borrow_data()?;
-            data[..8]
-                .try_into()
-                .map_err(|_| DexxerError::InvalidCandidate)?
-        };
-        // `DisclosureQueue` is the only candidate kind since week-5 Task 1 — a
-        // `Position` handed in here is a stale caller, not a pending record.
-        require!(
-            disc == DisclosureQueue::DISCRIMINATOR,
-            DexxerError::InvalidCandidate
-        );
-        process_disclosure_queue_candidate(
-            ai,
-            clock.slot,
-            config_key,
-            &payer_ai,
-            system_program,
-            budget,
-            &mut actions,
-        )?;
-    }
-    // The only observable record of the built bundle: on LiteSVM the Magic CPI
-    // below is skipped entirely, and on a real ER the actions execute on L1 a
-    // block later, so neither place shows what this call scheduled.
-    msg!("actions={}", actions.len());
-
     // Only in a real ER does a Magic program actually live at this address;
     // on LiteSVM (and any environment without the ER runtime) it is absent,
     // so skip the commit CPI rather than fail.
     if ctx.accounts.magic_program.to_account_info().executable {
         let bump = ctx.accounts.fee_escrow.bump;
         let seeds: &[&[u8]] = &[FEE_ESCROW_SEED, &[bump]];
-        let builder = MagicIntentBundleBuilder::new(
+        MagicIntentBundleBuilder::new(
             ctx.accounts.fee_escrow.to_account_info(),
             ctx.accounts.magic_context.to_account_info(),
             ctx.accounts.magic_program.to_account_info(),
@@ -255,13 +89,8 @@ pub fn commit_aggregate<'info>(
         .commit(&[
             ctx.accounts.pool.to_account_info(),
             ctx.accounts.balances_root.to_account_info(),
-        ]);
-        let builder = if actions.is_empty() {
-            builder
-        } else {
-            builder.add_post_commit_actions(actions)
-        };
-        builder.build_and_invoke_signed(&[seeds])?;
+        ])
+        .build_and_invoke_signed(&[seeds])?;
     }
     Ok(())
 }

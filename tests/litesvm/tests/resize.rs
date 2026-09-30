@@ -178,9 +178,6 @@ fn decrease_full_equals_close() {
     .unwrap();
     let p: Position = h.account(&t.position);
     assert_eq!(p.state, PositionState::Empty);
-    let dq: DisclosureQueue = h.account(&t.dq);
-    assert_eq!(dq.len, 1, "a full decrease queues its record like a close");
-    assert_eq!(dq.records[0].reason, CloseReason::User);
 }
 
 #[test]

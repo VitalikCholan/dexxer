@@ -98,15 +98,8 @@ pub(crate) fn liq_due(pos: &mut Position, market: &Market, mark: u64) -> Result<
 }
 
 /// Shared liquidation settlement — the close itself, once `liq_due` has said
-/// so.
-///
-/// Returns `false` (not an error) when the owner's ring is full: the record is
-/// the only copy of the closed trade and must not be dropped, but neither may
-/// one such candidate abort the caller — on `crank_tick` that would take every
-/// other liquidation in the batch down with it (week-5 Task 1, fix round 1,
-/// finding 2). The position stays `Open` with its `liq_ticks` intact and
-/// liquidates on the first tick after a `commit_aggregate` reveal drains the
-/// ring.
+/// so. Nothing is queued any more (spec §2.9), so a liquidation can never be
+/// skipped: it always settles through `finalize_close`.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn liquidate_now(
     market_key: Pubkey,
@@ -114,29 +107,22 @@ pub(crate) fn liquidate_now(
     pool: &mut PoolLive,
     user: &mut UserAccount,
     pos: &mut Position,
-    dq: &mut DisclosureQueue,
     mark: u64,
     fee_bps: u32,
     clock: &Clock,
-    delay_slots: u64,
-) -> Result<bool> {
-    if dq.len as usize >= DQ_CAPACITY {
-        return Ok(false);
-    }
+) -> Result<()> {
     finalize_close(
         market_key,
         risk_acc,
         pool,
         user,
         pos,
-        dq,
         mark,
         fee_bps,
         CloseReason::Liquidated,
         clock,
-        delay_slots,
     )?;
-    Ok(true)
+    Ok(())
 }
 
 /// Accounts of the scheduled per-position task. This list is frozen at
@@ -145,7 +131,7 @@ pub(crate) fn liquidate_now(
 ///
 /// `market` is READ-ONLY on purpose: the mark belongs to the market-wide
 /// crank schedule. Everything else this instruction can write (`market_risk`,
-/// `pool_live`, `position`, `user_account`, `disclosure_queue`) is a delegated
+/// `pool_live`, `position`, `user_account`) is a delegated
 /// account, which is also what lets them be writable in the outer
 /// `ScheduleTask` CPI's account list (a writable NON-delegated account there
 /// is rejected outright — see `ScheduleCrank.config` in `crank.rs`).
@@ -155,9 +141,9 @@ pub struct LiquidationCheck<'info> {
     /// includes a derived PDA (`liq_crank_signer`), which an account constraint
     /// cannot express without recomputing it on every field validation.
     pub crank: Signer<'info>,
-    // Boxed throughout: this context carries a `UserAccount`, a `Position` and
-    // a `DisclosureQueue` at once — the same trio that already forced boxing in
-    // `Trade` and `UndelegateUser`.
+    // Boxed throughout: this context carries a `UserAccount` and a `Position`
+    // at once — the same pair that already forced boxing in `Trade` and
+    // `UndelegateUser`.
     #[account(seeds = [CONFIG_SEED], bump = config.bump)]
     pub config: Box<Account<'info, Config>>,
     #[account(seeds = [MARKET_SEED, &market.symbol], bump = market.bump)]
@@ -175,7 +161,7 @@ pub struct LiquidationCheck<'info> {
         has_one = market
     )]
     pub position: Box<Account<'info, Position>>,
-    // Same owner-consistency checks `crank_tick` runs on a candidate triple,
+    // Same owner-consistency checks `crank_tick` runs on a candidate pair,
     // expressed declaratively since this context has exactly one candidate.
     #[account(
         mut,
@@ -184,13 +170,6 @@ pub struct LiquidationCheck<'info> {
         constraint = user_account.owner == position.owner @ DexxerError::InvalidCandidate
     )]
     pub user_account: Box<Account<'info, UserAccount>>,
-    #[account(
-        mut,
-        seeds = [DQ_SEED, disclosure_queue.owner.as_ref()],
-        bump = disclosure_queue.bump,
-        constraint = disclosure_queue.owner == position.owner @ DexxerError::InvalidCandidate
-    )]
-    pub disclosure_queue: Box<Account<'info, DisclosureQueue>>,
 }
 
 pub fn liquidation_check(mut ctx: Context<LiquidationCheck>) -> Result<()> {
@@ -242,25 +221,17 @@ pub fn liquidation_check(mut ctx: Context<LiquidationCheck>) -> Result<()> {
 
     let market_key = a.market.key();
     let fee_bps = a.market.liq_fee_bps as u32;
-    let delay = a.config.disclosure_delay_slots;
     if liq_due(&mut a.position, &a.market, mark)? {
-        let done = liquidate_now(
+        liquidate_now(
             market_key,
             &mut a.market_risk,
             &mut a.pool_live,
             &mut a.user_account,
             &mut a.position,
-            &mut a.disclosure_queue,
             mark,
             fee_bps,
             &clock,
-            delay,
         )?;
-        if !done {
-            // Ring full — skipped, not failed (see `liquidate_now`). The
-            // accrued `liq_ticks` stays, so the next tick retries.
-            msg!("liq check: queue full {}", a.position.key());
-        }
     }
     Ok(())
 }

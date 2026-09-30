@@ -2,7 +2,6 @@ use anchor_lang::prelude::Pubkey;
 
 pub mod balances_root;
 pub mod config;
-pub mod disclosure;
 pub mod faucet;
 pub mod fee_escrow;
 pub mod market;
@@ -14,7 +13,6 @@ pub mod position;
 pub mod user;
 pub use balances_root::*;
 pub use config::*;
-pub use disclosure::*;
 pub use faucet::*;
 pub use fee_escrow::*;
 pub use market::*;
@@ -31,12 +29,9 @@ pub const RISK_SEED: &[u8] = b"risk";
 pub const POOL_SEED: &[u8] = b"pool";
 pub const USER_SEED: &[u8] = b"user";
 pub const POSITION_SEED: &[u8] = b"position";
-pub const DQ_SEED: &[u8] = b"dq";
 pub const FAUCET_SEED: &[u8] = b"faucet";
 pub const MINT_AUTH_SEED: &[u8] = b"mint_auth";
 pub const FEE_ESCROW_SEED: &[u8] = b"fee_escrow";
-pub const COMMIT_SEED: &[u8] = b"commit";
-pub const DISCLOSURE_SEED: &[u8] = b"disclosure";
 pub const BALANCES_ROOT_SEED: &[u8] = b"balances_root";
 pub const POOL_LIVE_SEED: &[u8] = b"pool_live";
 /// Public `Pool` snapshot granularity: 100 dUSDC (6 decimals). Assets round down, liabilities round up (spec §2.5.1).
@@ -45,32 +40,16 @@ pub const SNAPSHOT_STEP: u64 = 100_000_000;
 pub const ROOT_LEAVES: usize = 64;
 /// UserAccounts per `set_balances_root` call (tx size / CU budget).
 pub const ROOT_BATCH: usize = 16;
-/// HARD program ceiling on post-commit actions per `commit_aggregate` bundle — NOT the number
-/// a bundle actually carries. The per-bundle count is chosen by the caller via
-/// `commit_aggregate(max_actions)`, clamped here to `[1, MAX_ACTIONS_PER_COMMIT]` (week-5
-/// final review C1), so the safe number is tunable from the relayer's `COMMIT_MAX_ACTIONS`
-/// env without a program redeploy.
-///
-/// Measured truth on the REAL `write_commitment`/`write_disclosure` action shape (week 5,
-/// Task 7, live devnet-tee): **8 real actions = bridge `0xA0000002` FAIL, 4 = PASS**. Week 3's
-/// M-C figure (28 PASS / 29 FAIL) was taken with a cheap 5-account spike action and does NOT
-/// describe this shape — the real actions are far heavier per action. Raising this constant
-/// without re-measuring would hand a client a budget the bridge rejects.
-pub const MAX_ACTIONS_PER_COMMIT: usize = 8;
-/// `ActionArgs::new` default escrow index (magic-actions.md).
-pub const ACTION_ESCROW_INDEX: u8 = 255;
 pub const SOL_SYMBOL: [u8; 8] = *b"SOL\0\0\0\0\0";
 pub const PERMISSION_MEMBERS: usize = 3; // owner, session, crank
 /// Upper bound on `crank_tick` candidates the PROGRAM accepts in one call.
 ///
-/// It is not what a client can actually fit: since week-5 Task 1 a candidate is
-/// a `[Position, UserAccount, DisclosureQueue]` triple, and a legacy (non-v0)
-/// transaction carrying 8 triples plus a ComputeBudget instruction already
-/// measures ~1175 bytes — 9 triples overflow the 1232-byte packet (measured,
-/// fix round 1, finding 1). Clients on legacy transactions must therefore chunk
-/// at 8 (`CRANK_TX_MAX_CANDIDATES` in `services/relayer/src/crank.ts`); the
-/// program cap stays 16 so a v0 transaction with an address-lookup table can
-/// use the whole budget later.
+/// A candidate is a `[Position, UserAccount]` pair (week-6 slots Task 1; it
+/// was a triple with the `DisclosureQueue` before trade disclosure was
+/// removed). The client-side legacy-transaction chunk size
+/// (`CRANK_TX_MAX_CANDIDATES` in `services/relayer/src/crank.ts`) was measured
+/// on triples and is not re-measured here; the program cap stays 16 so a v0
+/// transaction with an address-lookup table can use the whole budget.
 pub const MAX_CANDIDATES: usize = 16;
 // Week-2 Task 5 fix round 2 (controller ruling): guards against a sybil
 // griefing the shared `FeeEscrow`'s commit budget via a `withdraw(1)`-per-tx
@@ -161,13 +140,11 @@ mod size_tests {
     fn print_sizes_for_spec_q3() {
         let u = 8 + UserAccount::INIT_SPACE;
         let p = 8 + Position::INIT_SPACE;
-        let d = 8 + DisclosureQueue::INIT_SPACE;
         let m = 8 + Market::INIT_SPACE;
         let perm = rent(EphemeralPermission::size_of(PERMISSION_MEMBERS) as u32);
-        println!("UserAccount {u} B, Position {p} B, DisclosureQueue {d} B; L1 rent total {} lamports; ER permission prefund {perm} lamports x3",
-            l1_rent(u) + l1_rent(p) + l1_rent(d));
+        println!("UserAccount {u} B, Position {p} B; L1 rent total {} lamports; ER permission prefund {perm} lamports x2",
+            l1_rent(u) + l1_rent(p));
         assert!(p < 400, "Position must stay under 400 B (spec §8 Q3)");
-        assert!(d < 1300, "DisclosureQueue must stay under 1300 B");
         // Bound through a `let` (not the bare const expression) so clippy's
         // `assertions_on_constants` lint doesn't fire on a compile-time-true assert.
         assert!(m < 300, "Market must stay under 300 B");

@@ -1,7 +1,6 @@
 pub mod admin;
 pub mod commit;
 pub mod crank;
-pub mod disclosure;
 pub mod liquidation;
 pub mod pool_live;
 pub mod positions;
@@ -11,7 +10,6 @@ pub mod user;
 pub use admin::*;
 pub use commit::*;
 pub use crank::*;
-pub use disclosure::*;
 pub use liquidation::*;
 pub use pool_live::*;
 pub use positions::*;

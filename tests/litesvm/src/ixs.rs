@@ -6,7 +6,7 @@ use crate::{
 use anchor_lang::InstructionData;
 use dexxer_core::{
     instruction as ix,
-    state::{commitment_hash, DisclosureArgs, MarketParams, Side},
+    state::{MarketParams, Side},
 };
 use solana_instruction::{AccountMeta, Instruction};
 use solana_pubkey::Pubkey;
@@ -34,7 +34,6 @@ pub fn init_config(
     crank: &Pubkey,
     oracle_program: &Pubkey,
     tee_validator: &Pubkey,
-    delay: u64,
     scheduler_signer: &Pubkey,
     fee_payer: &Pubkey,
     magic_fee_vault: &Pubkey,
@@ -54,7 +53,6 @@ pub fn init_config(
             crank: apk(*crank),
             oracle_program: apk(*oracle_program),
             tee_validator: apk(*tee_validator),
-            disclosure_delay_slots: delay,
             scheduler_signer: apk(*scheduler_signer),
             fee_payer: apk(*fee_payer),
             magic_fee_vault: apk(*magic_fee_vault),
@@ -347,14 +345,6 @@ pub fn set_scheduler_signer(
         .data(),
     }
 }
-// Week-5 Task 5: retune the reveal delay on a live config (AdminConfig shape).
-pub fn set_disclosure_delay(admin: &Pubkey, config: &Pubkey, slots: u64) -> Instruction {
-    Instruction {
-        program_id: prog(),
-        accounts: vec![rs(admin), w(config)],
-        data: ix::SetDisclosureDelay { slots }.data(),
-    }
-}
 pub fn seed_pool(admin: &Pubkey, wd: &World, amount: u64) -> Instruction {
     Instruction {
         program_id: prog(),
@@ -412,7 +402,6 @@ pub fn init_user(owner: &Pubkey, wd: &World, exit_salt: [u8; 32]) -> Instruction
             r(&wd.market),
             w(&pdas::user(owner)),
             w(&pdas::position(owner, &wd.market)),
-            w(&pdas::dq(owner)),
             r(&SYSTEM),
         ],
         data: ix::InitUser { exit_salt }.data(),
@@ -438,10 +427,8 @@ pub fn set_session(
             r(&pdas::market()),
             w(&t.user),
             w(&t.position),
-            w(&t.dq),
             w(&pdas::permission(&t.user)),
             w(&pdas::permission(&t.position)),
-            w(&pdas::permission(&t.dq)),
             r(&pdas::permission_program()),
             w(&pdas::ephemeral_vault()),
             r(&pdas::magic_program()),
@@ -561,9 +548,7 @@ pub fn decrease_position(
         .data(),
     }
 }
-/// `candidates` become `remaining_accounts` triples `[Position, UserAccount,
-/// DisclosureQueue]` (week-5 Task 1: a liquidation is a close, and a close
-/// pushes its record into the owner's queue).
+/// `candidates` become `remaining_accounts` pairs `[Position, UserAccount]`.
 pub fn crank_tick(crank: &Pubkey, wd: &World, candidates: &[&Trader]) -> Instruction {
     crank_tick_on(crank, wd, &wd.sol(), candidates)
 }
@@ -581,7 +566,6 @@ pub fn crank_tick_on(crank: &Pubkey, wd: &World, m: &Mkt, candidates: &[&Trader]
     for t in candidates {
         accounts.push(w(&t.position_on(m)));
         accounts.push(w(&t.user));
-        accounts.push(w(&t.dq));
     }
     Instruction {
         program_id: prog(),
@@ -604,7 +588,6 @@ pub fn liquidation_check(signer: &Pubkey, wd: &World, t: &Trader) -> Instruction
             r(&wd.feed),
             w(&t.position),
             w(&t.user),
-            w(&t.dq),
         ],
         data: ix::LiquidationCheck {}.data(),
     }
@@ -647,137 +630,22 @@ pub fn withdraw(signer: &Pubkey, t: &Trader, wd: &World, amount: u64) -> Instruc
         data: ix::Withdraw { amount }.data(),
     }
 }
-/// `payer` must equal `Config.fee_payer` (`w.fee_payer` in tests). `extra` is any
-/// mix of `Position`/`DisclosureQueue` accounts appended after the fixed accounts —
-/// `commit_aggregate` reads them from `remaining_accounts`.
-///
-/// `max_actions` is the caller's per-bundle action budget (week-5 final review
-/// C1), clamped on-chain to `[1, MAX_ACTIONS_PER_COMMIT]`. Tests that assert the
-/// pre-argument behaviour pass `MAX_ACTIONS_PER_COMMIT` (8).
-pub fn commit_aggregate(
-    payer: &Pubkey,
-    wd: &World,
-    extra: &[AccountMeta],
-    max_actions: u8,
-) -> Instruction {
-    let mut accounts = vec![
-        r(&wd.config),
-        rs(payer),
-        w(&wd.pool),
-        r(&wd.pool_live),
-        w(&wd.balances_root),
-        w(&wd.fee_escrow),
-        w(&wd.magic_fee_vault),
-        w(&pdas::magic_context()),
-        r(&pdas::magic_program()),
-    ];
-    accounts.extend_from_slice(extra);
+/// `payer` must equal `Config.fee_payer` (`w.fee_payer` in tests).
+pub fn commit_aggregate(payer: &Pubkey, wd: &World) -> Instruction {
     Instruction {
         program_id: prog(),
-        accounts,
-        data: ix::CommitAggregate { max_actions }.data(),
-    }
-}
-/// Shared account layout for a direct (non-Magic-Action) call to `write_commitment`:
-/// `escrow_auth_meta` carries the caller-vs-real-fee-payer distinction (signer or
-/// not), `escrow_auth_key` derives the `escrow` action-balance PDA that must sign
-/// and never can.
-fn write_commitment_direct_accounts(
-    escrow_auth_meta: AccountMeta,
-    escrow_auth_key: &Pubkey,
-    wd: &World,
-    hash: &[u8; 32],
-) -> Vec<AccountMeta> {
-    vec![
-        w(&pdas::commitment(hash)),
-        r(&wd.config),
-        r(&SYSTEM),
-        r(&prog()),
-        escrow_auth_meta,
-        w(&pdas::action_escrow(escrow_auth_key)),
-    ]
-}
-/// Direct call to `write_commitment` by a plain wallet impersonating the action path:
-/// `caller` signs as `escrow_auth` (a wallet can legitimately sign for itself), and
-/// `escrow` is its derived action-escrow PDA — but **not** as a signer, since no wallet
-/// holds the private key for a PDA. This must be rejected by the `#[action]`
-/// escrow-signer / `source_program` checks.
-pub fn write_commitment_direct(
-    caller: &Pubkey,
-    wd: &World,
-    nonce: u64,
-    hash: [u8; 32],
-) -> Instruction {
-    Instruction {
-        program_id: prog(),
-        accounts: write_commitment_direct_accounts(rs(caller), caller, wd, &hash),
-        data: ix::WriteCommitment { nonce, hash }.data(),
-    }
-}
-/// Same shape as `write_commitment_direct`, but `escrow_auth` is the *real*
-/// `Config.fee_payer` (public knowledge — no signature required by the program's
-/// own constraint, which only checks the pubkey value) rather than the caller,
-/// and is never marked as a transaction signer. Isolates the one remaining gate a
-/// plain wallet cannot pass: `escrow` itself, which must be a signer at
-/// `ephemeral_balance_pda_from_payer(escrow_auth, ACTION_ESCROW_INDEX)` — a PDA no
-/// wallet holds the private key for.
-pub fn write_commitment_direct_with_escrow_auth(
-    escrow_auth: &Pubkey,
-    wd: &World,
-    nonce: u64,
-    hash: [u8; 32],
-) -> Instruction {
-    Instruction {
-        program_id: prog(),
-        accounts: write_commitment_direct_accounts(r(escrow_auth), escrow_auth, wd, &hash),
-        data: ix::WriteCommitment { nonce, hash }.data(),
-    }
-}
-/// Same split as `write_commitment_direct_accounts`, for `write_disclosure`.
-/// `hash` is `commitment_hash(args, salt)` — both PDAs are seeded by it (ruling 9).
-fn write_disclosure_direct_accounts(
-    escrow_auth_meta: AccountMeta,
-    escrow_auth_key: &Pubkey,
-    wd: &World,
-    hash: &[u8; 32],
-) -> Vec<AccountMeta> {
-    vec![
-        w(&pdas::disclosure(hash)),
-        r(&pdas::commitment(hash)),
-        r(&wd.config),
-        r(&SYSTEM),
-        r(&prog()),
-        escrow_auth_meta,
-        w(&pdas::action_escrow(escrow_auth_key)),
-    ]
-}
-/// Direct call to `write_disclosure` — same attack shape as `write_commitment_direct`.
-pub fn write_disclosure_direct(
-    caller: &Pubkey,
-    wd: &World,
-    args: DisclosureArgs,
-    salt: [u8; 32],
-) -> Instruction {
-    let hash = commitment_hash(&args, &salt);
-    Instruction {
-        program_id: prog(),
-        accounts: write_disclosure_direct_accounts(rs(caller), caller, wd, &hash),
-        data: ix::WriteDisclosure { args, salt }.data(),
-    }
-}
-/// Same shape as `write_disclosure_direct`, `escrow_auth`-parameterised like
-/// `write_commitment_direct_with_escrow_auth`.
-pub fn write_disclosure_direct_with_escrow_auth(
-    escrow_auth: &Pubkey,
-    wd: &World,
-    args: DisclosureArgs,
-    salt: [u8; 32],
-) -> Instruction {
-    let hash = commitment_hash(&args, &salt);
-    Instruction {
-        program_id: prog(),
-        accounts: write_disclosure_direct_accounts(r(escrow_auth), escrow_auth, wd, &hash),
-        data: ix::WriteDisclosure { args, salt }.data(),
+        accounts: vec![
+            r(&wd.config),
+            rs(payer),
+            w(&wd.pool),
+            r(&wd.pool_live),
+            w(&wd.balances_root),
+            w(&wd.fee_escrow),
+            w(&wd.magic_fee_vault),
+            w(&pdas::magic_context()),
+            r(&pdas::magic_program()),
+        ],
+        data: ix::CommitAggregate {}.data(),
     }
 }
 /// `set_balances_root` (ER, crank): `extra` is the batch of `UserAccount`
@@ -803,7 +671,7 @@ pub fn set_balances_root(
         .data(),
     }
 }
-/// `undelegate_user` (owner, ER): scrub -> close permission x3 -> commit_and_undelegate.
+/// `undelegate_user` (owner, ER): scrub -> close permission x2 -> commit_and_undelegate.
 /// Same permission/vault/magic accounts as `set_session`, plus `fee_escrow`/
 /// `magic_fee_vault`/`magic_context`/`magic_program` (as in `withdraw`).
 pub fn undelegate_user(signer: &Pubkey, t: &Trader, wd: &World) -> Instruction {
@@ -814,10 +682,8 @@ pub fn undelegate_user(signer: &Pubkey, t: &Trader, wd: &World) -> Instruction {
             r(&wd.config),
             w(&t.user),
             w(&t.position),
-            w(&t.dq),
             w(&pdas::permission(&t.user)),
             w(&pdas::permission(&t.position)),
-            w(&pdas::permission(&t.dq)),
             w(&pdas::ephemeral_vault()),
             r(&pdas::permission_program()),
             w(&wd.fee_escrow),
@@ -831,10 +697,9 @@ pub fn undelegate_user(signer: &Pubkey, t: &Trader, wd: &World) -> Instruction {
 
 /// `ComputeBudgetProgram::SetComputeUnitLimit` (discriminant `2`, u32 LE units),
 /// hand-built so the test crate needs no extra dependency. A full `crank_tick`
-/// batch no longer fits in the 200k default: 16 candidates measure ~166k when
-/// none liquidate but 367k when all of them do (week-5 Task 1 put a
-/// `DisclosureQueue` in every candidate triple), so any client that fills the
-/// batch has to raise the limit — `services/relayer/src/crank.ts` does the same.
+/// batch may not fit in the 200k default when many candidates liquidate at
+/// once, so any client that fills the batch raises the limit —
+/// `services/relayer/src/crank.ts` does the same.
 pub fn set_compute_unit_limit(units: u32) -> Instruction {
     let mut data = vec![2u8];
     data.extend_from_slice(&units.to_le_bytes());
@@ -845,45 +710,12 @@ pub fn set_compute_unit_limit(units: u32) -> Instruction {
     }
 }
 
-// ---------------------------------------------------------------- week-5 Task 2
-
-/// `close_orphan_queue` (ER, crank): reclaims the `DisclosureQueue` an exited
-/// user left behind once its last record has been revealed.
-pub fn close_orphan_queue(crank: &Pubkey, t: &Trader, wd: &World) -> Instruction {
-    Instruction {
-        program_id: prog(),
-        accounts: vec![
-            rs(crank),
-            r(&wd.config),
-            w(&t.dq),
-            // Read-only and unchecked on purpose: absent, foreign-owned, or
-            // present-and-`exited` is what the instruction reads as
-            // "the owner has exited".
-            r(&t.user),
-            w(&pdas::permission(&t.dq)),
-            w(&pdas::ephemeral_vault()),
-            r(&pdas::permission_program()),
-            w(&wd.fee_escrow),
-            w(&wd.magic_fee_vault),
-            w(&pdas::magic_context()),
-            r(&pdas::magic_program()),
-        ],
-        data: ix::CloseOrphanQueue {}.data(),
-    }
-}
-
-/// `close_exited_user` (base layer, `Config.fee_payer`): rent reclaim on all
-/// three of an exited owner's undelegated PDAs.
+/// `close_exited_user` (base layer, `Config.fee_payer`): rent reclaim on both
+/// of an exited owner's undelegated PDAs.
 pub fn close_exited_user(fee_payer: &Pubkey, t: &Trader, wd: &World) -> Instruction {
     Instruction {
         program_id: prog(),
-        accounts: vec![
-            s(fee_payer),
-            r(&wd.config),
-            w(&t.user),
-            w(&t.position),
-            w(&t.dq),
-        ],
+        accounts: vec![s(fee_payer), r(&wd.config), w(&t.user), w(&t.position)],
         data: ix::CloseExitedUser {}.data(),
     }
 }
@@ -902,13 +734,9 @@ pub fn delegate_user(owner: &Pubkey, payer: &Pubkey, wd: &World) -> Instruction 
         ephemeral_rollups_sdk::consts::DELEGATION_PROGRAM_ID.to_bytes(),
     ));
     // Week-5 Task 3 (P1): `payer` sits immediately after `owner` and funds the
-    // three delegation records; `owner` still signs for its own PDAs.
+    // delegation records; `owner` still signs for its own PDAs.
     let mut accounts = vec![s(owner), s(payer), r(&wd.config), r(&wd.market)];
-    for acc in [
-        pdas::user(owner),
-        pdas::position(owner, &wd.market),
-        pdas::dq(owner),
-    ] {
+    for acc in [pdas::user(owner), pdas::position(owner, &wd.market)] {
         let buffer = Pubkey::find_program_address(&[DELEGATE_BUFFER_TAG, acc.as_ref()], &prog()).0;
         let record = Pubkey::find_program_address(&[DELEGATION_RECORD_TAG, acc.as_ref()], &dlp).0;
         let meta = Pubkey::find_program_address(&[DELEGATION_METADATA_TAG, acc.as_ref()], &dlp).0;
@@ -919,25 +747,5 @@ pub fn delegate_user(owner: &Pubkey, payer: &Pubkey, wd: &World) -> Instruction 
         program_id: prog(),
         accounts,
         data: ix::DelegateUser {}.data(),
-    }
-}
-
-/// `init_user_reuse_queue`: re-onboarding after an exit — same account shape as
-/// `init_user`, but every PDA already exists (undelegation hands them back
-/// scrubbed, it does not close them).
-pub fn init_user_reuse_queue(owner: &Pubkey, wd: &World, exit_salt: [u8; 32]) -> Instruction {
-    Instruction {
-        program_id: prog(),
-        accounts: vec![
-            s(owner),
-            s(owner), // payer: owner self-pays in tests, as in `init_user`
-            r(&wd.config),
-            r(&wd.market),
-            w(&pdas::user(owner)),
-            w(&pdas::position(owner, &wd.market)),
-            w(&pdas::dq(owner)),
-            r(&SYSTEM),
-        ],
-        data: ix::InitUserReuseQueue { exit_salt }.data(),
     }
 }

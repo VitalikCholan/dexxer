@@ -18,7 +18,6 @@ pub struct UserAccount {
     pub actions_left: u32,
     pub free_margin: u64,
     pub locked_margin: u64,
-    pub nonce: u64,
     // Week-2 Task 5 fix round 2 (controller ruling): per-account withdraw
     // cooldown, guarding the shared `FeeEscrow`'s commit budget against a
     // sybil griefing a withdraw(1)-per-tx drain loop (see instructions/user.rs).
@@ -29,10 +28,9 @@ pub struct UserAccount {
     /// from the published leaf hash.
     pub exit_salt: [u8; 32],
     pub bump: u8,
-    /// Week-5 Task 2 (spec §2.6.3): set by `undelegate_user`, cleared by
-    /// `init_user_reuse_queue`. Marks an account that has left the ER and is
-    /// sitting scrubbed and dormant on L1 — the gate that lets re-onboarding
-    /// re-initialize it in place instead of `init`-ing a PDA that already
-    /// exists. Appended at the END so every earlier field keeps its offset.
+    /// Week-5 Task 2 (spec §2.6.3): set by `undelegate_user`. Marks an account
+    /// that has left the ER and is sitting scrubbed and dormant on L1 — the
+    /// gate for `close_exited_user` (and against re-delegating it in
+    /// `delegate_user`).
     pub exited: bool,
 }

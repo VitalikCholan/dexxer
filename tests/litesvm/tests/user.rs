@@ -33,7 +33,7 @@ fn faucet_limits_per_day() {
 }
 
 #[test]
-fn init_user_creates_three_pdas_and_prefunds_permission_rent() {
+fn init_user_creates_pdas_and_prefunds_permission_rent() {
     let mut h = Harness::new();
     let w = World::bootstrap(&mut h);
     let t = w.new_trader(&mut h, 0);
@@ -43,7 +43,6 @@ fn init_user_creates_three_pdas_and_prefunds_permission_rent() {
     let p: Position = h.account(&t.position);
     assert_eq!(p.state, PositionState::Empty);
     assert_eq!(p.market, apk(w.market));
-    let _dq: DisclosureQueue = h.account(&t.dq);
     let extra = ephemeral_rollups_sdk::ephemeral_accounts::rent(
         ephemeral_rollups_sdk::access_control::structs::EphemeralPermission::size_of(
             PERMISSION_MEMBERS,
@@ -114,13 +113,10 @@ fn set_session_only_by_owner() {
 
 // ---------------------------------------------------------- week-5 Task 2
 // Exit-side rent reclaim and the re-onboarding guard around it.
-// Fix round 1 (controller ruling, CRITICAL 1): `close_queue_l1` closed only the
-// queue and could strand an owner in a state no instruction could repair.
-// `close_exited_user` closes all three PDAs together, so after it plain
-// `init_user` is the re-onboarding path again.
+// `close_exited_user` closes both PDAs together, so after it plain `init_user`
+// is the re-onboarding path.
 
-/// Clean exit: no trades, so the ring is empty and `undelegate_user` takes all
-/// three accounts on its non-debt branch, leaving `exited == true`.
+/// Clean exit: no trades, `undelegate_user` leaves `exited == true`.
 fn exited_trader(h: &mut Harness, w: &World) -> Trader {
     let t = w.new_trader(h, 0);
     h.send(&[ixs::undelegate_user(&t.kp.pubkey(), &t, w)], &[&t.kp])
@@ -134,7 +130,7 @@ fn lamports(h: &Harness, k: &Pubkey) -> u64 {
 }
 
 #[test]
-fn close_exited_user_returns_rent_of_three_pdas_to_fee_payer() {
+fn close_exited_user_returns_rent_of_both_pdas_to_fee_payer() {
     let mut h = Harness::new();
     let w = World::bootstrap(&mut h);
     let t = exited_trader(&mut h, &w);
@@ -148,33 +144,29 @@ fn close_exited_user_returns_rent_of_three_pdas_to_fee_payer() {
     assert_custom_error(&r, 6000 + DexxerError::Unauthorized as u32);
 
     let before = lamports(&h, &w.fee_payer.pubkey());
-    let rent: u64 = [t.user, t.position, t.dq]
-        .iter()
-        .map(|k| lamports(&h, k))
-        .sum();
+    let rent: u64 = [t.user, t.position].iter().map(|k| lamports(&h, k)).sum();
     assert!(rent > 0);
     h.send(
         &[ixs::close_exited_user(&w.fee_payer.pubkey(), &t, &w)],
         &[&w.fee_payer],
     )
     .unwrap();
-    for k in [t.user, t.position, t.dq] {
+    for k in [t.user, t.position] {
         assert_eq!(lamports(&h, &k), 0, "PDA {k} must be closed");
     }
     assert_eq!(
         lamports(&h, &w.fee_payer.pubkey()),
         before + rent,
-        "the rent of all three PDAs lands on fee_payer"
+        "the rent of both PDAs lands on fee_payer"
     );
 
     // The slate is genuinely blank now — plain `init_user` onboards this owner
-    // again, which is the whole point of closing all three together.
+    // again, which is the whole point of closing both together.
     h.send(&[ixs::init_user(&t.kp.pubkey(), &w, [0x7c; 32])], &[&t.kp])
         .unwrap();
     let u: UserAccount = h.account(&t.user);
     assert!(!u.exited);
     assert_eq!(u.exit_salt, [0x7c; 32]);
-    assert_eq!(h.account::<DisclosureQueue>(&t.dq).len, 0);
 }
 
 #[test]
@@ -191,47 +183,10 @@ fn close_exited_user_rejects_non_exited() {
     assert_custom_error(&r, 6000 + DexxerError::NotExited as u32);
 }
 
-#[test]
-fn close_exited_user_rejects_pending_queue() {
-    let mut h = Harness::new();
-    let w = World::bootstrap(&mut h);
-    h.warp(9_101, 2_000_000);
-    w.set_price(&mut h, 150_000_000, 5, 2_000_000, 100);
-    let t = w.new_trader(&mut h, 1_000_000_000);
-    h.send(
-        &[ixs::open_position(
-            &t.kp.pubkey(),
-            &t,
-            &w,
-            Side::Long,
-            10_000_000_000,
-            150_000_000,
-            150_000_000,
-        )],
-        &[&t.kp],
-    )
-    .unwrap();
-    h.send(&[ixs::close_position(&t.kp.pubkey(), &t, &w, 0)], &[&t.kp])
-        .unwrap();
-    let free = h.account::<UserAccount>(&t.user).free_margin;
-    h.send(&[ixs::withdraw(&t.kp.pubkey(), &t, &w, free)], &[&t.kp])
-        .unwrap();
-    // Partial exit: `exited` is set and the balances are zero, so every account
-    // constraint passes — the pending record is the only thing left to stop it.
-    h.send(&[ixs::undelegate_user(&t.kp.pubkey(), &t, &w)], &[&t.kp])
-        .unwrap();
-    assert_eq!(h.account::<DisclosureQueue>(&t.dq).len, 1);
-    let r = h.send(
-        &[ixs::close_exited_user(&w.fee_payer.pubkey(), &t, &w)],
-        &[&w.fee_payer],
-    );
-    assert_custom_error(&r, 6000 + DexxerError::QueueStillPending as u32);
-}
-
 // Fix round 1 (controller ruling, IMPORTANT 2): `DelegateUser` takes every PDA
 // as an `UncheckedAccount`, so without an explicit read an exited account could
-// be pushed straight back into the ER — scrubbed, `exit_salt` zeroed —
-// bypassing `init_user_reuse_queue` entirely.
+// be pushed straight back into the ER — scrubbed, `exit_salt` zeroed. The
+// legitimate way back is `close_exited_user` followed by a fresh `init_user`.
 #[test]
 fn delegate_user_rejects_exited_account() {
     let mut h = Harness::new();
@@ -245,10 +200,12 @@ fn delegate_user_rejects_exited_account() {
     assert_custom_error(&r, 6000 + DexxerError::NotExited as u32);
 
     h.send(
-        &[ixs::init_user_reuse_queue(&t.kp.pubkey(), &w, [0x33; 32])],
-        &[&t.kp],
+        &[ixs::close_exited_user(&w.fee_payer.pubkey(), &t, &w)],
+        &[&w.fee_payer],
     )
     .unwrap();
+    h.send(&[ixs::init_user(&t.kp.pubkey(), &w, [0x33; 32])], &[&t.kp])
+        .unwrap();
     // LiteSVM deploys no delegation program, so the CPI below still cannot
     // succeed here — what this asserts is that the guard no longer fires and
     // the call now reaches the delegation CPI.
@@ -264,7 +221,7 @@ fn delegate_user_rejects_exited_account() {
 }
 
 // Week-5 Task 3 (P1): `DelegateUser` gained a `payer: Signer` distinct from
-// `owner`, so the three delegation records can be funded by the relayer's
+// `owner`, so the delegation records can be funded by the relayer's
 // sponsor key while the owner keeps signing for its own PDAs. LiteSVM deploys
 // no delegation program, so the CPI itself can never succeed here — what is
 // assertable is the half that runs BEFORE it: `payer` really is a separate,

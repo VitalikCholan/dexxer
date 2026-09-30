@@ -385,8 +385,8 @@ pub struct CloseExitedPosition<'info> {
 }
 
 pub fn close_exited_position(ctx: Context<CloseExitedPosition>) -> Result<()> {
-    // The SOL position closes with the user (`close_exited_user`); closing it
-    // here would leave `init_user_reuse_queue` without it — no re-onboarding.
+    // The SOL position closes with the user (`close_exited_user`), never on
+    // its own.
     require_keys_neq!(
         ctx.accounts.position.market,
         sol_market_key(),

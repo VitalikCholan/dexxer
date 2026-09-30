@@ -12,22 +12,22 @@ use crate::{
 use anchor_lang::prelude::*;
 use anchor_lang::solana_program::instruction::{AccountMeta, Instruction};
 use ephemeral_rollups_sdk::consts::MAGIC_PROGRAM_ID;
-use solana_keccak_hasher::hashv;
 
 /// STACK BUDGET — read before adding an account here. Week-5 Task 1's four new
 /// fields put `Trade::try_accounts` 8 bytes over the SBF 4096-byte frame
 /// (`anchor build`: "Stack offset of 4104 exceeded max offset of 4096", plus
 /// five "function call overwrites values in the frame" errors). Boxing `config`
-/// bought back a `Config`'s worth of frame — `Config::INIT_SPACE` is 275 B — so
-/// roughly 270 B of headroom is left. Week-5 Task 3 spent some of it on
-/// `liq_crank_signer` (an `UncheckedAccount`, cheap); if a future field does
-/// not fit, box the next-largest account (`market`, then `market_risk`). The
-/// build fails loudly on overflow, so this is a warning, not an invariant to
-/// trust blindly.
+/// bought back a `Config`'s worth of frame, roughly 270 B of headroom. Week-5
+/// Task 3 spent some of it on `liq_crank_signer` (an `UncheckedAccount`,
+/// cheap); week-6 slots Task 1 gave one account back (the boxed
+/// `disclosure_queue`, gone with trade disclosure — 12 accounts now). If a
+/// future field does not fit, box the next-largest account (`market`, then
+/// `market_risk`). The build fails loudly on overflow, so this is a warning,
+/// not an invariant to trust blindly.
 #[derive(Accounts)]
 pub struct Trade<'info> {
     pub signer: Signer<'info>,
-    // Boxed: week-5 Task 1 added four accounts to this context, which tipped
+    // Boxed: week-5 Task 1 added accounts to this context, which tipped
     // `Trade::try_accounts` 8 bytes past the SBF stack limit (build error, same
     // failure mode as `user_account`/`position` below). `Config` is the largest
     // read-only account here, so it is the cheapest one to move to the heap.
@@ -52,7 +52,7 @@ pub struct Trade<'info> {
     pub user_account: Box<Account<'info, UserAccount>>,
     // Boxed: with all the other accounts in this context inline, Position
     // pushes the account-validation stack frame past the SBF limit (same
-    // failure mode as InitUser's Position/DisclosureQueue in instructions/user.rs).
+    // failure mode as InitUser's Position in instructions/user.rs).
     #[account(
         mut,
         seeds = [POSITION_SEED, user_account.owner.as_ref(), market.key().as_ref()],
@@ -63,13 +63,6 @@ pub struct Trade<'info> {
     pub position: Box<Account<'info, Position>>,
     /// CHECK: validated in oracle::read_price (key == market.feed, owner == config.oracle_program)
     pub feed: UncheckedAccount<'info>,
-    // Week-5 Task 1: `finalize_close` pushes the `ClosedRecord` straight into
-    // the owner's ring, so every trading instruction that can close a position
-    // (`close_position`, `decrease_position` to zero) needs it. Boxed for the
-    // same SBF stack reason as `user_account`/`position` above — this is the
-    // biggest per-user account of the three.
-    #[account(mut, seeds = [DQ_SEED, user_account.owner.as_ref()], bump = disclosure_queue.bump)]
-    pub disclosure_queue: Box<Account<'info, DisclosureQueue>>,
     // The per-position liquidation task's payer AND authority (week-5 Task 3):
     // `open_position` registers the task with this PDA as the `ScheduleTask`
     // CPI payer, which is what makes the PROGRAM the task's authority, and
@@ -144,7 +137,6 @@ fn liq_task_accounts<'info>(a: &'info Trade<'info>) -> &'info [AccountInfo<'info
         a.feed.to_account_info(),
         a.position.to_account_info(),
         a.user_account.to_account_info(),
-        a.disclosure_queue.to_account_info(),
     ];
     Box::leak(infos.into_boxed_slice())
 }
@@ -183,7 +175,6 @@ fn register_liq_task<'info>(a: &'info Trade<'info>) -> Result<()> {
             AccountMeta::new_readonly(a.feed.key(), false),
             AccountMeta::new(a.position.key(), false),
             AccountMeta::new(a.user_account.key(), false),
-            AccountMeta::new(a.disclosure_queue.key(), false),
         ],
         data: anchor_lang::InstructionData::data(&crate::instruction::LiquidationCheck {}),
     };
@@ -315,7 +306,6 @@ pub fn open_position<'info>(
     p.liq_price = chk.liq_price;
     p.opened_slot = clock.slot;
     p.liq_ticks = 0;
-    p.closed = None;
     // Exact at open: entry == px.price, so notional(size, entry) == entry_notional.
     p.oi_notional = entry_notional;
     seed_mark(&mut a.market, px.price, clock.slot);
@@ -379,7 +369,6 @@ pub fn close_position<'info>(
         Side::Short => require!(px.price <= limit_price, DexxerError::SlippageExceeded),
     }
     let fee_bps = a.market.close_fee_bps as u32;
-    let delay = a.config.disclosure_delay_slots;
     let market_key = a.market.key();
     finalize_close(
         market_key,
@@ -387,12 +376,10 @@ pub fn close_position<'info>(
         &mut a.pool_live,
         &mut a.user_account,
         &mut a.position,
-        &mut a.disclosure_queue,
         px.price,
         fee_bps,
         CloseReason::User,
         &clock,
-        delay,
     )?;
     cancel_liq_task(ctx.accounts)
 }
@@ -555,19 +542,16 @@ pub fn decrease_position<'info>(
     let market_key = a.market.key();
     if close_size == a.position.size {
         let fee_bps = a.market.close_fee_bps as u32;
-        let delay = a.config.disclosure_delay_slots;
         finalize_close(
             market_key,
             &mut a.market_risk,
             &mut a.pool_live,
             &mut a.user_account,
             &mut a.position,
-            &mut a.disclosure_queue,
             px.price,
             fee_bps,
             CloseReason::User,
             &clock,
-            delay,
         )?;
         // A decrease that takes the size to zero IS a close — same task
         // teardown as `close_position`.
@@ -657,12 +641,12 @@ pub fn decrease_position<'info>(
 
 /// Shared by close_position, decrease_position (full) and crank liquidation.
 ///
-/// Queue-first (week-5 Task 1): the `ClosedRecord` is pushed into `dq` and the
-/// `Position` is reset to `Empty` in this same instruction, so a trader can
-/// reopen immediately and no crank round-trip (`mark_committed`, now gone) sits
-/// between a close and the next trade. `dq.push` is fallible (`QueueFull`), and
-/// it is the LAST thing that can fail here — a full ring reverts the entire
-/// close rather than settling the money and losing the record.
+/// Settles the money and resets the `Position` to `Empty` in one step, so a
+/// trader can reopen immediately. Trades are not disclosed (spec §2.9), so
+/// nothing is queued and nothing here can fail on a full buffer — only on a
+/// genuine accounting error. `market_key`/`clock` are unused until the
+/// per-user close history lands (plan Task 4) but are already part of the
+/// signature its callers use.
 #[allow(clippy::too_many_arguments)]
 pub fn finalize_close(
     market_key: Pubkey,
@@ -670,13 +654,12 @@ pub fn finalize_close(
     pool: &mut PoolLive,
     user: &mut UserAccount,
     pos: &mut Position,
-    dq: &mut DisclosureQueue,
     exit: u64,
     fee_bps: u32,
     reason: CloseReason,
     clock: &Clock,
-    delay_slots: u64,
 ) -> Result<Settlement> {
+    let _ = (market_key, clock);
     let notional_exit = math::notional(pos.size, exit)?;
     let pnl = math::upnl(pos.side, pos.size, pos.entry, exit)?;
     let fee = math::fee(notional_exit, fee_bps)?;
@@ -718,40 +701,11 @@ pub fn finalize_close(
         .open_positions
         .checked_sub(1)
         .ok_or(DexxerError::MathOverflow)?;
-    user.nonce = user.nonce.checked_add(1).ok_or(DexxerError::MathOverflow)?;
-    // week 3 may replace this salt source with VRF/TEE randomness
-    let salt = hashv(&[
-        pos.owner.as_ref(),
-        &user.nonce.to_le_bytes(),
-        &clock.slot.to_le_bytes(),
-    ])
-    .to_bytes();
-    dq.push(ClosedRecord {
-        market: market_key,
-        side: pos.side,
-        size: pos.size,
-        entry: pos.entry,
-        exit,
-        pnl,
-        fees: s.fee_taken,
-        reason,
-        opened_slot: pos.opened_slot,
-        closed_slot: clock.slot,
-        salt,
-        nonce: user.nonce,
-        reveal_after_slot: clock
-            .slot
-            .checked_add(delay_slots)
-            .ok_or(DexxerError::MathOverflow)?,
-        commitment_written: false,
-    })?;
     // Fully `Empty`, field by field: the next `open_position` overwrites
     // `state`/`side`/`size`/`entry`/`margin`/`liq_price`/`opened_slot`, but
     // leaving any of them set in between would show a phantom trade to the
-    // owner's client, so nothing is left behind. `closed` stays in the layout
-    // (no account migration) and is now always `None`.
+    // owner's client, so nothing is left behind.
     pos.state = PositionState::Empty;
-    pos.closed = None;
     pos.side = Side::Long;
     pos.size = 0;
     pos.entry = 0;
