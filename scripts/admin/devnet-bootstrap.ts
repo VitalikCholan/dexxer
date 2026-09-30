@@ -68,7 +68,6 @@ bootstrapDevnet()
       feed: b.feed.toBase58(),
       feeEscrow: b.feeEscrow.toBase58(),
       balancesRoot: b.balancesRoot.toBase58(),
-      actionEscrow: b.actionEscrow.toBase58(),
       sigs: b.sigs,
     });
   })

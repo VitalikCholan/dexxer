@@ -6,8 +6,8 @@
 // lib/trader.ts helpers it uses: `creditDeposit`/`initPermissions`), opens a
 // ~10x long, then — as admin — raises `Market.mmr_bps` far above the
 // position's actual margin ratio (`set_params`) so it becomes liquidatable
-// on the very next tick that reads it. Polls `Position.liq_ticks`/`state`
-// (owner-token read) until the crank (running separately —
+// on the very next tick that reads it. Polls the SOL slot's `liq_ticks` in
+// the trader's `Positions` (owner-token read) until the crank (running separately —
 // `scripts/crank-fallback/index.ts` with `DEXXER_NET=devnet`, started
 // beforehand) liquidates it, then restores the market's original params —
 // mandatory: this is a shared devnet market, other Task 6 verification runs
@@ -37,20 +37,16 @@ const { randomBytes } = await import("crypto");
 const { BN } = await import("@coral-xyz/anchor");
 const { SystemProgram, Transaction, sendAndConfirmTransaction, LAMPORTS_PER_SOL } = await import("@solana/web3.js");
 const { getOrCreateAssociatedTokenAccount, getAssociatedTokenAddressSync, TOKEN_PROGRAM_ID } = await import("@solana/spl-token");
-const {
-  DELEGATION_PROGRAM_ID,
-  EPHEMERAL_VAULT_ID,
-  MAGIC_PROGRAM_ID,
-  PERMISSION_PROGRAM_ID,
-  delegateSpl,
-  permissionPdaFromAccount,
-} = await import("@magicblock-labs/ephemeral-rollups-sdk");
+const { delegateSpl } = await import("@magicblock-labs/ephemeral-rollups-sdk");
 const envMod = await import("../lib/env.js");
 const { ER_VALIDATOR, NET, baseConn, loadOrCreateKey, sendAndConfirmIx, sleep, teeConn, waitDelegated } = envMod;
 const assert: (cond: unknown, msg: string) => asserts cond = envMod.assert;
-const { DEXXER_CORE_PROGRAM_ID, accountNs, dexxerCoreProgram, delegationTriple, pdas } = await import("../lib/program.js");
+const { accountNs, dexxerCoreProgram, pdas } = await import("../lib/program.js");
 const { bootstrapDevnet } = await import("../lib/admin.js");
-const { creditDeposit, initPermissions, tradeAccounts, U64_MAX } = await import("../lib/trader.js");
+const {
+  creditDeposit, delegateUserAccounts, initPermissions, initUserAccounts, permissionAccounts, readPositions, tradeAccounts, U64_MAX,
+} = await import("../lib/trader.js");
+const { slotFor } = await import("../lib/positions.js");
 
 if (NET !== "devnet") {
   console.error(`FAIL: DEXXER_NET must be "devnet" (got "${NET}"). Run: DEXXER_NET=devnet npm run devnet:liquidation`);
@@ -126,10 +122,9 @@ async function main() {
 
   const core = dexxerCoreProgram(baseConn, owner);
   const config = pdas.config();
-  const market = pdas.market();
+  const market = boot.market;
   const userAccount = pdas.userAccount(owner.publicKey);
-  const position = pdas.position(owner.publicKey, market);
-  const disclosureQueue = pdas.disclosureQueue(owner.publicKey);
+  const positions = pdas.positions(owner.publicKey);
   const faucetPda = pdas.faucet(owner.publicKey);
   const mintAuth = pdas.mintAuth();
   const ownerAta = getAssociatedTokenAddressSync(boot.mint, owner.publicKey);
@@ -140,50 +135,24 @@ async function main() {
     .faucetInit(new BN(DEPOSIT.toString()))
     .accounts({ owner: owner.publicKey, payer: owner.publicKey, config, faucet: faucetPda, dusdcMint: boot.mint, mintAuth, ownerAta, systemProgram: SystemProgram.programId, tokenProgram: TOKEN_PROGRAM_ID })
     .rpc();
-  const exitSalt = new Uint8Array(randomBytes(32));
-  const initUserSig = await core.methods
-    .initUser(Array.from(exitSalt))
-    .accounts({ owner: owner.publicKey, payer: owner.publicKey, config, market, userAccount, position, disclosureQueue, systemProgram: SystemProgram.programId })
-    .rpc();
+  const exitSalt = Array.from(randomBytes(32));
+  const initUserSig = await core.methods.initUser(exitSalt).accounts(initUserAccounts(owner.publicKey, owner.publicKey)).rpc();
   console.log("faucet_init", faucetSig, "init_user", initUserSig);
 
   console.log("=== delegateSpl + delegate_user ===");
   const delegateSplIxs = await delegateSpl(owner.publicKey, boot.mint, DEPOSIT, { validator: ER_VALIDATOR, initVaultIfMissing: false, idempotent: false });
   const delegateSplSig = await sendAndConfirmTransaction(baseConn, new Transaction().add(...delegateSplIxs), [owner], { commitment: "confirmed" });
-  const ut = delegationTriple(userAccount, DEXXER_CORE_PROGRAM_ID);
-  const pt = delegationTriple(position, DEXXER_CORE_PROGRAM_ID);
-  const dt = delegationTriple(disclosureQueue, DEXXER_CORE_PROGRAM_ID);
+  // week-5 Task 3 (P1): the owner pays the delegation records here.
   const delegateUserSig = await core.methods
     .delegateUser()
-    .accounts({
-      owner: owner.publicKey,
-      payer: owner.publicKey, // week-5 Task 3 (P1): delegation-record payer
-      config,
-      market,
-      bufferUserAccount: ut.buffer,
-      delegationRecordUserAccount: ut.record,
-      delegationMetadataUserAccount: ut.metadata,
-      userAccount,
-      bufferPosition: pt.buffer,
-      delegationRecordPosition: pt.record,
-      delegationMetadataPosition: pt.metadata,
-      position,
-      bufferDisclosureQueue: dt.buffer,
-      delegationRecordDisclosureQueue: dt.record,
-      delegationMetadataDisclosureQueue: dt.metadata,
-      disclosureQueue,
-      ownerProgram: DEXXER_CORE_PROGRAM_ID,
-      delegationProgram: DELEGATION_PROGRAM_ID,
-      systemProgram: SystemProgram.programId,
-    })
+    .accounts(delegateUserAccounts(owner.publicKey, owner.publicKey))
     .rpc();
   console.log("delegateSpl", delegateSplSig, "delegate_user", delegateUserSig);
   await waitDelegated(baseConn, userAccount, "UserAccount");
-  await waitDelegated(baseConn, position, "Position");
-  await waitDelegated(baseConn, disclosureQueue, "DisclosureQueue");
+  await waitDelegated(baseConn, positions, "Positions");
 
   console.log("=== credit_deposit + init_permissions (ER) ===");
-  const trader = { kp: owner, userAccount, position, disclosureQueue, userAta: ownerAta };
+  const trader = { kp: owner, userAccount, positions, userAta: ownerAta };
   const creditSig = await creditDeposit(boot, trader, DEPOSIT);
   const initPermSig = await initPermissions(trader);
   console.log("credit_deposit", creditSig, "init_permissions", initPermSig);
@@ -193,12 +162,9 @@ async function main() {
 
   console.log("=== set_session ===");
   const expiry = Math.floor(Date.now() / 1000) + 3600;
-  const userPermission = permissionPdaFromAccount(userAccount);
-  const positionPermission = permissionPdaFromAccount(position);
-  const dqPermission = permissionPdaFromAccount(disclosureQueue);
   const setSessionIx = await coreOwnerEr.methods
     .setSession(session.publicKey, new BN(expiry), 20)
-    .accounts({ owner: owner.publicKey, config, market, userAccount, position, disclosureQueue, userPermission, positionPermission, dqPermission, permissionProgram: PERMISSION_PROGRAM_ID, ephemeralVault: EPHEMERAL_VAULT_ID, magicProgram: MAGIC_PROGRAM_ID })
+    .accounts(permissionAccounts(owner.publicKey))
     .instruction();
   const setSessionSig = await sendAndConfirmIx(ownerConn, owner, setSessionIx);
   const fundSessionSig = await sendAndConfirmTransaction(
@@ -226,14 +192,14 @@ async function main() {
   const coreSessionEr = dexxerCoreProgram(sessionConn, session);
   const openIx = await coreSessionEr.methods
     .openPosition({ long: {} }, new BN(sizeLamports.toString()), new BN(marginUsd.toString()), new BN(U64_MAX.toString()))
-    .accounts({ signer: session.publicKey, ...tradeAccounts(boot, { userAccount, position, disclosureQueue }) })
+    .accounts({ signer: session.publicKey, ...tradeAccounts({ config, poolLive: boot.poolLive }, { userAccount, positions }, boot) })
     .instruction();
   const openSig = await sendAndConfirmIx(sessionConn, session, openIx);
   console.log("open_position (session-signed)", openSig);
 
-  const positionAfterOpen = await accountNs(coreOwnerEr).position.fetch(position);
-  assert("open" in positionAfterOpen.state, `Position.state == Open after open_position (got ${JSON.stringify(positionAfterOpen.state)})`);
-  console.log("Position after open:", { entry: positionAfterOpen.entry.toString(), margin: positionAfterOpen.margin.toString(), size: positionAfterOpen.size.toString() });
+  const slotAfterOpen = slotFor(await readPositions(ownerConn, positions), market);
+  assert(slotAfterOpen !== null, "Positions has an open SOL slot after open_position");
+  console.log("SOL slot after open:", { index: slotAfterOpen.index, entry: slotAfterOpen.entry.toString(), margin: slotAfterOpen.margin.toString(), size: slotAfterOpen.size.toString() });
 
   // --- admin: snapshot original params, then force liquidation via extreme mmr_bps ---
   const adminConn = await teeConn(admin);
@@ -259,15 +225,16 @@ async function main() {
 
     for (let i = 0; i < POLL_TRIES; i++) {
       liqPollTries = i + 1;
-      const pos = await accountNs(coreOwnerEr).position.fetch(position);
-      liqTicksSeen.push(Number(pos.liqTicks));
-      // Week-5 Task 1: a liquidation is a close, and a close pushes its record
-      // into the owner's ring and frees the `Position` straight to `Empty` —
-      // so "the queue grew" is what a liquidation looks like from out here.
-      const dq = await accountNs(coreOwnerEr).disclosureQueue.fetch(disclosureQueue);
-      if ("empty" in pos.state && dq.len > 0) {
+      const p = await readPositions(ownerConn, positions);
+      const slot = slotFor(p, market);
+      if (slot) liqTicksSeen.push(slot.liqTicks);
+      // Spec §2.9: a liquidation frees the slot and appends a `liquidated`
+      // record to the private history ring — that pair is what a liquidation
+      // looks like from out here (a fresh trader, so no older record to confuse).
+      const last = p.history.at(-1);
+      if (!slot && last?.reason === "liquidated") {
         liquidated = true;
-        closedInfo = dq.records[(dq.head + dq.len - 1) % dq.records.length];
+        closedInfo = last;
         console.log(`Position liquidated after ${((Date.now() - tSetParams) / 1000).toFixed(1)}s, ${liqPollTries} polls, liq_ticks history: ${JSON.stringify(liqTicksSeen)}`);
         break;
       }
@@ -299,7 +266,7 @@ async function main() {
       liquidated ? "PASS" : "FAIL (not liquidated within window)",
       JSON.stringify({
         owner: owner.publicKey.toBase58(),
-        position: position.toBase58(),
+        positions: positions.toBase58(),
         openSig,
         setParamsSig,
         liqPollTries,
@@ -307,7 +274,7 @@ async function main() {
         closedInfo,
         restoreSig,
         restoredOk,
-      }),
+      }, (_k, v) => (typeof v === "bigint" ? v.toString() : v)),
     );
   }
 }

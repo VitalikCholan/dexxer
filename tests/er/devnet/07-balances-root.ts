@@ -29,9 +29,9 @@
 //
 // Run: `npm run devnet:root` (from tests/er). Requires `devnet-bootstrap.ts`
 // (this script also calls it itself, idempotently) and ideally a prior
-// `06-commitment-reveal.ts` run (so at least one known trader's
+// `01-onboard-private.ts` run (so at least one known trader's
 // free_margin/exit_salt can be checked against the published root) — if
-// `.keys/devnet-run-mb-latest.json` is missing, this script still runs the
+// `.keys/devnet-run-latest.json` is missing, this script still runs the
 // root-cycle/commit/12x-cost measurements, just skips the leaf-membership
 // check against a specific known trader and says so.
 
@@ -148,12 +148,11 @@ async function main() {
 
   async function commitAggregateEmpty(): Promise<string> {
     const ix = await feePayerCore.methods
-      .commitAggregate(4)
+      .commitAggregate()
       .accounts({
         config: pdas.config(), payer: feePayer.publicKey, pool: boot.pool, poolLive: boot.poolLive, balancesRoot: boot.balancesRoot,
         feeEscrow: boot.feeEscrow, magicFeeVault: cfg.magicFeeVault, magicContext: MAGIC_CONTEXT_ID, magicProgram: MAGIC_PROGRAM_ID,
       })
-      .remainingAccounts([])
       .instruction();
     return sendAndConfirmIx(feePayerConn, feePayer, ix);
   }
@@ -183,7 +182,7 @@ async function main() {
   assert(decoded1.filled <= cycle1.owners.length, `filled (${decoded1.filled}) <= real trader count (${cycle1.owners.length})`);
   assert(decoded1.filled <= ROOT_LEAVES, "filled <= ROOT_LEAVES");
 
-  const pointerPath = resolve(KEYS_DIR, "devnet-run-mb-latest.json");
+  const pointerPath = resolve(KEYS_DIR, "devnet-run-latest.json"); // written by 01-onboard-private.ts
   if (existsSync(pointerPath)) {
     const runState = JSON.parse(readFileSync(pointerPath, "utf8"));
     const owner = loadOrCreateKey(runState.traderName);
@@ -207,7 +206,7 @@ async function main() {
     }
     assert(!paddingCollision, "no padding slot (index >= filled) equals the known real leaf");
   } else {
-    console.log(`(skipping known-trader leaf-membership check — ${pointerPath} not found; run 06-commitment-reveal.ts first for that assertion)`);
+    console.log(`(skipping known-trader leaf-membership check — ${pointerPath} not found; run 01-onboard-private.ts first for that assertion)`);
   }
 
   // === cycle #2: root + commit again, assert ALL 64 leaves changed ===

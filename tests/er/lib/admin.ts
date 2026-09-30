@@ -37,9 +37,7 @@ import {
 } from "@solana/web3.js";
 import { getOrCreateAssociatedTokenAccount, TOKEN_PROGRAM_ID, ASSOCIATED_TOKEN_PROGRAM_ID } from "@solana/spl-token";
 import {
-  createTopUpEscrowInstruction,
   delegateSpl,
-  escrowPdaFromEscrowAuthority,
   EPHEMERAL_VAULT_ID,
   lamportsDelegatedTransferIx,
   MAGIC_PROGRAM_ID,
@@ -49,11 +47,11 @@ import {
 import { NET, ORACLE, airdrop, baseConn, ER_VALIDATOR, loadOrCreateKey, sendAndConfirmIx, teeConn, waitDelegated } from "./env.js";
 import { crankSignerPda } from "./crank-signer.js";
 import {
-  ACTION_ESCROW_INDEX,
   DELEGATION_PROGRAM_ID,
   DEXXER_CORE_PROGRAM_ID,
   EPHEMERAL_SPL_TOKEN_PROGRAM_ID,
   MOCK_ORACLE_PROGRAM_ID,
+  SOL_SYMBOL,
   accountNs,
   dexxerCoreProgram,
   delegationTriple,
@@ -63,7 +61,6 @@ import {
 } from "./program.js";
 
 export const LAZER_FEED_ID = "6";
-export const DISCLOSURE_DELAY_SLOTS = 100;
 // devnet-tee's validator-scoped magic fee vault (M3, week2-results.md §Task 1):
 // `magicFeeVaultPdaFromValidator(ER_VALIDATOR)` = this address, measured with
 // 8.39 SOL funded. Local mb-stack keeps `PublicKey.default()` (no fee-vault
@@ -108,13 +105,11 @@ export interface Bootstrapped {
   sigs: Record<string, string>;
 }
 
-/** `bootstrapDevnet()`'s return value: same fields as `bootstrap()`, plus the devnet fee payer and week-3's `BalancesRoot`/action-escrow. */
+/** `bootstrapDevnet()`'s return value: same fields as `bootstrap()`, plus the devnet fee payer and week-3's `BalancesRoot`. */
 export interface BootstrappedDevnet extends Bootstrapped {
   feePayer: Keypair;
   /** `[b"balances_root"]`, week 3 Task 5/7 — see `initAndDelegateBalancesRoot`. */
   balancesRoot: PublicKey;
-  /** Action-escrow balance PDA topped up for `write_commitment`/`write_disclosure` — see `topUpActionEscrow`. */
-  actionEscrow: PublicKey;
 }
 
 async function ensureFunded(pubkey: PublicKey, minSol: number, label: string) {
@@ -447,7 +442,7 @@ const MIN_PERMISSION_SURPLUS = 5_000_000;
  * this runs. Idempotent: skips a PDA whose ER balance already meets
  * `MIN_PERMISSION_SURPLUS`.
  */
-async function fundMarketPermissions(admin: Keypair, marketRisk: PublicKey, poolLive: PublicKey, sigs: Record<string, string>): Promise<void> {
+export async function fundMarketPermissions(admin: Keypair, marketRisk: PublicKey, poolLive: PublicKey, sigs: Record<string, string>): Promise<void> {
   const conn = await teeConn(admin);
   const targets: [string, PublicKey][] = [
     ["marketRisk", marketRisk],
@@ -491,7 +486,7 @@ async function fundMarketPermissions(admin: Keypair, marketRisk: PublicKey, pool
  * tolerates a per-account CPI failure (fix round 1 — see
  * `instructions/user.rs`), so a real failure here throws.
  */
-async function initMarketPermissions(
+export async function initMarketPermissions(
   admin: Keypair,
   config: PublicKey,
   market: PublicKey,
@@ -550,46 +545,6 @@ async function initMarketPermissions(
   return { riskPermissioned, poolLivePermissioned };
 }
 
-const ACTION_ESCROW_TOP_UP_LAMPORTS = 0.05 * LAMPORTS_PER_SOL;
-const ACTION_ESCROW_MIN_LAMPORTS = 0.02 * LAMPORTS_PER_SOL;
-
-/**
- * Week 3 (Task 7): base-layer top-up of the action-escrow balance PDA that
- * `write_commitment`/`write_disclosure`'s `escrow`/`escrow_auth` accounts
- * check (`ephemeral_balance_pda_from_payer(escrow_auth, ACTION_ESCROW_INDEX)`
- * on the Rust side, `escrowPdaFromEscrowAuthority(feePayer, ACTION_ESCROW_INDEX)`
- * here — same derivation, see `spikes/06-magic-action/tests/magic-actions.ts`
- * for the reference call). `escrowAuthority` is `feePayer` (the identity
- * `write_commitment`/`write_disclosure` require as `Config.fee_payer`); the
- * lamports themselves come from `admin` (already funded by `requireFunded`
- * above), which is the only account that needs to sign this top-up —
- * `createTopUpEscrowInstruction`'s `payer` argument, not `escrowAuthority`,
- * is the signer (see its account list: `payer` is-signer, `escrowAuthority`
- * is not). Idempotent: skips if the escrow already holds >= 0.02 SOL.
- *
- * Note (brief discrepancy, IDL/SDK wins — see task-7-report.md): the task-7
- * brief's pseudocode calls `createTopUpEscrowInstruction` with 3 args
- * (escrow, payer, amount); the installed SDK (0.17.0, `tests/er/node_modules`)
- * exports a 4-arg signature `(escrow, escrowAuthority, payer, amount, index?)`
- * — `escrowAuthority` and `payer` are distinct accounts, and both
- * `escrowPdaFromEscrowAuthority`/`createTopUpEscrowInstruction` already
- * default their `index` param to 255 (== `ACTION_ESCROW_INDEX`), passed
- * explicitly here for clarity.
- */
-async function topUpActionEscrow(admin: Keypair, feePayer: Keypair, sigs: Record<string, string>): Promise<PublicKey> {
-  const escrow = escrowPdaFromEscrowAuthority(feePayer.publicKey, ACTION_ESCROW_INDEX);
-  const bal = await baseConn.getBalance(escrow, "confirmed").catch(() => 0);
-  if (bal >= ACTION_ESCROW_MIN_LAMPORTS) {
-    console.log(`action escrow: funded (${(bal / LAMPORTS_PER_SOL).toFixed(4)} SOL), skipped`);
-    return escrow;
-  }
-  const ix = createTopUpEscrowInstruction(escrow, feePayer.publicKey, admin.publicKey, ACTION_ESCROW_TOP_UP_LAMPORTS, ACTION_ESCROW_INDEX);
-  const sig = await sendAndConfirmTransaction(baseConn, new Transaction().add(ix), [admin], { commitment: "confirmed" });
-  sigs.topUpActionEscrow = sig;
-  console.log("action escrow top-up", sig, "escrow", escrow.toBase58());
-  return escrow;
-}
-
 export async function bootstrap(): Promise<Bootstrapped> {
   const admin = loadOrCreateKey("admin");
   await ensureFunded(admin.publicKey, 50, "admin");
@@ -619,7 +574,6 @@ export async function bootstrap(): Promise<Bootstrapped> {
         admin.publicKey,
         MOCK_ORACLE_PROGRAM_ID,
         ER_VALIDATOR,
-        new BN(DISCLOSURE_DELAY_SLOTS),
         ER_VALIDATOR, // scheduler_signer (Task 5 M1: local mb-stack validator identity)
         admin.publicKey,
         PublicKey.default,
@@ -648,7 +602,7 @@ export async function bootstrap(): Promise<Bootstrapped> {
   const marketInfo = await baseConn.getAccountInfo(market, "confirmed");
   if (!marketInfo) {
     const sig = await core.methods
-      .initMarket(MARKET_DEFAULTS, LAZER_FEED_ID)
+      .initMarket(Array.from(SOL_SYMBOL), MARKET_DEFAULTS, LAZER_FEED_ID)
       .accounts({ admin: admin.publicKey, config, market, marketRisk, systemProgram: SystemProgram.programId })
       .rpc();
     sigs.initMarket = sig;
@@ -736,7 +690,7 @@ export async function bootstrap(): Promise<Bootstrapped> {
     const mt = delegationTriple(market, DEXXER_CORE_PROGRAM_ID);
     const rt = delegationTriple(marketRisk, DEXXER_CORE_PROGRAM_ID);
     const sig = await core.methods
-      .delegateMarket()
+      .delegateMarket(Array.from(SOL_SYMBOL))
       .accounts({
         admin: admin.publicKey,
         config,
@@ -820,7 +774,6 @@ export async function bootstrapDevnet(): Promise<BootstrappedDevnet> {
         crank.publicKey,
         ORACLE,
         ER_VALIDATOR,
-        new BN(DISCLOSURE_DELAY_SLOTS),
         // scheduler_signer (task-6 fix round 3): crank_signer_pda(admin) for a
         // FRESH bootstrap, not ER_VALIDATOR (Task 1 M1's value — that was the
         // signer of ALREADY-scheduled ticks on a different, simpler spike
@@ -859,7 +812,7 @@ export async function bootstrapDevnet(): Promise<BootstrappedDevnet> {
   if (!marketInfo) {
     const params = { ...MARKET_DEFAULTS, maxConfBps: 0 };
     const sig = await core.methods
-      .initMarket(params, LAZER_FEED_ID)
+      .initMarket(Array.from(SOL_SYMBOL), params, LAZER_FEED_ID)
       .accounts({ admin: admin.publicKey, config, market, marketRisk, systemProgram: SystemProgram.programId })
       .rpc();
     sigs.initMarket = sig;
@@ -899,7 +852,7 @@ export async function bootstrapDevnet(): Promise<BootstrappedDevnet> {
     const mt = delegationTriple(market, DEXXER_CORE_PROGRAM_ID);
     const rt = delegationTriple(marketRisk, DEXXER_CORE_PROGRAM_ID);
     const sig = await core.methods
-      .delegateMarket()
+      .delegateMarket(Array.from(SOL_SYMBOL))
       .accounts({
         admin: admin.publicKey,
         config,
@@ -939,9 +892,8 @@ export async function bootstrapDevnet(): Promise<BootstrappedDevnet> {
   // --- init + delegate the fee-escrow PDA (Task 5 fix round 1) ---
   const feeEscrow = await initAndDelegateFeeEscrow(core, admin, config, sigs);
 
-  // --- init + delegate BalancesRoot, then top up the action escrow (week 3, Task 7) ---
+  // --- init + delegate BalancesRoot (week 3, Task 7) ---
   const balancesRoot = await initAndDelegateBalancesRoot(core, admin, config, sigs);
-  const actionEscrow = await topUpActionEscrow(admin, feePayer, sigs);
 
   // --- PoolLive migration (Task 3, steps 9-10): make MarketRisk + PoolLive
   // (already init+delegated above) permissioned [crank, admin] on the ER
@@ -962,22 +914,5 @@ export async function bootstrapDevnet(): Promise<BootstrappedDevnet> {
     );
   }
 
-  return { admin, mint, market, marketRisk, pool, poolAta, poolLive, feed, feeEscrow, sigs, feePayer, balancesRoot, actionEscrow };
-}
-
-/**
- * Week-5 Task 7 (M-H/M-J): `set_disclosure_delay` (base-layer `AdminConfig`,
- * same pattern as `pause`/`set_scheduler_signer` — see
- * `programs/dexxer_core/src/instructions/admin.rs`). `Config` is never
- * delegated, so this is a plain `baseConn` write, not a TEE one. Missing
- * from this file until now (Task 5 shipped the instruction but no client
- * builder); added here per the task-7 controller amendment rather than
- * inlined in each devnet script that needs it.
- */
-export async function setDisclosureDelay(admin: Keypair, slots: bigint): Promise<string> {
-  const core = dexxerCoreProgram(baseConn, admin);
-  return core.methods
-    .setDisclosureDelay(new BN(slots.toString()))
-    .accounts({ admin: admin.publicKey, config: pdas.config() })
-    .rpc();
+  return { admin, mint, market, marketRisk, pool, poolAta, poolLive, feed, feeEscrow, sigs, feePayer, balancesRoot };
 }

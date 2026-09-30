@@ -8,7 +8,7 @@
 // lamport balance before/after every commit — the real per-commit cost
 // measurement M3 could not pin, and the first attempt at this script
 // couldn't either (the fee-vault path never activated — see task-5-report.md
-// "fix round 1"). This settles decision (c). Asserts `Position`/`UserAccount`
+// "fix round 1"). This settles decision (c). Asserts `Positions`/`UserAccount`
 // on base layer are unchanged throughout (`commit_aggregate` commits `Pool`
 // and `BalancesRoot` — week 3, Task 5/6 — never a raw private account).
 //
@@ -20,7 +20,7 @@
 // transaction's signer/authorizer only.
 //
 // Run: `npm run devnet:commit` (from tests/er). Requires 01 to have run at
-// least once (uses its persisted owner/position/userAccount for the
+// least once (uses its persisted owner/positions/userAccount for the
 // unchanged-on-base assertion), `devnet-bootstrap.ts` to have created +
 // delegated `FeeEscrow`, and `fund-fee-payer.ts` to have topped it up.
 
@@ -56,7 +56,7 @@ const MIN_INTERVAL_MS = 5_000;
 
 interface RunState {
   owner: string;
-  position: string;
+  positions: string;
   userAccount: string;
 }
 
@@ -96,7 +96,7 @@ async function main() {
     process.exit(1);
   }
 
-  const position = new PublicKey(run.position);
+  const position = new PublicKey(run.positions);
   const userAccount = new PublicKey(run.userAccount);
   const positionBefore = await baseConn.getAccountInfo(position, "confirmed");
   const userAccountBefore = await baseConn.getAccountInfo(userAccount, "confirmed");
@@ -111,7 +111,7 @@ async function main() {
     const escrowBefore = await feePayerConn.getBalance(boot.feeEscrow, "confirmed").catch(() => -1);
     try {
       const ix = await core.methods
-        .commitAggregate(4)
+        .commitAggregate()
         .accounts({
           config,
           payer: feePayer.publicKey,
@@ -168,7 +168,7 @@ async function main() {
       `#${r.i}: ${r.ok ? "OK" : "FAIL"} escrow ${r.escrowBefore}->${r.escrowAfter} (delta ${r.escrowBefore >= 0 && r.escrowAfter >= 0 ? r.escrowAfter - r.escrowBefore : "n/a"})${r.sig ? ` sig=${r.sig}` : ""}${r.err ? ` err=${r.err.slice(0, 150)}` : ""}`,
     );
   }
-  console.log("Position unchanged on base:", positionUnchanged);
+  console.log("Positions unchanged on base:", positionUnchanged);
   console.log("UserAccount unchanged on base:", userAccountUnchanged);
 
   const succeeded = results.filter((r) => r.ok).length;
