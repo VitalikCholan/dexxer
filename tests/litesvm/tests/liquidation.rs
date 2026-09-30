@@ -76,8 +76,8 @@ fn liquidation_check_liquidates_underwater_position() {
             &[&w.crank],
         )
         .unwrap();
-        let pos: Position = h.account(&t.position);
-        assert_eq!(pos.state, PositionState::Open);
+        let pos = h.slot(&t, &w.market).expect("open slot");
+        assert!(pos.is_open());
         assert_eq!(pos.liq_ticks, expected);
     }
 
@@ -87,9 +87,8 @@ fn liquidation_check_liquidates_underwater_position() {
         &[&w.crank],
     )
     .unwrap();
-    let pos: Position = h.account(&t.position);
-    assert_eq!(pos.state, PositionState::Empty);
-    assert_eq!(pos.size, 0);
+    assert!(h.slot(&t, &w.market).is_none());
+    assert!(h.positions(&t.positions).slots.iter().all(|s| s.size == 0));
 
     // Same settlement arithmetic the crank path produces for this position:
     // pnl = 10 * (142 - 150) = -80 $, liq fee 1 % of 1420 $ = 14.2 $,
@@ -119,8 +118,8 @@ fn liquidation_check_noop_when_healthy_or_stale() {
         &[&w.crank],
     )
     .unwrap();
-    let pos: Position = h.account(&t.position);
-    assert_eq!(pos.state, PositionState::Open);
+    let pos = h.slot(&t, &w.market).expect("open slot");
+    assert!(pos.is_open());
     assert_eq!(pos.liq_ticks, 0);
 
     // (2) deep under water, but the feed is stale: no liquidation, no error,
@@ -131,8 +130,8 @@ fn liquidation_check_noop_when_healthy_or_stale() {
         &[&w.crank],
     )
     .unwrap();
-    let pos: Position = h.account(&t.position);
-    assert_eq!(pos.state, PositionState::Open);
+    let pos = h.slot(&t, &w.market).expect("open slot");
+    assert!(pos.is_open());
     assert_eq!(pos.liq_ticks, 0);
     assert_invariant(&h, &w, &[&t]);
 }
@@ -148,10 +147,7 @@ fn liquidation_check_rejects_non_scheduler_signer() {
         &[&stranger],
     );
     assert_custom_error(&r, 6000 + DexxerError::Unauthorized as u32);
-    assert_eq!(
-        h.account::<Position>(&t.position).state,
-        PositionState::Open
-    );
+    assert!(h.slot(&t, &w.market).is_some());
 }
 
 /// What this test can and cannot prove (week-5 final review M4, renamed from
@@ -218,10 +214,7 @@ fn open_skips_task_registration_without_magic_program() {
         &[&t.kp],
     )
     .unwrap();
-    assert_eq!(
-        h.account::<Position>(&t.position).state,
-        PositionState::Open
-    );
+    assert!(h.slot(&t, &w.market).is_some());
     assert_invariant(&h, &w, &[&t]);
 }
 
@@ -229,7 +222,7 @@ fn open_skips_task_registration_without_magic_program() {
 /// Program, but it is `mut` in this context — so an unconstrained one would let
 /// any caller name another trader's delegated account and write-lock it for the
 /// whole transaction, purely to contend with them. It is pinned to the caller's
-/// own `position`.
+/// own `positions`.
 #[test]
 fn open_position_rejects_foreign_task_context() {
     let mut h = Harness::new();
@@ -251,14 +244,13 @@ fn open_position_rejects_foreign_task_context() {
     // `task_context` is the second-to-last account of `Trade`, right before
     // `magic_program` and `liq_crank_signer` (see `Trader::trade_accounts`).
     let task_context_idx = ix.accounts.len() - 3;
-    assert_eq!(ix.accounts[task_context_idx].pubkey, attacker.position);
-    ix.accounts[task_context_idx].pubkey = victim.position;
+    assert_eq!(ix.accounts[task_context_idx].pubkey, attacker.positions);
+    ix.accounts[task_context_idx].pubkey = victim.positions;
 
     let r = h.send(&[ix], &[&attacker.kp]);
     assert_custom_error(&r, 6000 + DexxerError::InvalidCandidate as u32);
-    assert_eq!(
-        h.account::<Position>(&attacker.position).state,
-        PositionState::Empty,
+    assert!(
+        h.slot(&attacker, &w.market).is_none(),
         "the open must not have happened"
     );
 }

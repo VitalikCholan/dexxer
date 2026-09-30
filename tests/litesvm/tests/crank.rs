@@ -102,10 +102,7 @@ fn stale_oracle_skips_liquidation_and_counts_ticks() {
         )
         .unwrap();
     }
-    assert_eq!(
-        h.account::<Position>(&t.position).state,
-        PositionState::Open
-    );
+    assert!(h.slot(&t, &w.market).expect("open slot").is_open());
     assert_eq!(h.account::<Market>(&w.market).stale_ticks, 3);
 }
 
@@ -137,8 +134,8 @@ fn liquidation_after_hysteresis_ticks_below_mmr() {
             &[&w.crank],
         )
         .unwrap();
-        let pos: Position = h.account(&t.position);
-        assert_eq!(pos.state, PositionState::Open);
+        let pos = h.slot(&t, &w.market).expect("open slot");
+        assert!(pos.is_open());
         assert_eq!(pos.liq_ticks, expected);
     }
     h.send(
@@ -147,8 +144,7 @@ fn liquidation_after_hysteresis_ticks_below_mmr() {
     )
     .unwrap();
     // A liquidation is a close: the position is freed in the same tick.
-    let pos: Position = h.account(&t.position);
-    assert_eq!(pos.state, PositionState::Empty);
+    assert!(h.slot(&t, &w.market).is_none());
     // pnl = 10 * (142 - 150) = -80 $; liq fee 1 % of 1420 $ = 14.2 $; to_user = 150 - 80 - 14.2 = 55.8 $
     let u: UserAccount = h.account(&t.user);
     assert_eq!(u.free_margin, 1_000_000_000 - M150 - 900_000 + 55_800_000);
@@ -186,8 +182,8 @@ fn hysteresis_resets_when_price_recovers() {
         &[&w.crank],
     )
     .unwrap();
-    let pos: Position = h.account(&t.position);
-    assert_eq!(pos.state, PositionState::Open);
+    let pos = h.slot(&t, &w.market).expect("open slot");
+    assert!(pos.is_open());
     assert_eq!(pos.liq_ticks, 0);
 }
 
@@ -271,8 +267,8 @@ fn invalid_candidate_pair_rejected() {
     let a = open_long(&mut h, &w);
     let b = w.new_trader(&mut h, 0);
     let mut ix = ixs::crank_tick(&w.crank.pubkey(), &w, &[&a]);
-    // Position of A with the user account of B (the second slot of the pair,
-    // which `crank_tick` derives the position address from).
+    // Positions of A with the user account of B (the second account of the
+    // pair, whose owner must match the `Positions` owner).
     let user_slot = ix.accounts.len() - 1;
     ix.accounts[user_slot].pubkey = b.user;
     let r = h.send(&[ix], &[&w.crank]);
@@ -286,7 +282,7 @@ fn duplicate_candidate_pair_rejected() {
     h.warp(100, NOW);
     w.set_price(&mut h, P150, 5, NOW, 100);
     let t = open_long(&mut h, &w);
-    // Same [Position, UserAccount] pair passed twice in one
+    // Same [Positions, UserAccount] pair passed twice in one
     // crank_tick must not be allowed to drive liq_ticks 0 -> 2 in a single
     // transaction.
     let r = h.send(

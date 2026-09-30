@@ -180,7 +180,7 @@ impl World {
             .unwrap();
         let t = Trader {
             user: pdas::user(&o),
-            position: pdas::position(&o, &self.market),
+            positions: pdas::positions(&o),
             ata: ata(&o, &self.mint),
             kp,
         };
@@ -195,7 +195,7 @@ impl World {
 pub struct Trader {
     pub kp: Keypair,
     pub user: Pubkey,
-    pub position: Pubkey,
+    pub positions: Pubkey,
     pub ata: Pubkey,
 }
 
@@ -297,16 +297,11 @@ impl World {
 }
 
 impl Trader {
-    pub fn position_on(&self, m: &Mkt) -> Pubkey {
-        pdas::position(&self.kp.pubkey(), &m.market)
-    }
-
     pub fn trade_accounts(&self, w: &World, signer: &Pubkey) -> Vec<AccountMeta> {
         self.trade_accounts_on(w, &w.sol(), signer)
     }
 
     pub fn trade_accounts_on(&self, w: &World, m: &Mkt, signer: &Pubkey) -> Vec<AccountMeta> {
-        let position = self.position_on(m);
         vec![
             AccountMeta::new_readonly(*signer, true), // Trade.signer is not `mut`
             AccountMeta::new_readonly(w.config, false),
@@ -314,16 +309,14 @@ impl Trader {
             AccountMeta::new(m.risk, false),
             AccountMeta::new(w.pool_live, false),
             AccountMeta::new(self.user, false),
-            AccountMeta::new(position, false),
+            AccountMeta::new(self.positions, false),
             AccountMeta::new_readonly(m.feed, false),
             AccountMeta::new(w.fee_escrow, false),
-            // `task_context` is unconstrained (week-5 Task 3 will pass the real
-            // Magic Actions task context here): Task 0's spike measured that any
-            // existing writable account is accepted, so the position PDA stands
-            // in — it always exists and is already writable in this very
-            // instruction. No Magic program is deployed on LiteSVM, so nothing
-            // ever reads it here.
-            AccountMeta::new(position, false),
+            // `task_context` is pinned to the `Positions` PDA by the program
+            // (week-5 Task 3 fix round 1): it always exists and is already
+            // writable in this very instruction. No Magic program is deployed
+            // on LiteSVM, so nothing ever reads it here.
+            AccountMeta::new(self.positions, false),
             AccountMeta::new_readonly(pdas::magic_program(), false),
             // `liq_crank_signer` (week-5 Task 3): the signer a scheduled
             // `liquidation_check` tick carries. Only checked on the scheduling

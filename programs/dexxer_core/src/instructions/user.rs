@@ -174,26 +174,13 @@ pub struct InitUser<'info> {
     #[account(mut)]
     pub owner: Signer<'info>,
     // Fix round 1 (week 4, task 6 controller ruling): `fee_payer` fronts the
-    // rent for `UserAccount`/`Position` and the two per-PDA
+    // rent for `UserAccount`/`Positions` and the two per-PDA
     // `EphemeralPermission` prefund transfers below, instead of
     // `owner` — see `FaucetInit`'s `payer` field for the same rationale.
     #[account(mut)]
     pub payer: Signer<'info>,
     #[account(seeds = [CONFIG_SEED], bump = config.bump)]
     pub config: Account<'info, Config>,
-    // `UncheckedAccount`, not `Account<'info, Market>` (task-13 finding on
-    // mb-stack): once `delegate_market` has run, `market` is owned by the
-    // Delegation Program on L1, so any `Account<'info, Market>` deserialize
-    // of it here fails with `AccountOwnedByWrongProgram` — but users must
-    // still be able to `init_user` after the market has been delegated
-    // (delegation happens once at admin bootstrap; onboarding happens
-    // continuously afterward). Only `.key()` is used below, so the seeds
-    // constraint uses the fixed `SOL_SYMBOL` (matching `DelegateUser`'s
-    // already-correct `market` field) instead of reading `.symbol`/`.bump`
-    // off the account.
-    /// CHECK: address-derived via seeds; only `.key()` is read
-    #[account(seeds = [MARKET_SEED, &SOL_SYMBOL], bump)]
-    pub market: UncheckedAccount<'info>,
     #[account(
         init,
         payer = payer,
@@ -202,14 +189,17 @@ pub struct InitUser<'info> {
         bump
     )]
     pub user_account: Account<'info, UserAccount>,
+    // Every position of this trader, one slot per market (spec §2.9.1). No
+    // market in the seeds: which markets a trader uses never shows on L1, and
+    // a new market costs the trader no new account. Zero-copy (3.1 KiB).
     #[account(
         init,
         payer = payer,
-        space = 8 + Position::INIT_SPACE,
-        seeds = [POSITION_SEED, owner.key().as_ref(), market.key().as_ref()],
+        space = Positions::SPACE,
+        seeds = [POSITIONS_SEED, owner.key().as_ref()],
         bump
     )]
-    pub position: Box<Account<'info, Position>>,
+    pub positions: AccountLoader<'info, Positions>,
     pub system_program: Program<'info, System>,
 }
 pub fn init_user(ctx: Context<InitUser>, exit_salt: [u8; 32]) -> Result<()> {
@@ -219,19 +209,19 @@ pub fn init_user(ctx: Context<InitUser>, exit_salt: [u8; 32]) -> Result<()> {
     u.owner = o;
     u.exit_salt = exit_salt;
     u.bump = ctx.bumps.user_account;
-    let p = &mut ctx.accounts.position;
-    p.version = 1;
-    p.owner = o;
-    p.market = ctx.accounts.market.key();
-    p.state = PositionState::Empty;
-    p.side = Side::Long;
-    p.bump = ctx.bumps.position;
-    // spec §8 Q2: each PDA pays for its own EphemeralPermission inside the ER
-    // (spike 01 pattern) — prefund that rent on L1 at creation time.
+    {
+        // Every slot and history record starts all-zero (`SLOT_EMPTY`).
+        let mut p = ctx.accounts.positions.load_init()?;
+        p.owner = o;
+        p.version = 1;
+        p.bump = ctx.bumps.positions;
+    } // RefMut dropped before the prefund CPI below takes the account
+      // spec §8 Q2: each PDA pays for its own EphemeralPermission inside the ER
+      // (spike 01 pattern) — prefund that rent on L1 at creation time.
     let extra = rent(EphemeralPermission::size_of(PERMISSION_MEMBERS) as u32);
     for to in [
         ctx.accounts.user_account.to_account_info(),
-        ctx.accounts.position.to_account_info(),
+        ctx.accounts.positions.to_account_info(),
     ] {
         transfer(
             CpiContext::new(
@@ -250,7 +240,7 @@ pub fn init_user(ctx: Context<InitUser>, exit_salt: [u8; 32]) -> Result<()> {
 // spec §8 Q2: rebuild the per-user `EphemeralPermission` member lists
 // whenever the session key changes, so the new session key can read ER state
 // and the old one loses access. Same account set as `InitPermissions` (see
-// there for the market/permission-PDA shape) plus `config` for `config.crank`.
+// there for the permission-PDA shape).
 #[derive(Accounts)]
 pub struct SetSession<'info> {
     pub owner: Signer<'info>,
@@ -258,18 +248,17 @@ pub struct SetSession<'info> {
     // alongside each other blows the SBF stack frame in `try_accounts`.
     #[account(seeds = [CONFIG_SEED], bump = config.bump)]
     pub config: Box<Account<'info, Config>>,
-    #[account(seeds = [MARKET_SEED, &market.symbol], bump = market.bump)]
-    pub market: Box<Account<'info, Market>>,
     #[account(mut, seeds = [USER_SEED, owner.key().as_ref()], bump = user_account.bump, has_one = owner @ DexxerError::Unauthorized)]
     pub user_account: Box<Account<'info, UserAccount>>,
-    #[account(mut, seeds = [POSITION_SEED, owner.key().as_ref(), market.key().as_ref()], bump = position.bump, has_one = owner @ DexxerError::Unauthorized)]
-    pub position: Box<Account<'info, Position>>,
+    #[account(mut, seeds = [POSITIONS_SEED, owner.key().as_ref()], bump = positions.load()?.bump,
+        constraint = positions.load()?.owner == owner.key() @ DexxerError::Unauthorized)]
+    pub positions: AccountLoader<'info, Positions>,
     /// CHECK: permission PDAs under the permission program
     #[account(mut, seeds = [PERMISSION_SEED, user_account.key().as_ref()], bump, seeds::program = PERMISSION_PROGRAM_ID)]
     pub user_permission: UncheckedAccount<'info>,
     /// CHECK:
-    #[account(mut, seeds = [PERMISSION_SEED, position.key().as_ref()], bump, seeds::program = PERMISSION_PROGRAM_ID)]
-    pub position_permission: UncheckedAccount<'info>,
+    #[account(mut, seeds = [PERMISSION_SEED, positions.key().as_ref()], bump, seeds::program = PERMISSION_PROGRAM_ID)]
+    pub positions_permission: UncheckedAccount<'info>,
     /// CHECK:
     #[account(address = PERMISSION_PROGRAM_ID)]
     pub permission_program: UncheckedAccount<'info>,
@@ -292,10 +281,10 @@ pub fn set_session<'info>(
     u.actions_left = actions;
 
     let o = ctx.accounts.owner.key();
-    let m = ctx.accounts.market.key();
     let members = build_members(o, session_key, ctx.accounts.config.crank);
     let ub = [ctx.accounts.user_account.bump];
-    let pb = [ctx.accounts.position.bump];
+    // `load()` borrow ends with this statement, before the CPIs below.
+    let pb = [ctx.accounts.positions.load()?.bump];
     let pairs: [(AccountInfo, AccountInfo, Vec<&[u8]>); 2] = [
         (
             ctx.accounts.user_account.to_account_info(),
@@ -303,9 +292,9 @@ pub fn set_session<'info>(
             vec![USER_SEED, o.as_ref(), &ub],
         ),
         (
-            ctx.accounts.position.to_account_info(),
-            ctx.accounts.position_permission.to_account_info(),
-            vec![POSITION_SEED, o.as_ref(), m.as_ref(), &pb],
+            ctx.accounts.positions.to_account_info(),
+            ctx.accounts.positions_permission.to_account_info(),
+            vec![POSITIONS_SEED, o.as_ref(), &pb],
         ),
     ];
     for (acc, perm, seeds) in pairs.iter() {
@@ -489,7 +478,7 @@ pub fn withdraw(ctx: Context<Withdraw>, amount: u64) -> Result<()> {
 }
 
 // spec §8 Q2: delegate the user-scoped PDAs to the TEE validator. Seeds
-// already pin `owner` on `user_account`/`position`, so no extra `has_one`
+// already pin `owner` on `user_account`/`positions`, so no extra `has_one`
 // check is needed before delegating them.
 #[delegate]
 #[derive(Accounts)]
@@ -505,15 +494,12 @@ pub struct DelegateUser<'info> {
     pub payer: Signer<'info>,
     #[account(seeds = [CONFIG_SEED], bump = config.bump)]
     pub config: Account<'info, Config>,
-    /// CHECK: market key for the position seed
-    #[account(seeds = [MARKET_SEED, &SOL_SYMBOL], bump)]
-    pub market: UncheckedAccount<'info>,
     /// CHECK: delegated
     #[account(mut, del, seeds = [USER_SEED, owner.key().as_ref()], bump)]
     pub user_account: UncheckedAccount<'info>,
     /// CHECK: delegated
-    #[account(mut, del, seeds = [POSITION_SEED, owner.key().as_ref(), market.key().as_ref()], bump)]
-    pub position: UncheckedAccount<'info>,
+    #[account(mut, del, seeds = [POSITIONS_SEED, owner.key().as_ref()], bump)]
+    pub positions: UncheckedAccount<'info>,
 }
 pub fn delegate_user(ctx: Context<DelegateUser>) -> Result<()> {
     // Fix round 1 (controller ruling, IMPORTANT 2): `user_account` is an
@@ -536,7 +522,6 @@ pub fn delegate_user(ctx: Context<DelegateUser>) -> Result<()> {
         require!(!u.exited, DexxerError::NotExited);
     }
     let o = ctx.accounts.owner.key();
-    let m = ctx.accounts.market.key();
     ctx.accounts.delegate_user_account(
         &ctx.accounts.payer,
         &[USER_SEED, o.as_ref()],
@@ -545,9 +530,9 @@ pub fn delegate_user(ctx: Context<DelegateUser>) -> Result<()> {
             ..Default::default()
         },
     )?;
-    ctx.accounts.delegate_position(
+    ctx.accounts.delegate_positions(
         &ctx.accounts.payer,
-        &[POSITION_SEED, o.as_ref(), m.as_ref()],
+        &[POSITIONS_SEED, o.as_ref()],
         DelegateConfig {
             validator: Some(ctx.accounts.config.tee_validator),
             ..Default::default()
@@ -564,25 +549,21 @@ pub struct InitPermissions<'info> {
     #[account(mut)]
     pub owner: Signer<'info>,
     // Boxed (task-2 finding: with `config` added and every permission/vault/
-    // magic account alongside them, `config`/`market`/`user_account` blow the
-    // SBF stack frame in `try_accounts` even before `position` is counted).
+    // magic account alongside them, `config`/`user_account` blow the SBF stack
+    // frame in `try_accounts`).
     #[account(seeds = [CONFIG_SEED], bump = config.bump)]
     pub config: Box<Account<'info, Config>>,
-    #[account(seeds = [MARKET_SEED, &market.symbol], bump = market.bump)]
-    pub market: Box<Account<'info, Market>>,
     #[account(mut, seeds = [USER_SEED, owner.key().as_ref()], bump = user_account.bump, has_one = owner @ DexxerError::Unauthorized)]
     pub user_account: Box<Account<'info, UserAccount>>,
-    // Boxed: with the market/user_account/permission accounts alongside it,
-    // Position blows the SBF stack frame in `try_accounts` (same reason as
-    // `InitUser` above).
-    #[account(mut, seeds = [POSITION_SEED, owner.key().as_ref(), market.key().as_ref()], bump = position.bump, has_one = owner @ DexxerError::Unauthorized)]
-    pub position: Box<Account<'info, Position>>,
+    #[account(mut, seeds = [POSITIONS_SEED, owner.key().as_ref()], bump = positions.load()?.bump,
+        constraint = positions.load()?.owner == owner.key() @ DexxerError::Unauthorized)]
+    pub positions: AccountLoader<'info, Positions>,
     /// CHECK: permission PDAs under the permission program
     #[account(mut, seeds = [PERMISSION_SEED, user_account.key().as_ref()], bump, seeds::program = PERMISSION_PROGRAM_ID)]
     pub user_permission: UncheckedAccount<'info>,
     /// CHECK:
-    #[account(mut, seeds = [PERMISSION_SEED, position.key().as_ref()], bump, seeds::program = PERMISSION_PROGRAM_ID)]
-    pub position_permission: UncheckedAccount<'info>,
+    #[account(mut, seeds = [PERMISSION_SEED, positions.key().as_ref()], bump, seeds::program = PERMISSION_PROGRAM_ID)]
+    pub positions_permission: UncheckedAccount<'info>,
     /// CHECK:
     #[account(address = PERMISSION_PROGRAM_ID)]
     pub permission_program: UncheckedAccount<'info>,
@@ -595,14 +576,14 @@ pub struct InitPermissions<'info> {
 }
 pub fn init_permissions(ctx: Context<InitPermissions>) -> Result<()> {
     let o = ctx.accounts.owner.key();
-    let m = ctx.accounts.market.key();
     let members = build_members(
         o,
         ctx.accounts.user_account.session_key,
         ctx.accounts.config.crank,
     );
     let ub = [ctx.accounts.user_account.bump];
-    let pb = [ctx.accounts.position.bump];
+    // `load()` borrow ends with this statement, before the CPIs below.
+    let pb = [ctx.accounts.positions.load()?.bump];
     let pairs: [(AccountInfo, AccountInfo, Vec<&[u8]>); 2] = [
         (
             ctx.accounts.user_account.to_account_info(),
@@ -610,9 +591,9 @@ pub fn init_permissions(ctx: Context<InitPermissions>) -> Result<()> {
             vec![USER_SEED, o.as_ref(), &ub],
         ),
         (
-            ctx.accounts.position.to_account_info(),
-            ctx.accounts.position_permission.to_account_info(),
-            vec![POSITION_SEED, o.as_ref(), m.as_ref(), &pb],
+            ctx.accounts.positions.to_account_info(),
+            ctx.accounts.positions_permission.to_account_info(),
+            vec![POSITIONS_SEED, o.as_ref(), &pb],
         ),
     ];
     for (acc, perm, seeds) in pairs.iter() {
@@ -787,14 +768,15 @@ pub struct UndelegateUser<'info> {
     pub config: Box<Account<'info, Config>>,
     #[account(mut, seeds = [USER_SEED, owner.key().as_ref()], bump = user_account.bump, has_one = owner @ DexxerError::Unauthorized)]
     pub user_account: Box<Account<'info, UserAccount>>,
-    #[account(mut, seeds = [POSITION_SEED, owner.key().as_ref(), position.market.as_ref()], bump = position.bump, has_one = owner @ DexxerError::Unauthorized)]
-    pub position: Box<Account<'info, Position>>,
+    #[account(mut, seeds = [POSITIONS_SEED, owner.key().as_ref()], bump = positions.load()?.bump,
+        constraint = positions.load()?.owner == owner.key() @ DexxerError::Unauthorized)]
+    pub positions: AccountLoader<'info, Positions>,
     /// CHECK: permission PDA of `user_account`, under the permission program
     #[account(mut, seeds = [PERMISSION_SEED, user_account.key().as_ref()], bump, seeds::program = PERMISSION_PROGRAM_ID)]
     pub user_permission: UncheckedAccount<'info>,
-    /// CHECK: permission PDA of `position`
-    #[account(mut, seeds = [PERMISSION_SEED, position.key().as_ref()], bump, seeds::program = PERMISSION_PROGRAM_ID)]
-    pub position_permission: UncheckedAccount<'info>,
+    /// CHECK: permission PDA of `positions`
+    #[account(mut, seeds = [PERMISSION_SEED, positions.key().as_ref()], bump, seeds::program = PERMISSION_PROGRAM_ID)]
+    pub positions_permission: UncheckedAccount<'info>,
     /// CHECK: shared ER vault (rent for permission accounts lives here, as in SetSession)
     #[account(mut, address = EPHEMERAL_VAULT_ID)]
     pub ephemeral_vault: UncheckedAccount<'info>,
@@ -860,25 +842,36 @@ pub(crate) fn close_permission_if_present<'info>(
 /// tx) lands on L1 on the first try.
 ///
 /// This is the ONLY instruction in the program that commits a raw
-/// `UserAccount`/`Position` to L1 (CLAUDE.md privacy rule:
+/// `UserAccount`/`Positions` to L1 (CLAUDE.md privacy rule:
 /// a raw private account is never committed as-is) — and it is safe here
 /// specifically because both the scrub and the permission close above have
 /// already run by the time `commit_and_undelegate` is reached, so nothing
-/// sensitive is left in the bytes that land publicly on L1.
+/// sensitive is left in the bytes that land publicly on L1: every slot is
+/// `Empty` (a cleared slot is all-zero bytes, `market` included) and the
+/// history ring is scrubbed.
+///
+/// `remaining_accounts` are the markets whose liquidation tasks to cancel
+/// (spec §2.9.2): used ONLY for their key, from which the task id is derived
+/// (`liq_task_id(positions, market)`). They are never deserialized — a key
+/// that names no registered task is a measured-safe no-op cancel (week 5).
 pub fn undelegate_user<'info>(ctx: Context<'info, UndelegateUser<'info>>) -> Result<()> {
     let a = ctx.accounts;
-    require!(
-        a.position.state == PositionState::Empty,
-        DexxerError::HasOpenPosition
-    );
+    let rem = ctx.remaining_accounts;
+    require!(rem.len() <= MAX_SLOTS, DexxerError::InvalidInput);
+    let o = a.owner.key();
+    let positions_key = a.positions.key();
+    let pb = {
+        let mut p = a.positions.load_mut()?;
+        require!(p.open_count() == 0, DexxerError::HasOpenPosition);
+        // The owner's private close history never leaves the ER.
+        p.scrub_history();
+        [p.bump]
+    }; // RefMut dropped here — before every CPI below that takes `positions`
     require!(
         a.user_account.free_margin == 0 && a.user_account.locked_margin == 0,
         DexxerError::BalanceNotZero
     );
-    let o = a.owner.key();
-    let m = a.position.market;
     let ub = [a.user_account.bump];
-    let pb = [a.position.bump];
 
     // Scrub — nothing private may survive into the public commit below.
     // Every `UserAccount` field is accounted for here: `version`/`owner`/
@@ -910,12 +903,10 @@ pub fn undelegate_user<'info>(ctx: Context<'info, UndelegateUser<'info>>) -> Res
     // after the owner has moved trips it. Writing the scrub here — before
     // any CPI reassigns ownership — makes the later automatic write a no-op
     // (identical bytes), which the runtime does not flag regardless of the
-    // account's owner at that point. `position` is untouched by this
-    // function, so its automatic exit is already a no-op either way; flushed
-    // here too only for uniformity with `user_account` and to stay safe if a
-    // future change starts mutating it.
+    // account's owner at that point. `positions` is zero-copy: the history
+    // scrub above was written in place, and its automatic exit only rewrites
+    // the same 8-byte discriminator — already a no-op, so no explicit flush.
     a.user_account.exit(&crate::ID)?;
-    a.position.exit(&crate::ID)?;
 
     close_permission_if_present(
         &a.user_account.to_account_info(),
@@ -926,12 +917,12 @@ pub fn undelegate_user<'info>(ctx: Context<'info, UndelegateUser<'info>>) -> Res
         &[USER_SEED, o.as_ref(), &ub],
     )?;
     close_permission_if_present(
-        &a.position.to_account_info(),
-        &a.position_permission.to_account_info(),
+        &a.positions.to_account_info(),
+        &a.positions_permission.to_account_info(),
         &a.ephemeral_vault.to_account_info(),
         &a.magic_program.to_account_info(),
         &a.permission_program.to_account_info(),
-        &[POSITION_SEED, o.as_ref(), m.as_ref(), &pb],
+        &[POSITIONS_SEED, o.as_ref(), &pb],
     )?;
 
     // Every mutation is done — hand the accounts over as a shared,
@@ -940,40 +931,30 @@ pub fn undelegate_user<'info>(ctx: Context<'info, UndelegateUser<'info>>) -> Res
     // see `instructions/liquidation.rs`).
     let a: &'info UndelegateUser<'info> = a;
 
-    // Cancel the position's liquidation task. This is the ONLY place that can
-    // clean up after a LIQUIDATED position: `crank_tick`/`liquidation_check`
-    // deliberately do not cancel (see `trade::cancel_liq_task`), so a task
-    // whose position was liquidated keeps ticking as a no-op until its owner
-    // exits — and once the `Position` leaves the ER below, a live task would
-    // be pointing at an account that is no longer there.
-    //
-    // KNOWN RISK, to be measured on devnet in Task 4 (M-I): on the ordinary
-    // path (`close_position` already cancelled, or the owner never opened a
-    // position at all) this cancels a `task_id` that does not exist. A failing
-    // CPI cannot be caught from inside a program, so IF the validator errors
-    // on an unknown task id, this aborts every exit and must be removed or
-    // made conditional. Nothing in `ephemeral-rollups-sdk` 0.16.2 documents
-    // the behaviour (it only forwards `MagicBlockInstruction::CancelTask`),
-    // and week-5 Task 0's spike only ever cancelled live tasks.
+    // Cancel the liquidation task of every market the client names. This is
+    // the ONLY place that can clean up after a LIQUIDATED position:
+    // `crank_tick`/`liquidation_check` deliberately do not cancel (see
+    // `trade::cancel_liq_task`), so a task whose position was liquidated keeps
+    // ticking as a no-op until its owner exits — and once `Positions` leaves
+    // the ER below, a live task would be pointing at an account that is no
+    // longer there. Cancelling an id that was never registered (or already
+    // cancelled by `close_position`) is a measured-safe no-op (week 5, M-I).
     if a.magic_program.to_account_info().executable {
-        // `task_context` is the position's own PDA — the same convention the
-        // client uses when registering the task in `open_position`. The Magic
-        // Program treats this account as an inert writable placeholder: it
-        // never creates, writes or reassigns it, and any already-existing
-        // writable account is accepted (week-5 Task 0, measurement 6). Reusing
-        // `position` (already writable and delegated here) therefore costs
-        // this context no extra account — and adding one measurably did not
-        // fit: it put `UndelegateUser::try_accounts` 8 bytes over the SBF
-        // frame, which boxing `fee_escrow` did not recover.
+        // `task_context` is the `Positions` PDA — the same convention
+        // `open_position` uses when registering the task. The Magic Program
+        // treats this account as an inert writable placeholder: it never
+        // creates, writes or reassigns it (week-5 Task 0, measurement 6).
         let escrow: &'info Account<'info, FeeEscrow> = &a.fee_escrow;
-        let position: &'info Account<'info, Position> = &a.position;
-        cancel_liquidation_task(
-            escrow.as_ref(),
-            position.as_ref(),
-            &a.magic_program,
-            liq_task_id(&position.key(), &a.position.market),
-            a.fee_escrow.bump,
-        )?;
+        let positions_ai: &'info AccountInfo<'info> = a.positions.as_ref();
+        for market in rem.iter() {
+            cancel_liquidation_task(
+                escrow.as_ref(),
+                positions_ai,
+                &a.magic_program,
+                liq_task_id(&positions_key, &market.key()),
+                a.fee_escrow.bump,
+            )?;
+        }
     }
 
     // Only in a real ER does a Magic program actually live at this address;
@@ -990,7 +971,7 @@ pub fn undelegate_user<'info>(ctx: Context<'info, UndelegateUser<'info>>) -> Res
         .magic_fee_vault(a.magic_fee_vault.to_account_info())
         .commit_and_undelegate(&[
             a.user_account.to_account_info(),
-            a.position.to_account_info(),
+            a.positions.to_account_info(),
         ])
         .build_and_invoke_signed(&[seeds])?;
     }
@@ -1001,7 +982,7 @@ pub fn undelegate_user<'info>(ctx: Context<'info, UndelegateUser<'info>>) -> Res
 // an exited user's PDAs in one instruction. After this the owner's slate is
 // blank and plain `init_user` is the re-onboarding path.
 //
-// Anchor's typed `Account<>` on both is the gate that makes this safe to
+// Anchor's typed `Account<>`/`AccountLoader<>` on both is the gate that makes this safe to
 // expose: the owner check only passes once each account is back under this
 // program, i.e. only once the undelegation has actually settled on L1. While
 // either is still delegated it is owned by the Delegation Program and this
@@ -1030,9 +1011,9 @@ pub struct CloseExitedUser<'info> {
         constraint = user_account.exited @ DexxerError::NotExited,
         constraint = user_account.free_margin == 0 && user_account.locked_margin == 0 @ DexxerError::BalanceNotZero)]
     pub user_account: Box<Account<'info, UserAccount>>,
-    #[account(mut, close = fee_payer, seeds = [POSITION_SEED, user_account.owner.as_ref(), position.market.as_ref()], bump = position.bump,
-        constraint = position.state == PositionState::Empty @ DexxerError::HasOpenPosition)]
-    pub position: Box<Account<'info, Position>>,
+    #[account(mut, close = fee_payer, seeds = [POSITIONS_SEED, user_account.owner.as_ref()], bump = positions.load()?.bump,
+        constraint = positions.load()?.open_count() == 0 @ DexxerError::HasOpenPosition)]
+    pub positions: AccountLoader<'info, Positions>,
 }
 pub fn close_exited_user(_ctx: Context<CloseExitedUser>) -> Result<()> {
     Ok(())

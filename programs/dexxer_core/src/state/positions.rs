@@ -14,7 +14,43 @@ use anchor_lang::prelude::*;
 
 use crate::errors::DexxerError;
 
-use super::Side;
+#[derive(AnchorSerialize, AnchorDeserialize, Clone, Copy, Debug, PartialEq, Eq, InitSpace)]
+pub enum Side {
+    Long,
+    Short,
+}
+
+#[derive(AnchorSerialize, AnchorDeserialize, Clone, Copy, Debug, PartialEq, Eq, InitSpace)]
+pub enum CloseReason {
+    User,
+    Liquidated,
+}
+
+impl Side {
+    pub fn as_u8(self) -> u8 {
+        match self {
+            Side::Long => 0,
+            Side::Short => 1,
+        }
+    }
+    /// Only ever called on a byte this program wrote with `as_u8`.
+    pub fn from_u8(v: u8) -> Self {
+        if v == 1 {
+            Side::Short
+        } else {
+            Side::Long
+        }
+    }
+}
+
+impl CloseReason {
+    pub fn as_u8(self) -> u8 {
+        match self {
+            CloseReason::User => 0,
+            CloseReason::Liquidated => 1,
+        }
+    }
+}
 
 pub const MAX_SLOTS: usize = 16;
 pub const HISTORY_LEN: usize = 16;

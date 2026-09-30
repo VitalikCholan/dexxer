@@ -287,9 +287,8 @@ pub fn init_user(owner: &Pubkey, wd: &World, exit_salt: [u8; 32]) -> Instruction
             s(owner),
             s(owner), // payer (fix round 1, task 6 controller ruling): owner self-pays in tests
             r(&wd.config),
-            r(&wd.market),
             w(&pdas::user(owner)),
-            w(&pdas::position(owner, &wd.market)),
+            w(&pdas::positions(owner)),
             r(&SYSTEM),
         ],
         data: ix::InitUser { exit_salt }.data(),
@@ -312,11 +311,10 @@ pub fn set_session(
         accounts: vec![
             rs(signer),
             r(&pdas::config()),
-            r(&pdas::market()),
             w(&t.user),
-            w(&t.position),
+            w(&t.positions),
             w(&pdas::permission(&t.user)),
-            w(&pdas::permission(&t.position)),
+            w(&pdas::permission(&t.positions)),
             r(&pdas::permission_program()),
             w(&pdas::ephemeral_vault()),
             r(&pdas::magic_program()),
@@ -436,7 +434,7 @@ pub fn decrease_position(
         .data(),
     }
 }
-/// `candidates` become `remaining_accounts` pairs `[Position, UserAccount]`.
+/// `candidates` become `remaining_accounts` pairs `[Positions, UserAccount]`.
 pub fn crank_tick(crank: &Pubkey, wd: &World, candidates: &[&Trader]) -> Instruction {
     crank_tick_on(crank, wd, &wd.sol(), candidates)
 }
@@ -452,7 +450,7 @@ pub fn crank_tick_on(crank: &Pubkey, wd: &World, m: &Mkt, candidates: &[&Trader]
         r(&m.feed),
     ];
     for t in candidates {
-        accounts.push(w(&t.position_on(m)));
+        accounts.push(w(&t.positions));
         accounts.push(w(&t.user));
     }
     Instruction {
@@ -474,7 +472,7 @@ pub fn liquidation_check(signer: &Pubkey, wd: &World, t: &Trader) -> Instruction
             w(&wd.risk),
             w(&wd.pool_live),
             r(&wd.feed),
-            w(&t.position),
+            w(&t.positions),
             w(&t.user),
         ],
         data: ix::LiquidationCheck {}.data(),
@@ -562,23 +560,27 @@ pub fn set_balances_root(
 /// `undelegate_user` (owner, ER): scrub -> close permission x2 -> commit_and_undelegate.
 /// Same permission/vault/magic accounts as `set_session`, plus `fee_escrow`/
 /// `magic_fee_vault`/`magic_context`/`magic_program` (as in `withdraw`).
-pub fn undelegate_user(signer: &Pubkey, t: &Trader, wd: &World) -> Instruction {
+/// `markets` go to `remaining_accounts`: the markets whose liquidation tasks
+/// to cancel (read-only, used only for their key).
+pub fn undelegate_user(signer: &Pubkey, t: &Trader, wd: &World, markets: &[Pubkey]) -> Instruction {
+    let mut accounts = vec![
+        s(signer),
+        r(&wd.config),
+        w(&t.user),
+        w(&t.positions),
+        w(&pdas::permission(&t.user)),
+        w(&pdas::permission(&t.positions)),
+        w(&pdas::ephemeral_vault()),
+        r(&pdas::permission_program()),
+        w(&wd.fee_escrow),
+        w(&wd.magic_fee_vault),
+        w(&pdas::magic_context()),
+        r(&pdas::magic_program()),
+    ];
+    accounts.extend(markets.iter().map(r));
     Instruction {
         program_id: prog(),
-        accounts: vec![
-            s(signer),
-            r(&wd.config),
-            w(&t.user),
-            w(&t.position),
-            w(&pdas::permission(&t.user)),
-            w(&pdas::permission(&t.position)),
-            w(&pdas::ephemeral_vault()),
-            r(&pdas::permission_program()),
-            w(&wd.fee_escrow),
-            w(&wd.magic_fee_vault),
-            w(&pdas::magic_context()),
-            r(&pdas::magic_program()),
-        ],
+        accounts,
         data: ix::UndelegateUser {}.data(),
     }
 }
@@ -603,7 +605,7 @@ pub fn set_compute_unit_limit(units: u32) -> Instruction {
 pub fn close_exited_user(fee_payer: &Pubkey, t: &Trader, wd: &World) -> Instruction {
     Instruction {
         program_id: prog(),
-        accounts: vec![s(fee_payer), r(&wd.config), w(&t.user), w(&t.position)],
+        accounts: vec![s(fee_payer), r(&wd.config), w(&t.user), w(&t.positions)],
         data: ix::CloseExitedUser {}.data(),
     }
 }
@@ -623,8 +625,8 @@ pub fn delegate_user(owner: &Pubkey, payer: &Pubkey, wd: &World) -> Instruction 
     ));
     // Week-5 Task 3 (P1): `payer` sits immediately after `owner` and funds the
     // delegation records; `owner` still signs for its own PDAs.
-    let mut accounts = vec![s(owner), s(payer), r(&wd.config), r(&wd.market)];
-    for acc in [pdas::user(owner), pdas::position(owner, &wd.market)] {
+    let mut accounts = vec![s(owner), s(payer), r(&wd.config)];
+    for acc in [pdas::user(owner), pdas::positions(owner)] {
         let buffer = Pubkey::find_program_address(&[DELEGATE_BUFFER_TAG, acc.as_ref()], &prog()).0;
         let record = Pubkey::find_program_address(&[DELEGATION_RECORD_TAG, acc.as_ref()], &dlp).0;
         let meta = Pubkey::find_program_address(&[DELEGATION_METADATA_TAG, acc.as_ref()], &dlp).0;

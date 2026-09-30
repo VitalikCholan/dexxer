@@ -26,8 +26,10 @@ pub fn pool(mint: &Pubkey) -> Pubkey {
 pub fn user(owner: &Pubkey) -> Pubkey {
     pda(&[USER_SEED, owner.as_ref()])
 }
-pub fn position(owner: &Pubkey, market: &Pubkey) -> Pubkey {
-    pda(&[POSITION_SEED, owner.as_ref(), market.as_ref()])
+/// The trader's one `Positions` account — every market's slot lives inside
+/// it (spec §2.9.1), so the address carries no market.
+pub fn positions(owner: &Pubkey) -> Pubkey {
+    pda(&[POSITIONS_SEED, owner.as_ref()])
 }
 pub fn faucet(owner: &Pubkey) -> Pubkey {
     pda(&[FAUCET_SEED, owner.as_ref()])

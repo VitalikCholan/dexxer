@@ -36,7 +36,10 @@ fn undelegate_rejected_with_open_position() {
         &[&t.kp],
     )
     .unwrap();
-    let r = h.send(&[ixs::undelegate_user(&t.kp.pubkey(), &t, &w)], &[&t.kp]);
+    let r = h.send(
+        &[ixs::undelegate_user(&t.kp.pubkey(), &t, &w, &[w.market])],
+        &[&t.kp],
+    );
     assert_custom_error(&r, 6000 + DexxerError::HasOpenPosition as u32);
 }
 
@@ -45,7 +48,10 @@ fn undelegate_rejected_with_balance() {
     let mut h = Harness::new();
     let w = World::bootstrap(&mut h);
     let t = w.new_trader(&mut h, 1_000_000_000); // free_margin = 1000 dUSDC, not withdrawn
-    let r = h.send(&[ixs::undelegate_user(&t.kp.pubkey(), &t, &w)], &[&t.kp]);
+    let r = h.send(
+        &[ixs::undelegate_user(&t.kp.pubkey(), &t, &w, &[w.market])],
+        &[&t.kp],
+    );
     assert_custom_error(&r, 6000 + DexxerError::BalanceNotZero as u32);
 }
 
@@ -66,8 +72,11 @@ fn undelegate_scrubs_after_full_withdraw() {
         0,
         "test bug: withdraw should have set a non-zero last_withdraw_slot"
     );
-    h.send(&[ixs::undelegate_user(&t.kp.pubkey(), &t, &w)], &[&t.kp])
-        .unwrap();
+    h.send(
+        &[ixs::undelegate_user(&t.kp.pubkey(), &t, &w, &[w.market])],
+        &[&t.kp],
+    )
+    .unwrap();
     let u: UserAccount = h.account(&t.user);
     assert_eq!(u.session_key, anchor_lang::prelude::Pubkey::default());
     assert_eq!((u.session_expiry, u.actions_left), (0, 0));
@@ -97,7 +106,7 @@ fn trader_after_closed_trade(h: &mut Harness, w: &World) -> Trader {
         &[&t.kp],
     )
     .unwrap();
-    // limit_price 0 accepts any price; the close frees the `Position` to `Empty`.
+    // limit_price 0 accepts any price; the close frees the SOL slot.
     h.send(&[ixs::close_position(&t.kp.pubkey(), &t, w, 0)], &[&t.kp])
         .unwrap();
     let free = h.account::<UserAccount>(&t.user).free_margin;
@@ -113,16 +122,16 @@ fn undelegate_after_closed_trade_is_full_exit() {
     let mut h = Harness::new();
     let w = world_with_price(&mut h);
     let t = trader_after_closed_trade(&mut h, &w);
-    h.send(&[ixs::undelegate_user(&t.kp.pubkey(), &t, &w)], &[&t.kp])
-        .unwrap();
+    h.send(
+        &[ixs::undelegate_user(&t.kp.pubkey(), &t, &w, &[w.market])],
+        &[&t.kp],
+    )
+    .unwrap();
     let u: UserAccount = h.account(&t.user);
     assert!(u.exited, "the exit must flag the account as exited");
     assert_eq!(u.exit_salt, [0u8; 32]);
     assert_eq!((u.session_expiry, u.actions_left), (0, 0));
-    assert_eq!(
-        h.account::<Position>(&t.position).state,
-        PositionState::Empty
-    );
+    assert!(h.slot(&t, &w.market).is_none());
 }
 
 #[test]
@@ -135,13 +144,13 @@ fn undelegate_only_by_owner() {
         &[&t.kp],
     )
     .unwrap();
-    // `owner: Signer` re-derives `user_account`/`position`'s PDAs from
+    // `owner: Signer` re-derives `user_account`/`positions`' PDAs from
     // `owner.key()`, so passing a signer that isn't the trader's real owner
     // makes the account-supplied addresses disagree with that derivation —
     // Anchor's `ConstraintSeeds` (2006) fires, same shape as
     // `withdraw_by_session_rejected` in tests/litesvm/tests/withdraw.rs.
     let r = h.send(
-        &[ixs::undelegate_user(&w.crank.pubkey(), &t, &w)],
+        &[ixs::undelegate_user(&w.crank.pubkey(), &t, &w, &[w.market])],
         &[&w.crank],
     );
     assert_custom_error(&r, 2006);

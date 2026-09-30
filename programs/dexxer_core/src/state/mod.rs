@@ -9,7 +9,6 @@ pub mod market_risk;
 pub mod permissions;
 pub mod pool;
 pub mod pool_live;
-pub mod position;
 pub mod positions;
 pub mod user;
 pub use balances_root::*;
@@ -21,7 +20,6 @@ pub use market_risk::*;
 pub use permissions::*;
 pub use pool::*;
 pub use pool_live::*;
-pub use position::*;
 pub use positions::*;
 pub use user::*;
 
@@ -30,7 +28,6 @@ pub const MARKET_SEED: &[u8] = b"market";
 pub const RISK_SEED: &[u8] = b"risk";
 pub const POOL_SEED: &[u8] = b"pool";
 pub const USER_SEED: &[u8] = b"user";
-pub const POSITION_SEED: &[u8] = b"position";
 pub const POSITIONS_SEED: &[u8] = b"positions";
 pub const FAUCET_SEED: &[u8] = b"faucet";
 pub const MINT_AUTH_SEED: &[u8] = b"mint_auth";
@@ -47,9 +44,10 @@ pub const SOL_SYMBOL: [u8; 8] = *b"SOL\0\0\0\0\0";
 pub const PERMISSION_MEMBERS: usize = 3; // owner, session, crank
 /// Upper bound on `crank_tick` candidates the PROGRAM accepts in one call.
 ///
-/// A candidate is a `[Position, UserAccount]` pair (week-6 slots Task 1; it
+/// A candidate is a `[Positions, UserAccount]` pair (week-6 slots Task 1; it
 /// was a triple with the `DisclosureQueue` before trade disclosure was
-/// removed). The client-side legacy-transaction chunk size
+/// removed; since slots Task 4 the first account is the trader's `Positions`
+/// and the slot is found by the tick's market). The client-side legacy-transaction chunk size
 /// (`CRANK_TX_MAX_CANDIDATES` in `services/relayer/src/crank.ts`) was measured
 /// on triples and is not re-measured here; the program cap stays 16 so a v0
 /// transaction with an address-lookup table can use the whole budget.
@@ -77,7 +75,7 @@ pub const WITHDRAW_COOLDOWN_SLOTS: u64 = 300;
 /// backstop that fires later is the safe direction.
 ///
 /// What DID have to be adjusted is the tick budget itself: both callers share
-/// one `Position.liq_ticks`, so the default `liq_hysteresis_ticks` went 2 -> 3
+/// one `PositionSlot.liq_ticks`, so the default `liq_hysteresis_ticks` went 2 -> 3
 /// to keep the gate spanning more than one distinct mark sample — the full
 /// reasoning is on `liq_due` in `instructions/liquidation.rs`.
 pub const LIQ_TASK_INTERVAL_MS: i64 = 5_000;
@@ -86,9 +84,10 @@ pub const LIQ_TASK_INTERVAL_MS: i64 = 5_000;
 ///
 /// `task_id` is VALIDATOR-GLOBAL, not per-program (week-5 Task 0, open item
 /// 1), so it must be derived from something globally unique to this position —
-/// its own PDA. keccak256 is the project's hash primitive everywhere else
+/// the trader's `Positions` PDA plus the market key (one position per market
+/// per trader). keccak256 is the project's hash primitive everywhere else
 /// (week-3 rule), and the first 8 bytes are plenty: a collision would need two
-/// positions whose PDAs share a 64-bit keccak prefix.
+/// (positions, market) pairs that share a 64-bit keccak prefix.
 pub fn liq_task_id(positions: &Pubkey, market: &Pubkey) -> i64 {
     let h = solana_keccak_hasher::hashv(&[positions.as_ref(), market.as_ref()]).to_bytes();
     let mut b = [0u8; 8];
@@ -113,13 +112,19 @@ mod liq_task_tests {
         assert_ne!(liq_task_id(&a, &m), liq_task_id(&b, &m));
     }
 
-    /// Golden vector: keccak256(positions || market), first 8 bytes LE.
+    /// Golden vector: keccak256(positions ‖ market), first 8 bytes
+    /// little-endian — off-chain clients are checked against the same number.
     #[test]
     fn liq_task_id_golden_vector() {
-        let p = Pubkey::new_from_array([0u8; 32]);
-        let h = solana_keccak_hasher::hashv(&[p.as_ref(), p.as_ref()]).to_bytes();
-        let expected = i64::from_le_bytes(h[..8].try_into().unwrap());
-        assert_eq!(liq_task_id(&p, &p), expected);
+        let positions = Pubkey::new_from_array([1u8; 32]);
+        let market = Pubkey::new_from_array([2u8; 32]);
+        const GOLDEN: i64 = 1_387_748_199_796_337_972;
+        assert_eq!(liq_task_id(&positions, &market), GOLDEN);
+        assert_ne!(
+            liq_task_id(&market, &positions),
+            GOLDEN,
+            "argument order is part of the id"
+        );
     }
 }
 
@@ -139,12 +144,14 @@ mod size_tests {
     #[test]
     fn print_sizes_for_spec_q3() {
         let u = 8 + UserAccount::INIT_SPACE;
-        let p = 8 + Position::INIT_SPACE;
+        let p = Positions::SPACE;
         let m = 8 + Market::INIT_SPACE;
         let perm = rent(EphemeralPermission::size_of(PERMISSION_MEMBERS) as u32);
-        println!("UserAccount {u} B, Position {p} B; L1 rent total {} lamports; ER permission prefund {perm} lamports x2",
+        println!("UserAccount {u} B, Positions {p} B; L1 rent total {} lamports; ER permission prefund {perm} lamports x2",
             l1_rent(u) + l1_rent(p));
-        assert!(p < 400, "Position must stay under 400 B (spec §8 Q3)");
+        // `Positions` is pinned to exactly 3184 B by `positions.rs`'s layout
+        // test (spec §2.9.1); the old per-market `Position` < 400 B bound
+        // (spec §8 Q3) no longer applies to one account holding 16 slots.
         // Bound through a `let` (not the bare const expression) so clippy's
         // `assertions_on_constants` lint doesn't fire on a compile-time-true assert.
         assert!(m < 300, "Market must stay under 300 B");

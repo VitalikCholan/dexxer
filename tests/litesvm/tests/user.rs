@@ -40,15 +40,16 @@ fn init_user_creates_pdas_and_prefunds_permission_rent() {
     let ua: UserAccount = h.account(&t.user);
     assert_eq!(ua.owner, apk(t.kp.pubkey()));
     assert_eq!(ua.free_margin, 0);
-    let p: Position = h.account(&t.position);
-    assert_eq!(p.state, PositionState::Empty);
-    assert_eq!(p.market, apk(w.market));
+    let p = h.positions(&t.positions);
+    assert_eq!(p.open_count(), 0);
+    assert_eq!(p.owner, apk(t.kp.pubkey()));
+    assert!(h.slot(&t, &w.market).is_none());
     let extra = ephemeral_rollups_sdk::ephemeral_accounts::rent(
         ephemeral_rollups_sdk::access_control::structs::EphemeralPermission::size_of(
             PERMISSION_MEMBERS,
         ) as u32,
     );
-    let pos_acc = h.svm.get_account(&t.position).unwrap();
+    let pos_acc = h.svm.get_account(&t.positions).unwrap();
     assert_eq!(
         pos_acc.lamports,
         h.svm.minimum_balance_for_rent_exemption(pos_acc.data.len()) + extra
@@ -119,8 +120,11 @@ fn set_session_only_by_owner() {
 /// Clean exit: no trades, `undelegate_user` leaves `exited == true`.
 fn exited_trader(h: &mut Harness, w: &World) -> Trader {
     let t = w.new_trader(h, 0);
-    h.send(&[ixs::undelegate_user(&t.kp.pubkey(), &t, w)], &[&t.kp])
-        .unwrap();
+    h.send(
+        &[ixs::undelegate_user(&t.kp.pubkey(), &t, w, &[w.market])],
+        &[&t.kp],
+    )
+    .unwrap();
     assert!(h.account::<UserAccount>(&t.user).exited);
     t
 }
@@ -144,14 +148,14 @@ fn close_exited_user_returns_rent_of_both_pdas_to_fee_payer() {
     assert_custom_error(&r, 6000 + DexxerError::Unauthorized as u32);
 
     let before = lamports(&h, &w.fee_payer.pubkey());
-    let rent: u64 = [t.user, t.position].iter().map(|k| lamports(&h, k)).sum();
+    let rent: u64 = [t.user, t.positions].iter().map(|k| lamports(&h, k)).sum();
     assert!(rent > 0);
     h.send(
         &[ixs::close_exited_user(&w.fee_payer.pubkey(), &t, &w)],
         &[&w.fee_payer],
     )
     .unwrap();
-    for k in [t.user, t.position] {
+    for k in [t.user, t.positions] {
         assert_eq!(lamports(&h, &k), 0, "PDA {k} must be closed");
     }
     assert_eq!(

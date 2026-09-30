@@ -87,13 +87,14 @@ pub fn crank_tick<'info>(mut ctx: Context<'info, CrankTick<'info>>) -> Result<()
         return Ok(());
     }
     let mark = m.mark;
-    // (3)-(5) candidates: pairs [position, user_account].
+    // (3)-(5) candidates: pairs [positions, user_account]; the slot is the one
+    // of THIS market inside the trader's `Positions` (spec §2.9).
     let rem = ctx.remaining_accounts;
     require!(
         rem.len() % 2 == 0 && rem.len() / 2 <= MAX_CANDIDATES,
         DexxerError::InvalidCandidate
     );
-    // Reject a duplicate [Position, UserAccount] pair inside the same
+    // Reject a duplicate [Positions, UserAccount] pair inside the same
     // remaining_accounts list — without this, the same candidate passed twice
     // would run `liquidatable_now`/hysteresis logic twice in one tx,
     // double-incrementing `liq_ticks` and being able to trip liquidation a
@@ -115,7 +116,12 @@ pub fn crank_tick<'info>(mut ctx: Context<'info, CrankTick<'info>>) -> Result<()
         );
         seen[seen_len] = pos_ai.key();
         seen_len = seen_len.checked_add(1).ok_or(DexxerError::MathOverflow)?;
-        let mut pos = Position::try_deserialize(&mut &pos_ai.try_borrow_data()?[..])?;
+        // Zero-copy: the 3.1 KiB account is read and written in place (a
+        // by-value Borsh copy would not fit the SBF stack). `try_from` checks
+        // owner and discriminator; an account that is not a `Positions` in
+        // the first slot of a pair is a malformed candidate list, rejected
+        // like the mismatched pair below (as the typed `Position` decode did).
+        let loader = AccountLoader::<Positions>::try_from(pos_ai)?;
         // Week-5 Task 2 appended `exited` to `UserAccount` (layout version 2),
         // so a v1 account created before that upgrade is one byte short and
         // cannot be deserialized into the current struct at all. That is not a
@@ -136,39 +142,42 @@ pub fn crank_tick<'info>(mut ctx: Context<'info, CrankTick<'info>>) -> Result<()
                 continue;
             }
         };
-        require!(
-            pos.market == market_key && pos.owner == user.owner,
-            DexxerError::InvalidCandidate
-        );
-        let (exp_pos, _) = Pubkey::find_program_address(
-            &[POSITION_SEED, pos.owner.as_ref(), market_key.as_ref()],
-            &crate::ID,
-        );
+        let mut positions = loader.load_mut()?;
+        let (exp_pos, _) =
+            Pubkey::find_program_address(&[POSITIONS_SEED, positions.owner.as_ref()], &crate::ID);
         let (exp_user, _) =
             Pubkey::find_program_address(&[USER_SEED, user.owner.as_ref()], &crate::ID);
+        // A mismatched pair is a malformed candidate list from the crank,
+        // not a state of a trader — rejected, as before slots.
         require!(
-            pos_ai.key() == exp_pos && user_ai.key() == exp_user,
+            positions.owner == user.owner && pos_ai.key() == exp_pos && user_ai.key() == exp_user,
             DexxerError::InvalidCandidate
         );
-        if pos.state != PositionState::Open {
+        // No open slot on this market: nothing to check here — a candidate
+        // list is built per trader, not per (trader, market).
+        let Some(idx) = positions.find_open(&market_key) else {
             continue;
-        }
+        };
         // Hysteresis is shared with `liquidation_check` (week-5 Task 3) — the
         // one place `liq_ticks` moves, on either path.
-        if liq_due(&mut pos, &a.market, mark)? {
+        if liq_due(&mut positions.slots[idx], &a.market, mark)? {
             let fee_bps = a.market.liq_fee_bps as u32;
             liquidate_now(
                 market_key,
                 &mut a.market_risk,
                 &mut a.pool_live,
                 &mut user,
-                &mut pos,
+                &mut positions,
+                idx,
                 mark,
                 fee_bps,
                 &clock,
             )?;
         }
-        pos.try_serialize(&mut &mut pos_ai.try_borrow_mut_data()?[..])?;
+        // `positions` is zero-copy: its bytes were written in place and the
+        // `RefMut` is dropped at the end of this iteration. Only the Borsh
+        // `UserAccount` needs serializing back.
+        drop(positions);
         user.try_serialize(&mut &mut user_ai.try_borrow_mut_data()?[..])?;
     }
     Ok(())

@@ -55,7 +55,7 @@ fn increase_uses_vwap_entry_and_charges_fee_on_delta() {
         &[&t.kp],
     )
     .unwrap();
-    let p: Position = h.account(&t.position);
+    let p = h.slot(&t, &w.market).expect("open slot");
     assert_eq!(p.size, 2 * SOL10);
     assert_eq!(p.entry, 155_000_000);
     assert_eq!(p.margin, M150 + 160_000_000);
@@ -137,8 +137,8 @@ fn decrease_partial_releases_pro_rata_margin_and_realises_pnl() {
         &[&t.kp],
     )
     .unwrap();
-    let p: Position = h.account(&t.position);
-    assert_eq!(p.state, PositionState::Open);
+    let p = h.slot(&t, &w.market).expect("open slot");
+    assert!(p.is_open());
     assert_eq!(p.size, 6_000_000_000);
     assert_eq!(p.margin, 90_000_000);
     assert_eq!(p.entry, P150);
@@ -176,8 +176,7 @@ fn decrease_full_equals_close() {
         &[&t.kp],
     )
     .unwrap();
-    let p: Position = h.account(&t.position);
-    assert_eq!(p.state, PositionState::Empty);
+    assert!(h.slot(&t, &w.market).is_none());
 }
 
 #[test]
@@ -189,7 +188,7 @@ fn close_after_increase_keeps_oi_ledger_exact() {
     // `notional` itself also rounds up, the recompute can exceed the ledger's
     // true remaining balance (double rounding), underflowing `checked_sub`
     // and failing the whole crank tx / close — even though the position and
-    // pool are perfectly healthy. `Position.oi_notional` now tracks the exact
+    // pool are perfectly healthy. `PositionSlot.oi_notional` now tracks the exact
     // contribution in lock-step at open/increase/decrease, so this must
     // always succeed. (`add_size`/`add_price` below are chosen, via offline
     // search, to reproduce a positive recompute-vs-ledger drift.)
@@ -237,17 +236,14 @@ fn close_after_increase_keeps_oi_ledger_exact() {
         &[&t.kp],
     )
     .unwrap();
-    let p: Position = h.account(&t.position);
+    let p = h.slot(&t, &w.market).expect("open slot");
     assert_eq!(p.entry, 154_117_649, "VWAP entry rounds up");
     // Before the fix: notional(p.size, p.entry) = 2_620_000_034 > the ledger's
     // tracked 2_620_000_022 (open_notional 1_500_000_000 + delta_notional
     // 1_120_000_022) — a 12 base-unit shortfall that underflowed `checked_sub`.
     h.send(&[ixs::close_position(&t.kp.pubkey(), &t, &w, 0)], &[&t.kp])
         .unwrap();
-    assert_eq!(
-        h.account::<Position>(&t.position).state,
-        PositionState::Empty
-    );
+    assert!(h.slot(&t, &w.market).is_none());
     assert_eq!(h.account::<MarketRisk>(&w.risk).oi_long, 0);
     assert_invariant(&h, &w, &[&t]);
 }
@@ -309,7 +305,7 @@ fn second_increase_after_vwap_rounding_is_accepted() {
     )
     .unwrap();
     assert_eq!(
-        h.account::<Position>(&t.position).entry,
+        h.slot(&t, &w.market).expect("open slot").entry,
         154_117_649,
         "VWAP entry rounds up"
     );
@@ -328,8 +324,8 @@ fn second_increase_after_vwap_rounding_is_accepted() {
         &[&t.kp],
     )
     .unwrap();
-    let p: Position = h.account(&t.position);
-    assert_eq!(p.state, PositionState::Open);
+    let p = h.slot(&t, &w.market).expect("open slot");
+    assert!(p.is_open());
     assert_eq!(
         h.account::<MarketRisk>(&w.risk).oi_long,
         p.oi_notional,

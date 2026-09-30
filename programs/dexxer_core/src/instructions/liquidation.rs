@@ -7,7 +7,8 @@
 //! `open_position` itself and paid for by the program's own `FeeEscrow` PDA
 //! (which is therefore the task's authority — week-5 Task 0, measurement 3),
 //! calling `liquidation_check` on exactly that position's accounts every
-//! `LIQ_TASK_INTERVAL_MS`.
+//! `LIQ_TASK_INTERVAL_MS`. Since slots Task 4 "that position" is the slot of
+//! the task's market inside the trader's `Positions` account.
 //!
 //! `liquidation_check` is deliberately NOT a second crank:
 //!   * it never advances `Market.mark`/the EMA — the market-level schedule
@@ -57,7 +58,7 @@ pub fn fee_escrow_pda() -> Pubkey {
     Pubkey::find_program_address(&[FEE_ESCROW_SEED], &crate::ID).0
 }
 
-/// Shared hysteresis — the ONLY place `Position.liq_ticks` moves.
+/// Shared hysteresis — the ONLY place `PositionSlot.liq_ticks` moves.
 ///
 /// Returns `true` when this tick's health check says the position must be
 /// liquidated now. Both liquidation paths call it, so their semantics cannot
@@ -84,7 +85,7 @@ pub fn fee_escrow_pda() -> Pubkey {
 /// Wall-clock grace differs per path as a consequence: 3 ticks is ~3 s of
 /// crank time but ~11 s of scheduled time. That asymmetry is accepted — see
 /// `LIQ_TASK_INTERVAL_MS` in `state/mod.rs`.
-pub(crate) fn liq_due(pos: &mut Position, market: &Market, mark: u64) -> Result<bool> {
+pub(crate) fn liq_due(pos: &mut PositionSlot, market: &Market, mark: u64) -> Result<bool> {
     if risk::liquidatable_now(pos, market, mark)? {
         pos.liq_ticks = pos
             .liq_ticks
@@ -99,14 +100,16 @@ pub(crate) fn liq_due(pos: &mut Position, market: &Market, mark: u64) -> Result<
 
 /// Shared liquidation settlement — the close itself, once `liq_due` has said
 /// so. Nothing is queued any more (spec §2.9), so a liquidation can never be
-/// skipped: it always settles through `finalize_close`.
+/// skipped: it always settles through `finalize_close`, which also writes the
+/// owner's history record with `reason = Liquidated`.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn liquidate_now(
     market_key: Pubkey,
     risk_acc: &mut MarketRisk,
     pool: &mut PoolLive,
     user: &mut UserAccount,
-    pos: &mut Position,
+    positions: &mut Positions,
+    idx: usize,
     mark: u64,
     fee_bps: u32,
     clock: &Clock,
@@ -116,7 +119,8 @@ pub(crate) fn liquidate_now(
         risk_acc,
         pool,
         user,
-        pos,
+        positions,
+        idx,
         mark,
         fee_bps,
         CloseReason::Liquidated,
@@ -131,7 +135,7 @@ pub(crate) fn liquidate_now(
 ///
 /// `market` is READ-ONLY on purpose: the mark belongs to the market-wide
 /// crank schedule. Everything else this instruction can write (`market_risk`,
-/// `pool_live`, `position`, `user_account`) is a delegated
+/// `pool_live`, `positions`, `user_account`) is a delegated
 /// account, which is also what lets them be writable in the outer
 /// `ScheduleTask` CPI's account list (a writable NON-delegated account there
 /// is rejected outright — see `ScheduleCrank.config` in `crank.rs`).
@@ -141,9 +145,9 @@ pub struct LiquidationCheck<'info> {
     /// includes a derived PDA (`liq_crank_signer`), which an account constraint
     /// cannot express without recomputing it on every field validation.
     pub crank: Signer<'info>,
-    // Boxed throughout: this context carries a `UserAccount` and a `Position`
-    // at once — the same pair that already forced boxing in `Trade` and
-    // `UndelegateUser`.
+    // Boxed throughout: this context carries several Borsh accounts at once —
+    // the same shape that already forced boxing in `Trade` and
+    // `UndelegateUser`. `positions` is zero-copy and needs no box.
     #[account(seeds = [CONFIG_SEED], bump = config.bump)]
     pub config: Box<Account<'info, Config>>,
     #[account(seeds = [MARKET_SEED, &market.symbol], bump = market.bump)]
@@ -154,20 +158,21 @@ pub struct LiquidationCheck<'info> {
     pub pool_live: Box<Account<'info, PoolLive>>,
     /// CHECK: validated in oracle::read_price (key == market.feed, owner == config.oracle_program)
     pub feed: UncheckedAccount<'info>,
+    // The slot is found by `market.key()` in the body; a market with no open
+    // slot makes the tick a no-op.
     #[account(
         mut,
-        seeds = [POSITION_SEED, position.owner.as_ref(), market.key().as_ref()],
-        bump = position.bump,
-        has_one = market
+        seeds = [POSITIONS_SEED, user_account.owner.as_ref()],
+        bump = positions.load()?.bump
     )]
-    pub position: Box<Account<'info, Position>>,
+    pub positions: AccountLoader<'info, Positions>,
     // Same owner-consistency checks `crank_tick` runs on a candidate pair,
     // expressed declaratively since this context has exactly one candidate.
     #[account(
         mut,
         seeds = [USER_SEED, user_account.owner.as_ref()],
         bump = user_account.bump,
-        constraint = user_account.owner == position.owner @ DexxerError::InvalidCandidate
+        constraint = user_account.owner == positions.load()?.owner @ DexxerError::InvalidCandidate
     )]
     pub user_account: Box<Account<'info, UserAccount>>,
 }
@@ -189,12 +194,16 @@ pub fn liquidation_check(mut ctx: Context<LiquidationCheck>) -> Result<()> {
     let authorized = signer == liq_crank_signer(&fee_escrow_pda()) || signer == a.config.crank;
     require!(authorized, DexxerError::Unauthorized);
 
-    // A task keeps ticking after its position closes (nothing cancels it from
-    // inside a scheduled tick) — measured safe, and this is where it becomes a
-    // no-op (week-5 Task 0, "Тік по «закритій позиції»").
-    if a.position.state != PositionState::Open {
+    // A liquidated or user-closed position leaves its task registered until
+    // the next open on this market or the owner's exit (nothing cancels it
+    // from inside a scheduled tick): a tick on a market with no open slot is a
+    // no-op, never an error (spec §2.9.2; week-5 Task 0, "Тік по «закритій
+    // позиції»"). The borrow is scoped: nothing below issues a CPI, but the
+    // write happens in its own `load_mut` further down.
+    let market_key = a.market.key();
+    let Some(idx) = a.positions.load()?.find_open(&market_key) else {
         return Ok(());
-    }
+    };
 
     // Freshness gate. Two independent ways the mark can be untrustworthy:
     // the oracle itself is stale/too wide (spec §3.5 — skip, never liquidate
@@ -219,15 +228,16 @@ pub fn liquidation_check(mut ctx: Context<LiquidationCheck>) -> Result<()> {
         return Ok(()); // market never marked; nothing to liquidate against
     }
 
-    let market_key = a.market.key();
     let fee_bps = a.market.liq_fee_bps as u32;
-    if liq_due(&mut a.position, &a.market, mark)? {
+    let mut positions = a.positions.load_mut()?;
+    if liq_due(&mut positions.slots[idx], &a.market, mark)? {
         liquidate_now(
             market_key,
             &mut a.market_risk,
             &mut a.pool_live,
             &mut a.user_account,
-            &mut a.position,
+            &mut positions,
+            idx,
             mark,
             fee_bps,
             &clock,
@@ -251,8 +261,8 @@ pub fn liquidation_check(mut ctx: Context<LiquidationCheck>) -> Result<()> {
 /// accounts it already passes.
 ///
 /// Re-registering an existing `task_id` is an UPDATE, not an error (week-5
-/// Task 0, measurement 1): a second `open_position` on the same position PDA
-/// simply refreshes the task.
+/// Task 0, measurement 1): a second `open_position` on the same market of the
+/// same `Positions` PDA simply refreshes the task.
 pub(crate) fn schedule_liquidation_task<'info>(
     payer: &'info AccountInfo<'info>,
     magic_program: &'info AccountInfo<'info>,

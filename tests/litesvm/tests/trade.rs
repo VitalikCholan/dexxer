@@ -43,8 +43,8 @@ fn open_long_10x_locks_margin_and_fee() {
         &[&t.kp],
     )
     .unwrap();
-    let p: Position = h.account(&t.position);
-    assert_eq!(p.state, PositionState::Open);
+    let p = h.slot(&t, &w.market).expect("open slot");
+    assert!(p.is_open());
     assert_eq!(p.entry, P150);
     assert_eq!(p.margin, M150);
     assert_eq!(p.liq_price, 142_500_000);
@@ -282,8 +282,12 @@ fn close_with_profit_pays_from_protocol_liquidity() {
         1_000_000_000 - M150 - 900_000 + (M150 + 150_000_000 - 990_000)
     );
     assert_eq!(u.locked_margin, 0);
-    let p: Position = h.account(&t.position);
-    assert_eq!(p.state, PositionState::Empty);
+    assert!(h.slot(&t, &w.market).is_none());
+    // The only slot this trader ever used is the first one; a cleared slot is
+    // all-zero, `market` included.
+    let p = h.positions(&t.positions).slots[0];
+    assert!(!p.is_open());
+    assert_eq!(p.market, Default::default());
     assert_eq!(
         (
             p.size,
@@ -392,10 +396,7 @@ fn deviation_guard_blocks_open_not_close() {
     // always be available).
     h.send(&[ixs::close_position(&t.kp.pubkey(), &t, &w, 0)], &[&t.kp])
         .unwrap();
-    assert_eq!(
-        h.account::<Position>(&t.position).state,
-        PositionState::Empty
-    );
+    assert!(h.slot(&t, &w.market).is_none());
     assert_invariant(&h, &w, &[&t, &t2]);
 }
 
@@ -428,6 +429,5 @@ fn nine_closes_in_a_row_all_succeed() {
             .unwrap_or_else(|e| panic!("close #{i} failed: {e:?}"));
         assert_invariant(&h, &w, &[&t]);
     }
-    let p: Position = h.account(&t.position);
-    assert_eq!(p.state, PositionState::Empty);
+    assert!(h.slot(&t, &w.market).is_none());
 }
