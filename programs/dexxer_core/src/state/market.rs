@@ -20,6 +20,11 @@ pub struct Market {
     pub max_deviation_bps: u16,
     pub mark: u64,
     pub mark_slot: u64,
+    /// Identity (`posted_slot`) of the latest oracle print `crank_tick` has seen.
+    pub last_print: u64,
+    /// Number of distinct oracle prints `crank_tick` has seen (risk #38). Only
+    /// `crank_tick` writes it; `liq_due` counts a tick per new value.
+    pub sample_seq: u64,
     pub ema_alpha_bps: u16,
     pub liq_hysteresis_ticks: u8,
     pub max_stale_ticks: u16,
@@ -63,7 +68,7 @@ impl MarketParams {
             max_conf_bps: 50,
             max_deviation_bps: 200,
             ema_alpha_bps: 3000,
-            // 2 distinct price samples (`PositionSlot.last_liq_mark_slot` guards
+            // 2 distinct price samples (`Market.sample_seq` guards
             // the count, risk #38 — it was 3 while two callers double-counted).
             liq_hysteresis_ticks: 2,
             max_stale_ticks: 30,

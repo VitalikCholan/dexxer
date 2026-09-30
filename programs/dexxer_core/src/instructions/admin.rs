@@ -89,6 +89,8 @@ pub fn init_market(
     apply_params(m, &params);
     m.mark = 0;
     m.mark_slot = 0;
+    m.last_print = 0;
+    m.sample_seq = 0;
     m.paused_open = false;
     m.stale_ticks = 0;
     m.bump = ctx.bumps.market;

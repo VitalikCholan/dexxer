@@ -225,6 +225,8 @@ mod tests {
             max_deviation_bps: 200,
             mark: 150_000_000,
             mark_slot: 1,
+            last_print: 0,
+            sample_seq: 0,
             ema_alpha_bps: 3000,
             liq_hysteresis_ticks: 2,
             max_stale_ticks: 30,

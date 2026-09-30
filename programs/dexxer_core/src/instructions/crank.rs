@@ -79,6 +79,17 @@ pub fn crank_tick<'info>(mut ctx: Context<'info, CrankTick<'info>>) -> Result<()
         dev_bps > m.max_deviation_bps as u128
     };
     m.mark_slot = clock.slot;
+    // A liquidation SAMPLE is a distinct oracle print, not a crank call (risk
+    // #38): two crank sources landing on the same print must not count twice.
+    // `posted_slot` is strictly newer for every new post of the feed (the
+    // publish time is in whole seconds and can repeat across prints).
+    if px.posted_slot > m.last_print {
+        m.last_print = px.posted_slot;
+        m.sample_seq = m
+            .sample_seq
+            .checked_add(1)
+            .ok_or(DexxerError::MathOverflow)?;
+    }
     m.paused_open = tripped;
     if tripped {
         // Index deviated from the previous mark: the EMA still absorbed the
@@ -159,7 +170,7 @@ pub fn crank_tick<'info>(mut ctx: Context<'info, CrankTick<'info>>) -> Result<()
             continue;
         };
         // Hysteresis is shared with `liquidation_check` (week-5 Task 3) — the
-        // one place `liq_ticks` moves, on either path.
+        // one place `liq_ticks` advances, on either path.
         if liq_due(&mut positions.slots[idx], &a.market, mark)? {
             let fee_bps = a.market.liq_fee_bps as u32;
             liquidate_now(

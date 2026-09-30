@@ -84,7 +84,8 @@ fn liquidation_check_liquidates_underwater_position() {
         assert_eq!(pos.liq_ticks, expected);
         slot += 1;
         h.warp(slot, NOW);
-        w.set_price(&mut h, 142_000_000, 5, NOW, slot);
+        // A new oracle print (later `posted_slot` than the mark tick's 101).
+        w.set_price(&mut h, 142_000_000, 5, NOW, slot + 1_000);
         h.send(&[ixs::crank_tick(&w.crank.pubkey(), &w, &[])], &[&w.crank])
             .unwrap();
     }
@@ -297,7 +298,7 @@ fn three_checks_on_one_price_sample_count_as_one_tick() {
     )
     .unwrap();
 
-    // One crank tick moves the mark onto the crashed price: sample #1.
+    // Sample #1: a crank tick on a NEW print at the crashed price.
     h.warp(9_110, NOW);
     w.set_price(&mut h, P142, 5, NOW, 101);
     h.send(
@@ -306,7 +307,8 @@ fn three_checks_on_one_price_sample_count_as_one_tick() {
     )
     .unwrap();
     assert_eq!(h.slot(&t, &w.market).expect("open").liq_ticks, 1);
-    // Three more checks against the SAME mark_slot: still one tick.
+    // Three checks on the same print: still one tick (they do reach `liq_due`
+    // — the last step below is liquidated by ONE check).
     for i in 0..3u32 {
         h.send(
             &[
@@ -320,17 +322,70 @@ fn three_checks_on_one_price_sample_count_as_one_tick() {
     let s = h.slot(&t, &w.market).expect("not liquidated on one sample");
     assert_eq!(s.liq_ticks, 1);
 
-    // Sample #2 (a new mark_slot) reaches the hysteresis and liquidates.
+    // A second crank tick in a LATER slot on the SAME print (no new
+    // publication): the mark_slot moves, the sample does not.
     h.warp(9_111, NOW);
-    w.set_price(&mut h, P142, 5, NOW, 102);
     h.send(
         &[ixs::crank_tick(&w.crank.pubkey(), &w, &[&t])],
         &[&w.crank],
     )
     .unwrap();
+    assert_eq!(h.account::<Market>(&w.market).mark_slot, 9_111);
+    let s = h
+        .slot(&t, &w.market)
+        .expect("one print is one tick, whoever cranks");
+    assert_eq!(s.liq_ticks, 1);
+
+    // A new print, seen by a candidate-less crank_tick (moves the sample only):
+    // ONE liquidation_check now reaches the hysteresis and liquidates.
+    h.warp(9_112, NOW);
+    w.set_price(&mut h, P142, 5, NOW, 102);
+    h.send(&[ixs::crank_tick(&w.crank.pubkey(), &w, &[])], &[&w.crank])
+        .unwrap();
+    assert_eq!(h.slot(&t, &w.market).expect("open").liq_ticks, 1);
+    h.send(
+        &[ixs::liquidation_check(&w.crank.pubkey(), &w, &t)],
+        &[&w.crank],
+    )
+    .unwrap();
     assert!(
         h.slot(&t, &w.market).is_none(),
-        "liquidated on the second sample"
+        "liquidated on the second print"
     );
     assert_invariant(&h, &w, &[&t]);
+}
+
+/// A freshly opened slot starts at the market's current sample, so a print
+/// that was already sampled before the open can never tick the new position.
+/// (An underwater open is refused, so this asserts the stored baseline.)
+#[test]
+fn a_new_position_starts_from_the_current_sample() {
+    let mut h = Harness::new();
+    let w = World::bootstrap(&mut h);
+    h.warp(100, NOW);
+    w.set_price(&mut h, P150, 5, NOW, 100);
+    let t = w.new_trader(&mut h, 1_000_000_000);
+    // Two crank prints before the open: sample_seq = 2.
+    h.send(&[ixs::crank_tick(&w.crank.pubkey(), &w, &[])], &[&w.crank])
+        .unwrap();
+    h.warp(101, NOW);
+    w.set_price(&mut h, P150, 5, NOW, 101);
+    h.send(&[ixs::crank_tick(&w.crank.pubkey(), &w, &[])], &[&w.crank])
+        .unwrap();
+    let seq = h.account::<Market>(&w.market).sample_seq;
+    assert_eq!(seq, 2);
+    h.send(
+        &[ixs::open_position(
+            &t.kp.pubkey(),
+            &t,
+            &w,
+            Side::Long,
+            SOL10,
+            M150,
+            P150,
+        )],
+        &[&t.kp],
+    )
+    .unwrap();
+    assert_eq!(h.slot(&t, &w.market).expect("open").last_liq_sample, seq);
 }

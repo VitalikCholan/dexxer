@@ -316,8 +316,8 @@ pub fn open_position<'info>(
             opened_slot: clock.slot,
             // Exact at open: entry == px.price, so notional(size, entry) == entry_notional.
             oi_notional: entry_notional,
-            // Unused until the one-sample-one-tick rule lands (risk #38).
-            last_liq_mark_slot: 0,
+            // Only oracle prints seen AFTER the open may count against it.
+            last_liq_sample: a.market.sample_seq,
             state: SLOT_OPEN,
             side: side.as_u8(),
             liq_ticks: 0,

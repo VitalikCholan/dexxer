@@ -74,8 +74,8 @@ pub const WITHDRAW_COOLDOWN_SLOTS: u64 = 300;
 /// the scheduled path is the backstop, the crank is the fast path, and a
 /// backstop that fires later is the safe direction.
 ///
-/// Both callers share one `PositionSlot.liq_ticks`, which counts distinct mark
-/// samples (`last_liq_mark_slot`, risk #38) — see `liq_due` in
+/// Both callers share one `PositionSlot.liq_ticks`, which counts distinct oracle
+/// prints (`last_liq_sample`, risk #38) — see `liq_due` in
 /// `instructions/liquidation.rs`.
 pub const LIQ_TASK_INTERVAL_MS: i64 = 5_000;
 

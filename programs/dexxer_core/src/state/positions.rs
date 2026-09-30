@@ -70,9 +70,9 @@ pub struct PositionSlot {
     /// `oi_short` — the OI ledger moves only through this field, never through
     /// a recompute off the VWAP `entry` (double rounding can underflow).
     pub oi_notional: u64,
-    /// `Market.mark_slot` of the last price sample that counted toward
+    /// `Market.sample_seq` of the last oracle print that counted toward
     /// `liq_ticks` (risk #38): one sample, one tick.
-    pub last_liq_mark_slot: u64,
+    pub last_liq_sample: u64,
     pub state: u8,
     pub side: u8,
     pub liq_ticks: u8,
@@ -254,7 +254,7 @@ mod tests {
             liq_price: 4,
             opened_slot: 5,
             oi_notional: 6,
-            last_liq_mark_slot: 7,
+            last_liq_sample: 7,
             state: SLOT_OPEN,
             side: 1,
             liq_ticks: 2,

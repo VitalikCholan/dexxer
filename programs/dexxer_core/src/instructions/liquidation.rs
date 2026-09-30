@@ -11,7 +11,7 @@
 //! the task's market inside the trader's `Positions` account.
 //!
 //! `liquidation_check` is deliberately NOT a second crank:
-//!   * it never advances `Market.mark`/the EMA — the market-level schedule
+//!   * it never advances `Market.mark`/the EMA or `Market.sample_seq` — the market-level schedule
 //!     owns that, and two writers on one EMA would double-sample the index;
 //!   * it reads the oracle only as a FRESHNESS GATE on the mark it is about to
 //!     liquidate against (a dead crank freezes `mark`, and `check_deviation`
@@ -58,32 +58,34 @@ pub fn fee_escrow_pda() -> Pubkey {
     Pubkey::find_program_address(&[FEE_ESCROW_SEED], &crate::ID).0
 }
 
-/// Shared hysteresis — the ONLY place `PositionSlot.liq_ticks` moves.
+/// Shared hysteresis — the ONLY place `PositionSlot.liq_ticks` advances (a
+/// healthy check, or `increase_position`, resets it to 0).
 ///
 /// Returns `true` when this tick's health check says the position must be
 /// liquidated now. Both liquidation paths call it, so their semantics cannot
 /// diverge.
 ///
-/// `liq_ticks` counts distinct PRICE SAMPLES, not calls (risk #38). Two
-/// independent callers reach this function — the relayer's `crank_tick` (many
-/// candidates per market) and the position's scheduled `liquidation_check` —
-/// at different rates, several times per mark update. A tick is therefore
-/// counted only when `Market.mark_slot` (written solely by `crank_tick`) is
-/// newer than `PositionSlot.last_liq_mark_slot`; without the guard, a few calls
-/// in one slot liquidated on a single price. A healthy check resets the counter
-/// but keeps `last_liq_mark_slot`: `mark_slot` only grows, so any later sample
-/// is newer and counts again.
+/// `liq_ticks` counts distinct PRICE SAMPLES, not calls (risk #38). A sample is
+/// a distinct oracle print seen by `crank_tick`, which alone writes
+/// `Market.sample_seq` (it advances when the feed's `posted_slot` is newer than
+/// `Market.last_print`). Two callers reach this function at different rates,
+/// several times per print — the relayer's `crank_tick` and the position's
+/// scheduled `liquidation_check`; a tick counts only when `sample_seq` is newer
+/// than `PositionSlot.last_liq_sample`. Crank calls on one print, and any
+/// number of checks, therefore count once. A healthy check resets the counter
+/// but keeps `last_liq_sample`: `sample_seq` only grows, so any later print
+/// counts again.
 pub(crate) fn liq_due(pos: &mut PositionSlot, market: &Market, mark: u64) -> Result<bool> {
     if !risk::liquidatable_now(pos, market, mark)? {
         pos.liq_ticks = 0;
         return Ok(false);
     }
-    if market.mark_slot > pos.last_liq_mark_slot {
+    if market.sample_seq > pos.last_liq_sample {
         pos.liq_ticks = pos
             .liq_ticks
             .checked_add(1)
             .ok_or(DexxerError::MathOverflow)?;
-        pos.last_liq_mark_slot = market.mark_slot;
+        pos.last_liq_sample = market.sample_seq;
     }
     Ok(pos.liq_ticks >= market.liq_hysteresis_ticks)
 }
@@ -167,6 +169,10 @@ pub struct LiquidationCheck<'info> {
     pub user_account: Box<Account<'info, UserAccount>>,
 }
 
+/// Read-only on `market`: it never advances the price sample. Liquidation
+/// without the relayer therefore still needs a live `crank_tick` source (the
+/// market's scheduled crank) to see new prints — with no crank at all nothing
+/// is liquidated, deliberately: a frozen mark is not liquidated on.
 pub fn liquidation_check(mut ctx: Context<LiquidationCheck>) -> Result<()> {
     let clock = Clock::get()?;
     let a = &mut ctx.accounts;
