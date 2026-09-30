@@ -866,7 +866,7 @@ fn exit_scrubs_history_and_is_blocked_by_an_open_position_on_any_market() {
     assert_eq!(p.history_len, 0);
     // Everything after the 8-byte discriminator and the 32-byte owner, except
     // the trailing header (head/len/version/bump/pad/reserved), is zero.
-    assert!(raw.data[40..40 + 768 + 1536].iter().all(|b| *b == 0), "no slot or history byte leaves the ER");
+    assert!(raw.data[40..40 + 1536 + 1536].iter().all(|b| *b == 0), "no slot or history byte leaves the ER");
     assert!(h.account::<UserAccount>(&t.user).exited);
 }
 ```
