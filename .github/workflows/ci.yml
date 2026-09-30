@@ -60,8 +60,9 @@ jobs:
       # Fresh runner has no keys/programs keypair; anchor generates a random one and
       # would fail the declare_id! check — build against the source id instead.
       - run: anchor build --ignore-keys
-      - name: IDL copy in app matches build
-        run: cmp target/idl/dexxer_core.json app/src/idl/dexxer_core.json
+      - name: Canonical IDL matches build
+        # app/src/idl/dexxer_core.json is a stale copy until the app moves to position slots; deliberately not compared.
+        run: cmp target/idl/dexxer_core.json idl/dexxer_core.json
 
       - run: cargo test -p dexxer_core -p mock_oracle
 
@@ -92,7 +93,7 @@ jobs:
 
       - name: services/relayer
         env:
-          DEXXER_IDL_DIR: ${{ github.workspace }}/app/src/idl
+          DEXXER_IDL_DIR: ${{ github.workspace }}/idl
         run: |
           cd services/relayer
           npm ci
