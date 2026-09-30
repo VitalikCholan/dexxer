@@ -359,4 +359,39 @@ mod tests {
         assert_ne!(liq_task_id(&pos, &key(1)), liq_task_id(&pos, &key(2)));
         assert_ne!(liq_task_id(&pos, &key(1)), liq_task_id(&key(8), &key(1)));
     }
+
+    /// Byte offsets the off-chain decoders rely on (tests/er/lib/positions.ts,
+    /// and the app's codec): a layout change must fail here first.
+    #[test]
+    fn offsets_match_the_off_chain_decoders() {
+        use core::mem::offset_of;
+        assert_eq!(offset_of!(Positions, owner), 0);
+        assert_eq!(offset_of!(Positions, slots), 32);
+        assert_eq!(offset_of!(Positions, history), 1568);
+        assert_eq!(offset_of!(Positions, history_head), 3104);
+        assert_eq!(offset_of!(Positions, history_len), 3105);
+        assert_eq!(offset_of!(Positions, version), 3106);
+        assert_eq!(offset_of!(Positions, bump), 3107);
+        assert_eq!(offset_of!(PositionSlot, market), 0);
+        assert_eq!(offset_of!(PositionSlot, size), 32);
+        assert_eq!(offset_of!(PositionSlot, entry), 40);
+        assert_eq!(offset_of!(PositionSlot, margin), 48);
+        assert_eq!(offset_of!(PositionSlot, liq_price), 56);
+        assert_eq!(offset_of!(PositionSlot, opened_slot), 64);
+        assert_eq!(offset_of!(PositionSlot, oi_notional), 72);
+        assert_eq!(offset_of!(PositionSlot, last_liq_sample), 80);
+        assert_eq!(offset_of!(PositionSlot, state), 88);
+        assert_eq!(offset_of!(PositionSlot, side), 89);
+        assert_eq!(offset_of!(PositionSlot, liq_ticks), 90);
+        assert_eq!(offset_of!(HistoryRecord, market), 0);
+        assert_eq!(offset_of!(HistoryRecord, size), 32);
+        assert_eq!(offset_of!(HistoryRecord, entry), 40);
+        assert_eq!(offset_of!(HistoryRecord, exit), 48);
+        assert_eq!(offset_of!(HistoryRecord, pnl), 56);
+        assert_eq!(offset_of!(HistoryRecord, fees), 64);
+        assert_eq!(offset_of!(HistoryRecord, opened_slot), 72);
+        assert_eq!(offset_of!(HistoryRecord, closed_slot), 80);
+        assert_eq!(offset_of!(HistoryRecord, side), 88);
+        assert_eq!(offset_of!(HistoryRecord, reason), 89);
+    }
 }
