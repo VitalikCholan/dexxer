@@ -14,13 +14,15 @@
 
 **План 3 (app) і план 4 (чистий деплой, devnet-виміри)** — окремо. Цей план нічого не запускає на devnet і не деплоїть.
 
+> **Поправка під час виконання (рулінг Task 1, 30.09).** Канонічний IDL живе в **`idl/dexxer_core.json`** (корінь репозиторію), а не в `app/src/idl`. Причина: апка будує інструкції й кодеки через IDL, тож заміна її копії ламає 12 її тестів до плану 3. Тому `app/` у цьому плані **не змінюється взагалі** (її `app/src/idl/dexxer_core.json` лишається старим до плану 3), а CI (`cmp`), Dockerfile relayer-а й `DEXXER_IDL_DIR` перемикаються на `idl/`. Усюди нижче, де згадано `app/src/idl/dexxer_core.json` як ціль генерації чи порівняння, читати `idl/dexxer_core.json`; кроки Task 1 про `app/src/lib/errors.ts` і тести апки замінено на: «`app/` без змін, `cd app && npm test` — 103/103», плюс правки `.github/workflows/ci.yml` (рядок `cmp` і `DEXXER_IDL_DIR`) та `services/relayer/Dockerfile` (`COPY idl/dexxer_core.json idl/dexxer_core.json`, `ENV DEXXER_IDL_DIR=/app/idl`).
+
 ## Global Constraints
 
 - Гілка `positions-slots` (голова плану 1 — `b2176f7`). Нічого не пушити; коміт після кожної задачі, `git add <paths>` поштучно; повідомлення комітів англійською з трейлером сесії.
-- Node — з `.nvmrc` (24.18.0): `. "$HOME/.nvm/nvm.sh" && nvm use`. Тести relayer-а: `cd services/relayer && DEXXER_IDL_DIR=$PWD/../../app/src/idl npm test`. Типи: `npx tsc --noEmit` у `tests/er`, `scripts`, `services/relayer`. Postgres-тести (`test/indexerDb.test.ts`) — лише з `TEST_DATABASE_URL` (Docker `postgres:16-alpine`, рецепт у `services/relayer/README.md`); без нього вони skipped, і це допустимо.
+- Node — з `.nvmrc` (24.18.0): `. "$HOME/.nvm/nvm.sh" && nvm use`. Тести relayer-а: `cd services/relayer && DEXXER_IDL_DIR=$PWD/../../idl npm test`. Типи: `npx tsc --noEmit` у `tests/er`, `scripts`, `services/relayer`. Postgres-тести (`test/indexerDb.test.ts`) — лише з `TEST_DATABASE_URL` (Docker `postgres:16-alpine`, рецепт у `services/relayer/README.md`); без нього вони skipped, і це допустимо.
 - `anchor build` локально НЕ запускати (перемикає глобальну Solana). Rust: `cargo build-sbf --manifest-path programs/dexxer_core/Cargo.toml`, `cargo test -p dexxer_core`, `cargo +nightly-2026-09-18 test -p dexxer_litesvm` (або `cargo +nightly`).
-- Програму (`programs/`) не змінювати, крім одного unit-тесту зміщень у Task 2 (після нього — `program_autofixer` на зміненому файлі). `app/` не чіпати, крім `app/src/idl/dexxer_core.json` і двох повідомлень у `app/src/lib/errors.ts` (Task 1).
-- `app/src/idl/dexxer_core.json` — без кінцевого `\n` (CI порівнює `cmp` з виходом `anchor build`).
+- Програму (`programs/`) не змінювати, крім одного unit-тесту зміщень у Task 2 (після нього — `program_autofixer` на зміненому файлі). `app/` не чіпати ВЗАГАЛІ (її копія IDL лишається старою до плану 3); канонічний IDL — `idl/dexxer_core.json`.
+- `idl/dexxer_core.json` — без кінцевого `\n` (CI порівнює `cmp` з виходом `anchor build`).
 - Правило приватності: сервери читають лише публічні акаунти й оракул; приватні (`Positions`, `UserAccount`, `MarketRisk`, `PoolLive`) — тільки crank через власний TEE-токен (він permission-член). Жоден REST/WS-ендпоінт не віддає нічого з приватних акаунтів. Відкритий інтерес не віддаємо.
 - `Positions`, `PositionSlot`, `HistoryRecord`, `BalancesRoot` — `bytemuck`/`repr(C)`: Borsh-кодер Anchor їх НЕ декодує; лише ручний декодер за зміщеннями (Task 2).
 - Кандидати `crank_tick` — пари `[Positions, UserAccount]`, ≤16 на інструкцію; акаунт не того типу першим у парі зриває весь батч (Anchor 3002) — сміття відсіюється на клієнті.
@@ -103,21 +105,21 @@ fn main() {
 cd /Users/vitalikcholan/Projects/mobile_perp_dex
 cargo build --release --manifest-path tools/idlgen/Cargo.toml
 env -u RUSTUP_TOOLCHAIN CARGO_TARGET_DIR="$PWD/tools/idlgen/target/idl-build" \
-  tools/idlgen/target/release/idlgen "$PWD/programs/dexxer_core" "$PWD/app/src/idl/dexxer_core.json"
+  tools/idlgen/target/release/idlgen "$PWD/programs/dexxer_core" "$PWD/idl/dexxer_core.json"
 ```
 
 Перевірити (записати вихід у звіт):
 
 ```bash
 node -e '
-const i=require("./app/src/idl/dexxer_core.json");
+const i=require("./idl/dexxer_core.json");
 const n=(a)=>a.map(x=>x.name);
 console.log("ix",i.instructions.length,"accounts",n(i.accounts).sort().join(","));
 console.log("last errors",i.errors.slice(-2).map(e=>e.code+" "+e.name).join(", "));
 for (const gone of ["write_commitment","init_position","close_orphan_queue","init_user_reuse_queue"]) if (n(i.instructions).includes(gone)) throw new Error("still has "+gone);
 const iu=i.instructions.find(x=>x.name==="init_user"); console.log("init_user",n(iu.accounts).join(","));
 '
-tail -c 1 app/src/idl/dexxer_core.json | xxd -p   # НЕ 0a
+tail -c 1 idl/dexxer_core.json | xxd -p   # НЕ 0a
 ```
 
 Expected: `ix 40`; акаунти рівно `BalancesRoot,Config,Faucet,FeeEscrow,Market,MarketRisk,Pool,PoolLive,Positions,UserAccount`; `last errors 6049 NoFreeSlot, 6050 PositionLiquidatable`; `init_user owner,payer,config,user_account,positions,system_program`; останній байт не `0a`.
@@ -343,7 +345,7 @@ test("liqTaskId matches the program's golden vector and depends on argument orde
 
 ```bash
 cd services/relayer && . "$HOME/.nvm/nvm.sh" && nvm use
-DEXXER_IDL_DIR=$PWD/../../app/src/idl node --import tsx --test test/positionsCodec.test.ts test/symbol.test.ts
+DEXXER_IDL_DIR=$PWD/../../idl node --import tsx --test test/positionsCodec.test.ts test/symbol.test.ts
 ```
 
 Expected: FAIL — модулів `positions.js`/`symbol.js` нема, а `program.ts` падає на `accountDiscriminator("Position")` при завантаженні.
@@ -593,7 +595,7 @@ test("undelegate_user / close_exited_user builders match the IDL", () => {
 });
 ```
 
-- [ ] **Step 2: FAIL** — `DEXXER_IDL_DIR=$PWD/../../app/src/idl node --import tsx --test test/ixAccounts.test.ts test/marketParams.test.ts` (модуль `trader.js` не експортує будівників; `markets.js` нема).
+- [ ] **Step 2: FAIL** — `DEXXER_IDL_DIR=$PWD/../../idl node --import tsx --test test/ixAccounts.test.ts test/marketParams.test.ts` (модуль `trader.js` не експортує будівників; `markets.js` нема).
 
 - [ ] **Step 3: `tests/er/lib/markets.ts`** — дослівно з `git show multi-market-relayer:tests/er/lib/markets.ts`.
 
@@ -688,7 +690,7 @@ export async function readPositions(conn: Connection, positions: PublicKey): Pro
 - [ ] **Step 8: PASS**
 
 ```bash
-cd services/relayer && DEXXER_IDL_DIR=$PWD/../../app/src/idl node --import tsx --test test/ixAccounts.test.ts test/marketParams.test.ts test/positionsCodec.test.ts test/symbol.test.ts
+cd services/relayer && DEXXER_IDL_DIR=$PWD/../../idl node --import tsx --test test/ixAccounts.test.ts test/marketParams.test.ts test/positionsCodec.test.ts test/symbol.test.ts
 cd ../../tests/er && npx tsc --noEmit && npm run selftest:hashes
 cd ../../scripts && npm ci && npx tsc --noEmit
 grep -rnE "disclosureQueue|pdas\.position\(|commitmentHash|setDisclosureDelay|closeOrphanQueue|initUserReuseQueue|commitAggregate\([0-9]" tests/er scripts --include=*.ts -l
@@ -742,7 +744,7 @@ test("the disclosure endpoints are gone", async () => {
 
   (назву хелпера взяти з файлу; якщо там інлайновий запуск сервера — повторити той самий спосіб.)
 
-- [ ] **Step 2: FAIL** — `DEXXER_IDL_DIR=$PWD/../../app/src/idl node --import tsx --test test/env.test.ts test/markets.test.ts test/wsFilter.test.ts test/wsHeartbeat.test.ts test/health.test.ts test/indexerQuery.test.ts`.
+- [ ] **Step 2: FAIL** — `DEXXER_IDL_DIR=$PWD/../../idl node --import tsx --test test/env.test.ts test/markets.test.ts test/wsFilter.test.ts test/wsHeartbeat.test.ts test/health.test.ts test/indexerQuery.test.ts`.
 
 - [ ] **Step 3: перенести джерела.** Дослівно: `src/env.ts`, `src/markets.ts`, `migrations/008_ticks_market.sql`. У коментарі `markets.ts` слова «listed, provisioned and ticked» → «listed and ticked» (роздачі позицій більше нема). `src/health.ts`, `src/indexer/{accounts,http,query,store}.ts` — застосувати зміни гілки (`git diff 9904b98..multi-market-relayer -- services/relayer/src/health.ts services/relayer/src/indexer`).
 
@@ -982,7 +984,7 @@ test("rejects init_user whose payer slot is not the fee payer", async () => {
 
   (імена хелпера, аргументів і форми результату взяти з сусіднього тесту «accepts init_user» у цьому файлі; якщо такий негативний тест для `init_user` уже є — не дублювати, а переконатися, що він зелений на нових акаунтах, і записати це у звіт.)
 
-- [ ] **Step 5: PASS** — `DEXXER_IDL_DIR=$PWD/../../app/src/idl node --import tsx --test test/janitor.test.ts test/sponsor.test.ts` зелені.
+- [ ] **Step 5: PASS** — `DEXXER_IDL_DIR=$PWD/../../idl node --import tsx --test test/janitor.test.ts test/sponsor.test.ts` зелені.
 
 - [ ] **Step 6: commit**
 
@@ -1388,7 +1390,7 @@ export function untickedMarkets(byMarket: Map<string, unknown[]>, ticked: Market
 - [ ] **Step 8: PASS — повний зелений стан**
 
 ```bash
-cd services/relayer && npx tsc --noEmit && DEXXER_IDL_DIR=$PWD/../../app/src/idl npm test
+cd services/relayer && npx tsc --noEmit && DEXXER_IDL_DIR=$PWD/../../idl npm test
 cd ../../tests/er && npx tsc --noEmit && npm run selftest:hashes
 cd ../../scripts && npx tsc --noEmit
 cd ../app && npx tsc --noEmit && npm test
