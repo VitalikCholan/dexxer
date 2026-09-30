@@ -164,23 +164,6 @@ pub mod dexxer_core {
     pub fn delegate_market(ctx: Context<DelegateMarket>, symbol: [u8; 8]) -> Result<()> {
         admin::delegate_market(ctx, symbol)
     }
-    pub fn init_position(ctx: Context<InitPosition>, symbol: [u8; 8]) -> Result<()> {
-        positions::init_position(ctx, symbol)
-    }
-    pub fn delegate_position(ctx: Context<DelegatePosition>, symbol: [u8; 8]) -> Result<()> {
-        positions::delegate_position(ctx, symbol)
-    }
-    pub fn init_position_permission(ctx: Context<InitPositionPermission>) -> Result<()> {
-        positions::init_position_permission(ctx)
-    }
-    pub fn undelegate_position<'info>(
-        ctx: Context<'info, UndelegatePosition<'info>>,
-    ) -> Result<()> {
-        positions::undelegate_position(ctx)
-    }
-    pub fn close_exited_position(ctx: Context<CloseExitedPosition>) -> Result<()> {
-        positions::close_exited_position(ctx)
-    }
     pub fn delegate_pool(ctx: Context<DelegatePool>) -> Result<()> {
         admin::delegate_pool(ctx)
     }
