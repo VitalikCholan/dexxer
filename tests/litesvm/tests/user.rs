@@ -307,7 +307,7 @@ fn delegate_user_rejects_exited_account() {
         &[ixs::delegate_user(&t.kp.pubkey(), &t.kp.pubkey(), &w)],
         &[&t.kp],
     );
-    assert_custom_error(&r, 6000 + DexxerError::NotExited as u32);
+    assert_custom_error(&r, 6000 + DexxerError::UserExited as u32);
 
     h.send(
         &[ixs::close_exited_user(
@@ -330,7 +330,7 @@ fn delegate_user_rejects_exited_account() {
     );
     assert_ne!(
         custom_error_code(&r),
-        Some(6000 + DexxerError::NotExited as u32),
+        Some(6000 + DexxerError::UserExited as u32),
         "a re-onboarded account must pass the exited guard"
     );
 }

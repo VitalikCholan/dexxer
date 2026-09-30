@@ -1,7 +1,10 @@
-// Spec §2.8: markets beyond SOL. (Per-market position tests were removed with
-// the position instructions; they return on slots.) LiteSVM has no Delegation/Permission/Magic
-// program, so delegation CPIs fail by design (asserted as "passed every
-// constraint": no custom error) and ER CPIs are gated off by `executable`.
+// Markets beyond SOL (spec §2.8) and the position slots that hold a trader's
+// positions on all of them in one account (spec §2.9): per-market isolation,
+// every instruction on a market where the trader has no slot, the 16-slot
+// ceiling, the history ring, and the CU measurement of the slot instructions.
+// LiteSVM has no Delegation/Permission/Magic program, so delegation CPIs fail
+// by design (asserted as "passed every constraint": no custom error) and ER
+// CPIs are gated off by `executable`.
 use anchor_lang::InstructionData;
 use dexxer_core::{errors::DexxerError, state::*};
 use dexxer_litesvm::{
@@ -196,15 +199,123 @@ fn closing_one_market_leaves_the_other_untouched_and_a_wrong_market_is_refused()
     )
     .unwrap();
     // No BTC position: closing on BTC must not touch the SOL slot.
+    let sol_before = slot_bytes(&h, &t, &w.market);
     let r = h.send(&[ixs::close_position_on(&o, &t, &w, &btc, B80K)], &[&t.kp]);
     assert_custom_error(&r, 6000 + DexxerError::PositionNotOpen as u32);
-    assert!(h.slot(&t, &w.market).is_some());
+    assert_eq!(slot_bytes(&h, &t, &w.market), sol_before);
     h.warp(9_102, NOW);
     w.set_price(&mut h, P150, 5, NOW, 100);
     h.send(&[ixs::close_position(&o, &t, &w, P150)], &[&t.kp])
         .unwrap();
     assert!(h.slot(&t, &w.market).is_none());
     assert_eq!(h.positions(&t.positions).open_count(), 0);
+    assert_invariant_markets(&h, &w, &[&t], &[w.market, btc.market]);
+}
+
+/// The raw 96 bytes of the trader's OPEN slot on `market` (panics if none).
+fn slot_bytes(h: &Harness, t: &dexxer_litesvm::setup::Trader, market: &Pubkey) -> Vec<u8> {
+    let s = h.slot(t, market).expect("open slot");
+    anchor_lang::__private::bytemuck::bytes_of(&s).to_vec()
+}
+
+/// Review Focus 1 for the rest of the trading instructions: increase,
+/// decrease and add_margin on a market where the trader has no slot are
+/// refused with `PositionNotOpen`, and the slot on the other market does not
+/// change by a byte.
+#[test]
+fn trading_on_a_market_without_a_slot_is_refused_and_leaves_the_other_slot() {
+    let mut h = Harness::new();
+    let (w, btc, t) = two_markets(&mut h);
+    let o = t.kp.pubkey();
+    h.send(
+        &[ixs::open_position(
+            &o,
+            &t,
+            &w,
+            Side::Long,
+            SOL10,
+            M150,
+            P150,
+        )],
+        &[&t.kp],
+    )
+    .unwrap();
+    let sol_before = slot_bytes(&h, &t, &w.market);
+    let user_before = h.svm.get_account(&t.user).unwrap().data;
+    let tries = [
+        ixs::increase_position_on(&o, &t, &w, &btc, BTC_01, M80, u64::MAX),
+        ixs::decrease_position_on(&o, &t, &w, &btc, BTC_01, 0),
+        ixs::add_margin_on(&o, &t, &w, &btc, M80),
+    ];
+    for ix in tries {
+        let r = h.send(&[ix], &[&t.kp]);
+        assert_custom_error(&r, 6000 + DexxerError::PositionNotOpen as u32);
+        assert_eq!(slot_bytes(&h, &t, &w.market), sol_before);
+        assert_eq!(h.svm.get_account(&t.user).unwrap().data, user_before);
+    }
+    assert!(h.slot(&t, &btc.market).is_none());
+    assert_invariant_markets(&h, &w, &[&t], &[w.market, btc.market]);
+}
+
+/// Review Focus 1 for the liquidation paths: a crank tick and a scheduled
+/// check on a market where the trader has no slot succeed as a no-op, even
+/// with the trader's slot on the other market liquidatable at its own mark.
+#[test]
+fn crank_and_check_on_a_market_without_a_slot_are_no_ops() {
+    let mut h = Harness::new();
+    let (w, btc, t) = two_markets(&mut h);
+    let o = t.kp.pubkey();
+    h.send(
+        &[ixs::open_position(
+            &o,
+            &t,
+            &w,
+            Side::Long,
+            SOL10,
+            M150,
+            P150,
+        )],
+        &[&t.kp],
+    )
+    .unwrap();
+    // The SOL mark crashes to 142 (below the ~142.5 liq price) with no
+    // candidate, so the SOL slot is liquidatable but untouched.
+    let mut p = MarketParams::sol_perp_defaults();
+    p.ema_alpha_bps = 10_000;
+    p.max_deviation_bps = 10_000;
+    h.send(
+        &[ixs::set_params(&w.admin.pubkey(), &w.config, &w.market, p)],
+        &[&w.admin],
+    )
+    .unwrap();
+    w.set_price(&mut h, 142_000_000, 5, NOW, 101);
+    h.send(&[ixs::crank_tick(&w.crank.pubkey(), &w, &[])], &[&w.crank])
+        .unwrap();
+    let sol_before = slot_bytes(&h, &t, &w.market);
+    let user_before = h.svm.get_account(&t.user).unwrap().data;
+    // Two BTC prints, each seen by a BTC crank with the trader as candidate
+    // and by a BTC liquidation_check on the trader.
+    for i in 0..2u64 {
+        h.warp(9_110 + i, NOW);
+        w.set_price_on(&mut h, &btc, B70K, 5, NOW, 101 + i);
+        h.send(
+            &[ixs::crank_tick_on(&w.crank.pubkey(), &w, &btc, &[&t])],
+            &[&w.crank],
+        )
+        .unwrap();
+        h.send(
+            &[ixs::liquidation_check_on(&w.crank.pubkey(), &w, &btc, &t)],
+            &[&w.crank],
+        )
+        .unwrap();
+        assert_eq!(slot_bytes(&h, &t, &w.market), sol_before);
+        assert_eq!(h.svm.get_account(&t.user).unwrap().data, user_before);
+    }
+    assert!(
+        h.account::<Market>(&btc.market).sample_seq >= 2,
+        "BTC ticked"
+    );
+    assert_eq!(h.positions(&t.positions).history_len, 0);
     assert_invariant_markets(&h, &w, &[&t], &[w.market, btc.market]);
 }
 
@@ -254,6 +365,7 @@ fn a_btc_crash_liquidates_only_the_btc_position() {
         &[&w.admin],
     )
     .unwrap();
+    let sol_before = slot_bytes(&h, &t, &w.market);
     // One price sample per tick (risk #38): a new slot and post before each.
     for i in 0..btc_params().liq_hysteresis_ticks as u64 {
         h.warp(9_110 + i, NOW);
@@ -265,7 +377,19 @@ fn a_btc_crash_liquidates_only_the_btc_position() {
         .unwrap();
     }
     assert!(h.slot(&t, &btc.market).is_none(), "BTC liquidated");
-    assert!(h.slot(&t, &w.market).is_some(), "SOL untouched");
+    assert_eq!(slot_bytes(&h, &t, &w.market), sol_before, "SOL untouched");
+    // A SOL crank with the same trader as candidate: SOL is healthy at 150.
+    w.set_price(&mut h, P150, 5, NOW, 102);
+    h.send(
+        &[ixs::crank_tick_on(&w.crank.pubkey(), &w, &w.sol(), &[&t])],
+        &[&w.crank],
+    )
+    .unwrap();
+    assert_eq!(
+        slot_bytes(&h, &t, &w.market),
+        sol_before,
+        "SOL survives its own crank"
+    );
     let p = h.positions(&t.positions);
     assert_eq!(p.history_len, 1);
     assert_eq!(p.history[0].reason, CloseReason::Liquidated.as_u8());
@@ -621,6 +745,10 @@ fn measure_slots() {
         "CU crank_tick (16 candidates, none liquidatable) = {}",
         m.compute_units_consumed
     );
+    for t in &traders {
+        let s = h.slot(t, &w.market).expect("nobody liquidated at 150");
+        assert_eq!(s.liq_ticks, 0);
+    }
     let mut p = MarketParams::sol_perp_defaults();
     p.ema_alpha_bps = 10_000;
     p.max_deviation_bps = 10_000;

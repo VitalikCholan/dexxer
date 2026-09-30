@@ -377,3 +377,68 @@ fn decrease_leaving_dust_or_undermargined_remainder_rejected() {
     );
     assert_custom_error(&r, 6000 + DexxerError::InvalidInput as u32);
 }
+
+/// Final review I3: a partial decrease realises PnL on the closed part, so it
+/// leaves a history record (`reason = HISTORY_REASON_DECREASE`) — otherwise
+/// that PnL never shows in the owner's History. The later full close adds its
+/// own record with `reason = User`.
+#[test]
+fn a_partial_decrease_writes_a_history_record() {
+    let mut h = Harness::new();
+    let w = World::bootstrap(&mut h);
+    h.warp(100, NOW);
+    w.set_price(&mut h, P150, 5, NOW, 100);
+    let t = w.new_trader(&mut h, 1_000_000_000);
+    h.send(
+        &[ixs::open_position(
+            &t.kp.pubkey(),
+            &t,
+            &w,
+            Side::Long,
+            SOL10,
+            M150,
+            P150,
+        )],
+        &[&t.kp],
+    )
+    .unwrap();
+    let opened = h.slot(&t, &w.market).expect("open slot").opened_slot;
+    assert_eq!(h.positions(&t.positions).history_len, 0);
+    h.warp(107, NOW);
+    w.set_price(&mut h, 165_000_000, 5, NOW, 101);
+    h.send(
+        &[ixs::decrease_position(
+            &t.kp.pubkey(),
+            &t,
+            &w,
+            4_000_000_000,
+            165_000_000,
+        )],
+        &[&t.kp],
+    )
+    .unwrap();
+    let p = h.positions(&t.positions);
+    assert_eq!(p.history_len, 1);
+    let r = p.history[0];
+    assert_eq!(dexxer_litesvm::pk(r.market), w.market);
+    assert_eq!(r.size, 4_000_000_000, "the closed part only");
+    assert_eq!(r.entry, P150);
+    assert_eq!(r.exit, 165_000_000);
+    assert_eq!(r.pnl, 60_000_000, "4 SOL x 15 $");
+    assert_eq!(r.fees, 396_000, "6 bps of 660 $");
+    assert_eq!(r.opened_slot, opened);
+    assert_eq!(r.closed_slot, 107);
+    assert_eq!(r.side, Side::Long.as_u8());
+    assert_eq!(r.reason, HISTORY_REASON_DECREASE);
+    let s = h.slot(&t, &w.market).expect("still open");
+    assert_eq!(s.size, 6_000_000_000);
+
+    h.warp(108, NOW);
+    h.send(&[ixs::close_position(&t.kp.pubkey(), &t, &w, 0)], &[&t.kp])
+        .unwrap();
+    let p = h.positions(&t.positions);
+    assert_eq!(p.history_len, 2);
+    assert_eq!(p.history[1].reason, CloseReason::User.as_u8());
+    assert_eq!(p.history[1].size, 6_000_000_000);
+    assert_invariant(&h, &w, &[&t]);
+}

@@ -79,23 +79,29 @@ pub fn crank_tick<'info>(mut ctx: Context<'info, CrankTick<'info>>) -> Result<()
         dev_bps > m.max_deviation_bps as u128
     };
     m.mark_slot = clock.slot;
-    // A liquidation SAMPLE is a distinct oracle print, not a crank call (risk
-    // #38): two crank sources landing on the same print must not count twice.
-    // `posted_slot` is strictly newer for every new post of the feed (the
-    // publish time is in whole seconds and can repeat across prints).
-    if px.posted_slot > m.last_print {
+    m.paused_open = tripped;
+    if tripped {
+        // Index deviated from the previous mark: the EMA still absorbed the
+        // sample (so the guard self-clears as the mark converges), but this
+        // tick's index is not trustworthy enough to liquidate anyone on — so
+        // it is not a liquidation sample either (final review C3): otherwise
+        // `liquidation_check` would count, and liquidate on, the very print
+        // this tick refused.
+        return Ok(());
+    }
+    // A liquidation SAMPLE is a distinct oracle print that this tick ACCEPTED,
+    // not a crank call (risk #38): two crank sources landing on the same print
+    // must not count twice. Identity, not order (final review C2): a feed whose
+    // `posted_slot` ever went backwards would otherwise freeze every later
+    // sample, and with it every liquidation. Staleness is gated separately, on
+    // `publish_time`, in `read_price` (the publish time is in whole seconds
+    // and can repeat across prints, so it cannot serve as the identity).
+    if px.posted_slot != m.last_print {
         m.last_print = px.posted_slot;
         m.sample_seq = m
             .sample_seq
             .checked_add(1)
             .ok_or(DexxerError::MathOverflow)?;
-    }
-    m.paused_open = tripped;
-    if tripped {
-        // Index deviated from the previous mark: the EMA still absorbed the
-        // sample (so the guard self-clears as the mark converges), but this
-        // tick's index is not trustworthy enough to liquidate anyone on.
-        return Ok(());
     }
     let mark = m.mark;
     // (3)-(5) candidates: pairs [positions, user_account]; the slot is the one
@@ -129,9 +135,11 @@ pub fn crank_tick<'info>(mut ctx: Context<'info, CrankTick<'info>>) -> Result<()
         seen_len = seen_len.checked_add(1).ok_or(DexxerError::MathOverflow)?;
         // Zero-copy: the 3.1 KiB account is read and written in place (a
         // by-value Borsh copy would not fit the SBF stack). `try_from` checks
-        // owner and discriminator; an account that is not a `Positions` in
-        // the first slot of a pair is a malformed candidate list, rejected
-        // like the mismatched pair below (as the typed `Position` decode did).
+        // owner and discriminator: a program-owned first account of a pair
+        // that is not a `Positions` aborts the whole tick with Anchor's own
+        // error (3002, `AccountDiscriminatorMismatch`), not
+        // `InvalidCandidate`. An undecodable SECOND account (`UserAccount`) is
+        // skipped just below.
         let loader = AccountLoader::<Positions>::try_from(pos_ai)?;
         // Week-5 Task 2 appended `exited` to `UserAccount` (layout version 2),
         // so a v1 account created before that upgrade is one byte short and

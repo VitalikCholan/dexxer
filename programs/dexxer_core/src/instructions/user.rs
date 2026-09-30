@@ -517,10 +517,11 @@ pub fn delegate_user(ctx: Context<DelegateUser>) -> Result<()> {
     // raw deserialize: the address is PDA-derived by the `#[delegate]` macro's
     // `seeds = [USER_SEED, owner.key()]` constraint, so no foreign-owned
     // account can occupy this slot and be read as a `UserAccount`.
+    // (`UserExited`, not `NotExited`: the account HAS exited — final review.)
     {
         let data = ctx.accounts.user_account.try_borrow_data()?;
         let u = UserAccount::try_deserialize(&mut &data[..])?;
-        require!(!u.exited, DexxerError::NotExited);
+        require!(!u.exited, DexxerError::UserExited);
     }
     let o = ctx.accounts.owner.key();
     ctx.accounts.delegate_user_account(
@@ -864,7 +865,12 @@ pub fn undelegate_user<'info>(ctx: Context<'info, UndelegateUser<'info>>) -> Res
     let pb = {
         let mut p = a.positions.load_mut()?;
         require!(p.open_count() == 0, DexxerError::HasOpenPosition);
-        // The owner's private close history never leaves the ER.
+        // The owner's private close history never leaves the ER. Every slot is
+        // already `Empty` (gate above) and a cleared slot is all-zero bytes;
+        // the slots are zeroed again anyway, as defence in depth. `owner`,
+        // `version`, `bump`, `_pad` and `_reserved` are kept: `owner` is the
+        // PDA seed, the rest are structural and hold no trade data.
+        p.scrub_slots();
         p.scrub_history();
         [p.bump]
     }; // RefMut dropped here — before every CPI below that takes `positions`
@@ -878,7 +884,10 @@ pub fn undelegate_user<'info>(ctx: Context<'info, UndelegateUser<'info>>) -> Res
     // Every `UserAccount` field is accounted for here: `version`/`owner`/
     // `bump` are kept (structural, not private data — `owner` is the PDA
     // seed); `free_margin`/`locked_margin` are provably zero already (the
-    // `BalanceNotZero` guard above); everything else is zeroed below,
+    // `BalanceNotZero` guard above); `rent_payer` and `_reserved` are kept
+    // deliberately — `rent_payer` is where `close_exited_user` must send the
+    // rent (risk #39) and is public on L1 anyway (the payer of `init_user`),
+    // `_reserved` is never written; everything else is zeroed below,
     // including `last_withdraw_slot` (a withdraw-cooldown timestamp — leaks
     // recent activity if left on the committed account).
     let u = &mut a.user_account;
@@ -904,9 +913,11 @@ pub fn undelegate_user<'info>(ctx: Context<'info, UndelegateUser<'info>>) -> Res
     // after the owner has moved trips it. Writing the scrub here — before
     // any CPI reassigns ownership — makes the later automatic write a no-op
     // (identical bytes), which the runtime does not flag regardless of the
-    // account's owner at that point. `positions` is zero-copy: the history
-    // scrub above was written in place, and its automatic exit only rewrites
-    // the same 8-byte discriminator — already a no-op, so no explicit flush.
+    // account's owner at that point. `positions` is zero-copy: the slot and
+    // history scrubs above were written in place, and its automatic exit only
+    // rewrites the same 8-byte discriminator — already a no-op, so no explicit
+    // flush (reasoned from Anchor's `AccountLoader::exit`, not measured on
+    // devnet).
     a.user_account.exit(&crate::ID)?;
 
     close_permission_if_present(

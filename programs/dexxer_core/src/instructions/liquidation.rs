@@ -58,18 +58,21 @@ pub fn fee_escrow_pda() -> Pubkey {
     Pubkey::find_program_address(&[FEE_ESCROW_SEED], &crate::ID).0
 }
 
-/// Shared hysteresis — the ONLY place `PositionSlot.liq_ticks` advances (a
-/// healthy check, or `increase_position`, resets it to 0).
+/// Shared hysteresis — the ONLY place `PositionSlot.liq_ticks` changes: it
+/// advances here, and only a healthy check here resets it to 0.
+/// `increase_position` never touches it (final review C1) — an increase on a
+/// position liquidatable at the mark is refused outright.
 ///
 /// Returns `true` when this tick's health check says the position must be
 /// liquidated now. Both liquidation paths call it, so their semantics cannot
 /// diverge.
 ///
 /// `liq_ticks` counts distinct PRICE SAMPLES, not calls (risk #38). A sample is
-/// a distinct oracle print seen by `crank_tick`, which alone writes
-/// `Market.sample_seq` (it advances when the feed's `posted_slot` is newer than
-/// `Market.last_print`). Two callers reach this function at different rates,
-/// several times per print — the relayer's `crank_tick` and the position's
+/// a distinct oracle print that `crank_tick` ACCEPTED — not one on which its
+/// deviation breaker tripped. `crank_tick` alone writes `Market.sample_seq`: it
+/// advances when the accepted print's `posted_slot` differs from
+/// `Market.last_print` (identity, not order). Two callers reach this function
+/// at different rates, several times per print — the relayer's `crank_tick` and the position's
 /// scheduled `liquidation_check`; a tick counts only when `sample_seq` is newer
 /// than `PositionSlot.last_liq_sample`. Crank calls on one print, and any
 /// number of checks, therefore count once. A healthy check resets the counter
@@ -290,13 +293,10 @@ pub(crate) fn schedule_liquidation_task<'info>(
 /// PDA that paid for the registration — a program PDA can own and cancel a
 /// task with no human signer anywhere (week-5 Task 0, measurement 3).
 ///
-/// KNOWN UNMEASURED (Task 4, M-I): what the validator does when the
-/// `task_id` does not exist. `ephemeral-rollups-sdk` 0.16.2 just forwards a
-/// `MagicBlockInstruction::CancelTask { task_id }` CPI, and a failing CPI
-/// cannot be caught from inside a program — so if an unknown id errors, a
-/// cancel on a never-registered task aborts the whole caller. Every call site
-/// is placed where a task is expected to exist, and each is gated on
-/// `magic_program.executable`.
+/// Cancelling a `task_id` that does not exist (never registered, or already
+/// cancelled) was measured on devnet to be a safe no-op, not an error (week 5,
+/// M-I) — which is what lets `undelegate_user` cancel for every market the
+/// client names. Every call site is gated on `magic_program.executable`.
 pub(crate) fn cancel_liquidation_task<'info>(
     authority: &'info AccountInfo<'info>,
     task_context: &'info AccountInfo<'info>,

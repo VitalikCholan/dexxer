@@ -20,10 +20,13 @@ pub struct Market {
     pub max_deviation_bps: u16,
     pub mark: u64,
     pub mark_slot: u64,
-    /// Identity (`posted_slot`) of the latest oracle print `crank_tick` has seen.
+    /// Identity (`posted_slot`) of the latest oracle print `crank_tick`
+    /// ACCEPTED (a print on which its deviation breaker tripped is not
+    /// recorded). Compared by identity (`!=`), not order.
     pub last_print: u64,
-    /// Number of distinct oracle prints `crank_tick` has seen (risk #38). Only
-    /// `crank_tick` writes it; `liq_due` counts a tick per new value.
+    /// Number of distinct oracle prints `crank_tick` has accepted (risk #38) —
+    /// a tripped print is not a sample. Only `crank_tick` writes it; `liq_due`
+    /// counts a tick per new value.
     pub sample_seq: u64,
     pub ema_alpha_bps: u16,
     pub liq_hysteresis_ticks: u8,

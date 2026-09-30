@@ -183,7 +183,7 @@ fn exit_scrubs_history_and_is_blocked_by_an_open_position_on_any_market() {
     .unwrap();
     let markets = [w.market, btc.market];
     let r = h.send(&[ixs::undelegate_user(&o, &t, &w, &markets)], &[&t.kp]);
-    assert!(r.is_err(), "open BTC position blocks the exit");
+    assert_custom_error(&r, 6000 + DexxerError::HasOpenPosition as u32);
     h.warp(9_102, NOW);
     w.set_price_on(&mut h, &btc, P150, 5, NOW, 100);
     h.send(&[ixs::close_position_on(&o, &t, &w, &btc, P150)], &[&t.kp])

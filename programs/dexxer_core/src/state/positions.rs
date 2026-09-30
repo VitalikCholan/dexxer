@@ -52,6 +52,14 @@ impl CloseReason {
     }
 }
 
+/// `HistoryRecord.reason` values. 0/1 are `CloseReason::as_u8()` (a full
+/// close by the owner, a liquidation); 2 is a PARTIAL `decrease_position`,
+/// which realises PnL on part of the size and leaves the slot open — it is a
+/// history kind only, never a `CloseReason`.
+pub const HISTORY_REASON_USER: u8 = 0;
+pub const HISTORY_REASON_LIQUIDATED: u8 = 1;
+pub const HISTORY_REASON_DECREASE: u8 = 2;
+
 pub const MAX_SLOTS: usize = 16;
 pub const HISTORY_LEN: usize = 16;
 pub const SLOT_EMPTY: u8 = 0;
@@ -140,7 +148,7 @@ impl Positions {
 
     /// Slot for a NEW position on `market`: one position per market, first
     /// empty slot. The caller fills the slot; this only picks it.
-    pub fn alloc(&mut self, market: &Pubkey) -> Result<usize> {
+    pub fn alloc(&self, market: &Pubkey) -> Result<usize> {
         require!(
             self.find_open(market).is_none(),
             DexxerError::PositionNotEmpty
@@ -176,6 +184,14 @@ impl Positions {
         self.history = bytemuck::Zeroable::zeroed();
         self.history_head = 0;
         self.history_len = 0;
+    }
+
+    /// Every slot back to zero bytes. Defence in depth for `undelegate_user`,
+    /// which already requires `open_count() == 0` (and a cleared slot is
+    /// already all-zero): nothing a slot ever held can reach L1 even if a
+    /// future path left a non-open slot with bytes in it.
+    pub fn scrub_slots(&mut self) {
+        self.slots = bytemuck::Zeroable::zeroed();
     }
 }
 
@@ -246,6 +262,10 @@ mod tests {
     #[test]
     fn clear_slot_zeroes_every_byte_and_frees_it() {
         let mut p = blank();
+        for i in 0..2 {
+            p.slots[i].state = SLOT_OPEN;
+            p.slots[i].market = key(10 + i as u8);
+        }
         p.slots[2] = PositionSlot {
             market: key(5),
             size: 1,
@@ -260,9 +280,39 @@ mod tests {
             liq_ticks: 2,
             _pad: [0; 5],
         };
+        assert_eq!(
+            p.alloc(&key(6)).unwrap(),
+            3,
+            "slot 2 is taken before the clear"
+        );
         p.clear_slot(2);
         assert_eq!(bytemuck::bytes_of(&p.slots[2]), &[0u8; 96][..]);
-        assert_eq!(p.alloc(&key(5)).unwrap(), 0);
+        // Slots 0 and 1 are still open: the freed slot 2 is the first empty one.
+        assert_eq!(p.alloc(&key(5)).unwrap(), 2);
+    }
+
+    #[test]
+    fn scrub_slots_leaves_no_slot_byte_behind() {
+        let mut p = blank();
+        p.owner = key(1);
+        for i in 0..MAX_SLOTS {
+            p.slots[i].market = key(i as u8 + 1);
+            p.slots[i].size = 7;
+            p.slots[i].liq_ticks = 1;
+        }
+        p.push_history(rec(3));
+        p.scrub_slots();
+        assert!(bytemuck::bytes_of(&p.slots).iter().all(|b| *b == 0));
+        assert_eq!(p.owner, key(1), "owner is the PDA seed and stays");
+        assert_eq!(p.history_len, 1, "history has its own scrub");
+    }
+
+    #[test]
+    fn history_reasons_match_close_reasons() {
+        assert_eq!(HISTORY_REASON_USER, CloseReason::User.as_u8());
+        assert_eq!(HISTORY_REASON_LIQUIDATED, CloseReason::Liquidated.as_u8());
+        assert_ne!(HISTORY_REASON_DECREASE, HISTORY_REASON_USER);
+        assert_ne!(HISTORY_REASON_DECREASE, HISTORY_REASON_LIQUIDATED);
     }
 
     fn rec(n: u64) -> HistoryRecord {

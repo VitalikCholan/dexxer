@@ -127,8 +127,9 @@ fn liquidation_after_hysteresis_ticks_below_mmr() {
     .unwrap();
     w.set_price(&mut h, 142_000_000, 5, NOW, 101); // liq price 142.5 -> equity < MMR
     let hyst = MarketParams::sol_perp_defaults().liq_hysteresis_ticks;
-    // Risk #38: a tick counts only on a NEW price sample (`mark_slot`), so each
-    // tick below gets its own slot and price post.
+    // Risk #38: a tick counts only on a NEW oracle print (`Market.sample_seq`
+    // advances when `posted_slot` changes), so each tick below gets its own
+    // slot and price post.
     let mut slot = 100u64;
     for expected in 1..hyst {
         slot += 1;
@@ -242,10 +243,13 @@ fn sixteen_candidates_fit_in_cu_budget() {
     let traders: Vec<_> = (0..MAX_CANDIDATES).map(|_| open_long(&mut h, &w)).collect();
     let refs: Vec<&_> = traders.iter().collect();
     // The explicit limit is not optional: this measures the cheap path (16
-    // candidates, none liquidatable) at ~166k CU, which does fit the 200k
-    // default — but the same tick with all 16 actually liquidating measured
-    // 367k (fix round 1, finding 4), so any client that fills a batch has to
-    // raise the limit. `services/relayer/src/crank.ts` does the same.
+    // candidates, none liquidatable). On position slots it measured 142k-172k
+    // CU over six `measure_slots` runs (final review of week-6 slots; the
+    // figure depends on the random test keypairs, since the tick derives two
+    // PDAs per candidate), and the same tick with all 16 liquidating
+    // 162k-192k — close to or above the 200k default, so any client that
+    // fills a batch has to raise the limit. `services/relayer/src/crank.ts`
+    // does the same.
     let meta = h
         .send(
             &[
@@ -259,9 +263,9 @@ fn sixteen_candidates_fit_in_cu_budget() {
         "sixteen_candidates_fit_in_cu_budget: compute_units_consumed = {}",
         meta.compute_units_consumed
     );
-    // Measured 165_623 with triples (week 5, fix round 1, finding 4); pairs
-    // only drop an account per candidate. Bound kept above that, so a
-    // regression in the non-liquidating path is caught rather than absorbed.
+    // Measured 165_623 with triples (week 5, fix round 1, finding 4). The
+    // bound is kept above the slots range above, so a regression in the
+    // non-liquidating path is caught rather than absorbed.
     assert!(
         meta.compute_units_consumed <= 250_000,
         "CU budget exceeded: {}",

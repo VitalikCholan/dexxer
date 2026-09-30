@@ -394,9 +394,12 @@ pub fn close_position_on(
     }
 }
 pub fn add_margin(signer: &Pubkey, t: &Trader, w: &World, amount: u64) -> Instruction {
+    add_margin_on(signer, t, w, &w.sol(), amount)
+}
+pub fn add_margin_on(signer: &Pubkey, t: &Trader, wd: &World, m: &Mkt, amount: u64) -> Instruction {
     Instruction {
         program_id: prog(),
-        accounts: t.trade_accounts(w, signer),
+        accounts: t.trade_accounts_on(wd, m, signer),
         data: ix::AddMargin { amount }.data(),
     }
 }
@@ -415,9 +418,21 @@ pub fn increase_position(
     add_margin: u64,
     limit_price: u64,
 ) -> Instruction {
+    increase_position_on(signer, t, w, &w.sol(), add_size, add_margin, limit_price)
+}
+#[allow(clippy::too_many_arguments)]
+pub fn increase_position_on(
+    signer: &Pubkey,
+    t: &Trader,
+    wd: &World,
+    m: &Mkt,
+    add_size: u64,
+    add_margin: u64,
+    limit_price: u64,
+) -> Instruction {
     Instruction {
         program_id: prog(),
-        accounts: t.trade_accounts(w, signer),
+        accounts: t.trade_accounts_on(wd, m, signer),
         data: ix::IncreasePosition {
             add_size,
             add_margin,
@@ -433,9 +448,19 @@ pub fn decrease_position(
     close_size: u64,
     limit_price: u64,
 ) -> Instruction {
+    decrease_position_on(signer, t, w, &w.sol(), close_size, limit_price)
+}
+pub fn decrease_position_on(
+    signer: &Pubkey,
+    t: &Trader,
+    wd: &World,
+    m: &Mkt,
+    close_size: u64,
+    limit_price: u64,
+) -> Instruction {
     Instruction {
         program_id: prog(),
-        accounts: t.trade_accounts(w, signer),
+        accounts: t.trade_accounts_on(wd, m, signer),
         data: ix::DecreasePosition {
             close_size,
             limit_price,
@@ -472,15 +497,18 @@ pub fn crank_tick_on(crank: &Pubkey, wd: &World, m: &Mkt, candidates: &[&Trader]
 /// Fixed account list — the scheduler freezes it at registration time, so it
 /// never carries `remaining_accounts` (week-5 Task 3).
 pub fn liquidation_check(signer: &Pubkey, wd: &World, t: &Trader) -> Instruction {
+    liquidation_check_on(signer, wd, &wd.sol(), t)
+}
+pub fn liquidation_check_on(signer: &Pubkey, wd: &World, m: &Mkt, t: &Trader) -> Instruction {
     Instruction {
         program_id: prog(),
         accounts: vec![
             rs(signer),
             r(&wd.config),
-            r(&wd.market),
-            w(&wd.risk),
+            r(&m.market),
+            w(&m.risk),
             w(&wd.pool_live),
-            r(&wd.feed),
+            r(&m.feed),
             w(&t.positions),
             w(&t.user),
         ],

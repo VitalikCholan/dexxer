@@ -67,16 +67,14 @@ pub const WITHDRAW_COOLDOWN_SLOTS: u64 = 300;
 /// 5 s, not the market crank's 1 s: the scheduler was measured to overshoot
 /// the requested interval (16 ticks per 60 s at `interval 5000` — week-5
 /// Task 0, measurement 1), and every position carries its own task, so the
-/// tick rate is multiplied by the number of open positions. `liq_ticks`
-/// hysteresis is counted in TICKS, not wall time, which means the same
-/// `Market.liq_hysteresis_ticks` is ~3 s of grace on the crank path and ~11 s
-/// on this one. That is deliberate and this constant is NOT adjusted for it:
-/// the scheduled path is the backstop, the crank is the fast path, and a
-/// backstop that fires later is the safe direction.
+/// tick rate is multiplied by the number of open positions.
 ///
-/// Both callers share one `PositionSlot.liq_ticks`, which counts distinct oracle
-/// prints (`last_liq_sample`, risk #38) — see `liq_due` in
-/// `instructions/liquidation.rs`.
+/// Neither interval sets the grace period any more: both callers share one
+/// `PositionSlot.liq_ticks`, which counts distinct oracle prints accepted by
+/// `crank_tick` (`Market.sample_seq` vs `last_liq_sample`, risk #38), not
+/// calls — see `liq_due` in `instructions/liquidation.rs`. The grace is
+/// `Market.liq_hysteresis_ticks` prints of the feed, however often either path
+/// runs; this interval only bounds how late after a print the backstop looks.
 pub const LIQ_TASK_INTERVAL_MS: i64 = 5_000;
 
 /// Magic Actions `task_id` for one position's liquidation task.

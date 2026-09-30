@@ -243,7 +243,7 @@ pub fn open_position<'info>(
     // Pick the slot before any money moves: `PositionNotEmpty` if this market
     // already has a position, `NoFreeSlot` when all sixteen are taken. The
     // slot itself is written only after every computation below succeeded.
-    let idx = a.positions.load_mut()?.alloc(&market_key)?;
+    let idx = a.positions.load()?.alloc(&market_key)?;
     let px = read_price(&a.feed.to_account_info(), &a.market, &a.config, &clock)?;
     check_open_quality(&px, &a.market)?;
     check_deviation(&px, &a.market)?;
@@ -484,6 +484,26 @@ pub fn increase_position(
         new_margin,
         new_entry,
     )?;
+    // Final review C1: an increase may never touch a position that is
+    // liquidatable at the current mark. It used to reset `liq_ticks`, so a
+    // dust increase after every print kept a liquidatable position alive
+    // forever. The check runs on the WOULD-BE slot (new size, margin, VWAP
+    // entry, liq price) before any state is written or money moves, against
+    // the stored `Market.mark` — the price both liquidation paths use. An
+    // unmarked market (`mark == 0`) has nothing to liquidate against.
+    if a.market.mark != 0 {
+        let would_be = PositionSlot {
+            size: new_size,
+            margin: new_margin,
+            entry: new_entry,
+            liq_price: chk.liq_price,
+            ..pos
+        };
+        require!(
+            !risk::liquidatable_now(&would_be, &a.market, a.market.mark)?,
+            DexxerError::PositionLiquidatable
+        );
+    }
     let delta_notional = math::notional(add_size, px.price)?;
     let fee = math::fee(delta_notional, a.market.open_fee_bps as u32)?;
     let cost = add_margin
@@ -532,7 +552,8 @@ pub fn increase_position(
     p.margin = new_margin;
     p.entry = new_entry;
     p.liq_price = chk.liq_price;
-    p.liq_ticks = 0;
+    // `liq_ticks` is deliberately left alone (C1): only a healthy check in
+    // `liq_due` resets it.
     // Track the exact OI contribution in lock-step with the ledger above
     // (delta_notional, not a recompute off the rounded VWAP entry).
     p.oi_notional = p
@@ -663,6 +684,23 @@ pub fn decrease_position<'info>(
         DexxerError::InsufficientMargin
     );
     p.liq_price = math::liq_price(side, p.entry, p.size, p.margin, a.market.mmr_bps).unwrap_or(0);
+    // Final review I3: the realised part goes into the owner's history, like
+    // a close — otherwise its PnL would never show. The slot stays open, so
+    // this is its own kind, `HISTORY_REASON_DECREASE`, not a `CloseReason`.
+    // No CPI follows on this path; the `RefMut` ends with the function.
+    positions.push_history(HistoryRecord {
+        market: market_key,
+        size: close_size,
+        entry: pos.entry,
+        exit: px.price,
+        pnl,
+        fees: s.fee_taken,
+        opened_slot: pos.opened_slot,
+        closed_slot: clock.slot,
+        side: pos.side,
+        reason: HISTORY_REASON_DECREASE,
+        _pad: [0; 6],
+    });
     Ok(())
 }
 

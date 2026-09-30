@@ -264,8 +264,9 @@ fn open_position_rejects_foreign_task_context() {
     );
 }
 
-/// Risk #38: `liq_ticks` counts distinct price samples (`Market.mark_slot`),
-/// not calls. Only `crank_tick` moves the mark; `liquidation_check` reads it.
+/// Risk #38: `liq_ticks` counts distinct oracle prints accepted by
+/// `crank_tick` (`Market.sample_seq`), not calls. Only `crank_tick` moves the
+/// mark and the sample; `liquidation_check` reads them.
 #[test]
 fn three_checks_on_one_price_sample_count_as_one_tick() {
     let mut h = Harness::new();
@@ -388,4 +389,199 @@ fn a_new_position_starts_from_the_current_sample() {
     )
     .unwrap();
     assert_eq!(h.slot(&t, &w.market).expect("open").last_liq_sample, seq);
+}
+
+/// Final review C1: a dust `increase_position` on a position that is
+/// liquidatable at the current mark used to reset `liq_ticks` to 0, so the
+/// trader could dodge the hysteresis print after print. Now the increase is
+/// refused (the would-be slot is liquidatable at the stored mark), the counter
+/// stays, and the next print liquidates.
+#[test]
+fn a_dust_increase_on_a_liquidatable_position_is_refused_and_keeps_ticks() {
+    let mut h = Harness::new();
+    let (w, t) = world_with_long(&mut h, P142);
+    let o = t.kp.pubkey();
+    assert_eq!(h.account::<Market>(&w.market).liq_hysteresis_ticks, 2);
+    // Same print the mark tick saw: the crank counts tick 1 on it.
+    h.send(
+        &[ixs::crank_tick(&w.crank.pubkey(), &w, &[&t])],
+        &[&w.crank],
+    )
+    .unwrap();
+    assert_eq!(h.slot(&t, &w.market).expect("open").liq_ticks, 1);
+    let slot_before = h.slot(&t, &w.market).unwrap();
+    let user_before: UserAccount = h.account(&t.user);
+
+    let r = h.send(
+        &[ixs::increase_position(&o, &t, &w, 1, 2, u64::MAX)],
+        &[&t.kp],
+    );
+    assert_custom_error(&r, 6000 + DexxerError::PositionLiquidatable as u32);
+    let slot_after = h.slot(&t, &w.market).expect("still open");
+    assert_eq!(
+        bytemuck_bytes(&slot_before),
+        bytemuck_bytes(&slot_after),
+        "a refused increase writes nothing, liq_ticks included"
+    );
+    let user_after: UserAccount = h.account(&t.user);
+    assert_eq!(user_before.free_margin, user_after.free_margin);
+    assert_eq!(user_before.locked_margin, user_after.locked_margin);
+
+    // The next print completes the hysteresis.
+    h.warp(102, NOW);
+    w.set_price(&mut h, P142, 5, NOW, 102);
+    h.send(
+        &[ixs::crank_tick(&w.crank.pubkey(), &w, &[&t])],
+        &[&w.crank],
+    )
+    .unwrap();
+    assert!(h.slot(&t, &w.market).is_none(), "liquidated on print 2");
+    assert_eq!(
+        h.positions(&t.positions).history[0].reason,
+        CloseReason::Liquidated.as_u8()
+    );
+    assert_invariant(&h, &w, &[&t]);
+}
+
+/// Final review C1, the other half: an increase that leaves the position
+/// healthy still works, and it does not reset a non-zero `liq_ticks` by
+/// itself — only a healthy check (`liq_due`) does.
+#[test]
+fn a_healthy_increase_works_and_does_not_reset_liq_ticks() {
+    let mut h = Harness::new();
+    let (w, t) = world_with_long(&mut h, P142);
+    let o = t.kp.pubkey();
+    h.send(
+        &[ixs::crank_tick(&w.crank.pubkey(), &w, &[&t])],
+        &[&w.crank],
+    )
+    .unwrap();
+    assert_eq!(h.slot(&t, &w.market).expect("open").liq_ticks, 1);
+    // +0.01 SOL with +100 $ margin: healthy at the 142 mark afterwards.
+    h.send(
+        &[ixs::increase_position(
+            &o,
+            &t,
+            &w,
+            10_000_000,
+            100_000_000,
+            u64::MAX,
+        )],
+        &[&t.kp],
+    )
+    .unwrap();
+    let s = h.slot(&t, &w.market).expect("open");
+    assert_eq!(s.size, SOL10 + 10_000_000);
+    assert_eq!(s.margin, M150 + 100_000_000);
+    assert_eq!(s.liq_ticks, 1, "an increase never resets the counter");
+    // The next check on a new print sees a healthy position and resets it.
+    h.warp(102, NOW);
+    w.set_price(&mut h, P142, 5, NOW, 102);
+    h.send(
+        &[ixs::crank_tick(&w.crank.pubkey(), &w, &[&t])],
+        &[&w.crank],
+    )
+    .unwrap();
+    assert_eq!(h.slot(&t, &w.market).expect("open").liq_ticks, 0);
+    assert_invariant(&h, &w, &[&t]);
+}
+
+/// Final review C2: a sample is a DIFFERENT print (`posted_slot !=
+/// last_print`), not a newer one. With `>` a single high `posted_slot` would
+/// freeze every later sample and nobody would ever be liquidated again.
+#[test]
+fn prints_with_a_lower_posted_slot_still_count_as_samples() {
+    let mut h = Harness::new();
+    let (w, t) = world_with_long(&mut h, P142);
+    let seq0 = h.account::<Market>(&w.market).sample_seq;
+    h.warp(102, NOW);
+    w.set_price(&mut h, P142, 5, NOW, 5_000);
+    h.send(
+        &[ixs::crank_tick(&w.crank.pubkey(), &w, &[&t])],
+        &[&w.crank],
+    )
+    .unwrap();
+    assert_eq!(h.account::<Market>(&w.market).sample_seq, seq0 + 1);
+    assert_eq!(h.slot(&t, &w.market).expect("open").liq_ticks, 1);
+    // The feed's posted_slot goes backwards.
+    h.warp(103, NOW);
+    w.set_price(&mut h, P142, 5, NOW, 200);
+    h.send(
+        &[ixs::crank_tick(&w.crank.pubkey(), &w, &[&t])],
+        &[&w.crank],
+    )
+    .unwrap();
+    let m: Market = h.account(&w.market);
+    assert_eq!(m.sample_seq, seq0 + 2, "a lower posted_slot is a new print");
+    assert_eq!(m.last_print, 200);
+    assert!(h.slot(&t, &w.market).is_none(), "liquidated on print 2");
+    assert_invariant(&h, &w, &[&t]);
+}
+
+/// Final review C3: a print on which `crank_tick` tripped its deviation
+/// breaker is not a sample — `liquidation_check` must not count or liquidate
+/// on it. The same print, accepted by a later crank call, counts.
+#[test]
+fn a_print_the_crank_tripped_on_is_not_a_sample() {
+    let mut h = Harness::new();
+    // Mark 142 (hard EMA), sample 1; the position ticks once on it.
+    let (w, t) = world_with_long(&mut h, P142);
+    h.send(
+        &[ixs::liquidation_check(&w.crank.pubkey(), &w, &t)],
+        &[&w.crank],
+    )
+    .unwrap();
+    assert_eq!(h.slot(&t, &w.market).expect("open").liq_ticks, 1);
+    let seq = h.account::<Market>(&w.market).sample_seq;
+    // Back to the default EMA (0.3) and deviation guard (2 %).
+    h.send(
+        &[ixs::set_params(
+            &w.admin.pubkey(),
+            &w.config,
+            &w.market,
+            MarketParams::sol_perp_defaults(),
+        )],
+        &[&w.admin],
+    )
+    .unwrap();
+    // 138 vs mark 142 = 2.8 %: the crank trips. The EMA still absorbs it
+    // (mark 140.8), which is within 2 % of 138 for `liquidation_check`.
+    h.warp(102, NOW);
+    w.set_price(&mut h, 138_000_000, 5, NOW, 102);
+    h.send(&[ixs::crank_tick(&w.crank.pubkey(), &w, &[])], &[&w.crank])
+        .unwrap();
+    let m: Market = h.account(&w.market);
+    assert!(m.paused_open, "the crank tripped on this print");
+    assert_eq!(m.mark, 140_800_000);
+    assert_eq!(m.sample_seq, seq, "a tripped print is not a sample");
+    h.send(
+        &[ixs::liquidation_check(&w.crank.pubkey(), &w, &t)],
+        &[&w.crank],
+    )
+    .unwrap();
+    let s = h
+        .slot(&t, &w.market)
+        .expect("not liquidated on a tripped print");
+    assert_eq!(s.liq_ticks, 1);
+    // The same print, now within 2 % of the mark: accepted, and it counts.
+    h.warp(103, NOW);
+    h.send(&[ixs::crank_tick(&w.crank.pubkey(), &w, &[])], &[&w.crank])
+        .unwrap();
+    let m: Market = h.account(&w.market);
+    assert!(!m.paused_open);
+    assert_eq!(m.sample_seq, seq + 1);
+    h.send(
+        &[ixs::liquidation_check(&w.crank.pubkey(), &w, &t)],
+        &[&w.crank],
+    )
+    .unwrap();
+    assert!(
+        h.slot(&t, &w.market).is_none(),
+        "liquidated on the accepted print"
+    );
+    assert_invariant(&h, &w, &[&t]);
+}
+
+fn bytemuck_bytes(s: &PositionSlot) -> Vec<u8> {
+    anchor_lang::__private::bytemuck::bytes_of(s).to_vec()
 }
