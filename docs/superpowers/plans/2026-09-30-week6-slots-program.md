@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** трейдер тримає позиції на будь-яких ринках в одному акаунті `Positions` (8 слотів + приватне кільце історії на 16 записів); угоди не розкриваються; новий ринок не потребує жодної дії на трейдера; ризики #38 і #39 закриті.
+**Goal:** трейдер тримає позиції на будь-яких ринках в одному акаунті `Positions` (16 слотів + приватне кільце історії на 16 записів); угоди не розкриваються; новий ринок не потребує жодної дії на трейдера; ризики #38 і #39 закриті.
 
 **Architecture:** спершу видаляється підсистема розкриття й інструкції позицій-на-ринок (програма стає меншою й лишається зеленою), потім додається zero-copy акаунт `Positions` і на нього одним кроком переводяться онбординг, торгівля, ліквідація, crank і вихід. Ринок шукається в даних акаунта (слот за ключем ринку), а не в адресі PDA. Наприкінці — поведінкові тести кількох ринків, per-sample гістерезис (#38) і повернення ренти платнику (#39).
 
@@ -16,7 +16,7 @@
 
 - Гілка `positions-slots` (від `main` 9904b98). Нічого не пушити; коміт після кожної задачі, `git add <paths>` поштучно; повідомлення комітів англійською з трейлером сесії.
 - Чистий старт devnet: сумісність лейауту зі старими акаунтами **не потрібна** — поля можна видаляти й переставляти. Коди помилок `DexxerError` — лише ДОПИСУВАТИ в кінець; невживані варіанти лишаються (мапа помилок апки тримається на номерах).
-- Лейаут `Positions` — рівно з spec §2.9.1: `owner: Pubkey | slots: [PositionSlot; 8] | history: [HistoryRecord; 16] | history_head: u8 | history_len: u8 | version: u8 | bump: u8 | _pad: [u8; 4] | _reserved: [u8; 64]` (2408 B + 8). `PositionSlot` 96 B: `market: Pubkey | size | entry | margin | liq_price | opened_slot | oi_notional | last_liq_mark_slot (u64 ×7) | state: u8 | side: u8 | liq_ticks: u8 | _pad: [u8; 5]`. `HistoryRecord` 96 B: `market: Pubkey | size | entry | exit: u64 | pnl: i64 | fees | opened_slot | closed_slot: u64 | side: u8 | reason: u8 | _pad: [u8; 6]`. Сіди `[b"positions", owner]`. Доступ лише через `AccountLoader` (Borsh by value 2.4 KiB пробиває SBF-стек).
+- Лейаут `Positions` — рівно з spec §2.9.1: `owner: Pubkey | slots: [PositionSlot; 16] | history: [HistoryRecord; 16] | history_head: u8 | history_len: u8 | version: u8 | bump: u8 | _pad: [u8; 4] | _reserved: [u8; 64]` (3176 B + 8). `PositionSlot` 96 B: `market: Pubkey | size | entry | margin | liq_price | opened_slot | oi_notional | last_liq_mark_slot (u64 ×7) | state: u8 | side: u8 | liq_ticks: u8 | _pad: [u8; 5]`. `HistoryRecord` 96 B: `market: Pubkey | size | entry | exit: u64 | pnl: i64 | fees | opened_slot | closed_slot: u64 | side: u8 | reason: u8 | _pad: [u8; 6]`. Сіди `[b"positions", owner]`. Доступ лише через `AccountLoader` (Borsh by value 3.1 KiB пробиває SBF-стек).
 - `RefMut` від `load_mut()` мусить бути звільнений (`drop`) ДО будь-якого CPI, що бере цей акаунт (планувальник, permission, `commit_and_undelegate`).
 - Округлення — на користь пулу; математика — в `math.rs`, `u128` проміжні, `checked_*`. OI-леджер змінюється лише через `oi_notional` слота, ніколи перерахунком з VWAP `entry`.
 - Приватний байт ніколи не виходить на L1: `undelegate_user` стирає історію й вимагає всі слоти `Empty` (гейт маржі) до `commit_and_undelegate`; очищений слот — усі 96 байт нулі, включно з `market`.
@@ -29,7 +29,7 @@
 ## Review Focus
 
 1. **Слот чужого ринку.** `close/increase/decrease/add_margin/liquidation_check/crank_tick` з ринком, на якому в трейдера немає відкритої позиції → `PositionNotOpen` (торгівля) або тихий `continue`/no-op (crank, планувальник), ніколи дія над слотом іншого ринку — Task 4 (тести в Task 5).
-2. **Дев'ятий ринок.** `open_position` при 8 зайнятих слотах → `NoFreeSlot`, стан без змін; після закриття одного — відкривається — Task 5.
+2. **Сімнадцятий ринок.** `open_position` при 16 зайнятих слотах → `NoFreeSlot`, стан без змін; після закриття одного — відкривається — Task 5.
 3. **Історія не блокує й не тече.** 17-те закриття перезаписує найстаріший запис; ліквідація пише запис із `reason = Liquidated`; `undelegate_user` лишає в акаунті нуль ненульових байтів історії й слотів — Task 5.
 4. **Один семпл ціни — один тік ліквідації (#38).** Три виклики `liquidation_check`/`crank_tick` на одному `Market.mark_slot` не ліквідують позицію з гістерезисом 2; другий семпл — ліквідує — Task 6.
 5. **Рента повертається платнику (#39).** `close_exited_user` шле лампорти на `UserAccount.rent_payer`, а не на підписанта; сторонній підписант → `Unauthorized`; власник може закрити сам — Task 7.
@@ -169,7 +169,7 @@ git commit -m "refactor(program): remove per-market position instructions"
 
 ```rust
 pub const POSITIONS_SEED: &[u8] = b"positions";
-pub const MAX_SLOTS: usize = 8;
+pub const MAX_SLOTS: usize = 16;
 pub const HISTORY_LEN: usize = 16;
 pub const SLOT_EMPTY: u8 = 0;
 pub const SLOT_OPEN: u8 = 1;
@@ -182,7 +182,7 @@ impl PositionSlot { pub fn is_open(&self) -> bool; pub fn side(&self) -> Side; }
 #[zero_copy] #[repr(C)] pub struct HistoryRecord { /* layout per Global Constraints */ }
 #[account(zero_copy)] #[repr(C)] pub struct Positions { /* layout per Global Constraints */ }
 impl Positions {
-    pub const SPACE: usize = 8 + core::mem::size_of::<Positions>();          // 2416
+    pub const SPACE: usize = 8 + core::mem::size_of::<Positions>();          // 3184
     pub fn find_open(&self, market: &Pubkey) -> Option<usize>;
     pub fn open_index(&self, market: &Pubkey) -> Result<usize>;              // Err(PositionNotOpen)
     pub fn alloc(&mut self, market: &Pubkey) -> Result<usize>;               // Err(PositionNotEmpty) | Err(NoFreeSlot)
@@ -216,8 +216,8 @@ mod tests {
     fn layout_is_exactly_the_spec() {
         assert_eq!(core::mem::size_of::<PositionSlot>(), 96);
         assert_eq!(core::mem::size_of::<HistoryRecord>(), 96);
-        assert_eq!(core::mem::size_of::<Positions>(), 2408);
-        assert_eq!(Positions::SPACE, 2416);
+        assert_eq!(core::mem::size_of::<Positions>(), 3176);
+        assert_eq!(Positions::SPACE, 3184);
     }
 
     #[test]
@@ -231,7 +231,7 @@ mod tests {
     }
 
     #[test]
-    fn a_ninth_market_gets_no_free_slot() {
+    fn a_seventeenth_market_gets_no_free_slot() {
         let mut p = blank();
         for i in 0..MAX_SLOTS {
             let idx = p.alloc(&key(i as u8 + 1)).unwrap();
@@ -321,7 +321,7 @@ mod tests {
 // Here a new market costs the trader nothing — a free slot is already there.
 //
 // `zero_copy`, accessed only through `AccountLoader`: a by-value Borsh
-// deserialization of 2.4 KiB overflows the SBF stack (the `BalancesRoot`
+// deserialization of 3.1 KiB overflows the SBF stack (the `BalancesRoot`
 // lesson, week 3). Field order is `repr(C)`-significant and padded by hand so
 // `bytemuck::Pod` needs no implicit padding.
 use anchor_lang::prelude::*;
@@ -330,7 +330,7 @@ use crate::errors::DexxerError;
 
 use super::Side;
 
-pub const MAX_SLOTS: usize = 8;
+pub const MAX_SLOTS: usize = 16;
 pub const HISTORY_LEN: usize = 16;
 pub const SLOT_EMPTY: u8 = 0;
 pub const SLOT_OPEN: u8 = 1;
@@ -516,7 +516,7 @@ impl CloseReason {
 
 ```bash
 git add programs/dexxer_core/src/state/positions.rs programs/dexxer_core/src/state/mod.rs programs/dexxer_core/src/state/position.rs programs/dexxer_core/src/errors.rs programs/dexxer_core/src/instructions/trade.rs programs/dexxer_core/src/instructions/user.rs
-git commit -m "feat(program): Positions account — 8 slots and a 16-record private history ring"
+git commit -m "feat(program): Positions account — 16 slots and a 16-record private history ring"
 ```
 
 ---
@@ -563,7 +563,7 @@ pub fn open_position<'info>(
     {
         let mut positions = a.positions.load_mut()?;
         // `PositionNotEmpty` if this market already has a position, `NoFreeSlot`
-        // when all eight are taken — both before any money moved would be
+        // when all sixteen are taken — both before any money moved would be
         // cleaner, so call `alloc` right after `assert_trader` and keep `idx`.
         let idx = positions.alloc(&market_key)?;
         positions.slots[idx] = PositionSlot {
@@ -761,26 +761,30 @@ fn a_btc_crash_liquidates_only_the_btc_position() {
     assert_invariant_markets(&h, &w, &[&t], &[w.market, btc.market]);
 }
 
+// 16 opens by one trader: if a pool-utilisation or OI limit refuses one of them
+// before the slot ceiling does, raise the test pool liquidity or the trader's
+// deposit — never lower MAX_SLOTS or the number of markets in this test.
 #[test]
-fn the_ninth_market_has_no_free_slot_until_one_closes() {
+fn the_seventeenth_market_has_no_free_slot_until_one_closes() {
     let mut h = Harness::new();
     let w = World::bootstrap(&mut h);
     h.warp(9_101, NOW);
     w.set_price(&mut h, P150, 5, NOW, 100);
-    // SOL + 8 more markets, all priced like SOL so SOL-sized trades fit.
+    // SOL + 16 more markets (17 in all, one more than MAX_SLOTS), all priced
+    // like SOL so SOL-sized trades fit.
     let mut mkts = vec![w.sol()];
-    for (i, s) in ["M1", "M2", "M3", "M4", "M5", "M6", "M7", "M8"].iter().enumerate() {
-        let m = w.add_market(&mut h, s, &format!("{}", 200 + i), MarketParams::sol_perp_defaults());
+    for i in 0..16 {
+        let m = w.add_market(&mut h, &format!("M{}", i + 1), &format!("{}", 200 + i), MarketParams::sol_perp_defaults());
         w.set_price_on(&mut h, &m, P150, 5, NOW, 100);
         mkts.push(m);
     }
     let t = w.new_trader(&mut h, 5_000_000_000);
     let o = t.kp.pubkey();
-    for m in &mkts[..8] {
+    for m in &mkts[..16] {
         h.send(&[ixs::open_position_on(&o, &t, &w, m, Side::Long, SOL10, M150, P150)], &[&t.kp]).unwrap();
     }
     let before: UserAccount = h.account(&t.user);
-    let r = h.send(&[ixs::open_position_on(&o, &t, &w, &mkts[8], Side::Long, SOL10, M150, P150)], &[&t.kp]);
+    let r = h.send(&[ixs::open_position_on(&o, &t, &w, &mkts[16], Side::Long, SOL10, M150, P150)], &[&t.kp]);
     assert_custom_error(&r, 6000 + DexxerError::NoFreeSlot as u32);
     let after: UserAccount = h.account(&t.user);
     assert_eq!(before.free_margin, after.free_margin, "a refused open moves no money");
@@ -789,7 +793,7 @@ fn the_ninth_market_has_no_free_slot_until_one_closes() {
         w.set_price_on(&mut h, m, P150, 5, NOW, 100);
     }
     h.send(&[ixs::close_position_on(&o, &t, &w, &mkts[0], P150)], &[&t.kp]).unwrap();
-    h.send(&[ixs::open_position_on(&o, &t, &w, &mkts[8], Side::Long, SOL10, M150, P150)], &[&t.kp]).unwrap();
+    h.send(&[ixs::open_position_on(&o, &t, &w, &mkts[16], Side::Long, SOL10, M150, P150)], &[&t.kp]).unwrap();
     let keys: Vec<Pubkey> = mkts.iter().map(|m| m.market).collect();
     assert_invariant_markets(&h, &w, &[&t], &keys);
 }
@@ -1079,7 +1083,7 @@ cargo test -p dexxer_core -p mock_oracle
 cargo +nightly-2026-09-18 test -p dexxer_litesvm
 ```
 
-- [ ] **Step 2: виміри.** `size_tests`: друкувати `UserAccount`, `Positions::SPACE`, L1-ренту обох (`(space + 128) * 6960`) і префонд permission ×2; асерт `Positions::SPACE == 2416`. Тест-вимір `measure_slots` у `markets.rs` (`-- --nocapture`): CU `init_user`, `open_position`, `close_position`, `increase_position`, `crank_tick` з 16 кандидатами без ліквідацій і з 16 ліквідаціями, `liquidation_check`, `undelegate_user` з 5 ринками в `remaining_accounts`; розмір `.so` (`ls -l target/deploy/dexxer_core.so`). Порівняти CU з `main` там, де є число в `week5-results.md`/spec (crank 16 кандидатів: 166k/367k).
+- [ ] **Step 2: виміри.** `size_tests`: друкувати `UserAccount`, `Positions::SPACE`, L1-ренту обох (`(space + 128) * 6960`) і префонд permission ×2; асерт `Positions::SPACE == 3184`. Тест-вимір `measure_slots` у `markets.rs` (`-- --nocapture`): CU `init_user`, `open_position`, `close_position`, `increase_position`, `crank_tick` з 16 кандидатами без ліквідацій і з 16 ліквідаціями, `liquidation_check`, `undelegate_user` з 5 ринками в `remaining_accounts`; розмір `.so` (`ls -l target/deploy/dexxer_core.so`). Порівняти CU з `main` там, де є число в `week5-results.md`/spec (crank 16 кандидатів: 166k/367k).
 - [ ] **Step 3: IDL — лише перевірка, без коміту в `app/src/idl`.** Згенерувати IDL методом плану мульти-маркету (CLAUDE.md, «Регенерація IDL без `anchor-cli`») у scratch-файл поза репозиторієм; перевірити: інструкцій 37 (47 − 10), серед акаунтів є `Positions` (zero-copy, `serialization: bytemuck`), нема `Position`/`DisclosureQueue`/`Commitment`/`Disclosure`, у `init_user` нема `market`. Список інструкцій — у звіт. `app/src/idl/dexxer_core.json` НЕ чіпати: його заміна разом із TS — перша задача плану 2 (інакше тести relayer-а й `tsc` червоніють посеред гілки).
 - [ ] **Step 4: spec «Реалізовано (програма)»** у §2.9: що зроблено по задачах, лічильники тестів (unit, LiteSVM), список видалених тестів одним рядком на категорію, виміри (розміри, рента, CU, `.so`), відхилення від плану (рулінги), відкрите для плану 2 (IDL, TS).
 - [ ] **Step 5: CLAUDE.md.**
