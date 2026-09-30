@@ -281,11 +281,20 @@ pub fn faucet_mint(owner: &Pubkey, wd: &World, amount: u64) -> Instruction {
     }
 }
 pub fn init_user(owner: &Pubkey, wd: &World, exit_salt: [u8; 32]) -> Instruction {
+    init_user_paid(owner, owner, wd, exit_salt) // owner self-pays in tests
+}
+/// `init_user` with a separate `payer` (the relayer's sponsored onboarding).
+pub fn init_user_paid(
+    owner: &Pubkey,
+    payer: &Pubkey,
+    wd: &World,
+    exit_salt: [u8; 32],
+) -> Instruction {
     Instruction {
         program_id: prog(),
         accounts: vec![
             s(owner),
-            s(owner), // payer (fix round 1, task 6 controller ruling): owner self-pays in tests
+            s(payer), // payer (fix round 1, task 6 controller ruling)
             r(&wd.config),
             w(&pdas::user(owner)),
             w(&pdas::positions(owner)),
@@ -600,12 +609,24 @@ pub fn set_compute_unit_limit(units: u32) -> Instruction {
     }
 }
 
-/// `close_exited_user` (base layer, `Config.fee_payer`): rent reclaim on both
-/// of an exited owner's undelegated PDAs.
-pub fn close_exited_user(fee_payer: &Pubkey, t: &Trader, wd: &World) -> Instruction {
+/// `close_exited_user` (base layer, `Config.fee_payer` or the owner): rent
+/// reclaim on both of an exited owner's undelegated PDAs, sent to
+/// `rent_payer` (must equal `UserAccount.rent_payer`, risk #39).
+pub fn close_exited_user(
+    closer: &Pubkey,
+    t: &Trader,
+    wd: &World,
+    rent_payer: &Pubkey,
+) -> Instruction {
     Instruction {
         program_id: prog(),
-        accounts: vec![s(fee_payer), r(&wd.config), w(&t.user), w(&t.positions)],
+        accounts: vec![
+            s(closer),
+            r(&wd.config),
+            w(rent_payer),
+            w(&t.user),
+            w(&t.positions),
+        ],
         data: ix::CloseExitedUser {}.data(),
     }
 }

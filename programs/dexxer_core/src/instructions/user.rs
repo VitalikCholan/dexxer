@@ -208,6 +208,7 @@ pub fn init_user(ctx: Context<InitUser>, exit_salt: [u8; 32]) -> Result<()> {
     u.version = USER_ACCOUNT_VERSION;
     u.owner = o;
     u.exit_salt = exit_salt;
+    u.rent_payer = ctx.accounts.payer.key();
     u.bump = ctx.bumps.user_account;
     {
         // Every slot and history record starts all-zero (`SLOT_EMPTY`).
@@ -988,30 +989,29 @@ pub fn undelegate_user<'info>(ctx: Context<'info, UndelegateUser<'info>>) -> Res
 // either is still delegated it is owned by the Delegation Program and this
 // instruction cannot touch it at all.
 //
-// `fee_payer`, not the departed owner: the owner has exited and may never sign
-// again, and it is the protocol that fronted this rent in the first place
-// (`init_user`'s sponsored `payer`).
-//
-// POLICY (spec §4.2, risk #39): this is unconditional, and it is correct only
-// for accounts whose rent the sponsor actually paid (week 4 onwards). An
-// account created before sponsored rent existed was paid for by its OWNER, and
-// this hands that rent to the protocol. Accepted for devnet; the fix (store the
-// rent payer on `UserAccount` while the layout is versioned anyway, and refund
-// it) is week-6 work.
+// The rent goes to the recorded `UserAccount.rent_payer` (risk #39), never to
+// whoever signs: a sponsored onboarding refunds `Config.fee_payer`, a
+// self-funded one refunds the owner. The closer is `Config.fee_payer` (the
+// relayer's janitor, for an owner who has gone) or the owner themselves.
+// `rent_payer` survives `undelegate_user`'s scrub — it is already public on L1
+// as the payer of `init_user`.
 #[derive(Accounts)]
 pub struct CloseExitedUser<'info> {
-    #[account(mut, constraint = fee_payer.key() == config.fee_payer @ DexxerError::Unauthorized)]
-    pub fee_payer: Signer<'info>,
+    /// `Config.fee_payer` (the relayer's janitor) or the owner themselves.
+    pub closer: Signer<'info>,
     #[account(seeds = [CONFIG_SEED], bump = config.bump)]
     pub config: Account<'info, Config>,
-    // The owner is gone, so there is no owner signature to seed from.
+    /// CHECK: lamports destination, pinned to the recorded payer.
+    #[account(mut, constraint = rent_payer.key() == user_account.rent_payer @ DexxerError::Unauthorized)]
+    pub rent_payer: UncheckedAccount<'info>,
     // `user_account.owner` is bound first, so both addresses below derive from
     // this one account's stored owner: they cannot belong to different traders.
-    #[account(mut, close = fee_payer, seeds = [USER_SEED, user_account.owner.as_ref()], bump = user_account.bump,
+    #[account(mut, close = rent_payer, seeds = [USER_SEED, user_account.owner.as_ref()], bump = user_account.bump,
+        constraint = closer.key() == config.fee_payer || closer.key() == user_account.owner @ DexxerError::Unauthorized,
         constraint = user_account.exited @ DexxerError::NotExited,
         constraint = user_account.free_margin == 0 && user_account.locked_margin == 0 @ DexxerError::BalanceNotZero)]
     pub user_account: Box<Account<'info, UserAccount>>,
-    #[account(mut, close = fee_payer, seeds = [POSITIONS_SEED, user_account.owner.as_ref()], bump = positions.load()?.bump,
+    #[account(mut, close = rent_payer, seeds = [POSITIONS_SEED, user_account.owner.as_ref()], bump = positions.load()?.bump,
         constraint = positions.load()?.open_count() == 0 @ DexxerError::HasOpenPosition)]
     pub positions: AccountLoader<'info, Positions>,
 }

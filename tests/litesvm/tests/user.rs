@@ -134,7 +134,7 @@ fn lamports(h: &Harness, k: &Pubkey) -> u64 {
 }
 
 #[test]
-fn close_exited_user_returns_rent_of_both_pdas_to_fee_payer() {
+fn close_exited_user_returns_rent_of_both_pdas_to_payer() {
     let mut h = Harness::new();
     let w = World::bootstrap(&mut h);
     let t = exited_trader(&mut h, &w);
@@ -142,16 +142,22 @@ fn close_exited_user_returns_rent_of_both_pdas_to_fee_payer() {
     let stranger = Keypair::new();
     h.fund(&stranger.pubkey(), 1_000_000_000);
     let r = h.send(
-        &[ixs::close_exited_user(&stranger.pubkey(), &t, &w)],
+        &[ixs::close_exited_user(
+            &stranger.pubkey(),
+            &t,
+            &w,
+            &t.kp.pubkey(),
+        )],
         &[&stranger],
     );
     assert_custom_error(&r, 6000 + DexxerError::Unauthorized as u32);
 
-    let before = lamports(&h, &w.fee_payer.pubkey());
+    let o = t.kp.pubkey();
+    let before = lamports(&h, &o);
     let rent: u64 = [t.user, t.positions].iter().map(|k| lamports(&h, k)).sum();
     assert!(rent > 0);
     h.send(
-        &[ixs::close_exited_user(&w.fee_payer.pubkey(), &t, &w)],
+        &[ixs::close_exited_user(&w.fee_payer.pubkey(), &t, &w, &o)],
         &[&w.fee_payer],
     )
     .unwrap();
@@ -159,9 +165,9 @@ fn close_exited_user_returns_rent_of_both_pdas_to_fee_payer() {
         assert_eq!(lamports(&h, &k), 0, "PDA {k} must be closed");
     }
     assert_eq!(
-        lamports(&h, &w.fee_payer.pubkey()),
+        lamports(&h, &o),
         before + rent,
-        "the rent of both PDAs lands on fee_payer"
+        "the rent of both PDAs lands on the recorded payer (here the owner)"
     );
 
     // The slate is genuinely blank now — plain `init_user` onboards this owner
@@ -174,6 +180,101 @@ fn close_exited_user_returns_rent_of_both_pdas_to_fee_payer() {
 }
 
 #[test]
+fn close_exited_user_returns_rent_to_whoever_paid_it() {
+    let mut h = Harness::new();
+    let w = World::bootstrap(&mut h);
+    let t = exited_trader(&mut h, &w); // harness onboards with `payer = owner`
+    let o = t.kp.pubkey();
+    let u: UserAccount = h.account(&t.user);
+    assert_eq!(u.rent_payer, apk(o), "init_user recorded its payer");
+    assert_eq!(u.owner, apk(o), "the scrub keeps owner");
+    let rent = lamports(&h, &t.user) + lamports(&h, &t.positions);
+    let owner_before = lamports(&h, &o);
+    // The relayer's fee_payer closes; the lamports go to the recorded payer.
+    h.send(
+        &[ixs::close_exited_user(&w.fee_payer.pubkey(), &t, &w, &o)],
+        &[&w.fee_payer],
+    )
+    .unwrap();
+    assert_eq!(lamports(&h, &o), owner_before + rent);
+    assert_eq!(lamports(&h, &t.user), 0);
+}
+
+#[test]
+fn close_exited_user_sponsored_rent_goes_to_fee_payer() {
+    let mut h = Harness::new();
+    let w = World::bootstrap(&mut h);
+    let kp = Keypair::new();
+    let o = kp.pubkey();
+    h.fund(&o, 1_000_000_000);
+    // Sponsored onboarding: `fee_payer` fronts the rent, the owner only signs.
+    h.send(
+        &[ixs::init_user_paid(
+            &o,
+            &w.fee_payer.pubkey(),
+            &w,
+            [0x11; 32],
+        )],
+        &[&kp, &w.fee_payer],
+    )
+    .unwrap();
+    let t = Trader {
+        user: dexxer_litesvm::pdas::user(&o),
+        positions: dexxer_litesvm::pdas::positions(&o),
+        ata: Pubkey::default(),
+        kp,
+    };
+    let u: UserAccount = h.account(&t.user);
+    assert_eq!(u.rent_payer, apk(w.fee_payer.pubkey()));
+    h.send(&[ixs::undelegate_user(&o, &t, &w, &[w.market])], &[&t.kp])
+        .unwrap();
+    // The scrub must not have zeroed the recorded payer.
+    let u: UserAccount = h.account(&t.user);
+    assert!(u.exited);
+    assert_eq!(u.rent_payer, apk(w.fee_payer.pubkey()));
+    let rent = lamports(&h, &t.user) + lamports(&h, &t.positions);
+    let fp_before = lamports(&h, &w.fee_payer.pubkey());
+    let owner_before = lamports(&h, &o);
+    // The owner closes on their own; the rent still goes back to the sponsor.
+    h.send(
+        &[ixs::close_exited_user(&o, &t, &w, &w.fee_payer.pubkey())],
+        &[&t.kp],
+    )
+    .unwrap();
+    assert_eq!(lamports(&h, &w.fee_payer.pubkey()), fp_before + rent);
+    assert_eq!(lamports(&h, &o), owner_before);
+}
+
+#[test]
+fn close_exited_user_guards_signer_and_destination() {
+    let mut h = Harness::new();
+    let w = World::bootstrap(&mut h);
+    let t = exited_trader(&mut h, &w);
+    let o = t.kp.pubkey();
+    let stranger = Keypair::new();
+    h.fund(&stranger.pubkey(), 1_000_000_000);
+    let r = h.send(
+        &[ixs::close_exited_user(&stranger.pubkey(), &t, &w, &o)],
+        &[&stranger],
+    );
+    assert_custom_error(&r, 6000 + DexxerError::Unauthorized as u32);
+    // Right signer, wrong destination.
+    let r = h.send(
+        &[ixs::close_exited_user(
+            &w.fee_payer.pubkey(),
+            &t,
+            &w,
+            &stranger.pubkey(),
+        )],
+        &[&w.fee_payer],
+    );
+    assert_custom_error(&r, 6000 + DexxerError::Unauthorized as u32);
+    // The owner may close their own accounts.
+    h.send(&[ixs::close_exited_user(&o, &t, &w, &o)], &[&t.kp])
+        .unwrap();
+}
+
+#[test]
 fn close_exited_user_rejects_non_exited() {
     let mut h = Harness::new();
     let w = World::bootstrap(&mut h);
@@ -181,7 +282,12 @@ fn close_exited_user_rejects_non_exited() {
     // so only the `exited` gate stands between them and being closed.
     let t = w.new_trader(&mut h, 0);
     let r = h.send(
-        &[ixs::close_exited_user(&w.fee_payer.pubkey(), &t, &w)],
+        &[ixs::close_exited_user(
+            &w.fee_payer.pubkey(),
+            &t,
+            &w,
+            &t.kp.pubkey(),
+        )],
         &[&w.fee_payer],
     );
     assert_custom_error(&r, 6000 + DexxerError::NotExited as u32);
@@ -204,7 +310,12 @@ fn delegate_user_rejects_exited_account() {
     assert_custom_error(&r, 6000 + DexxerError::NotExited as u32);
 
     h.send(
-        &[ixs::close_exited_user(&w.fee_payer.pubkey(), &t, &w)],
+        &[ixs::close_exited_user(
+            &w.fee_payer.pubkey(),
+            &t,
+            &w,
+            &t.kp.pubkey(),
+        )],
         &[&w.fee_payer],
     )
     .unwrap();
