@@ -64,38 +64,28 @@ pub fn fee_escrow_pda() -> Pubkey {
 /// liquidated now. Both liquidation paths call it, so their semantics cannot
 /// diverge.
 ///
-/// TWO INDEPENDENT CALLERS, ONE COUNTER (fix round 1). `liq_ticks` advances
-/// once per CALL, and since week-5 Task 3 there are two callers running at
-/// different rates: the relayer's `crank_tick` at ~1 s and this position's
-/// scheduled `liquidation_check` at ~3.75 s (`LIQ_TASK_INTERVAL_MS` is 5 s but
-/// the scheduler overshoots — week-5 Task 0, measurement 1). They do not
-/// coordinate, so a scheduled tick that lands between two crank ticks counts
-/// the SAME `Market.mark` sample a second time — the very double-count
-/// `crank_tick` already refuses to make within one transaction (its
-/// duplicate-candidate check). The counter therefore no longer measures
-/// "distinct price samples", only "calls".
-///
-/// The fix is a parameter, not a layout change: `MarketParams`'s default
-/// `liq_hysteresis_ticks` went 2 -> 3 (`state/market.rs`). 3 is the smallest
-/// value for which the worst-case interleaving — crank, scheduled, crank —
-/// still spans at least two DISTINCT mark samples, which is what the original
-/// 2 meant on a single-caller crank. Raising it further would only delay the
-/// backstop.
-///
-/// Wall-clock grace differs per path as a consequence: 3 ticks is ~3 s of
-/// crank time but ~11 s of scheduled time. That asymmetry is accepted — see
-/// `LIQ_TASK_INTERVAL_MS` in `state/mod.rs`.
+/// `liq_ticks` counts distinct PRICE SAMPLES, not calls (risk #38). Two
+/// independent callers reach this function — the relayer's `crank_tick` (many
+/// candidates per market) and the position's scheduled `liquidation_check` —
+/// at different rates, several times per mark update. A tick is therefore
+/// counted only when `Market.mark_slot` (written solely by `crank_tick`) is
+/// newer than `PositionSlot.last_liq_mark_slot`; without the guard, a few calls
+/// in one slot liquidated on a single price. A healthy check resets the counter
+/// but keeps `last_liq_mark_slot`: `mark_slot` only grows, so any later sample
+/// is newer and counts again.
 pub(crate) fn liq_due(pos: &mut PositionSlot, market: &Market, mark: u64) -> Result<bool> {
-    if risk::liquidatable_now(pos, market, mark)? {
+    if !risk::liquidatable_now(pos, market, mark)? {
+        pos.liq_ticks = 0;
+        return Ok(false);
+    }
+    if market.mark_slot > pos.last_liq_mark_slot {
         pos.liq_ticks = pos
             .liq_ticks
             .checked_add(1)
             .ok_or(DexxerError::MathOverflow)?;
-        Ok(pos.liq_ticks >= market.liq_hysteresis_ticks)
-    } else {
-        pos.liq_ticks = 0;
-        Ok(false)
+        pos.last_liq_mark_slot = market.mark_slot;
     }
+    Ok(pos.liq_ticks >= market.liq_hysteresis_ticks)
 }
 
 /// Shared liquidation settlement — the close itself, once `liq_due` has said

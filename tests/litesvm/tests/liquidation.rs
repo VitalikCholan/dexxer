@@ -11,6 +11,7 @@ use solana_keypair::Keypair;
 use solana_signer::Signer;
 
 const P150: u64 = 150_000_000;
+const P142: u64 = 142_000_000;
 const SOL10: u64 = 10_000_000_000;
 const M150: u64 = 150_000_000;
 // Same clock base every other suite settled on (bootstrap's faucet loop warps
@@ -67,9 +68,11 @@ fn liquidation_check_liquidates_underwater_position() {
     // liq price is ~142.5 for a 10 SOL long at $150 with $150 margin.
     let (w, t) = world_with_long(&mut h, 142_000_000);
 
-    // Ticks below the hysteresis gate (default `liq_hysteresis_ticks` is 3
-    // since fix round 1 — two callers now share one `liq_ticks` counter): the
-    // position stays open and only the counter moves.
+    // Ticks below the hysteresis gate: the position stays open and only the
+    // counter moves. `liquidation_check` never moves the mark, so each tick
+    // needs a fresh price sample from a (candidate-less) `crank_tick` (risk
+    // #38: one sample, one tick).
+    let mut slot = 100u64;
     for expected in 1..MarketParams::sol_perp_defaults().liq_hysteresis_ticks {
         h.send(
             &[ixs::liquidation_check(&w.crank.pubkey(), &w, &t)],
@@ -79,6 +82,11 @@ fn liquidation_check_liquidates_underwater_position() {
         let pos = h.slot(&t, &w.market).expect("open slot");
         assert!(pos.is_open());
         assert_eq!(pos.liq_ticks, expected);
+        slot += 1;
+        h.warp(slot, NOW);
+        w.set_price(&mut h, 142_000_000, 5, NOW, slot);
+        h.send(&[ixs::crank_tick(&w.crank.pubkey(), &w, &[])], &[&w.crank])
+            .unwrap();
     }
 
     // The tick that meets the gate: liquidated in the same instruction.
@@ -253,4 +261,76 @@ fn open_position_rejects_foreign_task_context() {
         h.slot(&attacker, &w.market).is_none(),
         "the open must not have happened"
     );
+}
+
+/// Risk #38: `liq_ticks` counts distinct price samples (`Market.mark_slot`),
+/// not calls. Only `crank_tick` moves the mark; `liquidation_check` reads it.
+#[test]
+fn three_checks_on_one_price_sample_count_as_one_tick() {
+    let mut h = Harness::new();
+    let w = World::bootstrap(&mut h);
+    h.warp(100, NOW);
+    w.set_price(&mut h, P150, 5, NOW, 100);
+    let t = w.new_trader(&mut h, 1_000_000_000);
+    h.send(
+        &[ixs::open_position(
+            &t.kp.pubkey(),
+            &t,
+            &w,
+            Side::Long,
+            SOL10,
+            M150,
+            P150,
+        )],
+        &[&t.kp],
+    )
+    .unwrap();
+    assert_eq!(h.account::<Market>(&w.market).liq_hysteresis_ticks, 2);
+    // Hard EMA + wide deviation guard: the mark lands on the crashed price in
+    // one tick (liq price is ~142.5 for this position).
+    let mut p = MarketParams::sol_perp_defaults();
+    p.ema_alpha_bps = 10_000;
+    p.max_deviation_bps = 10_000;
+    h.send(
+        &[ixs::set_params(&w.admin.pubkey(), &w.config, &w.market, p)],
+        &[&w.admin],
+    )
+    .unwrap();
+
+    // One crank tick moves the mark onto the crashed price: sample #1.
+    h.warp(9_110, NOW);
+    w.set_price(&mut h, P142, 5, NOW, 101);
+    h.send(
+        &[ixs::crank_tick(&w.crank.pubkey(), &w, &[&t])],
+        &[&w.crank],
+    )
+    .unwrap();
+    assert_eq!(h.slot(&t, &w.market).expect("open").liq_ticks, 1);
+    // Three more checks against the SAME mark_slot: still one tick.
+    for i in 0..3u32 {
+        h.send(
+            &[
+                ixs::set_compute_unit_limit(200_000 + i),
+                ixs::liquidation_check(&w.crank.pubkey(), &w, &t),
+            ],
+            &[&w.crank],
+        )
+        .unwrap();
+    }
+    let s = h.slot(&t, &w.market).expect("not liquidated on one sample");
+    assert_eq!(s.liq_ticks, 1);
+
+    // Sample #2 (a new mark_slot) reaches the hysteresis and liquidates.
+    h.warp(9_111, NOW);
+    w.set_price(&mut h, P142, 5, NOW, 102);
+    h.send(
+        &[ixs::crank_tick(&w.crank.pubkey(), &w, &[&t])],
+        &[&w.crank],
+    )
+    .unwrap();
+    assert!(
+        h.slot(&t, &w.market).is_none(),
+        "liquidated on the second sample"
+    );
+    assert_invariant(&h, &w, &[&t]);
 }

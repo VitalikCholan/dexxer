@@ -254,8 +254,10 @@ fn a_btc_crash_liquidates_only_the_btc_position() {
         &[&w.admin],
     )
     .unwrap();
-    w.set_price_on(&mut h, &btc, B70K, 5, NOW, 101);
-    for _ in 0..btc_params().liq_hysteresis_ticks {
+    // One price sample per tick (risk #38): a new slot and post before each.
+    for i in 0..btc_params().liq_hysteresis_ticks as u64 {
+        h.warp(9_110 + i, NOW);
+        w.set_price_on(&mut h, &btc, B70K, 5, NOW, 101 + i);
         h.send(
             &[ixs::crank_tick_on(&w.crank.pubkey(), &w, &btc, &[&t])],
             &[&w.crank],

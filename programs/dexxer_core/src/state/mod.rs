@@ -74,10 +74,9 @@ pub const WITHDRAW_COOLDOWN_SLOTS: u64 = 300;
 /// the scheduled path is the backstop, the crank is the fast path, and a
 /// backstop that fires later is the safe direction.
 ///
-/// What DID have to be adjusted is the tick budget itself: both callers share
-/// one `PositionSlot.liq_ticks`, so the default `liq_hysteresis_ticks` went 2 -> 3
-/// to keep the gate spanning more than one distinct mark sample — the full
-/// reasoning is on `liq_due` in `instructions/liquidation.rs`.
+/// Both callers share one `PositionSlot.liq_ticks`, which counts distinct mark
+/// samples (`last_liq_mark_slot`, risk #38) — see `liq_due` in
+/// `instructions/liquidation.rs`.
 pub const LIQ_TASK_INTERVAL_MS: i64 = 5_000;
 
 /// Magic Actions `task_id` for one position's liquidation task.

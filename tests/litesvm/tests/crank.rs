@@ -106,10 +106,9 @@ fn stale_oracle_skips_liquidation_and_counts_ticks() {
     assert_eq!(h.account::<Market>(&w.market).stale_ticks, 3);
 }
 
-/// Renamed in week-5 Task 3, fix round 1: the gate is `liq_hysteresis_ticks`,
-/// whose default went 2 -> 3 once `crank_tick` and the scheduled
-/// `liquidation_check` started sharing one `liq_ticks` counter. The test reads
-/// the parameter instead of hardcoding the number.
+/// The gate is `liq_hysteresis_ticks` (default 2 again since risk #38: ticks
+/// count distinct price samples). The test reads the parameter instead of
+/// hardcoding the number.
 #[test]
 fn liquidation_after_hysteresis_ticks_below_mmr() {
     let mut h = Harness::new();
@@ -128,7 +127,13 @@ fn liquidation_after_hysteresis_ticks_below_mmr() {
     .unwrap();
     w.set_price(&mut h, 142_000_000, 5, NOW, 101); // liq price 142.5 -> equity < MMR
     let hyst = MarketParams::sol_perp_defaults().liq_hysteresis_ticks;
+    // Risk #38: a tick counts only on a NEW price sample (`mark_slot`), so each
+    // tick below gets its own slot and price post.
+    let mut slot = 100u64;
     for expected in 1..hyst {
+        slot += 1;
+        h.warp(slot, NOW);
+        w.set_price(&mut h, 142_000_000, 5, NOW, slot);
         h.send(
             &[ixs::crank_tick(&w.crank.pubkey(), &w, &[&t])],
             &[&w.crank],
@@ -138,6 +143,9 @@ fn liquidation_after_hysteresis_ticks_below_mmr() {
         assert!(pos.is_open());
         assert_eq!(pos.liq_ticks, expected);
     }
+    slot += 1;
+    h.warp(slot, NOW);
+    w.set_price(&mut h, 142_000_000, 5, NOW, slot);
     h.send(
         &[ixs::crank_tick(&w.crank.pubkey(), &w, &[&t])],
         &[&w.crank],
@@ -203,7 +211,10 @@ fn bad_debt_is_counted_not_paid() {
     )
     .unwrap();
     w.set_price(&mut h, 120_000_000, 5, NOW, 101); // pnl -300 $ > margin 150 $
-    for _ in 0..MarketParams::sol_perp_defaults().liq_hysteresis_ticks {
+    for i in 0..MarketParams::sol_perp_defaults().liq_hysteresis_ticks as u64 {
+        // One price sample per tick (risk #38).
+        h.warp(101 + i, NOW);
+        w.set_price(&mut h, 120_000_000, 5, NOW, 101 + i);
         h.send(
             &[ixs::crank_tick(&w.crank.pubkey(), &w, &[&t])],
             &[&w.crank],
