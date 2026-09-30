@@ -41,9 +41,11 @@ export function AddMarginSheet({
   const { colors } = useTheme()
   const caption = useTextStyle('caption')
   const [amount, setAmount] = useState('')
+  // MAX sends the raw free margin — the field shows it rounded to cents, which can exceed it.
+  const [all, setAll] = useState(false)
 
   const n = Number(amount)
-  const add = Number.isFinite(n) && n > 0 ? usdAmount(n) : 0n
+  const add = all && freeMarginUsd !== null ? freeMarginUsd : Number.isFinite(n) && n > 0 ? usdAmount(n) : 0n
   const tooMuch = freeMarginUsd !== null && add > freeMarginUsd
   const newLiq =
     add > 0n ? liqAfterAddMargin(position.side, position.entry, position.size, position.margin, add, mmrBps) : null
@@ -57,11 +59,21 @@ export function AddMarginSheet({
       <Input
         label="Amount"
         value={amount}
-        onChangeText={setAmount}
+        onChangeText={(t) => {
+          setAll(false)
+          setAmount(t)
+        }}
         suffix="dUSDC"
         keyboardType="decimal-pad"
         hint={`Available: ${freeMarginUsd !== null ? formatUsd2(freeMarginUsd) : '—'} dUSDC`}
-        onMax={freeMarginUsd !== null ? () => setAmount(formatUsd2(freeMarginUsd)) : undefined}
+        onMax={
+          freeMarginUsd !== null
+            ? () => {
+                setAll(true)
+                setAmount(formatUsd2(freeMarginUsd))
+              }
+            : undefined
+        }
       />
       <Row label="Margin" value={`$${formatUsd2(position.margin)} → $${formatUsd2(newMargin)}`} />
       <Row label="Leverage" value={`${leverage(position.margin)} → ${leverage(newMargin)}`} />
