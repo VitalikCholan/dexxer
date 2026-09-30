@@ -1,10 +1,10 @@
 // app/src/lib/trade.ts
 //
 // Trade-side helpers: fixed-point scaling (`usdAmount`/`solSize`), client
-// uPnL, the `Trade` account list, and the four session-signed ER
-// instructions (`open/close/increase/decrease_position`) — sent without an
-// MWA prompt, signed by the local session `Keypair` (`session.ts`). Split
-// out of `program.ts` (week 6).
+// uPnL, the `Trade` account list, and the five session-signed ER
+// instructions (`open/close/increase/decrease_position`, `add_margin`) —
+// sent without an MWA prompt, signed by the local session `Keypair`
+// (`session.ts`). Split out of `program.ts` (week 6).
 import { BN } from '@coral-xyz/anchor'
 import { Connection, Keypair, PublicKey, Transaction, type TransactionInstruction } from '@solana/web3.js'
 import { dexxerCoreProgram } from './anchor'
@@ -103,6 +103,26 @@ export async function openPosition(
       new BN(margin.toString()),
       new BN(limitPrice.toString()),
     )
+    .accounts({ signer: session.publicKey, ...accounts })
+    .instruction()
+  return sendSessionTx(conn, session, [ix])
+}
+
+/**
+ * `add_margin` on the ER, signed ONLY by `session` (C.4 — Positions card's
+ * "Add margin"). Moves `amount` from free to the open position's margin and
+ * recomputes its liq price; no price read, so no limit argument
+ * (`trade.rs::add_margin`). There is no `remove_margin` instruction.
+ */
+export async function addMargin(
+  conn: Connection,
+  session: Keypair,
+  accounts: TradeAccounts,
+  amount: bigint,
+): Promise<string> {
+  const core = dexxerCoreProgram(conn, session.publicKey)
+  const ix = await core.methods
+    .addMargin(new BN(amount.toString()))
     .accounts({ signer: session.publicKey, ...accounts })
     .instruction()
   return sendSessionTx(conn, session, [ix])

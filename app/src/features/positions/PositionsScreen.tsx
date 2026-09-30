@@ -1,7 +1,7 @@
 // app/src/features/positions/PositionsScreen.tsx
 //
 // Task 10: one open-position card (design: "one market, one position") with
-// Close/Increase/Decrease, driven by `useTradeSession`'s session key — same
+// Close/Increase/Decrease and (week 6, C.4) Add margin, driven by `useTradeSession`'s session key — same
 // no-MWA-prompt signing Trade already uses. `close_position`'s limit price
 // uses the permissive sentinel (mirrors `TradeScreen`'s old inline Close);
 // increase/decrease use `math.ts`'s slippage-limit helpers off the live mark.
@@ -14,13 +14,22 @@ import { Skeleton } from '@/src/ui/Skeleton'
 import { EmptyState } from '@/src/ui/EmptyState'
 import { showToast } from '@/src/ui/Toast'
 import { useLiveAccount } from '@/src/lib/live'
-import { decodeMarket, decodePosition } from '@/src/lib/codecs'
+import { decodeMarket, decodePosition, decodeUserAccount } from '@/src/lib/codecs'
 import { describeTxError } from '@/src/lib/errors'
-import { closePosition, decreasePosition, increasePosition, solSize, U64_MAX, usdAmount } from '@/src/lib/trade'
+import {
+  addMargin,
+  closePosition,
+  decreasePosition,
+  increasePosition,
+  solSize,
+  U64_MAX,
+  usdAmount,
+} from '@/src/lib/trade'
 import * as math from '@/src/lib/math'
 import { PositionCard } from './PositionCard'
 import { IncreaseSheet } from './IncreaseSheet'
 import { DecreaseSheet } from './DecreaseSheet'
+import { AddMarginSheet } from './AddMarginSheet'
 import { useTradeSession } from '../trade/useTradeSession'
 import { useOnboardingGate } from '../onboard/useOnboardingGate'
 
@@ -31,9 +40,10 @@ export function PositionsScreen() {
 
   const positionLive = useLiveAccount(conn, accounts?.position ?? null, decodePosition)
   const marketLive = useLiveAccount(conn, accounts?.market ?? null, decodeMarket)
+  const userLive = useLiveAccount(conn, accounts?.userAccount ?? null, decodeUserAccount)
 
   const [busy, setBusy] = useState(false)
-  const [sheet, setSheet] = useState<'increase' | 'decrease' | null>(null)
+  const [sheet, setSheet] = useState<'increase' | 'decrease' | 'margin' | null>(null)
 
   const position = positionLive.value
   const mark = marketLive.value?.mark ?? null
@@ -79,6 +89,14 @@ export function PositionsScreen() {
     [conn, session, accounts, position, mark, run],
   )
 
+  const handleAddMargin = useCallback(
+    (amount: bigint) => {
+      if (!conn || !session || !accounts) return Promise.resolve()
+      return run('Add margin', () => addMargin(conn, session, accounts, amount))
+    },
+    [conn, session, accounts, run],
+  )
+
   return (
     <Page>
       <ScrollView contentContainerStyle={{ gap: space.lg, paddingVertical: space.lg }}>
@@ -101,6 +119,7 @@ export function PositionsScreen() {
             onClose={handleClose}
             onIncrease={() => setSheet('increase')}
             onDecrease={() => setSheet('decrease')}
+            onAddMargin={() => setSheet('margin')}
           />
         )}
 
@@ -122,6 +141,15 @@ export function PositionsScreen() {
               markUsd={mark}
               busy={busy}
               onSubmit={handleDecrease}
+            />
+            <AddMarginSheet
+              open={sheet === 'margin'}
+              onClose={() => setSheet(null)}
+              position={position}
+              freeMarginUsd={userLive.value?.freeMargin ?? null}
+              mmrBps={mmrBps}
+              busy={busy}
+              onSubmit={handleAddMargin}
             />
           </>
         ) : null}

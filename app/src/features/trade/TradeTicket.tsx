@@ -1,7 +1,8 @@
 // app/src/features/trade/TradeTicket.tsx
 //
 // Task 10: Long/Short + Size/Margin/Leverage form, live preview row, Open
-// button. Leverage convention (`math.ts`'s header comment): a plain integer
+// button. Week 6 (C.4): that form is the Open tab; the Close tab
+// (`CloseTab.tsx`) closes part or all of the position via `decrease_position`. Leverage convention (`math.ts`'s header comment): a plain integer
 // 1..10× (matches `ui/LeverageSlider`'s step). Changing Size or dragging the
 // slider recomputes Margin at that leverage (`deriveTicket`, below, wraps
 // `math.marginForLeverage`); typing a custom Margin overrides it until
@@ -20,38 +21,76 @@ import { LeverageSlider } from '@/src/ui/LeverageSlider'
 import { Card } from '@/src/ui/Card'
 import { Row } from '@/src/ui/Row'
 import { Button } from '@/src/ui/Button'
+import { CloseTab } from './CloseTab'
 import * as math from '@/src/lib/math'
 import { formatUsd2 } from '@/src/lib/status'
 import { deriveTicket, impliedLeverage, safeLiq } from './ticketMath'
-import { type SideName } from '@/src/lib/codecs'
+import { type DecodedPosition, type SideName } from '@/src/lib/codecs'
 import { solSize, usdAmount } from '@/src/lib/trade'
 
 export interface MarketParams {
   imrBps: bigint
   mmrBps: bigint
   openFeeBps: bigint
+  closeFeeBps: bigint
+  minSize: bigint
 }
 
 export interface TradeTicketProps {
   markUsd: bigint | null
   market: MarketParams | null
   freeMarginUsd: bigint | null
-  hasOpenPosition: boolean
+  position: DecodedPosition | null
   busy: boolean
   disabled?: boolean
   /** Raw program units: size 1e9, margin/limit 1e6 — no number round trip on the way to `openPosition`. */
   onOpen: (side: SideName, size: bigint, margin: bigint, limitPrice: bigint) => Promise<void>
+  /** Raw 1e9 size — `decrease_position`'s `close_size`. */
+  onClose: (closeSize: bigint) => Promise<void>
 }
 
-export function TradeTicket({
-  markUsd,
-  market,
-  freeMarginUsd,
-  hasOpenPosition,
-  busy,
-  disabled,
-  onOpen,
-}: TradeTicketProps) {
+export function TradeTicket({ position, onClose, ...open }: TradeTicketProps) {
+  const { colors } = useTheme()
+  const caption = useTextStyle('caption')
+  const [tab, setTab] = useState<'open' | 'close'>('open')
+  const hasOpenPosition = position?.state === 'Open'
+
+  return (
+    <Card>
+      <Segment
+        compact
+        value={tab}
+        onChange={setTab}
+        options={[
+          { value: 'open', label: 'Open' },
+          { value: 'close', label: 'Close' },
+        ]}
+      />
+      {tab === 'open' ? (
+        <OpenForm {...open} hasOpenPosition={hasOpenPosition} />
+      ) : (
+        <CloseTab
+          // A fresh position starts with an empty field, not the last close's text.
+          key={hasOpenPosition ? `${position.entry}` : 'none'}
+          position={position}
+          markUsd={open.markUsd}
+          closeFeeBps={open.market?.closeFeeBps ?? null}
+          minSize={open.market?.minSize ?? null}
+          busy={open.busy}
+          disabled={open.disabled}
+          onClose={onClose}
+        />
+      )}
+      <Text style={[caption, { color: colors.textSecondary, textAlign: 'center' }]}>
+        No wallet prompt — signed by your session key
+      </Text>
+    </Card>
+  )
+}
+
+type OpenFormProps = Omit<TradeTicketProps, 'position' | 'onClose'> & { hasOpenPosition: boolean }
+
+function OpenForm({ markUsd, market, freeMarginUsd, hasOpenPosition, busy, disabled, onOpen }: OpenFormProps) {
   const { colors, space } = useTheme()
   const caption = useTextStyle('caption')
 
@@ -114,7 +153,7 @@ export function TradeTicket({
 
   if (hasOpenPosition) {
     return (
-      <Card>
+      <View style={{ gap: space.md }}>
         <Segment
           tone="long-short"
           value={side}
@@ -124,13 +163,15 @@ export function TradeTicket({
             { value: 'short', label: 'Short' },
           ]}
         />
-        <Text style={[caption, { color: colors.textSecondary }]}>One position per market. Close it in Positions.</Text>
-      </Card>
+        <Text style={[caption, { color: colors.textSecondary }]}>
+          One position per market. Close it on the Close tab, or change it in Positions.
+        </Text>
+      </View>
     )
   }
 
   return (
-    <Card>
+    <View style={{ gap: space.md }}>
       <Segment
         tone="long-short"
         value={side}
@@ -173,9 +214,6 @@ export function TradeTicket({
       >
         {busy ? 'Signing with session key…' : side === 'long' ? 'Open Long' : 'Open Short'}
       </Button>
-      <Text style={[caption, { color: colors.textSecondary, textAlign: 'center' }]}>
-        No wallet prompt — signed by your session key
-      </Text>
-    </Card>
+    </View>
   )
 }

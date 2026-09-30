@@ -5,45 +5,54 @@ Phantom (24.09), доки MagicBlock (fees, runtime limits, magic actions), дж
 (committor `TaskStrategist`). Пріоритет: **надійність → безпека/міграція → продукт**. Спека — новий §2.7
 (brainstorming → writing-plans → SDD), як у тижнях 3–5.
 
+**Статус (29.09.2026):** ✅ — у `main`; 🟡 — у відкритому PR або частково; ⬜ — не почато.
+Зведення: A — ⬜ усе; B.1 ✅ (PR #8), B.2 ⬜, B.3 ✅ (M-K тижня 5), B.4 ✅ (PR #7); C.1 🟡 програма (PR #10),
+C.2 🟡 відео, C.3 ⬜, C.4 🟡 / C.5 🟡 / C.6-A 🟡 / C.7 🟡 Trading rules (PR #9), C.6-B ⬜.
+Поза бек-логом: ✅ індексер — keyset-пагінація, фільтри `/disclosures`, `/stats` (PR #8); ✅ рефакторинг
+`app/` (PR #7); 🟡 прапорці фіч `src/lib/features.ts` (PR #9).
+
 ## A. Надійність (обовʼязково, ~60%)
 
-1. **Ризик #37 — запис губиться, якщо L1-дія впаде після pop.** `due_reveals` знімає запис із черги в тій
+1. ⬜ **Ризик #37 — запис губиться, якщо L1-дія впаде після pop.** `due_reveals` знімає запис із черги в тій
    самій ER-tx, що планує `write_disclosure`; якщо міст скине дію (`0xA0000002`, або `Commitment`
    відсутній), 13F-обіцянка для цієї угоди мовчки провалюється. Фікс: прапорець «reveal scheduled» на
    записі, зняття лише після того, як crank побачив `Disclosure` на L1 (crank-асертований, як колишній
    `mark_committed`, але для видалення, а не для запису). Програмна зміна + LiteSVM + апгрейд.
-2. **Ризик #38 — гістерезис без per-sample guard.** `liq_ticks` інкрементується на кожен виклик
+2. ⬜ **Ризик #38 — гістерезис без per-sample guard.** `liq_ticks` інкрементується на кожен виклик
    (`crank_tick` + `liquidation_check`), три виклики в одному слоті ліквідують за одним семплом ціни.
    Фікс: поле `last_liq_mark_slot` у `Position` (зміна лейауту → міграція, див. B.2), інкремент лише при
    новому `Market.mark_slot`; дефолт `liq_hysteresis_ticks` повернути до 2.
-3. **Ризик #39 — `close_exited_user` віддає рент `fee_payer` беззастережно.** Для акаунтів до тижня 5 рент
+3. ⬜ **Ризик #39 — `close_exited_user` віддає рент `fee_payer` беззастережно.** Для акаунтів до тижня 5 рент
    платив власник. Фікс: `rent_payer: Pubkey` в `UserAccount` (та сама міграція), рент → `rent_payer`.
-4. **Ліквідація трейдера з повним кільцем.** Зараз `liquidate_now` пропускає кандидата з `dq.len == 8` →
+4. ⬜ **Ліквідація трейдера з повним кільцем.** Зараз `liquidate_now` пропускає кандидата з `dq.len == 8` →
    поганий борг накопичується, поки черга не дренується. Варіанти: зарезервований слот під ліквідацію;
    витіснення найстарішого записаного (`commitment_written`) запису; окремий `bad_debt`-запис поза чергою.
    Обрати у brainstorming; тест LiteSVM «повне кільце + underwater → ліквідовано».
-5. **Економіка `commit_aggregate` (виміряно з доків MagicBlock).** Ціна Base Action =
+5. ⬜ **Економіка `commit_aggregate` (виміряно з доків MagicBlock).** Ціна Base Action =
    `CU_requested × 50 000 / 1 000 000` лампортів: наші 100k/120k CU → 5–6k за дію (~22k за бандл із 4).
    Виміряти реальні CU `write_commitment`/`write_disclosure` і знизити `compute_units` у `CallHandler`.
    З 26-го коміту — 100 000 лампортів за кожен закомічений акаунт (`Pool`+`BalancesRoot` = 200k/цикл):
    при `COMMIT_INTERVAL_TICKS=60` це ≈0.29 SOL/добу з `fee_payer` → для продукту повернути **300**.
-6. **Бридж-ліміт дій — питання до MagicBlock.** Committor вміщує коміт + дії в одну L1-tx ≤ 1232 B
+6. ⬜ **Бридж-ліміт дій — питання до MagicBlock.** Committor вміщує коміт + дії в одну L1-tx ≤ 1232 B
    (`TaskStrategist`, ALT/буфери стискають лише коміти, не аргументи дій); при провалі — `remove_actions`
    для всієї стратегії. Запит: multi-tx finalize / ALT для args дій. До відповіді — `COMMIT_MAX_ACTIONS=4`,
    `write_disclosure` полегшити (передавати менше байтів), карантин лишається як запобіжник.
-7. **Невиміряне з тижня 5** (виміряти, не чинити наосліп): стійкість scheduler-задач до рестарту
+7. ⬜ **Невиміряне з тижня 5** (виміряти, не чинити наосліп): стійкість scheduler-задач до рестарту
    devnet-tee; тік `i64::MAX`-задачі у вже розделегований `Position`; чи ER шанує `ComputeBudget` 1.4M
    (16 ліквідацій за тік = 367k CU); `init_user_reuse_queue` на devnet (вікно між ER-close і base-close).
 
 ## B. Безпека / міграція (~25%)
 
-1. **#27 — SIWS-гейт `/sponsor`** (+ L1-гейт або invite): без нього спонсорування можна злити.
+1. ✅ **#27 — SIWS-гейт `/sponsor`** (+ L1-гейт або invite): без нього спонсорування можна злити.
    Верифікація SIWS-підпису на relayer, звʼязка owner ↔ sponsor-слоти, денний бюджет уже є.
-2. **Міграція лейауту акаунтів.** `UserAccount` v1 (тижні 1–2) нечитабельний усіма типізованими
+   **Зроблено (PR #8, spec §2.7):** `/sponsor` і `/nonce` лише із SIWS-сесією власника. Відкрито:
+   Sybil (свіжі ключі безкоштовні — invite / Genesis Token / per-IP); `SIWS_DOMAIN` на prod не
+   виставлено (`/auth/challenge` → 404, `/sponsor`/`/nonce` не змонтовані).
+2. ⬜ **Міграція лейауту акаунтів.** `UserAccount` v1 (тижні 1–2) нечитабельний усіма типізованими
    інструкціями; 4 legacy Open-позиції на devnet — перманентний skew `oi_long`/`locked`. Для A.2/A.3 теж
    потрібна зміна лейауту → одна `migrate_user_account` (realloc + версія) + `admin_force_close_stranded`
    для devnet-сміття (або wipe devnet-стану перед мейннет-планом).
-3. **MWA identity verification (Phantom).** Smoke 24.09: Phantom відхиляє `reauthorize` —
+3. ✅ **MWA identity verification (Phantom).** Smoke 24.09: Phantom відхиляє `reauthorize` —
    `dApp identity is not verified (mwaIdentityVerified !== true)`. Треба власний домен як `identity.uri`
    з `/.well-known/assetlinks.json` (Digital Asset Links, package `com.dexxer.app` + SHA-256 signing cert).
    До того — один промпт авторизації на сесію підпису (hotfix `withAuthRetry`, тиждень 5). Upstream-баг
@@ -51,13 +60,18 @@ Phantom (24.09), доки MagicBlock (fees, runtime limits, magic actions), дж
    retry wallet-ui не спрацьовує) — зарепортити. Phantom Connect SDK (`@phantom/react-native-sdk`,
    deeplink) — лише як Phantom-only fallback після перевірки co-sign `fee_payer`; MWA лишається основним
    (Seeker).
-4. **Шаблонні залишки в app:** root-гейт `/sign-in` («app» + placeholder-іконка), `AppConfig.uri`
+   **✅ Зроблено (M-K, 24–25.09):** relayer віддає `/.well-known/assetlinks.json`, `identity.uri` =
+   origin relayer-а; патч `protocol@2.3.0` через patch-package, upstream PR
+   solana-mobile/mobile-wallet-adapter#1680; durable nonces і self-fund для Phantom. Верифікацію
+   підтверджено на fakewallet, на Phantom — ні. Release-APK мусить виставити свій SHA-256 відбиток.
+4. ✅ **Шаблонні залишки в app:** root-гейт `/sign-in` («app» + placeholder-іконка), `AppConfig.uri`
    був `https://example.com` (виправлено hotfix-ом) — привести до брендингу Dexxer; `WalletUiDropdown`
-   у хедері Account.
+   у хедері Account. **Зроблено (PR #7):** `/sign-in` = продуктовий `ConnectScreen`, спайки видалено,
+   оболонка на токенах `src/ui`.
 
 ## C. Продукт (~15%, якщо A/B вкладуться)
 
-1. **Мульти-маркет** (уточнено 27.09): додати **BTC-PERP, ETH-PERP, HYPE-PERP, ZEC-PERP** до
+1. 🟡 **Мульти-маркет** (уточнено 27.09): додати **BTC-PERP, ETH-PERP, HYPE-PERP, ZEC-PERP** до
    SOL-PERP, кілька одночасних позицій на трейдера (`Position` per market — сіди
    `[b"position", owner, market]` уже це дозволяють). Це друга половина перп-ядра, не UI-фіча;
    відкриті питання перед дизайном (brainstorming → spec): (а) чи публікує оракул MagicBlock
@@ -67,10 +81,16 @@ Phantom (24.09), доки MagicBlock (fees, runtime limits, magic actions), дж
    і `SNAPSHOT_STEP` для кількох ринків; (д) стейлнес окремо на кожен фід; (е) UI — вибір ринку
    на Trade, список позицій замість однієї картки, колонка ринку в History; (є) міграція лейауту
    devnet-акаунтів (перетинається з B).
-2. Відео/пітч, тег `v0.4-mvp`.
-3. Тех-борг тижня 5 (Task 9): `permissions.rs`-модуль, `Toast`/`Sheet` таймери, WS ping/pong,
+   **🟡 Програма — PR #10 (план 1 з 3, spec §2.8):** ринок = символ (`init_market(symbol)`), позиція
+   на кожному ринку створюється разом, не при угоді (`init_position`/`delegate_position`/
+   `init_position_permission`, вихід — `undelegate_position`/`close_exited_position`), маржа
+   ізольована (б), ліквідація per position (в), `set_session` оновлює permissions усіх ринків;
+   LiteSVM 107, unit 64. Лишилось: план 2 (relayer, admin-TS, `add-market`), план 3 (апка: вибір ринку,
+   список позицій, колонка ринку в History), апгрейд на devnet і додавання BTC/ETH/HYPE/ZEC.
+2. 🟡 Відео/пітч, тег `v0.4-mvp`. Launch-відео 21 с зроблено (/brag, 27.09, `brag-output/`); тегу ще нема.
+3. ⬜ Тех-борг тижня 5 (Task 9): `permissions.rs`-модуль, `Toast`/`Sheet` таймери, WS ping/pong,
    `listBaseOwners` O(n) → індекс по `exited`.
-4. **UX торгового екрана (додано 27.09 за ревʼю «три опори» трейдинг-апок):**
+4. 🟡 **UX торгового екрана (додано 27.09 за ревʼю «три опори» трейдинг-апок):**
    - пресети суми (10 / 50 / 100 dUSDC) і плеча (2× / 5× / 10×) кнопками замість полів вводу;
    - фандинг і сумарний OI пулу на Trade — OI є в `Pool`-знімку (огрублений `SNAPSHOT_STEP`),
      фандингу в програмі немає взагалі — спершу вирішити, чи він потрібен у MVP;
@@ -80,7 +100,11 @@ Phantom (24.09), доки MagicBlock (fees, runtime limits, magic actions), дж
    - алерт «Approaching liquidation» → одразу на Add margin: серверний push неможливий
      (сервер не бачить приватну позицію) — лише локальні нотифікації з апки у фоні через
      `accountSubscribe`.
-5. **Графік як у TradingView** (додано 27.09): замість власного `PriceChart` — повноцінний
+
+   **🟡 PR #9:** зроблено Add margin на картці позиції (`add_margin`; remove margin у програмі нема).
+   Не зроблено: пресети суми/плеча, плашка TP/SL «скоро», локальний алерт ліквідації; фандинг —
+   рішення разом із Borrow Rate (C.6-B).
+5. 🟡 **Графік як у TradingView** (додано 27.09): замість власного `PriceChart` — повноцінний
    свічковий графік з масштабуванням/прокруткою, crosshair із ціною і часом, лініями
    entry/liq-price/mark поверх свічок, обсягом і базовими індикаторами (EMA, VWAP).
    **Таймфрейми (уточнено 27.09):** 1s, 1m, 5m, 15m, 30m, 1h, 2h, 4h, 6h, 8h, 12h, 24h, 2D, 5D,
@@ -98,11 +122,21 @@ Phantom (24.09), доки MagicBlock (fees, runtime limits, magic actions), дж
    (Heikin Ashi, HLC area, Step line) або кастомний рендер. Кандидат — `lightweight-charts` (TradingView, Apache-2.0) у
    WebView або `react-native-wagmi-charts`/Skia-порт; дані — з indexer-а relayer-а
    (`/prices`, свічки вже агрегуються). Рішення про бібліотеку — окремий спайк.
-6. **Торговий термінал — фічі з референсів (додано 27.09; Jupiter-подібний хедер, Telegram
+   **🟡 PR #9:** обрано `lightweight-charts` 5.2.1 у WebView (вшито в APK через `scripts/gen-lwc.ts`,
+   без CDN); 12 типів зі «зірочкою», A/L, EMA 20, лінії entry/liq, pinch-зум, налаштування в
+   AsyncStorage. Не зроблено: таймфрейми крім 1m/5m/15m (потрібен relayer), панель обсягу і VWAP
+   (обсяг приватний, в оракула його нема — свідомо), атрибуція TradingView (логотип вимкнено —
+   потрібна за ліцензією).
+6. 🟡 **Торговий термінал — фічі з референсів (додано 27.09; Jupiter-подібний хедер, Telegram
    Wallet mini-app, CEX-тикет).** Dexxer — оракульний перп із пулом-контрагентом і виконанням
    за mark, без стакана, тому кожну фічу перекладено на нашу модель:
 
-   **A. Лише UI, дані вже є (черга після C.4):**
+   **A. Лише UI, дані вже є (черга після C.4):** 🟡 PR #9 — зроблено хедер (значок, бейдж макс.
+   плеча, ціна, зміна, High/Low зі свічок, Available liq. з `/pool/latest`), вкладки Open / Close
+   (частковий `decrease_position`), згортуваний графік, Positions (n) / Open Orders (0), About +
+   Perpetuals + Risk disclosure. OI свідомо не показано (приватний `MarketRisk`), 24H Vol — теж.
+   Не зроблено: +/− і SOL ↔ dUSDC, слайдер плеча, Max Long / Max Short, «Avail.» → Deposit,
+   кнопки Long / Short унизу.
    - Хедер ринку: тікер + значок, макс. плече (`250x`-бейдж), ціна великим і зміна за 24h;
      рядок статистики **24H High / 24H Low** (індексер зі свічок), **Available Liq.** (вільна
      ліквідність пулу на сторону з публічного `Pool`-знімка), **Open interest** (з того самого
@@ -119,7 +153,7 @@ Phantom (24.09), доки MagicBlock (fees, runtime limits, magic actions), дж
      about Perpetuals» і «View risk disclosure» — потрібно для dApp Store і для новачків.
    - Кнопки **Long / Short** унизу екрана ринку (Telegram-стиль) як альтернатива тикету.
 
-   **B. Потрібна робота в програмі (умовні ордери — один механізм на все):**
+   **B. Потрібна робота в програмі (умовні ордери — один механізм на все):** ⬜
    - **Limit** (виконати, коли mark ≤/≥ ціни), **Trigger / Stop** (умовний market/limit),
      **TP/SL** (чекбокс у тикеті + на картці позиції), **Trailing Stop** (тригер, що crank
      підтягує за ціною). Усе це — записи умовних ордерів у приватному per-user акаунті
@@ -142,7 +176,7 @@ Phantom (24.09), доки MagicBlock (fees, runtime limits, magic actions), дж
 
    Порядок: A після C.4 (один спринт UI), B.Borrow Rate разом із C.4-«фандинг», B.умовні
    ордери — окремий тиждень після мульти-маркету або замість нього (продуктове рішення).
-7. **Інформація по активу — вкладка «Token information» (додано 27.09; референс — Aster).**
+7. 🟡 **Інформація по активу — вкладка «Token information» (додано 27.09; референс — Aster).**
    На екрані ринку три вкладки: **Chart / Token information / Trading rules**; хедер із
    значком активу, тікером, бейджем `Perp`, кнопками share / alert / favorite.
    Зміст Token information:
@@ -162,6 +196,9 @@ Phantom (24.09), доки MagicBlock (fees, runtime limits, magic actions), дж
    від зовнішнього API для тексту. Апка — екран `AssetInfoScreen` із трьома вкладками,
    Long/Short знизу. Дані ринкові й публічні, приватності не торкаються. Залежить від C.1
    (список активів BTC/ETH/HYPE/ZEC), для SOL можна зробити одразу.
+   **🟡 PR #9:** вкладка Trading rules (перемикач Chart / Trading rules; параметри публічного `Market`
+   за фіксованими офсетами, OI cap за замовчуванням — 30 % знімка пулу). Не зроблено: Token
+   information, `/assets/:symbol`, `AssetInfoScreen`.
 
 ## Не робимо (без нової причини)
 Seeker Connect (web-only), ZK-знімок, iOS.

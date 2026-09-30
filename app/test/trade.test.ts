@@ -8,7 +8,14 @@ import assert from 'node:assert/strict'
 import { BN, BorshInstructionCoder } from '@coral-xyz/anchor'
 import { Keypair, PublicKey, Transaction } from '@solana/web3.js'
 import { DEXXER_CORE_IDL } from '../src/lib/anchor'
-import { decreasePosition, increasePosition, openPosition, U64_MAX, type TradeAccounts } from '../src/lib/trade'
+import {
+  addMargin,
+  decreasePosition,
+  increasePosition,
+  openPosition,
+  U64_MAX,
+  type TradeAccounts,
+} from '../src/lib/trade'
 
 const ixCoder = new BorshInstructionCoder(DEXXER_CORE_IDL)
 
@@ -90,4 +97,12 @@ test('decreasePosition with the permissive Short limit encodes U64_MAX itself, n
   assert.equal(ix.name, 'decrease_position')
   assert.equal(ix.args.close_size, 100_000_000n)
   assert.equal(ix.args.limit_price, U64_MAX)
+})
+
+test('addMargin encodes the bigint amount exactly', async () => {
+  const { conn, sent } = fakeConn()
+  await addMargin(conn as never, Keypair.generate(), accounts, 12_345_678n)
+  const ix = lastIx(sent)
+  assert.equal(ix.name, 'add_margin')
+  assert.equal(ix.args.amount, 12_345_678n)
 })

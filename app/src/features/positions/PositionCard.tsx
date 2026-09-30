@@ -2,7 +2,7 @@
 //
 // Task 10: open-position card per design — side/leverage header, Size/
 // Entry/Mark/Margin/Liq. price rows, live uPnL, a liquidation-distance bar,
-// Close/Increase/Decrease actions.
+// Close/Increase/Decrease actions, and (week 6, C.4) Add margin.
 //
 // Week 5, Task 6: the "Recording commitment on-chain" pending badge this
 // card used to render for `Position.state === 'Closed' && !commitmentWritten`
@@ -89,9 +89,18 @@ export interface PositionCardProps {
   onClose: () => void
   onIncrease: () => void
   onDecrease: () => void
+  onAddMargin: () => void
 }
 
-export function PositionCard({ position: p, mark, busy, onClose, onIncrease, onDecrease }: PositionCardProps) {
+export function PositionCard({
+  position: p,
+  mark,
+  busy,
+  onClose,
+  onIncrease,
+  onDecrease,
+  onAddMargin,
+}: PositionCardProps) {
   const { colors, space } = useTheme()
   const heading = useTextStyle('heading')
   const caption = useTextStyle('caption')
@@ -150,6 +159,13 @@ export function PositionCard({ position: p, mark, busy, onClose, onIncrease, onD
         <View style={{ flex: 1 }}>
           <Button variant="secondary" disabled={busy} onPress={onDecrease}>
             Decrease
+          </Button>
+        </View>
+      </View>
+      <View style={{ flexDirection: 'row', gap: space.sm }}>
+        <View style={{ flex: 1 }}>
+          <Button variant="secondary" disabled={busy} onPress={onAddMargin}>
+            Add margin
           </Button>
         </View>
         <View style={{ flex: 1 }}>

@@ -1,34 +1,39 @@
 // app/src/features/trade/TradeScreen.tsx
 //
 // Task 10: full Trade screen per design — header (mark + 24h change + Pyth
-// Lazer freshness badge), PriceChart (1m/5m/15m), TradeTicket (Open
+// Lazer freshness badge), the chart (C.5: `chart/TradingChart`), TradeTicket (Open
 // Long/Short — session-signed, no MWA prompt), stale-oracle and
 // session-expired banners. Close/Increase/Decrease moved to the Positions
-// screen (Task 10) — this screen only opens.
+// screen (Task 10); week 6 (C.4) brings partial/full close back as the
+// ticket's Close tab (`decrease_position`). Week 6 (C.6-A): the chart
+// collapses (`ChartSection`), and Positions (n) / Open Orders (n) sit
+// under the ticket (`TradeActivity`).
 import { useCallback, useMemo, useState } from 'react'
 import { router } from 'expo-router'
 import { ScrollView, Text, View } from 'react-native'
 import { Page } from '@/src/ui/Page'
 import { useTheme } from '@/src/theme'
 import { useTextStyle } from '@/src/ui/styles'
-import { Segment } from '@/src/ui/Segment'
 import { Badge } from '@/src/ui/Badge'
 import { Button } from '@/src/ui/Button'
 import { Skeleton } from '@/src/ui/Skeleton'
 import { showToast } from '@/src/ui/Toast'
 import { useLiveAccount } from '@/src/lib/live'
-import { useCandles, useIndexerConnected, useMark } from '@/src/lib/indexer'
-import { decodeMarket, decodePosition, decodeUserAccount, readMarket, type SideName } from '@/src/lib/codecs'
+import { useCandles, useIndexerConnected, useMark, usePoolHistory } from '@/src/lib/indexer'
+import { decodePosition, decodeUserAccount, readMarket, type SideName } from '@/src/lib/codecs'
 import { describeTxError } from '@/src/lib/errors'
-import { openPosition } from '@/src/lib/trade'
-import { PriceChart } from './PriceChart'
+import { decreasePosition, openPosition } from '@/src/lib/trade'
+import * as math from '@/src/lib/math'
+import { ChartSection, type Tf } from './ChartSection'
+import { TradeActivity } from './TradeActivity'
 import { TradeHeader } from './TradeHeader'
+import { MarketInfoCard } from './MarketInfoCard'
+import { maxLeverage, rangeStats } from './headerStats'
 import { TradeTicket, type MarketParams } from './TradeTicket'
+import { decodeTicketMarket } from './marketLimits'
 import { useTradeSession } from './useTradeSession'
 import { LOW_SESSION_ACTIONS } from '@/src/lib/session'
 import { useOnboardingGate } from '../onboard/useOnboardingGate'
-
-type Tf = '1m' | '5m' | '15m'
 
 export function TradeScreen() {
   const { colors, space } = useTheme()
@@ -40,13 +45,14 @@ export function TradeScreen() {
   const [busy, setBusy] = useState(false)
 
   const positionLive = useLiveAccount(conn, accounts?.position ?? null, decodePosition)
-  const marketLive = useLiveAccount(conn, accounts?.market ?? null, decodeMarket)
+  const marketLive = useLiveAccount(conn, accounts?.market ?? null, decodeTicketMarket)
   const userLive = useLiveAccount(conn, accounts?.userAccount ?? null, decodeUserAccount)
   const mark = useMark()
   const change24h = useCandles('15m', 96)
+  const pool = usePoolHistory(1)
   const indexerConnected = useIndexerConnected()
 
-  const hasOpenPosition = positionLive.value?.state === 'Open'
+  const position = positionLive.value
   const marketMark = marketLive.value?.mark ?? null
   const markUsd = mark.data?.price ?? marketMark
   const markUsdNum = markUsd !== null ? Number(markUsd) / 1e6 : null
@@ -95,6 +101,8 @@ export function TradeScreen() {
         imrBps: BigInt(marketLive.value.imrBps),
         mmrBps: BigInt(marketLive.value.mmrBps),
         openFeeBps: BigInt(marketLive.value.openFeeBps),
+        closeFeeBps: BigInt(marketLive.value.closeFeeBps),
+        minSize: marketLive.value.minSize,
       }
     : null
 
@@ -116,24 +124,46 @@ export function TradeScreen() {
     [conn, session, accounts],
   )
 
+  const handleClose = useCallback(
+    async (closeSize: bigint) => {
+      if (!conn || !session || !accounts || !position || markUsd === null) return
+      setBusy(true)
+      try {
+        const limit = math.closeSlippageLimit(position.side, markUsd)
+        await decreasePosition(conn, session, accounts, closeSize, limit)
+        showToast({
+          tone: 'success',
+          text: closeSize === position.size ? 'Position closed' : `Closed ${Number(closeSize) / 1_000_000_000} SOL`,
+        })
+      } catch (e) {
+        showToast({ tone: 'danger', text: describeTxError(e) })
+      } finally {
+        setBusy(false)
+      }
+    },
+    [conn, session, accounts, position, markUsd],
+  )
+
   return (
     <Page>
       <ScrollView contentContainerStyle={{ gap: space.lg, paddingVertical: space.lg }}>
-        <TradeHeader markUsdNum={markUsdNum} pctChange={pctChange} dotColor={dotColor} />
+        <TradeHeader
+          markUsdNum={markUsdNum}
+          pctChange={pctChange}
+          dotColor={dotColor}
+          maxLeverage={marketLive.value ? maxLeverage(marketLive.value.maxLevBps, marketLive.value.imrBps) : null}
+          range={rangeStats(change24h.data, now * 1000)}
+          poolLiquidity={pool.data?.length ? pool.data[pool.data.length - 1].capitalTotal : null}
+        />
 
-        <View style={{ gap: space.sm }}>
-          <PriceChart tf={tf} markUsd={markUsdNum} />
-          <Segment
-            compact
-            value={tf}
-            onChange={setTf}
-            options={[
-              { value: '1m', label: '1m' },
-              { value: '5m', label: '5m' },
-              { value: '15m', label: '15m' },
-            ]}
-          />
-        </View>
+        <ChartSection
+          tf={tf}
+          onTfChange={setTf}
+          markUsd={markUsd}
+          position={position}
+          market={marketLive.value}
+          poolCapital={pool.data?.length ? pool.data[pool.data.length - 1].capitalTotal : null}
+        />
 
         {oracle.reason === 'loading' ? (
           <Skeleton lines={1} />
@@ -177,12 +207,17 @@ export function TradeScreen() {
             markUsd={markUsd}
             market={marketParams}
             freeMarginUsd={userLive.value?.freeMargin ?? null}
-            hasOpenPosition={hasOpenPosition}
+            position={position}
             busy={busy}
             disabled={tradingPaused || sessionExpired || sessionUsedUp || !session}
             onOpen={handleOpen}
+            onClose={handleClose}
           />
         )}
+
+        <TradeActivity position={position} markUsd={markUsd} />
+
+        <MarketInfoCard market={marketLive.value} />
       </ScrollView>
     </Page>
   )
