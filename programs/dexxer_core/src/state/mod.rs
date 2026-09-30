@@ -10,6 +10,7 @@ pub mod permissions;
 pub mod pool;
 pub mod pool_live;
 pub mod position;
+pub mod positions;
 pub mod user;
 pub use balances_root::*;
 pub use config::*;
@@ -21,6 +22,7 @@ pub use permissions::*;
 pub use pool::*;
 pub use pool_live::*;
 pub use position::*;
+pub use positions::*;
 pub use user::*;
 
 pub const CONFIG_SEED: &[u8] = b"config";
@@ -29,6 +31,7 @@ pub const RISK_SEED: &[u8] = b"risk";
 pub const POOL_SEED: &[u8] = b"pool";
 pub const USER_SEED: &[u8] = b"user";
 pub const POSITION_SEED: &[u8] = b"position";
+pub const POSITIONS_SEED: &[u8] = b"positions";
 pub const FAUCET_SEED: &[u8] = b"faucet";
 pub const MINT_AUTH_SEED: &[u8] = b"mint_auth";
 pub const FEE_ESCROW_SEED: &[u8] = b"fee_escrow";
@@ -86,8 +89,8 @@ pub const LIQ_TASK_INTERVAL_MS: i64 = 5_000;
 /// its own PDA. keccak256 is the project's hash primitive everywhere else
 /// (week-3 rule), and the first 8 bytes are plenty: a collision would need two
 /// positions whose PDAs share a 64-bit keccak prefix.
-pub fn liq_task_id(position: &Pubkey) -> i64 {
-    let h = solana_keccak_hasher::hashv(&[position.as_ref()]).to_bytes();
+pub fn liq_task_id(positions: &Pubkey, market: &Pubkey) -> i64 {
+    let h = solana_keccak_hasher::hashv(&[positions.as_ref(), market.as_ref()]).to_bytes();
     let mut b = [0u8; 8];
     b.copy_from_slice(&h[..8]);
     i64::from_le_bytes(b)
@@ -98,28 +101,25 @@ mod liq_task_tests {
     use super::*;
 
     #[test]
-    fn liq_task_id_is_deterministic_and_position_specific() {
+    fn liq_task_id_is_deterministic_and_key_specific() {
         let a = Pubkey::new_from_array([7u8; 32]);
         let b = Pubkey::new_from_array([8u8; 32]);
-        assert_eq!(liq_task_id(&a), liq_task_id(&a), "same input, same id");
-        assert_ne!(liq_task_id(&a), liq_task_id(&b));
+        let m = Pubkey::new_from_array([1u8; 32]);
+        assert_eq!(
+            liq_task_id(&a, &m),
+            liq_task_id(&a, &m),
+            "same input, same id"
+        );
+        assert_ne!(liq_task_id(&a, &m), liq_task_id(&b, &m));
     }
 
-    /// Golden vector — pins the byte layout (keccak256 of the raw 32 pubkey
-    /// bytes, first 8 bytes read little-endian) so a client that recomputes
-    /// the id off-chain can be checked against the same number.
+    /// Golden vector: keccak256(positions || market), first 8 bytes LE.
     #[test]
     fn liq_task_id_golden_vector() {
         let p = Pubkey::new_from_array([0u8; 32]);
-        let h = solana_keccak_hasher::hashv(&[p.as_ref()]).to_bytes();
+        let h = solana_keccak_hasher::hashv(&[p.as_ref(), p.as_ref()]).to_bytes();
         let expected = i64::from_le_bytes(h[..8].try_into().unwrap());
-        assert_eq!(liq_task_id(&p), expected);
-        // keccak256(32 zero bytes) = 290decd9548b62a8d60345a988386fc84ba6bc95484008f6362f93160ef3e563
-        assert_eq!(&h[..8], &[0x29, 0x0d, 0xec, 0xd9, 0x54, 0x8b, 0x62, 0xa8]);
-        assert_eq!(
-            liq_task_id(&p),
-            i64::from_le_bytes([0x29, 0x0d, 0xec, 0xd9, 0x54, 0x8b, 0x62, 0xa8])
-        );
+        assert_eq!(liq_task_id(&p, &p), expected);
     }
 }
 

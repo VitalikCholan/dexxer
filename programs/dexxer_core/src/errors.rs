@@ -126,6 +126,8 @@ pub enum DexxerError {
     MarketNotFound,
     #[msg("the SOL position moves with the user account; other markets use the *_position instructions")]
     PrimaryPositionMismatch,
+    #[msg("All position slots are in use")]
+    NoFreeSlot,
 }
 
 impl From<MathError> for anchor_lang::error::Error {

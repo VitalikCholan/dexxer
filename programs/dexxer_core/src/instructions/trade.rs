@@ -183,7 +183,7 @@ fn register_liq_task<'info>(a: &'info Trade<'info>) -> Result<()> {
         &a.magic_program,
         liq_task_accounts(a),
         inner,
-        liq_task_id(&a.position.key()),
+        liq_task_id(&a.position.key(), &a.market.key()),
         a.fee_escrow.bump,
     )
 }
@@ -208,7 +208,7 @@ fn cancel_liq_task<'info>(a: &'info Trade<'info>) -> Result<()> {
         escrow.as_ref(),
         &a.task_context,
         &a.magic_program,
-        liq_task_id(&a.position.key()),
+        liq_task_id(&a.position.key(), &a.market.key()),
         a.fee_escrow.bump,
     )
 }

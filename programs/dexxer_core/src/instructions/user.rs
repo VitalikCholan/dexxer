@@ -971,7 +971,7 @@ pub fn undelegate_user<'info>(ctx: Context<'info, UndelegateUser<'info>>) -> Res
             escrow.as_ref(),
             position.as_ref(),
             &a.magic_program,
-            liq_task_id(&position.key()),
+            liq_task_id(&position.key(), &a.position.market),
             a.fee_escrow.bump,
         )?;
     }
