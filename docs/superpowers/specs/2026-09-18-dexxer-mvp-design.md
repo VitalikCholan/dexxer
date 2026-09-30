@@ -134,6 +134,8 @@ Hedge mode / кілька позицій на ринок · limit/TP/SL · fundi
 
 ### 2.4 Дизайн тижня 3: 13F-пайплайн, `BalancesRoot`, вихід **(week 3, 21.09.2026)**
 
+> **Застаріло 30.09.2026 у частині 13F (§2.4.1) — див. §2.9:** угоди більше не розкриваються; `BalancesRoot` і вихід лишаються з поправками §2.9.2.
+
 Затверджено брейнштормом 21.09 після знахідки #13 (§2.1 «фундаментальне правило»: сирий приватний акаунт ніколи не йде на L1). Усі L1-записи тижня 3 їздять **лише на коміті публічного `Pool`** як Magic Actions; хеші виходять із TEE тільки як *аргументи* публічних L1-інструкцій.
 
 **2.4.1 13F-пайплайн (ядро)**
@@ -344,7 +346,7 @@ Owner, ER: `require!(Position.Empty && DisclosureQueue порожня && free_ma
 - Адмін-команда `tests/er/devnet/add-market.ts SYMBOL LAZER_ID`: L1 `init_market` + `delegate_market` → eSPL-поповнення ренти під permission (санкціонований шлях тижня 4) → ER `init_market_permissions` (`MarketRisk` приватний `[crank, admin]`) → `schedule_crank` зі своїм `task_id`.
 - Параметри — однакова доларова вилка розміру, бо розмір синтетичний (шкала 1e9). **Нижня межа** `min_size` — у одиницях розміру, тому своя на ринок (≈$1–2): SOL 0.01, BTC 0.00002, ETH 0.0005, HYPE 0.015, ZEC 0.0008. **Верхня межа** `max_position` — **номінал у USD (1e6)**, не розмір (`notional ≤ max_position`, §3), тож одне значення вже є однаковою доларовою стелею для всіх ринків — береться як у SOL, а не масштабується ціною (виправлено 28.09: початкова редакція давала стелю в одиницях розміру, «BTC 0.15» = `150_000_000`, що програма читає як $150 номіналу — перше ж BTC-відкриття на $800 падало `PositionTooLarge`, знайдено LiteSVM-тестом). Плече: SOL/BTC/ETH 10×; HYPE/ZEC 5× (волатильніші — IMR 20 %, MMR 10 %). `max_staleness_secs` — за реальною частотою фіду (≈9 с), не 2 с.
 
-**2.8.2 Позиції трейдера (програма)**
+**2.8.2 Позиції трейдера (програма)** — **замінено §2.9 (30.09.2026): слоти в одному акаунті**
 
 - **L1:** `init_position(symbol)` — `owner` + `payer` (спонсорується для 0-SOL), вимагає `UserAccount` власника наявним і делегованим (онбординг пройдено, не `exited`), префондить ренту під permission (як `init_user`); `delegate_position(symbol)` — делегує позицію (працює й з уже наявним розделегованим акаунтом). Обидві — в одній tx на ринок.
 - **ER:** `init_position_permission(symbol)` — приватний permission `[owner, session, crank]` (session — з `UserAccount.session_key`); підписант — власник **або** живий сесійний ключ.
@@ -382,6 +384,53 @@ Owner, ER: `require!(Position.Empty && DisclosureQueue порожня && free_ma
 - **Тести:** LiteSVM **107** (89 + 18 у `tests/markets.rs`: 17 поведінкових + 1 вимір), unit **64** (61 + 3 `symbol_tests`), relayer 171 без змін (161 pass, 10 DB-skip) на новому IDL, `tsc` ×4 — чисто. Характеризаційні тести (SOL і BTC в одного трейдера, ліквідація лише BTC, вихід блокується відкритим BTC) пройшли **без змін програми**: торгівля, crank і гейт маржі вже були параметризовані ринком.
 - **Виміри (LiteSVM):** рента на додатковий ринок на користувача — **2 742 544 лампорти** (≈0.00274 SOL: `Position` + префонд `EphemeralPermission`), тобто ≈0.011 SOL на 4 ринки з бюджету `fee_payer` (рента записів делегації — окремо, вимір на devnet у плані 2). CU (ER-CPI у LiteSVM пропущені; розкид — пошук bump для випадкових ключів): `init_market` 20.8k, `init_position` 14.6–19.1k, `init_position_permission` 12–17k, `set_session` 32–44k без пар і 40–54k з 2 парами, `undelegate_position` 16–17k, `close_exited_position` 8.5k. **Розмір tx:** спонсорована форма (nonce-advance + 2 CB + `[init_position, delegate_position]`×N, підписанти `fee_payer` + власник) — N=1 732 B, N=2 948 B, **N=3 1164 B**, N=4 ≈1380 B > 1232 → **≤ 3 ринки на L1-tx**, чотири нові ринки — два леги (план 3). `set_session` + 4 пари — 849 B (влазить, але разом з іншими ER-інструкціями в одній tx — перевірити в плані 3).
 - **IDL** (`app/src/idl/dexxer_core.json`) регенеровано тим самим `anchor_lang_idl::build::IdlBuilder` 0.1.4, що викликає `anchor idl build` 1.0.2, але без `anchor-cli` (його `[toolchain] solana_version` перемикав би глобальну Solana); метод звірено на `main` — байт-у-байт, крім кінцевого `\n`. Диф: +5 інструкцій, +5 помилок, `symbol` у `init_market`/`delegate_market`.
+
+### 2.9 Дизайн тижня 6, частина 3: позиції-слоти, без розкриття угод, чистий старт **(week 6, 30.09.2026)**
+
+Джерело рішень — брейншторм 30.09 після виконання плану 2 (гілка `multi-market-relayer`, не змерджена). Цей розділ **замінює** §2.4.1 (13F-пайплайн), §2.6 у частині виходу з боргом розкриття і §2.8.2 (позиції на ринок); §2.8.1 (ринок = символ), §2.8.3 (реєстр ринків, crank/індексер по ринках) і §2.8.5 лишаються чинними з поправками нижче. Рішення користувача: **(1)** позиції трейдера — фіксовані слоти в одному акаунті, ринок у даних, а не в адресі; **(2)** 8 слотів; **(3)** угоди **не розкриваються** взагалі — архітектурне рішення 18.09 «розкриття — commit-then-reveal» скасовано; **(4)** власна історія трейдера — приватне кільце на 16 записів в ER; **(5)** чистий старт devnet (нова адреса програми), без міграції; **(6)** у той самий деплой — ризики #38 і #39.
+
+**Чому не PDA на ринок.** Сід `[position, owner, market]` кладе ринок в адресу L1-акаунта. Наслідки: новий ринок = новий L1-акаунт на кожного трейдера; створення при першій угоді розкриває вибір ринку, тому позиції доводиться роздавати всім наперед. План 2 зробив це relayer-ом (варіант C: `fee_payer` створює, crank робить приватною) — працює, але коштує ≈0.011 SOL замороженої ренти протоколу на власника, посилює Sybil #27 і вимагає фонового циклу, порога балансу, janitor-а й cooldown-у. Слоти прибирають причину: новий ринок — одна адмін-tx, нуль дій на трейдера; на L1 у кожного один однаковий акаунт. Той самий шаблон у Drift (`perpPositions` — фіксований масив на 8). Ephemeral-акаунти MagicBlock відкинуто: вони не можуть бути джерелом правди для балансів (зникають зі станом ER).
+
+**Чому без розкриття.** Розкриття — продуктове рішення, не вимога системи: `Disclosure.owner` завжди нульовий, тобто це була прозорість протоколу, а не підзвітність трейдера. Ціна — найдорожча підсистема після ядра: черга на трейдера, що обмежує кількість закритих угод на вікно розкриття (8 на 30 днів), ризик #37, неможливість ліквідувати при повному кільці, ліміт мосту на 4 дії за коміт, карантин черг. Публічними лишаються огрублений агрегат `Pool` і `BalancesRoot` — вони й далі доводять зобов'язання протоколу та їх забезпечення. Втрачено: перевірюваність окремих угод ззовні й теза «13F» у позиціонуванні.
+
+**2.9.1 Акаунти трейдера**
+
+Два акаунти замість трьох, обидва створюються на онбордингу, делегуються, permission `[owner, session, crank]`.
+
+- `UserAccount` (Borsh) — як було, плюс `rent_payer: Pubkey` (#39) і `_reserved: [u8; 32]`; без `nonce`.
+- `Positions` — `#[account(zero_copy)] #[repr(C)]`, сіди `[b"positions", owner]`, доступ через `AccountLoader` (2.4 KiB Borsh by value пробиває SBF-стек — урок `BalancesRoot`, тиждень 3). Лейаут: `owner: Pubkey | slots: [PositionSlot; 8] | history: [HistoryRecord; 16] | history_head: u8 | history_len: u8 | version: u8 | bump: u8 | _pad: [u8; 4] | _reserved: [u8; 64]` — 2408 B + 8 дискримінатор; рента ≈0.018 SOL, раз, у наявному лезі онбордингу.
+  - `PositionSlot` (96 B): `market: Pubkey | size | entry | margin | liq_price | opened_slot | oi_notional | last_liq_mark_slot: u64 ×7 | state: u8 (0 Empty, 1 Open) | side: u8 | liq_ticks: u8 | _pad: [u8; 5]`.
+  - `HistoryRecord` (96 B): `market: Pubkey | size | entry | exit: u64 | pnl: i64 | fees | opened_slot | closed_slot: u64 | side: u8 | reason: u8 (0 User, 1 Liquidated) | _pad: [u8; 6]`.
+- Одна позиція на ринок на трейдера; слот шукається за ключем ринку; `open` бере перший `Empty`, усі зайняті → `NoFreeSlot`. Історія перезаписує найстаріший запис (нічого не блокує) і **стирається перед виходом з ER** — на L1 не потрапляє жоден приватний байт.
+- Зникають: `Position`, `DisclosureQueue`, `ClosedRecord`, `Commitment`, `Disclosure`. `Config` втрачає `disclosure_delay_slots`. `Market`/`MarketRisk`/`Pool`/`PoolLive`/`BalancesRoot`/`FeeEscrow` — без змін. Коди помилок лише дописуються (`NoFreeSlot`), невживані лишаються в enum — номери стабільні для мапи помилок апки.
+
+**2.9.2 Інструкції**
+
+- **Зникають (10):** `write_commitment`, `write_disclosure`, `set_disclosure_delay`, `init_position`, `delegate_position`, `init_position_permission`, `undelegate_position`, `close_exited_position`, `close_orphan_queue`, `init_user_reuse_queue`. Нових немає.
+- **Онбординг:** `init_user` створює `UserAccount` + `Positions`, пише `rent_payer = payer`; `delegate_user` делегує обидва; `init_permissions` — permission обох; `set_session` оновлює обидва (без пар у `remaining_accounts`). Леги й промпти — як сьогодні.
+- **Торгівля:** `open/increase/decrease/close_position`, `add_margin` — акаунт ринку + пошук слота. `Trade`: `[signer, config, market, market_risk, pool_live, user_account, positions, feed, fee_escrow, task_context(=positions), magic_program, liq_crank_signer]` — 12 акаунтів. `finalize_close` пише `HistoryRecord` і скидає слот; шляху, яким закриття могло б упасти через заповненість, немає. OI — лише через `oi_notional` слота.
+- **Ліквідація:** `crank_tick` на ринок, кандидати — пари `[Positions, UserAccount]`, ≤16; програма дивиться лише слот цього ринку (слота нема або `Empty` → `continue`). `liquidation_check` — задача на пару «трейдер × ринок»: `task_id = keccak(positions ‖ market)[0..8]`, реєстрація в `open_position`, скасування в `close_position`/повному `decrease_position`. Задача **ліквідованої** позиції лишається живою (тік по порожньому слоту — no-op), як і сьогодні: її оновлює наступний `open_position` на тому ж ринку або скасовує `undelegate_user` — клієнт передає акаунти всіх ринків реєстру в `remaining_accounts`, програма скасовує `task_id` кожного (cancel невідомого id — виміряний безпечний no-op, тиждень 5). **#38:** `liq_ticks` росте лише коли `Market.mark_slot > slot.last_liq_mark_slot`; дефолт `liq_hysteresis_ticks` 3 → 2.
+- **Коміт:** `commit_aggregate()` — `commit(&[Pool, BalancesRoot])` через `FeeEscrow`, без дій, без `max_actions`, без `remaining_accounts`.
+- **Вихід:** `undelegate_user` — гейт `free_margin == 0 && locked_margin == 0` (⇒ усі слоти `Empty`), стирає історію, `exited = true`, явний `exit()` перед `commit_and_undelegate` обох акаунтів (рулінг 10). Часткового виходу немає. `close_exited_user` (L1) — підписант `Config.fee_payer` **або власник**, рента → `UserAccount.rent_payer` (**#39**). Повторний онбординг — звичайний `init_user` після закриття.
+- Без змін: адмін (`init_config`, `init_market(symbol)`, `delegate_market(symbol)`, `init_market_permissions`, `set_params`, `pause`/`unpause`, планувальник), пул і `PoolLive`, `credit_deposit`, `withdraw`, faucet, `BalancesRoot`, `FeeEscrow`.
+
+**2.9.3 Relayer та адмін**
+
+- З гілки `multi-market-relayer` переносяться без змін по суті: реєстр ринків із фільтром «`MarketRisk` уже приватний», crank по ринках (`runMarkets`, SOL-фолбек, ліміт повтору помилок), індексер по ринках (міграція `008`, `GET /markets`, `?market=`, `/ws?markets=`, heartbeat), `/healthz.markets` (`ok` — лише SOL), `add-market` і каталог ринків, хелпери символів, `envNum`. Не переносяться: `positions.ts`, проходи janitor-а 1b/2b, зміна програми під варіант C.
+- Crank: `getProgramAccounts` по `Positions`, слоти розбираються клієнтом; кандидати — пари. Коміт-цикл: `runRootCycle` + `commit_aggregate`; цикл розкриття, карантин, `COMMIT_MAX_ACTIONS` зникають. Janitor: один прохід — `close_exited_user` для власників з `exited`. Індексер: без стрічки `Disclosure`, `/disclosures`, `/stats`, WS-кадрів `disclosure`. `/sponsor`: whitelist `{faucet_init, init_user, delegate_user}` + eSPL, форми під нові акаунти.
+
+**2.9.4 App**
+
+- Кодек і PDA `Positions`; торгові хуки з ринком; `useMarkets()`, вибір ринку, список позицій. Кожен ринок доступний одразу — «увімкнення ринків» немає.
+- History — з кільця історії, плюс локальний архів на пристрої (апка копіює побачені записи, глибина не обмежена 16). Ledger і UI commit-reveal прибираються; Receipt (`BalancesRoot`) лишається.
+
+**2.9.5 Чистий старт, виміри, тести**
+
+- Новий keypair програми → деплой → `bootstrapDevnet` (Config, пул, SOL) → `add-market` BTC/ETH/HYPE/ZEC → relayer (нова адреса через IDL) → APK. Ключі, SOL, Railway — користувач. Закриття старої програми (`solana program close`, повертає ренту) — **незворотне**, окремим рішенням користувача після того, як нова запрацювала.
+- Виміри на devnet: кілька задач `liquidation_check` одного трейдера на одному `Positions` (`task_context` спільний — за довідкою MagicBlock задачу ідентифікує `task_id`, але не виміряно); ліквідація без relayer-а (повтор M-G′); CU торгових інструкцій із zero-copy й розміри tx онбордингу; вартість спрощеного коміту; невиміряне з тижня 5 (стійкість задач до рестарту TEE, `ComputeBudget` 1.4M в ER).
+- LiteSVM: позиції на кількох ринках в одного трейдера, ліквідація лише одного ринку, `NoFreeSlot`, 17-те закриття перезаписує перший запис історії, #38 (три виклики на одному `mark_slot` — один тік), #39 (рента → `rent_payer`, власник закриває сам), вихід стирає історію, `assert_invariant` у кожному торговому тесті.
+- Плани: (1) програма + LiteSVM; (2) relayer + адмін-TS; (3) app; (4) деплой і виміри. Гілка — `positions-slots` від `main`.
+- Закриває ризики: #37 (нема чого губити), #38, #39, «ліквідація при повному кільці», ліміт мосту на дії. Нові/відкриті: стеля 8 одночасних позицій на трейдера (зміна — міграція лейауту); останні 16 угод лежать у TEE й читаються crank-ом; усі позиції трейдера — один write-lock; Sybil #27 — без змін (варіант C його не посилює, бо скасований).
 
 ## 3. Маржинальна математика й ліквідація
 
