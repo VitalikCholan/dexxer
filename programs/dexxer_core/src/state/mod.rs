@@ -146,8 +146,14 @@ mod size_tests {
         let p = Positions::SPACE;
         let m = 8 + Market::INIT_SPACE;
         let perm = rent(EphemeralPermission::size_of(PERMISSION_MEMBERS) as u32);
-        println!("UserAccount {u} B, Positions {p} B; L1 rent total {} lamports; ER permission prefund {perm} lamports x2",
-            l1_rent(u) + l1_rent(p));
+        println!(
+            "UserAccount {u} B (L1 rent {} lamports), Positions {p} B (L1 rent {} lamports); \
+             L1 rent total {} lamports; ER permission prefund {perm} lamports x2",
+            l1_rent(u),
+            l1_rent(p),
+            l1_rent(u) + l1_rent(p)
+        );
+        assert_eq!(p, 3184, "Positions::SPACE is pinned by spec §2.9.1");
         // `Positions` is pinned to exactly 3184 B by `positions.rs`'s layout
         // test (spec §2.9.1); the old per-market `Position` < 400 B bound
         // (spec §8 Q3) no longer applies to one account holding 16 slots.

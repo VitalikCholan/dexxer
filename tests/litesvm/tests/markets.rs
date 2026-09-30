@@ -435,3 +435,224 @@ fn the_seventeenth_close_overwrites_the_oldest_history_record() {
     assert_eq!(p.history[0].reason, CloseReason::User.as_u8());
     assert_invariant(&h, &w, &[&t]);
 }
+
+/// Not a regression gate on exact numbers — a measurement (`-- --nocapture`)
+/// whose only asserts are that every measured instruction succeeded and did
+/// what it should. Prints one `CU <name> = <n>` line per scenario (spec §2.9
+/// "Реалізовано"). LiteSVM only: real ER/TEE CU is a devnet measurement.
+#[test]
+fn measure_slots() {
+    use dexxer_litesvm::{pdas, setup::Trader, token_ix};
+    let mut h = Harness::new();
+    let w = World::bootstrap(&mut h);
+    h.warp(9_101, NOW);
+    w.set_price(&mut h, P150, 5, NOW, 100);
+
+    // init_user (measured on a hand-built trader: `new_trader` hides it).
+    let kp = Keypair::new();
+    let o = kp.pubkey();
+    h.fund(&o, 5_000_000_000);
+    h.send(&[token_ix::create_ata(&o, &o, &w.mint)], &[&kp])
+        .unwrap();
+    h.send(&[ixs::faucet_init(&o, &w, 1_000_000_000)], &[&kp])
+        .unwrap();
+    let m = h
+        .send(&[ixs::init_user(&o, &w, [0x5a; 32])], &[&kp])
+        .unwrap();
+    println!("CU init_user = {}", m.compute_units_consumed);
+    let t = Trader {
+        user: pdas::user(&o),
+        positions: pdas::positions(&o),
+        ata: token_ix::ata(&o, &w.mint),
+        kp,
+    };
+    h.send(&[ixs::credit_deposit(&o, &t, &w, 1_000_000_000)], &[&t.kp])
+        .unwrap();
+
+    // Trading on one SOL slot.
+    let m = h
+        .send(
+            &[ixs::open_position(
+                &o,
+                &t,
+                &w,
+                Side::Long,
+                SOL10,
+                M150,
+                P150,
+            )],
+            &[&t.kp],
+        )
+        .unwrap();
+    println!("CU open_position = {}", m.compute_units_consumed);
+    assert!(h.slot(&t, &w.market).is_some());
+    h.warp(9_102, NOW);
+    w.set_price(&mut h, P150, 5, NOW, 100);
+    let m = h
+        .send(
+            &[ixs::increase_position(&o, &t, &w, SOL10, M150, P150)],
+            &[&t.kp],
+        )
+        .unwrap();
+    println!("CU increase_position = {}", m.compute_units_consumed);
+    assert_eq!(h.slot(&t, &w.market).unwrap().size, 2 * SOL10);
+    let m = h
+        .send(&[ixs::close_position(&o, &t, &w, P150)], &[&t.kp])
+        .unwrap();
+    println!("CU close_position = {}", m.compute_units_consumed);
+    assert!(h.slot(&t, &w.market).is_none());
+    assert_eq!(h.positions(&t.positions).history_len, 1);
+
+    // undelegate_user with 5 markets (SOL + 4) in remaining_accounts.
+    let mut keys = vec![w.market];
+    for (i, s) in ["BTC", "ETH", "HYPE", "ZEC"].iter().enumerate() {
+        keys.push(
+            w.add_market(&mut h, s, &format!("{}", 300 + i), btc_params())
+                .market,
+        );
+    }
+    let free = h.account::<UserAccount>(&t.user).free_margin;
+    h.send(&[ixs::withdraw(&o, &t, &w, free)], &[&t.kp])
+        .unwrap();
+    let m = h
+        .send(&[ixs::undelegate_user(&o, &t, &w, &keys)], &[&t.kp])
+        .unwrap();
+    println!(
+        "CU undelegate_user (5 markets) = {}",
+        m.compute_units_consumed
+    );
+    assert!(h.account::<UserAccount>(&t.user).exited);
+
+    // liquidation_check: one trader, mark crashed by a candidate-less tick.
+    let mut h = Harness::new();
+    let w = World::bootstrap(&mut h);
+    h.warp(100, NOW);
+    w.set_price(&mut h, P150, 5, NOW, 100);
+    let t = w.new_trader(&mut h, 1_000_000_000);
+    let o = t.kp.pubkey();
+    h.send(
+        &[ixs::open_position(
+            &o,
+            &t,
+            &w,
+            Side::Long,
+            SOL10,
+            M150,
+            P150,
+        )],
+        &[&t.kp],
+    )
+    .unwrap();
+    let mut p = MarketParams::sol_perp_defaults();
+    p.ema_alpha_bps = 10_000;
+    p.max_deviation_bps = 10_000;
+    h.send(
+        &[ixs::set_params(&w.admin.pubkey(), &w.config, &w.market, p)],
+        &[&w.admin],
+    )
+    .unwrap();
+    h.warp(101, NOW);
+    w.set_price(&mut h, 142_000_000, 5, NOW, 101);
+    h.send(&[ixs::crank_tick(&w.crank.pubkey(), &w, &[])], &[&w.crank])
+        .unwrap();
+    let m = h
+        .send(
+            &[ixs::liquidation_check(&w.crank.pubkey(), &w, &t)],
+            &[&w.crank],
+        )
+        .unwrap();
+    println!(
+        "CU liquidation_check (counts tick 1, no liquidation) = {}",
+        m.compute_units_consumed
+    );
+    assert_eq!(h.slot(&t, &w.market).unwrap().liq_ticks, 1);
+    h.warp(102, NOW);
+    w.set_price(&mut h, 142_000_000, 5, NOW, 102);
+    h.send(&[ixs::crank_tick(&w.crank.pubkey(), &w, &[])], &[&w.crank])
+        .unwrap();
+    let m = h
+        .send(
+            &[ixs::liquidation_check(&w.crank.pubkey(), &w, &t)],
+            &[&w.crank],
+        )
+        .unwrap();
+    println!(
+        "CU liquidation_check (liquidates) = {}",
+        m.compute_units_consumed
+    );
+    assert!(h.slot(&t, &w.market).is_none());
+    assert_invariant(&h, &w, &[&t]);
+
+    // crank_tick with 16 candidates: healthy, then 16 liquidations.
+    let mut h = Harness::new();
+    let w = World::bootstrap(&mut h);
+    h.warp(100, NOW);
+    w.set_price(&mut h, P150, 5, NOW, 100);
+    let traders: Vec<Trader> = (0..MAX_CANDIDATES)
+        .map(|_| {
+            let t = w.new_trader(&mut h, 1_000_000_000);
+            h.send(
+                &[ixs::open_position(
+                    &t.kp.pubkey(),
+                    &t,
+                    &w,
+                    Side::Long,
+                    SOL10,
+                    M150,
+                    P150,
+                )],
+                &[&t.kp],
+            )
+            .unwrap();
+            t
+        })
+        .collect();
+    let refs: Vec<&Trader> = traders.iter().collect();
+    let big = ixs::set_compute_unit_limit(1_400_000);
+    h.warp(101, NOW);
+    w.set_price(&mut h, P150, 5, NOW, 101);
+    let m = h
+        .send(
+            &[big.clone(), ixs::crank_tick(&w.crank.pubkey(), &w, &refs)],
+            &[&w.crank],
+        )
+        .unwrap();
+    println!(
+        "CU crank_tick (16 candidates, none liquidatable) = {}",
+        m.compute_units_consumed
+    );
+    let mut p = MarketParams::sol_perp_defaults();
+    p.ema_alpha_bps = 10_000;
+    p.max_deviation_bps = 10_000;
+    h.send(
+        &[ixs::set_params(&w.admin.pubkey(), &w.config, &w.market, p)],
+        &[&w.admin],
+    )
+    .unwrap();
+    // Two distinct prints below the liquidation price: tick 1, then 16 liquidations.
+    for (i, last) in [(102u64, false), (103u64, true)] {
+        h.warp(i, NOW);
+        w.set_price(&mut h, 120_000_000, 5, NOW, i);
+        let m = h
+            .send(
+                &[big.clone(), ixs::crank_tick(&w.crank.pubkey(), &w, &refs)],
+                &[&w.crank],
+            )
+            .unwrap();
+        if last {
+            println!(
+                "CU crank_tick (16 candidates, 16 liquidations) = {}",
+                m.compute_units_consumed
+            );
+        } else {
+            println!(
+                "CU crank_tick (16 candidates, tick 1, none liquidated yet) = {}",
+                m.compute_units_consumed
+            );
+        }
+    }
+    for t in &traders {
+        assert!(h.slot(t, &w.market).is_none(), "every candidate liquidated");
+    }
+    assert_invariant(&h, &w, &refs);
+}
