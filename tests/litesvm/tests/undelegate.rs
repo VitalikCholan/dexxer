@@ -132,6 +132,7 @@ fn undelegate_after_closed_trade_is_full_exit() {
     assert_eq!(u.exit_salt, [0u8; 32]);
     assert_eq!((u.session_expiry, u.actions_left), (0, 0));
     assert!(h.slot(&t, &w.market).is_none());
+    assert_eq!(h.positions(&t.positions).history_len, 0);
 }
 
 #[test]
@@ -154,4 +155,54 @@ fn undelegate_only_by_owner() {
         &[&w.crank],
     );
     assert_custom_error(&r, 2006);
+}
+
+#[test]
+fn exit_scrubs_history_and_is_blocked_by_an_open_position_on_any_market() {
+    let mut h = Harness::new();
+    let w = World::bootstrap(&mut h);
+    let btc = w.add_market(&mut h, "BTC", "1", MarketParams::sol_perp_defaults());
+    h.warp(9_101, NOW);
+    w.set_price(&mut h, P150, 5, NOW, 100);
+    w.set_price_on(&mut h, &btc, P150, 5, NOW, 100);
+    let t = w.new_trader(&mut h, 1_000_000_000);
+    let o = t.kp.pubkey();
+    h.send(
+        &[ixs::open_position_on(
+            &o,
+            &t,
+            &w,
+            &btc,
+            Side::Long,
+            SOL10,
+            M150,
+            P150,
+        )],
+        &[&t.kp],
+    )
+    .unwrap();
+    let markets = [w.market, btc.market];
+    let r = h.send(&[ixs::undelegate_user(&o, &t, &w, &markets)], &[&t.kp]);
+    assert!(r.is_err(), "open BTC position blocks the exit");
+    h.warp(9_102, NOW);
+    w.set_price_on(&mut h, &btc, P150, 5, NOW, 100);
+    h.send(&[ixs::close_position_on(&o, &t, &w, &btc, P150)], &[&t.kp])
+        .unwrap();
+    assert_eq!(h.positions(&t.positions).history_len, 1);
+    // Withdraw everything so the margin gate passes.
+    let free = h.account::<UserAccount>(&t.user).free_margin;
+    h.send(&[ixs::withdraw(&o, &t, &w, free)], &[&t.kp])
+        .unwrap();
+    h.send(&[ixs::undelegate_user(&o, &t, &w, &markets)], &[&t.kp])
+        .unwrap();
+    let raw = h.svm.get_account(&t.positions).unwrap();
+    let p = h.positions(&t.positions);
+    assert_eq!(p.history_len, 0);
+    // Everything after the 8-byte discriminator and the 32-byte owner, except
+    // the trailing header (head/len/version/bump/pad/reserved), is zero.
+    assert!(
+        raw.data[40..40 + 1536 + 1536].iter().all(|b| *b == 0),
+        "no slot or history byte leaves the ER"
+    );
+    assert!(h.account::<UserAccount>(&t.user).exited);
 }
