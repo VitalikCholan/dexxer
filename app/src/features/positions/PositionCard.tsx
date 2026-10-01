@@ -88,7 +88,7 @@ export interface PositionCardProps {
   onIncrease: () => void
   onDecrease: () => void
   onAddMargin: () => void
-  /** Registry does not know this market: no mark/uPnL, actions disabled, this note shown. */
+  /** Registry has no entry for this market yet: caption only, nothing is disabled. */
   note?: string
 }
 
@@ -153,24 +153,24 @@ export function PositionCard({
       ) : null}
       <View style={{ flexDirection: 'row', gap: space.sm }}>
         <View style={{ flex: 1 }}>
-          <Button variant="secondary" disabled={busy || !!note} onPress={onIncrease}>
+          <Button variant="secondary" disabled={busy} onPress={onIncrease}>
             Increase
           </Button>
         </View>
         <View style={{ flex: 1 }}>
-          <Button variant="secondary" disabled={busy || !!note} onPress={onDecrease}>
+          <Button variant="secondary" disabled={busy} onPress={onDecrease}>
             Decrease
           </Button>
         </View>
       </View>
       <View style={{ flexDirection: 'row', gap: space.sm }}>
         <View style={{ flex: 1 }}>
-          <Button variant="secondary" disabled={busy || !!note} onPress={onAddMargin}>
+          <Button variant="secondary" disabled={busy} onPress={onAddMargin}>
             Add margin
           </Button>
         </View>
         <View style={{ flex: 1 }}>
-          <Button variant="destructive" disabled={busy || !!note} onPress={onClose}>
+          <Button variant="destructive" disabled={busy} onPress={onClose}>
             Close
           </Button>
         </View>

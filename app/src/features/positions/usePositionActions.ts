@@ -1,16 +1,15 @@
 // app/src/features/positions/usePositionActions.ts
 //
-// Session-key actions (no MWA prompt) for ONE market's slot. `market` is the
-// registry entry of the selected card; `null` (unknown market, or nothing
-// selected) makes every action a no-op. `mark` comes from the selected card's
-// live public `Market` — the caller owns that single subscription.
-import { useCallback, useMemo, useState } from 'react'
+// Session-key actions (no MWA prompt) on ONE row (the active card). Accounts
+// come from the row's own live public `Market` (`controlTarget`) — the relayer
+// registry is not involved, so every open slot is controllable. `close` is a
+// pending action: it runs as soon as the active row's Market has delivered.
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { type Connection, type Keypair } from '@solana/web3.js'
 import { showToast } from '@/src/ui/Toast'
 import { describeTxError } from '@/src/lib/errors'
 import * as math from '@/src/lib/math'
-import { type MarketInfo } from '@/src/lib/markets'
-import { type PositionSlot } from '@/src/lib/positions'
+import { type DecodedMarket } from '@/src/lib/codecs'
 import {
   addMargin,
   closePosition,
@@ -18,73 +17,78 @@ import {
   increasePosition,
   solSize,
   tradeAccountsFor,
-  U64_MAX,
   usdAmount,
   type BaseTradeAccounts,
 } from '@/src/lib/trade'
+import { controlTarget, type PositionRow } from './positionRows'
 
 export function usePositionActions(
   base: BaseTradeAccounts | null,
   conn: Connection | null,
   session: Keypair | null,
-  market: MarketInfo | null,
-  slot: PositionSlot | null,
-  mark: bigint | null,
-  onDone?: () => void,
+  row: PositionRow | null,
+  market: DecodedMarket | null,
 ) {
   const [busy, setBusy] = useState(false)
-  const accounts = useMemo(() => (base && market ? tradeAccountsFor(base, market) : null), [base, market])
+  const [closeRequested, setCloseRequested] = useState(false)
+  const accounts = useMemo(() => {
+    const target = row ? controlTarget(row, market) : null
+    return base && target ? tradeAccountsFor(base, target) : null
+  }, [base, row, market])
+  const mark = accounts && market ? market.mark : null
+  const side = row?.slot.side ?? null
 
-  const run = useCallback(
-    async (label: string, fn: () => Promise<string>) => {
-      setBusy(true)
-      try {
-        await fn()
-        showToast({ tone: 'success', text: `${label} confirmed` })
-        onDone?.()
-      } catch (e) {
-        showToast({ tone: 'danger', text: describeTxError(e) })
-      } finally {
-        setBusy(false)
-      }
-    },
-    [onDone],
-  )
+  /** Resolves `true` when the transaction confirmed (errors are toasted, not thrown). */
+  const run = useCallback(async (label: string, fn: () => Promise<string>): Promise<boolean> => {
+    setBusy(true)
+    try {
+      await fn()
+      showToast({ tone: 'success', text: `${label} confirmed` })
+      return true
+    } catch (e) {
+      showToast({ tone: 'danger', text: describeTxError(e) })
+      return false
+    } finally {
+      setBusy(false)
+    }
+  }, [])
 
-  const close = useCallback(() => {
-    if (!conn || !session || !accounts) return
+  useEffect(() => {
+    if (!closeRequested || busy || !conn || !session || !accounts) return
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setCloseRequested(false)
     void run('Close', () => closePosition(conn, session, accounts))
-  }, [conn, session, accounts, run])
+  }, [closeRequested, busy, conn, session, accounts, run])
+
+  const requestClose = useCallback(() => setCloseRequested(true), [])
 
   const increase = useCallback(
-    (addSizeSol: number, addMarginUsd: number) => {
-      if (!conn || !session || !accounts || !slot || mark === null) return Promise.resolve()
-      const limit = math.openSlippageLimit(slot.side, mark)
+    async (addSizeSol: number, addMarginUsd: number) => {
+      if (!conn || !session || !accounts || !side || mark === null) return false
+      const limit = math.openSlippageLimit(side, mark)
       return run('Increase', () =>
         increasePosition(conn, session, accounts, solSize(addSizeSol), usdAmount(addMarginUsd), limit),
       )
     },
-    [conn, session, accounts, slot, mark, run],
+    [conn, session, accounts, side, mark, run],
   )
 
   const decrease = useCallback(
-    (closeSizeSol: number) => {
-      if (!conn || !session || !accounts || !slot) return Promise.resolve()
-      // Raw price units end to end (see trade.ts).
-      const limitPrice =
-        mark !== null ? math.closeSlippageLimit(slot.side, mark) : slot.side === 'Long' ? 0n : U64_MAX
+    async (closeSizeSol: number) => {
+      if (!conn || !session || !accounts || !side || mark === null) return false
+      const limitPrice = math.closeSlippageLimit(side, mark)
       return run('Decrease', () => decreasePosition(conn, session, accounts, solSize(closeSizeSol), limitPrice))
     },
-    [conn, session, accounts, slot, mark, run],
+    [conn, session, accounts, side, mark, run],
   )
 
   const addMarginTo = useCallback(
-    (amount: bigint) => {
-      if (!conn || !session || !accounts) return Promise.resolve()
+    async (amount: bigint) => {
+      if (!conn || !session || !accounts) return false
       return run('Add margin', () => addMargin(conn, session, accounts, amount))
     },
     [conn, session, accounts, run],
   )
 
-  return { close, increase, decrease, addMargin: addMarginTo, busy }
+  return { requestClose, increase, decrease, addMargin: addMarginTo, busy, ready: accounts !== null }
 }

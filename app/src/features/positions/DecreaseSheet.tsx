@@ -58,9 +58,12 @@ export function DecreaseSheet({ open, onClose, position, symbol, markUsd, busy, 
         value={realizedPnl !== null ? `${realizedPnl >= 0n ? '+' : ''}$${(Number(realizedPnl) / 1e6).toFixed(2)}` : '—'}
         tone={realizedPnl === null ? undefined : realizedPnl >= 0n ? 'success' : 'danger'}
       />
+      {markUsd === null ? (
+        <Text style={[caption, { color: colors.textSecondary, textAlign: 'center' }]}>Waiting for market price…</Text>
+      ) : null}
       <Button
         variant="secondary"
-        disabled={busy || closeSizeNum <= 0 || closeSizeNum > maxSol}
+        disabled={busy || markUsd === null || closeSizeNum <= 0 || closeSizeNum > maxSol}
         onPress={() => void onSubmit(closeSizeNum)}
       >
         {busy ? 'Signing with session key…' : 'Confirm decrease'}

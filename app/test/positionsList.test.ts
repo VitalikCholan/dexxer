@@ -28,3 +28,29 @@ test('positionRows: a registry market without a slot never appears', () => {
   const p: DecodedPositions = { owner: k(), slots: [], history: [], version: 1, bump: 1 }
   assert.deepEqual(positionRows(p, [mi('SOL'), mi('BTC')]), [])
 })
+
+import { PublicKey } from '@solana/web3.js'
+import { controlTarget, displaySymbol, marketMatches } from '../src/features/positions/positionRows'
+import { pdas } from '../src/lib/pdas'
+import type { DecodedMarket } from '../src/lib/codecs'
+
+const live = (symbol: string): DecodedMarket => ({ mark: 1n, maxLevBps: 1, imrBps: 1, mmrBps: 1, openFeeBps: 1, closeFeeBps: 1, symbol, feed: k() })
+
+test('controlTarget: an unregistered market is controllable from its own Market account; a stale/other Market is not', () => {
+  const btc = live('BTC')
+  const stray = pdas.marketFor('BTC')
+  const row = { slot: slot(1, stray), symbol: 'x…', market: null }
+  assert.deepEqual(controlTarget(row, btc), { market: stray, feed: btc.feed })
+  assert.equal(controlTarget(row, live('ETH')), null)
+  assert.equal(controlTarget(row, null), null)
+  assert.equal(marketMatches(stray, live('bad symbol!')), false)
+})
+
+test('displaySymbol: registry, else live Market symbol, else shortened key', () => {
+  const stray = pdas.marketFor('BTC')
+  const row = { slot: slot(1, stray), symbol: stray.toBase58().slice(0, 4) + '…', market: null }
+  assert.equal(displaySymbol(row, live('BTC')), 'BTC')
+  assert.equal(displaySymbol(row, null), row.symbol)
+  assert.equal(displaySymbol({ ...row, market: mi('SOL', stray) }, null), 'SOL')
+  void PublicKey
+})

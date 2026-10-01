@@ -27,6 +27,8 @@ export interface AddMarginSheetProps {
   freeMarginUsd: bigint | null
   mmrBps: bigint
   busy: boolean
+  /** The position's Market has loaded (its feed is needed to sign). */
+  ready: boolean
   /** Raw 1e6 amount — `add_margin`'s argument. */
   onSubmit: (amount: bigint) => Promise<void>
 }
@@ -39,6 +41,7 @@ export function AddMarginSheet({
   freeMarginUsd,
   mmrBps,
   busy,
+  ready,
   onSubmit,
 }: AddMarginSheetProps) {
   const { colors } = useTheme()
@@ -84,7 +87,10 @@ export function AddMarginSheet({
       {tooMuch ? (
         <Text style={[caption, { color: colors.short }]}>More than your free margin — deposit first</Text>
       ) : null}
-      <Button variant="primary" disabled={busy || add === 0n || tooMuch} onPress={() => void onSubmit(add)}>
+      {!ready ? (
+        <Text style={[caption, { color: colors.textSecondary, textAlign: 'center' }]}>Waiting for market price…</Text>
+      ) : null}
+      <Button variant="primary" disabled={busy || !ready || add === 0n || tooMuch} onPress={() => void onSubmit(add)}>
         {busy ? 'Signing with session key…' : 'Confirm add margin'}
       </Button>
       <Text style={[caption, { color: colors.textSecondary, textAlign: 'center' }]}>

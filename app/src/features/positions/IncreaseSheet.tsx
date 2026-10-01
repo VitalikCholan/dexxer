@@ -70,9 +70,12 @@ export function IncreaseSheet({
         keyboardType="decimal-pad"
       />
       <Row label="New liq. price ≈" value={newLiq !== null ? `$${(Number(newLiq) / 1e6).toFixed(2)}` : '—'} />
+      {markUsd === null ? (
+        <Text style={[caption, { color: colors.textSecondary, textAlign: 'center' }]}>Waiting for market price…</Text>
+      ) : null}
       <Button
         variant="primary"
-        disabled={busy || addSizeNum <= 0}
+        disabled={busy || markUsd === null || addSizeNum <= 0}
         onPress={() => void onSubmit(addSizeNum, addMarginNum)}
       >
         {busy ? 'Signing with session key…' : 'Confirm increase'}
