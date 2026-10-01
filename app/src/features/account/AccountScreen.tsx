@@ -24,7 +24,8 @@ import { useTeeConnection } from '@/src/lib/er'
 import { useMwaSigning } from '@/src/lib/mwa/useMwaSigning'
 import { useRelayerSession } from '@/src/lib/relayerAuth'
 import { useLiveAccount } from '@/src/lib/live'
-import { decodeDisclosureQueue, decodePosition, decodeUserAccount } from '@/src/lib/codecs'
+import { decodeUserAccount } from '@/src/lib/codecs'
+import { decodePositions } from '@/src/lib/positions'
 import { describeTxError } from '@/src/lib/errors'
 import { formatSessionLeft, formatUsd2 } from '@/src/lib/status'
 import { pdas } from '@/src/lib/pdas'
@@ -36,7 +37,7 @@ import { ReceiptSection } from '../receipt/ReceiptSection'
 import { DepositSheet } from './DepositSheet'
 import { WithdrawSheet } from './WithdrawSheet'
 import { ExitSheet, type ExitChecklist } from './ExitSheet'
-import { buildAccountPdas, depositTx, exitTx, withdrawTx } from './accountTx'
+import { buildAccountPdas, depositTx, exitMarkets, exitTx, withdrawTx } from './accountTx'
 
 type OpenSheet = 'deposit' | 'withdraw' | 'exit' | null
 
@@ -59,10 +60,10 @@ export function AccountScreen() {
     [signTransactions, getConnection, ensureRelayerSession],
   )
 
-  const dqPubkey = owner ? pdas.disclosureQueue(owner) : null
+  // Task 4 adds `TradeAccounts.positions`; until then derive it here.
+  const positionsPubkey = useMemo(() => (owner ? pdas.positions(owner) : null), [owner])
   const user = useLiveAccount(conn, accounts?.userAccount ?? null, decodeUserAccount)
-  const position = useLiveAccount(conn, accounts?.position ?? null, decodePosition)
-  const dq = useLiveAccount(conn, dqPubkey, decodeDisclosureQueue)
+  const positionsLive = useLiveAccount(conn, positionsPubkey, decodePositions)
 
   const [sheet, setSheet] = useState<OpenSheet>(null)
   const [busy, setBusy] = useState(false)
@@ -96,9 +97,11 @@ export function AccountScreen() {
     [owner, run, mwa],
   )
   const handleExit = useCallback(() => {
-    if (!owner || !accounts || !dqPubkey) return Promise.resolve()
-    return run('Exit', async () => exitTx(await buildAccountPdas(owner), mwa, accounts.position, dqPubkey))
-  }, [owner, accounts, dqPubkey, run, mwa])
+    if (!owner || !positionsPubkey) return Promise.resolve()
+    return run('Exit', async () =>
+      exitTx(await buildAccountPdas(owner), mwa, positionsPubkey, exitMarkets(positionsLive.value, pdas.market())),
+    )
+  }, [owner, positionsPubkey, positionsLive.value, run, mwa])
 
   if (!account) {
     return (
@@ -118,12 +121,9 @@ export function AccountScreen() {
   const sessionLabel = formatSessionLeft(expirySec, now, actionsLeft)
 
   const checklist: ExitChecklist = {
-    noOpenPosition: position.value === null || position.value.state === 'Empty',
+    noOpenPosition: positionsLive.value === null || positionsLive.value.slots.length === 0,
     balanceWithdrawn: user.value === null || (user.value.freeMargin === 0n && user.value.lockedMargin === 0n),
   }
-  // Informational only (week-5 Task 2 retired the `QueueNotEmpty` gate) —
-  // how many still-queued trades will be revealed on schedule after exit.
-  const pendingDisclosures = dq.value?.len ?? 0
 
   return (
     <Page>
@@ -138,8 +138,8 @@ export function AccountScreen() {
           <Badge tone={sessionActive ? 'success' : 'danger'}>{sessionLabel}</Badge>
         </View>
 
-        {gate.status === 'needs_setup' ? null : error || user.error || position.error || dq.error ? (
-          <Text style={{ color: colors.short }}>{error ?? user.error ?? position.error ?? dq.error}</Text>
+        {gate.status === 'needs_setup' ? null : error || user.error || positionsLive.error ? (
+          <Text style={{ color: colors.short }}>{error ?? user.error ?? positionsLive.error}</Text>
         ) : null}
 
         {gate.status === 'needs_setup' ? (
@@ -195,7 +195,6 @@ export function AccountScreen() {
           open={FEATURES.exit && sheet === 'exit'}
           onClose={() => setSheet(null)}
           checklist={checklist}
-          pendingDisclosures={pendingDisclosures}
           busy={busy}
           onConfirm={handleExit}
         />
