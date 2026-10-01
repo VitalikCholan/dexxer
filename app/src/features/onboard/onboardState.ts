@@ -62,11 +62,12 @@ export function isDelegated(snap: L1Snapshot): boolean {
 }
 
 /**
- * Returning owner (week-5 Task 2): the `UserAccount` PDA survived a prior
- * `undelegate_user`, is back under `dexxer_core` and carries `exited`. Only
- * `init_user_reuse_queue` (`mut`, not `init`) can re-initialise it.
+ * The `UserAccount` PDA survived a prior `undelegate_user`: it is back under
+ * `dexxer_core` and carries `exited`. Nothing re-initialises it — the relayer's
+ * janitor closes it (`close_exited_user`, within a commit cycle), after which
+ * onboarding starts from scratch.
  */
-export function needsReuseQueue(snap: L1Snapshot): boolean {
+export function isExitedOnL1(snap: L1Snapshot): boolean {
   return snap.userAccount !== null && !isDelegated(snap) && readUserAccountExited(snap.userAccount.data)
 }
 
@@ -83,6 +84,7 @@ export function l1ProgressFrom(snap: L1Snapshot): OnboardState {
   if (!snap.faucet) return 'NotOnboarded'
   if (!snap.userAccount) return 'Funded'
   if (isDelegated(snap)) return 'Delegated'
+  if (isExitedOnL1(snap)) return 'Exited'
   return 'Initialized'
 }
 

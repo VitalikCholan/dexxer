@@ -16,7 +16,7 @@
 import { test, afterEach } from 'node:test'
 import assert from 'node:assert/strict'
 import { BN, BorshAccountsCoder } from '@coral-xyz/anchor'
-import { Keypair, PublicKey, type AccountInfo, type Connection, type TransactionInstruction } from '@solana/web3.js'
+import { Keypair, PublicKey, SystemProgram, Transaction, type AccountInfo, type Connection, type TransactionInstruction } from '@solana/web3.js'
 import { ASSOCIATED_TOKEN_PROGRAM_ID, getAssociatedTokenAddressSync } from '@solana/spl-token'
 import {
   DELEGATION_PROGRAM_ID,
@@ -27,6 +27,8 @@ import {
 import { baseConn } from '../src/lib/solana'
 import { DEXXER_CORE_IDL, DEXXER_CORE_PROGRAM_ID } from '../src/lib/anchor'
 import { pdas } from '../src/lib/pdas'
+import { assertIxKeysMatchIdl } from './ixAccounts.test'
+import { l1KeysFor, l1ProgressFrom, readL1Snapshot } from '../src/features/onboard/onboardState'
 import type { NonceInfo } from '../src/lib/nonce'
 import {
   collectBatchLegs,
@@ -63,18 +65,19 @@ async function userAccountData(o: {
   actionsLeft?: number
 }) {
   return encodeAccount('UserAccount', {
-    version: 2,
+    version: 3,
     owner: o.owner,
     session_key: o.sessionKey ?? PublicKey.default,
     session_expiry: new BN(o.sessionExpiry ?? 0),
     actions_left: o.actionsLeft ?? 20,
     free_margin: new BN(0),
     locked_margin: new BN(0),
-    nonce: new BN(0),
     last_withdraw_slot: new BN(0),
     exit_salt: Array(32).fill(1),
     bump: 255,
     exited: o.exited ?? false,
+    rent_payer: PublicKey.default,
+    _reserved: Array(32).fill(0),
   })
 }
 
@@ -112,8 +115,7 @@ function makeCtx(): OnboardCtx {
     mint: MINT,
     market,
     userAccount: pdas.userAccount(owner),
-    position: pdas.position(owner, market),
-    disclosureQueue: pdas.disclosureQueue(owner),
+    positions: pdas.positions(owner),
     faucetPda: pdas.faucet(owner),
     mintAuth: pdas.mintAuth(),
     pool: pdas.pool(MINT),
@@ -163,6 +165,8 @@ async function collect(
   const log: string[] = []
   const mwa = { getConnection: async () => fakeConn(tee) as unknown as Connection }
   const legs = await collectBatchLegs(ctx, mwa, feePayer, (s) => log.push(s), NONCES)
+  // anchor-ts drops unknown keys silently: every built leg must carry exactly the IDL's account count.
+  for (const l of legs) assertIxKeysMatchIdl(new Transaction().add(...l.ixs))
   return { legs: legs.map(shape), log, raw: legs }
 }
 
@@ -205,6 +209,24 @@ test('fresh owner: four legs, L1 legs sponsored on nonces 0/1/2, ER leg owner-pa
     'delegate_spl carries only eSPL instructions',
   )
   assert.ok(raw[3].conn !== baseConn, 'ER leg is sent on the owner TEE connection, not the base one')
+
+  // Exact account sets and order (the IDL's), on real PDAs.
+  const keys = (ix: TransactionInstruction) => ix.keys.map((k) => k.pubkey.toBase58())
+  const b58 = (...p: PublicKey[]) => p.map((k) => k.toBase58())
+  const initUser = raw[0].ixs[2]
+  assert.deepEqual(
+    keys(initUser),
+    b58(ctx.owner, FEE_PAYER, ctx.config, ctx.userAccount, ctx.positions, SystemProgram.programId),
+  )
+  const delegateUser = keys(raw[2].ixs[0])
+  assert.equal(delegateUser.length, 14)
+  assert.equal(delegateUser[1], FEE_PAYER.toBase58())
+  assert.equal(delegateUser[6], ctx.userAccount.toBase58())
+  assert.equal(delegateUser[10], ctx.positions.toBase58())
+  const initPerm = keys(raw[3].ixs[0])
+  assert.equal(initPerm.length, 9)
+  assert.equal(initPerm[4], permissionPdaFromAccount(ctx.userAccount).toBase58())
+  assert.equal(initPerm[5], permissionPdaFromAccount(ctx.positions).toBase58())
 })
 
 test('self-funded owner (feePayer === owner): L1 legs are not sponsored', async () => {
@@ -221,27 +243,23 @@ test('self-funded owner (feePayer === owner): L1 legs are not sponsored', async 
   )
 })
 
-test('returning owner after exit: init_user_reuse_queue instead of init_user, faucet/ATA skipped', async () => {
+test('returning owner after exit: no L1 leg is built until the janitor closed the accounts', async () => {
   const ctx = makeCtx()
-  const base = new Map([
-    [ctx.faucetPda.toBase58(), info(DEXXER_CORE_PROGRAM_ID)],
-    [ctx.ownerAta.toBase58(), info(PublicKey.unique())],
-    [
-      ctx.userAccount.toBase58(),
-      info(DEXXER_CORE_PROGRAM_ID, await userAccountData({ owner: ctx.owner, exited: true })),
-    ],
-  ])
-  const { legs, log } = await collect(ctx, base, new Map())
-  assert.deepEqual(
-    legs.map((l) => [l.label, l.ixs]),
-    [
-      ['faucet+init_user', ['init_user_reuse_queue']],
-      ['delegate_spl', legs[1].ixs],
-      ['delegate_user', ['delegate_user']],
-      ['permissions+session', ['init_permissions', 'set_session']],
-    ],
+  const ua = await userAccountData({ owner: ctx.owner, exited: true })
+  installBase(
+    new Map([
+      [ctx.config.toBase58(), info(DEXXER_CORE_PROGRAM_ID, Buffer.alloc(8))],
+      [ctx.userAccount.toBase58(), info(DEXXER_CORE_PROGRAM_ID, ua)],
+      [pdas.faucet(ctx.owner).toBase58(), info(DEXXER_CORE_PROGRAM_ID)],
+    ]),
   )
-  assert.ok(log.includes('faucet_init: exists, skipped'))
+  const snap = await readL1Snapshot(baseConn, l1KeysFor(ctx.owner, MINT))
+  assert.equal(l1ProgressFrom(snap), 'Exited')
+  const log: string[] = []
+  const mwa = { getConnection: async () => fakeConn(new Map()) as unknown as Connection }
+  const legs = await collectBatchLegs(ctx, mwa, FEE_PAYER, (s) => log.push(s), [null, null, null], snap)
+  assert.deepEqual(legs.map((l) => l.label), [])
+  assert.ok(log.some((s) => s.startsWith('init_user: account exited')))
 })
 
 test('initialised but not exited and not delegated: nothing to (re)initialise, delegation still pending', async () => {

@@ -20,18 +20,13 @@ const MARKET_SEED = Buffer.from('market')
 const RISK_SEED = Buffer.from('risk')
 const POOL_SEED = Buffer.from('pool')
 const USER_SEED = Buffer.from('user')
-const POSITION_SEED = Buffer.from('position')
-const DQ_SEED = Buffer.from('dq')
+const POSITIONS_SEED = Buffer.from('positions')
 const FAUCET_SEED = Buffer.from('faucet')
 const MINT_AUTH_SEED = Buffer.from('mint_auth')
 const FEE_ESCROW_SEED = Buffer.from('fee_escrow')
 // Week 4 (Task 1): private live pool counters — see programs/dexxer_core/src/state/pool_live.rs.
 const POOL_LIVE_SEED = Buffer.from('pool_live')
-// Week 3 (Task 9): seeds for the 13F/BalancesRoot pipeline, matching
-// `programs/dexxer_core/src/state/mod.rs` and `tests/er/lib/program.ts`'s
-// `pdas` verbatim.
-const COMMIT_SEED = Buffer.from('commit')
-const DISCLOSURE_SEED = Buffer.from('disclosure')
+// `BalancesRoot` seed, matching `programs/dexxer_core/src/state/mod.rs` verbatim.
 const BALANCES_ROOT_SEED = Buffer.from('balances_root')
 // Week 5, Task 3: the MagicBlock Crank program's per-authority executor PDA.
 // Pinned validator source is cited in `tests/er/lib/crank-signer.ts`.
@@ -51,16 +46,15 @@ function pda(seeds: (Buffer | Uint8Array)[], programId: PublicKey): PublicKey {
   return PublicKey.findProgramAddressSync(seeds, programId)[0]
 }
 
-/** Accepts either a 32-byte `Uint8Array`/`Buffer` or a hex string (with or without `0x`) — mirrors `tests/er/lib/program.ts`'s `hashSeed`. */
-function hashSeed(hash: Uint8Array | string): Buffer {
-  if (typeof hash === 'string') {
-    const hex = hash.startsWith('0x') ? hash.slice(2) : hash
-    const b = Buffer.from(hex, 'hex')
-    if (b.length !== 32) throw new Error(`commitment hash must be 32 bytes, got ${b.length}`)
-    return b
-  }
-  if (hash.length !== 32) throw new Error(`commitment hash must be 32 bytes, got ${hash.length}`)
-  return Buffer.from(hash)
+/** `symbol: [u8; 8]` of `init_market` — 1–8 bytes `A-Z0-9`, NUL-padded (program's `validate_symbol`). */
+export function symbolBytes(symbol: string): Buffer {
+  if (!/^[A-Z0-9]{1,8}$/.test(symbol)) throw new Error(`bad market symbol: ${symbol}`)
+  const b = Buffer.alloc(8)
+  b.write(symbol, 'ascii')
+  return b
+}
+export function symbolString(bytes: Uint8Array): string {
+  return Buffer.from(bytes).toString('ascii').replace(/\0+$/, '')
 }
 
 export const pdas = {
@@ -76,7 +70,8 @@ export const pdas = {
    */
   liqCrankSigner: () =>
     pda([CRANK_EXECUTOR_SEED, pdas.feeEscrow().toBuffer()], CRANK_PROGRAM_ID),
-  market: () => pda([MARKET_SEED, SOL_SYMBOL], DEXXER_CORE_PROGRAM_ID),
+  market: () => pdas.marketFor('SOL'),
+  marketFor: (symbol: string) => pda([MARKET_SEED, symbolBytes(symbol)], DEXXER_CORE_PROGRAM_ID),
   marketRisk: (market: PublicKey) => pda([RISK_SEED, market.toBuffer()], DEXXER_CORE_PROGRAM_ID),
   pool: (mint: PublicKey) => pda([POOL_SEED, mint.toBuffer()], DEXXER_CORE_PROGRAM_ID),
   /** Private live pool counters (week 4, Task 1) — every trading/money instruction writes here; `pool` above is a step-rounded snapshot written only by `commit_aggregate`. */
@@ -87,17 +82,10 @@ export const pdas = {
   },
   faucet: (owner: PublicKey) => pda([FAUCET_SEED, owner.toBuffer()], DEXXER_CORE_PROGRAM_ID),
   userAccount: (owner: PublicKey) => pda([USER_SEED, owner.toBuffer()], DEXXER_CORE_PROGRAM_ID),
-  position: (owner: PublicKey, market: PublicKey) =>
-    pda([POSITION_SEED, owner.toBuffer(), market.toBuffer()], DEXXER_CORE_PROGRAM_ID),
-  disclosureQueue: (owner: PublicKey) => pda([DQ_SEED, owner.toBuffer()], DEXXER_CORE_PROGRAM_ID),
+  positions: (owner: PublicKey) => pda([POSITIONS_SEED, owner.toBuffer()], DEXXER_CORE_PROGRAM_ID),
   /** Oracle feed PDA, derived under `oracleProgram` (`Config.oracle_program` — the real devnet Pricing Oracle, not `dexxer_core`). */
   feedUnder: (oracleProgram: PublicKey, lazerFeedId: string = LAZER_FEED_ID) =>
     pda([FEED_SEED, LAZER_SEED, Buffer.from(lazerFeedId)], oracleProgram),
-  // Week 3 (Task 9/8b): 13F/BalancesRoot pipeline PDAs — History reads
-  // `Disclosure`, Receipt reads `BalancesRoot`. Hash-seeded, not
-  // nonce-seeded (ruling 9, Task 8b) — see tests/er/lib/program.ts's pdas.
-  commitment: (hash: Uint8Array | string) => pda([COMMIT_SEED, hashSeed(hash)], DEXXER_CORE_PROGRAM_ID),
-  disclosure: (hash: Uint8Array | string) => pda([DISCLOSURE_SEED, hashSeed(hash)], DEXXER_CORE_PROGRAM_ID),
   balancesRoot: () => pda([BALANCES_ROOT_SEED], DEXXER_CORE_PROGRAM_ID),
 }
 

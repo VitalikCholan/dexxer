@@ -8,7 +8,7 @@ import type { Connection, Keypair, PublicKey, TransactionInstruction } from '@so
 import type { NonceInfo } from '@/src/lib/nonce'
 
 export type OnboardState =
-  'Disconnected' | 'NotOnboarded' | 'Funded' | 'Initialized' | 'Delegated' | 'Credited' | 'Permissioned' | 'SessionSet'
+  'Disconnected' | 'NotOnboarded' | 'Funded' | 'Exited' | 'Initialized' | 'Delegated' | 'Credited' | 'Permissioned' | 'SessionSet'
 
 export type BatchPhase = 'Idle' | 'Collecting' | 'Signing' | 'Submitting' | 'Done' | 'Failed'
 
@@ -43,10 +43,11 @@ export interface OnboardCtx {
   owner: PublicKey
   config: PublicKey
   mint: PublicKey
+  /** SOL market — kept for `L1Keys` compatibility only; NOT an account of `init_user`/`delegate_user`/`init_permissions`. */
   market: PublicKey
   userAccount: PublicKey
-  position: PublicKey
-  disclosureQueue: PublicKey
+  /** Zero-copy `Positions` (16 slots) — the trader's second delegated account next to `userAccount`. */
+  positions: PublicKey
   faucetPda: PublicKey
   mintAuth: PublicKey
   pool: PublicKey
