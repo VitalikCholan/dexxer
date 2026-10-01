@@ -27,7 +27,7 @@
 
 **Що тепер живе на devnet (01.10.2026).** Програма `Fyg2yJBoN97ScWxT37xBp2zaaiNncNqnGJ7PAbtnUfCY`
 (слот `506295949`), Config/пул/`FeeEscrow`/`BalancesRoot`, п'ять ринків (SOL, BTC, ETH, HYPE, ZEC) з
-п'ятьма запланованими `crank_tick` (`i64::MAX`, 1000 мс), relayer на Railway (деплоймент `8b33d95d`,
+п'ятьма запланованими `crank_tick` (`i64::MAX`, 1000 мс), relayer на Railway (деплоймент `8b33d95d`, з ≈21:30 за Києвом — `5a070a7c` з політикою `ALWAYS`/180 с,
 `COMMIT_INTERVAL_MS=300000`), dev-client APK на нову програму. Стару програму `G2ok…` **не закрито**
 (незворотне рішення власника, відкрите).
 
@@ -193,9 +193,19 @@ permissioned = true), `fund-fee-payer` `eCigiqHW…` (0.2 SOL у `FeeEscrow`, б
 
 **Railway ігнорує `services/relayer/railway.json`.** У деплойменті `fileServiceManifest: {}`, а
 `serviceManifest` має `restartPolicyType: ON_FAILURE`, `restartPolicyMaxRetries: 10`,
-`healthcheckTimeout: 30` (лог `Retry window: 30s`). `ALWAYS` і 180 с з репо **не діють**, доки
-власник не вкаже в налаштуваннях сервісу Config-as-code шлях `services/relayer/railway.json` і не
-передеплоїть. Власника попрошено; на 01.10.2026 не зроблено.
+`healthcheckTimeout: 30` (лог `Retry window: 30s`). `ALWAYS` і 180 с з репо не діяли.
+
+**Політику застосовано того ж вечора (контролер, ≈21:30 за Києвом).** Config-as-code
+(`railway.json`/`railway.toml`) Railway оголосив застарілим на користь Infrastructure-as-Code
+`.railway/railway.ts`: `update-service` з `railwayConfigFile` відхилено саме з цим повідомленням, тож
+`services/relayer/railway.json` Railway не застосує ніколи — він лишається документацією намірених
+значень. Значення виставлено напряму в налаштуваннях сервісу (Railway MCP `update-service`):
+`restartPolicyType = ALWAYS`, `healthcheckTimeout = 180`; `get-service-config` після —
+`healthcheckTimeout: 180, restartPolicyType: "ALWAYS"`. MCP `redeploy` (деплоймент `3d1ccce7`) упав на
+BUILD_IMAGE (`Railpack failed to prepare the build`): у деплойменту з `railway up` нема джерела-репо для
+перезбирання; живий деплоймент не зачеплено. Свіжий `railway up --service relayer --ci` → деплоймент
+**`5a070a7c` SUCCESS** (21:30:23 за Києвом), `/healthz` ok, `commitIntervalMs 300000`, 5 ринків. Між
+`8b33d95d` і `5a070a7c` живою була `ON_FAILURE` × 10 / 30 с.
 
 **`COMMIT_INTERVAL_MS` повернуто на 300000** (рулінг контролера після Task 5). Коміт коштує 200 000
 лам. (M-слоти-B), тож при 60 с `FeeEscrow` спорожнів би за ≈16 год. Перевірено читанням `/healthz`
@@ -203,7 +213,8 @@ permissioned = true), `fund-fee-payer` `eCigiqHW…` (0.2 SOL у `FeeEscrow`, б
 
 ### Відкрите після Task 4
 
-- Config-as-code шлях на Railway (власник), потім деплой. До того діє `ON_FAILURE` × 10 / 30 с.
+- ~~Config-as-code шлях на Railway~~ — застосовано напряму (`5a070a7c`, див. вище); відкрите — перенести
+  налаштування сервісу в `.railway/railway.ts`.
 - Успішний `commit_aggregate` не пише рядка логу (лише збій).
 - Тіки ринків послідовні; петля росте лінійно з кількістю ринків, `CRANK_WATCHDOG_MS` (120 с) від
   неї не масштабується.
@@ -451,8 +462,8 @@ Hermes `Buffer.subarray().toString()` повертає `"83,79,76,0,0,0,0,0"` з
 ## Відкрите після плану 4
 
 - **Незворотні рішення власника:** `solana program close G2ok…` (повертає ренту старої програми,
-  старі задачі планувальника помруть разом з нею); Config-as-code шлях на Railway
-  (`services/relayer/railway.json`) + деплой. До того живе `ON_FAILURE` × 10 / healthcheck 30 с.
+  старі задачі планувальника помруть разом з нею). Окремо, не незворотне: перенесення налаштувань
+  сервісу Railway у `.railway/railway.ts` (політика `ALWAYS` / 180 с уже застосована напряму, `5a070a7c`).
 - **Smoke 8–9** з апки, повторний smoke обох фіксів на свіжому APK, Phantom.
 - **Не виміряно:** стійкість задач до рестарту TEE; `crank_tick` з 12 парами (розмір і CU); CU
   `credit_deposit`/`withdraw` в ER; `ComputeBudget` 1.4M в ER; справжні рядки помилок TEE для
@@ -481,6 +492,11 @@ Hermes `Buffer.subarray().toString()` повертає `"83,79,76,0,0,0,0,0"` з
 - Пробна підписка Railway закінчилась непомітно: relayer лежав з 25.09, Postgres — з 22.09. Нічого
   про це не сповіщало (див. uptime-монітор).
 - `solana program dump <id> -` пише файл з іменем `-`, а не в stdout.
-- `railway.json` у репо не означає застосованої політики: перевіряти `serviceManifest` деплойменту.
+- `railway.json` у репо не означає застосованої політики: перевіряти `serviceManifest` деплойменту. Config-as-code Railway
+  застарів (`.railway/railway.ts`) — налаштування сервісу виставляти напряму (`update-service`).
+- Передеплой сервісу, залитого `railway up`, — лише `railway up`: MCP `redeploy` не має джерела-репо й
+  падає на BUILD_IMAGE.
+- Процес `railway mcp` плагіна тримає токен, з яким стартував, і стає `Unauthorized`, коли той спливає, —
+  перезапустити процес (або конектор Railway claude.ai).
 - Сценарій, що форсує параметри спільного ринку, ліквідує **кожного** трейдера на ньому, не лише
   свого (13 забрав трейдера 01).

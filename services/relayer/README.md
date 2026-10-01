@@ -79,7 +79,7 @@ permission member of (privacy rule, see repo `CLAUDE.md`).
     rejects. Railway's restart policy is what restarts it — the repo's
     `railway.json` asks for `ALWAYS` (plan 4: the exits are deliberate, so a
     capped `ON_FAILURE` retry count would end in a permanently dead crank),
-    though the live service does not apply it yet (caveat below) — the healthcheck
+    and that policy is now applied on the live service (caveat below) — the healthcheck
     runs only at deploy time, a later 503 restarts nothing. Because
     `/healthz` is 503 until the new process's first SOL tick,
     `railway.json`'s `healthcheckTimeout` is 180 s (was 30 s) so a slow
@@ -87,10 +87,20 @@ permission member of (privacy rule, see repo `CLAUDE.md`).
     plan-4 deploy, 01.10.2026):** Railway does not read
     `services/relayer/railway.json` (no config-as-code path is set on the
     service), so the live deployment still runs `ON_FAILURE` × 10 with a 30 s
-    healthcheck from the service settings. The owner has been asked to set
-    Settings → Config-as-code → `services/relayer/railway.json`; until a
-    redeploy after that, the live policy stays `ON_FAILURE` × 10 / 30 s. The
-    first SOL tick came 6.7 s after container start.
+    healthcheck from the service settings. **Update (01.10.2026, ~21:30 Kyiv):**
+    Railway has deprecated config-as-code (`railway.json`/`railway.toml`) in
+    favour of Infrastructure-as-Code `.railway/railway.ts` (`update-service`
+    with `railwayConfigFile` is rejected with that message), so this file will
+    never be applied; it stays as documentation of the intended values
+    (migrating to `.railway/railway.ts` is open). The values were set directly
+    in the service settings via the Railway MCP `update-service`
+    (`restartPolicyType = ALWAYS`, `healthcheckTimeout = 180`) and took
+    effect with deployment `5a070a7c` (`railway up --service relayer --ci`).
+    Between `8b33d95d` and `5a070a7c` the live policy was `ON_FAILURE` × 10 /
+    30 s. Redeploy with `railway up`, not `redeploy`: a deployment uploaded by
+    `railway up` has no repo source to rebuild from (MCP `redeploy` →
+    `3d1ccce7` failed at BUILD_IMAGE, live deployment unaffected). The first
+    SOL tick came 6.7 s after container start.
 - `src/candidates.ts` — turns raw `Positions` accounts into
   `crank_tick` candidate **pairs** `[Positions, UserAccount]`: one candidate
   per OPEN slot (a trader only enters the batch of a market they hold a slot
@@ -398,7 +408,7 @@ enforced ComputeBudget `SetComputeUnitPrice` ceiling.
 | `JANITOR_RETRY_COOLDOWN_MS` | no (default `3600000`, min `60000`) | per-owner cooldown after a `close_exited_user` the program rejected on chain (`src/janitor.ts`); unparseable / below the minimum → default |
 | `JANITOR_MIN_FEE_PAYER_SOL` | no (default `0.002`, min `0`) | the janitor pass is skipped (and an error recorded) while `fee_payer`'s base balance is below this; `0` disables the floor |
 | `CRANK_BAD_PAIR_COOLDOWN_MS` | no (default `60000`, min `5000`) | how long a `[Positions, UserAccount]` pair rejected alone on chain stays out of the batches (`src/candidates.ts`) |
-| `CRANK_WATCHDOG_MS` | no (default `120000`, min `30000`) | no loop iteration completed within this → the process exits with code 1 (`src/crank.ts`) so Railway restarts it. Not scaled to the loop size (many markets × chunks could legitimately take longer — a plan-4 check). A commit cycle in flight for longer than max(3 × `COMMIT_INTERVAL_MS`, 600 000) exits the same way. The repo's `railway.json` sets `restartPolicyType: ALWAYS` (plan 4: a condition that repeats after every restart keeps restarting rather than stopping the service — watch the restart count), but the live service does not apply it yet: it runs `ON_FAILURE` × 10 / 30 s healthcheck until Settings → Config-as-code points at `services/relayer/railway.json` and the service is redeployed (see the liveness caveat above) |
+| `CRANK_WATCHDOG_MS` | no (default `120000`, min `30000`) | no loop iteration completed within this → the process exits with code 1 (`src/crank.ts`) so Railway restarts it. Not scaled to the loop size (many markets × chunks could legitimately take longer — a plan-4 check). A commit cycle in flight for longer than max(3 × `COMMIT_INTERVAL_MS`, 600 000) exits the same way. The repo's `railway.json` sets `restartPolicyType: ALWAYS` (plan 4: a condition that repeats after every restart keeps restarting rather than stopping the service — watch the restart count), and the live service applies it since deployment `5a070a7c` (01.10.2026), set directly in the service settings because Railway deprecated config-as-code and never reads `railway.json` (see the liveness caveat above; before that: `ON_FAILURE` × 10 / 30 s) |
 | `INDEXER_ENABLED` | no (default `false`) | Task 5: starts the public-data indexer (see above) — needs `DATABASE_URL`, disabled with a warning if it's unset |
 | `SPONSOR_ENABLED` | no (default `false`) | Task 6: starts `POST /sponsor` (see below) — needs `DATABASE_URL`, disabled with a warning if it's unset |
 | `SPONSOR_DAILY_SOL` | no (default `0.5`) | rolling 24h cap on sponsored lamports across all owners |
