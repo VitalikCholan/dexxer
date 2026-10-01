@@ -12,6 +12,7 @@ const DEVNET: TicketMarket = {
   mmrBps: 500,
   openFeeBps: 6,
   closeFeeBps: 6,
+  symbol: 'SOL',
   minSize: 10_000_000n,
   maxPosition: 100_000_000_000n,
   oiCap: 0n,

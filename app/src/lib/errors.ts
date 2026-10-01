@@ -2,11 +2,11 @@
 //
 // Program error codes -> user-facing messages, generated from the IDL. Split
 // out of `program.ts` (week 6); `test/errors.test.ts` pins the invariants.
-import idlJson from '../idl/dexxer_core.json'
+import idlJson from '../../../idl/dexxer_core.json'
 
 // --- program error codes -> short messages ---
 //
-// Source of truth is the IDL's `errors` array (`src/idl/dexxer_core.json`,
+// Source of truth is the IDL's `errors` array (`idl/dexxer_core.json`,
 // CI-verified identical to `anchor build`'s output): every code the program
 // can return gets its on-chain `msg` here automatically, so a new
 // `#[error_code]` variant never again ships as a raw `custom program error:
@@ -20,6 +20,9 @@ const ERROR_MESSAGE_OVERRIDES: Record<number, string> = {
   6017: 'no open position',
   6020: 'session key expired — redo onboarding to refresh it',
   6021: 'no actions left on this session key — redo onboarding to refresh it',
+  6046: 'This account has exited — set it up again from the Onboarding screen',
+  6049: 'All 16 position slots are in use — close a position first',
+  6050: 'Position is at its liquidation price — add margin before increasing it',
 }
 
 export const DEXXER_ERROR_MESSAGES: Record<number, string> = Object.fromEntries(

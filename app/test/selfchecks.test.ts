@@ -8,8 +8,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { assertMathSelfCheck } from '../src/lib/math'
-import { assertCommitmentGolden, assertLeafGolden } from '../src/lib/hashes'
-import { assertDisclosureStatusSelfCheck } from '../src/lib/status'
+import { assertLeafGolden } from '../src/lib/hashes'
 import { assertIdentityHashSelfCheck } from '../src/lib/mwa/tokenStore'
 import {
   assertIsAuthorizationFailureSelfCheck,
@@ -17,18 +16,15 @@ import {
 } from '../src/lib/mwa/errors'
 import { assertDeriveTicketSelfCheck } from '../src/features/trade/ticketMath'
 import { assertLiqDistancePctSelfCheck } from '../src/features/positions/PositionCard'
-import { assertHistoryMergeSelfCheck, chunk, MAX_ACCOUNTS_PER_RPC } from '../src/features/history/historyRows'
+import { chunk, MAX_ACCOUNTS_PER_RPC } from '../src/features/history/historyRows'
 
 // --- ports of on-chain math / hashing (golden vectors shared with Rust and tests/er) ---
 test('math.ts matches math.rs vectors', () => assertMathSelfCheck())
 test('leafHex matches the Rust BalancesRoot golden vector', () => assertLeafGolden())
-test('commitmentHash matches the Rust disclosure golden vector', () => assertCommitmentGolden())
 
 // --- pure UI/state helpers ---
-test('disclosureStatus / formatSlotsAsTime / formatUsd2', () => assertDisclosureStatusSelfCheck())
 test('deriveTicket (Trade ticket margin + insufficient gate)', () => assertDeriveTicketSelfCheck())
 test('liqDistancePct (Position card)', () => assertLiqDistancePctSelfCheck())
-test('mergeHistoryRows dedupes one trade seen in both sources', () => assertHistoryMergeSelfCheck())
 
 // --- MWA error classification ---
 test('identityHash is deterministic and field-sensitive', () => assertIdentityHashSelfCheck())

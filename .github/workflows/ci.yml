@@ -61,7 +61,6 @@ jobs:
       # would fail the declare_id! check — build against the source id instead.
       - run: anchor build --ignore-keys
       - name: Canonical IDL matches build
-        # app/src/idl/dexxer_core.json is a stale copy until the app moves to position slots; deliberately not compared.
         run: cmp target/idl/dexxer_core.json idl/dexxer_core.json
 
       - run: cargo test -p dexxer_core -p mock_oracle

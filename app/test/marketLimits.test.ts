@@ -27,6 +27,8 @@ test('decodeTicketMarket: every public Market parameter, plus the shared decodeM
     max_deviation_bps: 202,
     mark: new BN(151_234_567),
     mark_slot: new BN(42),
+    last_print: new BN(9),
+    sample_seq: new BN(4),
     ema_alpha_bps: 3_003,
     liq_hysteresis_ticks: 3,
     max_stale_ticks: 30,
