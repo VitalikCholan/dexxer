@@ -68,7 +68,7 @@
 //
 // Logs carry no trader key (final review I5): one line per landed
 // transaction, `tick n=... market=... mark=... mark_slot=... sig=... cu=...
-// tick_ms=... candidates=<count> liquidated=<count>` (`formatTickLine`; a
+// bytes=... tick_ms=... candidates=<count> liquidated=<count>` (`formatTickLine`; a
 // field whose read failed is `null`), written by best-effort reads that run
 // AFTER the tick and are not awaited by the loop. Where one trader must be
 // told apart from another (quarantine, discovery skips) the line carries
@@ -392,6 +392,8 @@ export interface TickLineFields {
   markSlot: string | null;
   sig: string;
   cu: number | null;
+  /** Serialized length of the sent transaction (`tx.serialize().length`) — the 1232-byte budget of a chunk. */
+  bytes: number;
   tickMs: number;
   candidates: number;
   /** How many of the chunk's candidates lost their slot on this market in this tick — a count, never keys (I5). */
@@ -400,7 +402,7 @@ export interface TickLineFields {
 
 /** The one log line per landed `crank_tick` (parsed by scripts/demo/week1-cli.ts `parseTickLine`). */
 export function formatTickLine(f: TickLineFields): string {
-  return `tick n=${f.n} market=${f.market} mark=${f.mark} mark_slot=${f.markSlot} sig=${f.sig} cu=${f.cu} tick_ms=${f.tickMs} candidates=${f.candidates} liquidated=${f.liquidated}`;
+  return `tick n=${f.n} market=${f.market} mark=${f.mark} mark_slot=${f.markSlot} sig=${f.sig} cu=${f.cu} bytes=${f.bytes} tick_ms=${f.tickMs} candidates=${f.candidates} liquidated=${f.liquidated}`;
 }
 
 export interface CrankOpts {
@@ -534,7 +536,7 @@ async function runCrank(cfg: RelayerConfig, state: RelayerState, registry: Marke
    * turns its field into `null` (and a debug line), never the landed tick
    * into a failed one.
    */
-  function logLanded(m: MarketInfo, chunk: Candidate[], n: number, sig: string, tickMs: number): void {
+  function logLanded(m: MarketInfo, chunk: Candidate[], n: number, sig: string, bytes: number, tickMs: number): void {
     const c = conn;
     const p = prog;
     void (async () => {
@@ -554,6 +556,7 @@ async function runCrank(cfg: RelayerConfig, state: RelayerState, registry: Marke
           markSlot: market.status === "fulfilled" ? market.value.markSlot.toString() : null,
           sig,
           cu: tx.status === "fulfilled" ? (tx.value?.meta?.computeUnitsConsumed ?? null) : null,
+          bytes,
           tickMs,
           candidates: chunk.length,
           liquidated,
@@ -586,9 +589,10 @@ async function runCrank(cfg: RelayerConfig, state: RelayerState, registry: Marke
       .add(ComputeBudgetProgram.setComputeUnitLimit({ units: 1_400_000 }))
       .add(ix);
     txn.sign(cfg.crank);
-    const sig = await conn.sendRawTransaction(txn.serialize(), { skipPreflight: true });
+    const raw = txn.serialize();
+    const sig = await conn.sendRawTransaction(raw, { skipPreflight: true });
     await confirmSignature(conn, sig);
-    logLanded(m, chunk, n, sig, Date.now() - sendT0);
+    logLanded(m, chunk, n, sig, raw.length, Date.now() - sendT0);
   }
 
   // Pairs that failed `crank_tick` alone: pairKey → excluded until (ms).

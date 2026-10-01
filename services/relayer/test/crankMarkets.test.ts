@@ -209,10 +209,10 @@ test("nextFreshBlockhash: gives up after the limit with a SHARED error (I2d, R1)
 });
 
 test("formatTickLine: counts, never keys; unreadable fields are null (I5)", () => {
-  const line = formatTickLine({ n: 7, market: "SOL", mark: "150000000", markSlot: "42", sig: "5sig", cu: 1234, tickMs: 80, candidates: 3, liquidated: 1 });
-  assert.equal(line, "tick n=7 market=SOL mark=150000000 mark_slot=42 sig=5sig cu=1234 tick_ms=80 candidates=3 liquidated=1");
-  const nulls = formatTickLine({ n: 8, market: "BTC", mark: null, markSlot: null, sig: "5sig", cu: null, tickMs: 90, candidates: 0, liquidated: null });
-  assert.equal(nulls, "tick n=8 market=BTC mark=null mark_slot=null sig=5sig cu=null tick_ms=90 candidates=0 liquidated=null");
+  const line = formatTickLine({ n: 7, market: "SOL", mark: "150000000", markSlot: "42", sig: "5sig", cu: 1234, bytes: 1175, tickMs: 80, candidates: 3, liquidated: 1 });
+  assert.equal(line, "tick n=7 market=SOL mark=150000000 mark_slot=42 sig=5sig cu=1234 bytes=1175 tick_ms=80 candidates=3 liquidated=1");
+  const nulls = formatTickLine({ n: 8, market: "BTC", mark: null, markSlot: null, sig: "5sig", cu: null, bytes: 383, tickMs: 90, candidates: 0, liquidated: null });
+  assert.equal(nulls, "tick n=8 market=BTC mark=null mark_slot=null sig=5sig cu=null bytes=383 tick_ms=90 candidates=0 liquidated=null");
   assert.ok(!/\[/.test(line), "no key list");
 });
 
