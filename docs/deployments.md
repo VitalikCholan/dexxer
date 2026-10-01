@@ -4,6 +4,14 @@
 файлі — лише публічні ідентифікатори (project/service id, домен, PDA,
 program id) і ролі ключів.
 
+> **Стан на 01.10.2026.** Усе нижче, що описує живий деплой (program id, адреси, виміри, env на
+> Railway), — це **стара** програма `G2ok…` і **старий** relayer (розкриття, `DisclosureQueue`,
+> `Position` на ринок). Гілка `positions-slots` (нова програма на слотах, relayer і адмін-TS на ній,
+> `services/relayer/README.md`) на devnet **не задеплоєна**: чистий старт з новим keypair програми —
+> план 4 (spec §2.9.5). Зміни, які настануть із деплоєм плану 4 (перейменовані/видалені env,
+> видалені ендпоінти), позначено «після деплою плану 4»; розділ «Позиції-слоти — розкатка (план 4)»
+> нижче — порядок дій, нічого з нього не виконано й не виміряно.
+
 ## Railway — `services/relayer`
 
 Крank-fallback (Task 4, week 4) як always-on сервіс на Railway, замінює
@@ -47,11 +55,13 @@ program id) і ролі ключів.
 | `RAILWAY_DOCKERFILE_PATH` | `services/relayer/Dockerfile` | — |
 | `ASSETLINKS_PACKAGE` | не задано (дефолт `com.dexxer.app`) | Digital Asset Links для MWA identity verification (24.09), `GET /.well-known/assetlinks.json` |
 | `ASSETLINKS_SHA256_FINGERPRINTS` | не задано (дефолт — сертифікат debug-keystore dev-client-а `FA:C6:17:45:…:3B:9C`) | для release-збірки виставити власний відбиток(и), через кому |
-| `COMMIT_INTERVAL_TICKS` **(week 5)** | інтервал disclosure/orphan-циклу в тіках crank-петлі; дефолт 300, **живе значення `60`** (≈1 хв, обрано для демо M-H — reveal за один цикл при `disclosure_delay_slots=0`); замінює зашитий `DISCLOSURE_EVERY_TICKS` тижня 4 | — |
-| `COMMIT_MAX_ACTIONS` **(week 5)** | бюджет дій на один бандл, який relayer **передає в програму** аргументом `commit_aggregate(max_actions)` (апгрейд #3) і яким же обмежує вибір черг; дефолт і **живе значення `4`**, clamp `[1, 8]` (8 — програмна СТЕЛЯ `MAX_ACTIONS_PER_COMMIT`, не кількість дій у бандлі); halve-and-retry на `0xA0000002` халвить і аргумент, і бюджет вибірки. Реальний бридж MagicBlock відхиляє 8 реальних дій за раз, 4 проходять (виміряно на живому беклозі, `week5-results.md` §Task 7). **До апгрейду #3** цей env обирав лише *які* черги йдуть у бандл — програма емітила до 8 дій на чергу незалежно від нього, через що одна повна черга ніколи не комітилася | — |
-| `QUARANTINE_CYCLES` **(week 5)** | скільки циклів ізолювати `DisclosureQueue`, що впала 2 рази поспіль на `0xA0000002`; дефолт **10** (не виставлявся окремо, лишено дефолтним) | — |
+| `COMMIT_INTERVAL_TICKS` **(week 5; після деплою плану 4 — замінюється)** | інтервал disclosure/orphan-циклу в тіках crank-петлі; дефолт 300, **живе значення `60`** (≈1 хв, обрано для демо M-H — reveal за один цикл при `disclosure_delay_slots=0`); замінює зашитий `DISCLOSURE_EVERY_TICKS` тижня 4. **Після деплою плану 4:** змінну прибрати, виставити **`COMMIT_INTERVAL_MS=60000`** (годинник, не тіки; дефолт 300000, мін. 10000) — старе `60` (тіків) у новому образі ігнорується, дефолт 5 хв | — |
+| `COMMIT_MAX_ACTIONS` **(week 5; після деплою плану 4 — видалити)** | бюджет дій на один бандл, який relayer **передає в програму** аргументом `commit_aggregate(max_actions)` (апгрейд #3) і яким же обмежує вибір черг; дефолт і **живе значення `4`**, clamp `[1, 8]` (8 — програмна СТЕЛЯ `MAX_ACTIONS_PER_COMMIT`, не кількість дій у бандлі); halve-and-retry на `0xA0000002` халвить і аргумент, і бюджет вибірки. Реальний бридж MagicBlock відхиляє 8 реальних дій за раз, 4 проходять (виміряно на живому беклозі, `week5-results.md` §Task 7). **До апгрейду #3** цей env обирав лише *які* черги йдуть у бандл — програма емітила до 8 дій на чергу незалежно від нього, через що одна повна черга ніколи не комітилася | — |
+| `QUARANTINE_CYCLES` **(week 5; після деплою плану 4 — видалити)** | скільки циклів ізолювати `DisclosureQueue`, що впала 2 рази поспіль на `0xA0000002`; дефолт **10** (не виставлявся окремо, лишено дефолтним) | — |
 | ~~`SPONSOR_ALLOW_SESSION_TOPUP`~~ **видалено (week 5)** | гілка session-lamports top-up через `/sponsor` прибрана разом з env-змінною — devnet-tee відхиляє чужого `fee_payer` як платника не-ним-ініційованої ER-tx (`InvalidAccountForFee`), тож ця гілка була недосяжна для чесного клієнта й досяжна лише для атакера | — |
 | `SIWS_DOMAIN` **(week 6, обов'язковий)** | домен MWA identity app (`IDENTITY_DOMAIN`; зараз = хост relayer-а, тобто **`relayer-production-1ae7.up.railway.app`**). SIWS-повідомлення з іншим `domain` або з `uri` на іншому хості відхиляються. **Без цієї змінної `/auth/*`, `/sponsor` і `/nonce` не монтуються** (fail-closed, лог `sponsor: … SIWS_DOMAIN is not set`) — онбординг і депозит 0-SOL-гаманців зупиняються. Якщо app отримає власний домен (`EXPO_PUBLIC_IDENTITY_URI`), `SIWS_DOMAIN` змінюється разом із ним | — |
+| `MARKETS_REFRESH_MS` **(після деплою плану 4, необов'язкова)** | період оновлення реєстру ринків relayer-а; дефолт 60000, мін. 5000 | — |
+| `JANITOR_RETRY_COOLDOWN_MS` **(після деплою плану 4, необов'язкова)** | пауза на власника після невдалого `close_exited_user` janitor-а; дефолт 3600000, мін. 60000 | — |
 | `AUTH_SESSION_TTL_HOURS` **(week 6)** | тривалість SIWS-сесії relayer-а; дефолт **168** (7 діб), невалідне/≤0 → дефолт. У `auth_sessions` зберігається лише `sha256(token)` | — |
 
 Обидва ключі закодовано локально через `bs58.encode(Uint8Array.from(JSON.parse(readFileSync(...))))`
@@ -105,6 +115,63 @@ MCP, або `railway variables set` через CLI) виставляються �
   рухати `Market`); `true`/`false` лише коли `CRANK_ENABLED=false` — див.
   розділ «Scheduler (Task 7)» нижче.
 
+## Позиції-слоти — розкатка (план 4; код — гілка `positions-slots`, 01.10.2026)
+
+Нічого з цього на devnet не виконано і не виміряно. Нова програма (`Positions` на 16 слотів, без
+розкриття, #38/#39) — **чистий старт**: новий keypair програми, нова адреса, без міграції зі старого
+`G2ok…` (spec §2.9.5); relayer і адмін-TS на гілці вже написані проти нового IDL
+(канонічний — `idl/dexxer_core.json`, `DEXXER_IDL_DIR=/app/idl` у Dockerfile). Застосунок (`app/`)
+досі на старому IDL до плану 3, тож новий relayer і старий APK несумісні за онбордингом і History.
+Порядок:
+
+1. Новий keypair програми (`keys/programs/`, gitignored), `declare_id!`, деплой, `bootstrapDevnet`
+   (Config, пул, SOL), потім `cd tests/er && npm run devnet:add-market -- BTC` (далі `ETH`, `HYPE`,
+   `ZEC`; лазер-фіди — `tests/er/lib/markets.ts`). **`--schedule` для кожного ринку** (SOL
+   включно, якщо розклад ще не заведено): ліквідація без relayer-а потребує живого `crank_tick`
+   на кожному ринку як джерела цінових семплів (#38, spec §2.9.2) — без запланованого кранка вона
+   залежить від relayer-а. Ринок з'являється в `/markets` і в crank-у лише після успішного
+   `init_market_permissions` (relayer перевіряє власника permission-PDA `MarketRisk`); недороблений
+   `add-market` просто перезапустити.
+2. Railway env (див. таблицю вище): `COMMIT_INTERVAL_TICKS=60` → **`COMMIT_INTERVAL_MS=60000`**;
+   видалити `COMMIT_MAX_ACTIONS`, `QUARANTINE_CYCLES`; за потреби `MARKETS_REFRESH_MS`,
+   `JANITOR_RETRY_COOLDOWN_MS`; `SIWS_DOMAIN` і решта — без змін. `fee_payer` потребує поповнення:
+   він платить комісії комітів, `/sponsor`, nonce і ренту онбордингу (`Positions` ≈0.0231 SOL +
+   `UserAccount` ≈0.0023 SOL на спонсорованого власника; LiteSVM-розрахунок, на devnet не виміряно),
+   плюс janitor-комісії.
+3. **До деплою relayer-а прогнати Postgres-тести** (`TEST_DATABASE_URL`, рецепт у
+   `services/relayer/README.md`) — 7 тестів `indexerDb.test.ts` на гілці **не запускались** (немає
+   Docker), міграція `008` на справжній БД не перевірена. На старті в лозі має бути
+   `db: applying migration 008_ticks_market.sql`.
+4. Перевірка: `/healthz` → `markets` з SOL/BTC/ETH/HYPE/ZEC і ненульовим `lastTickAt`;
+   `GET /markets` — п'ять записів (SOL першим); `GET /mark?market=BTC` → `stale:false`;
+   `/disclosures` і `/stats` → 404 (очікувано). `/healthz.ok` = свіжість тіку **SOL**.
+5. Невиміряне, що входить у план 4 (повний перелік — spec §2.9 «Відкрите для плану 4»): розмір і CU
+   реального `crank_tick` із 12 парами; читання `Positions` crank-токеном через
+   `getProgramAccounts` (один виклик за тік повертає ≈4.4 KB на трейдера — оцінка за розміром
+   акаунта, ≈440 KB на 100 трейдерів, ≈4.4 MB на 1000); читання власників permission-PDA реєстром;
+   Postgres-тести і міграція `008`; перший гейт — що `posted_slot` реального Pyth Lazer змінюється на
+   кожному принті.
+
+**Міграція 008 — перекриття деплоїв і відкат.** `008_ticks_market.sql` переносить PK `ticks` з `(ts)`
+на `(market, ts)` (рядки до неї — `'SOL'`) і прибирає індекс `ticks_ts_idx`. Старий образ після неї:
+`insertTick` з `ON CONFLICT (ts)` падає (унікального обмеження на `ts` більше нема) — тіки не
+пишуться; запити без фільтра ринку віддали б тіки BTC/ETH/… як SOL. Тому вікно перекриття деплоїв
+може коротко показати в старих ендпоінтах чужу ціну, а **відкат на образ до 008 без відкату схеми —
+неприпустимий**. Відкат — однією транзакцією:
+
+```sql
+-- 1) зупинити indexer (INDEXER_ENABLED=false або зупинити сервіс), потім:
+BEGIN;
+DELETE FROM ticks WHERE market <> 'SOL';
+ALTER TABLE ticks DROP CONSTRAINT ticks_pkey;
+ALTER TABLE ticks ADD PRIMARY KEY (ts);
+ALTER TABLE ticks DROP COLUMN market;
+CREATE INDEX IF NOT EXISTS ticks_ts_idx ON ticks (ts);          -- як у 001_indexer.sql
+DELETE FROM _migrations WHERE name = '008_ticks_market.sql';    -- щоб повторний деплій нового образу знову її застосував
+COMMIT;
+-- 2) деплой старого образу
+```
+
 ## Індексер публічних даних (Task 5, 22.09.2026)
 
 Другий підсервіс усередині того ж `relayer`-процесу (`INDEXER_ENABLED=true`
@@ -118,11 +185,18 @@ RPC), ніколи `crank`/`fee_payer`-ключі. REST + WS ендпоінти 
 | `GET /prices?tf=1m&limit=5` | `{"tf":"1m","candles":[{"t":1790106000000,"o":118309140,"h":118327003,"l":118306592,"c":118324531}, ...]}` |
 | `GET /mark` | `{"price":"118314540","slot":335253475,"ts":1790106407044}` |
 | `GET /pool/latest` | `{"slot":335177389,"ts":1790106155570,"capital_total":"24100000000","protocol_liquidity":"9900000000","locked_total":"100000000","fees_accrued":"0","insurance":"0","bad_debt_total":"0"}` |
-| `GET /disclosures?limit=3` | масив із 3 записів закритих позицій (реальні devnet-угоди тижнів 3-4) |
+| `GET /disclosures?limit=3` | масив із 3 записів закритих позицій (реальні devnet-угоди тижнів 3-4). **Після деплою плану 4 — 404** (розкриття прибрано) |
 | `GET /root/latest` | `{"root_slot":335228040,"filled":11,"leavesHex":[...64 hex-рядки...]}` |
-| `GET /disclosures?limit=2&market=…` **(week 6)** | масив + заголовок `X-Next-Cursor: 348880561.2F4jr1u2…`; кожен запис має `market` (`1347yiBY…` — PDA SOL-ринку). Фільтри `side`/`reason`/`market`/`from`/`to`, курсор — `services/relayer/README.md` «Pagination, filters, stats» |
-| `GET /stats?window=all` **(week 6)** | `{"window":"all","market":null,"trades":42,"longs":41,"shorts":1,"liquidations":4,"wins":21,"volume_quote":"4945668443","pnl_total":"1433766","fees_total":"7214965","win_rate":0.5,…}` (локальний indexer проти devnet, 27.09.2026) |
+| `GET /disclosures?limit=2&market=…` **(week 6; після деплою плану 4 — 404)** | масив + заголовок `X-Next-Cursor: 348880561.2F4jr1u2…`; кожен запис має `market` (`1347yiBY…` — PDA SOL-ринку). Фільтри `side`/`reason`/`market`/`from`/`to`, курсор — `services/relayer/README.md` «Pagination, filters, stats» |
+| `GET /stats?window=all` **(week 6; після деплою плану 4 — 404)** | `{"window":"all","market":null,"trades":42,"longs":41,"shorts":1,"liquidations":4,"wins":21,"volume_quote":"4945668443","pnl_total":"1433766","fees_total":"7214965","win_rate":0.5,…}` (локальний indexer проти devnet, 27.09.2026) |
 | `wss://…/ws` | `{"type":"mark","price":"118284685","ts":1790106415146}` кожну секунду (throttle) |
+
+**Після деплою плану 4** (код на гілці `positions-slots`): індексер читає лише оракул (по ринках),
+`Pool`, `BalancesRoot`; нові `GET /markets`, `?market=` на `/mark`/`/prices`, `/ws?markets=`
+(без параметра — лише SOL), міграція `008_ticks_market.sql` (деталі, відкат і перекриття деплоїв —
+розділ «Позиції-слоти — розкатка (план 4)» нижче). Таблиця `disclosures` у живій БД лишається, але
+невживана (не видаляється). `/healthz` несе `commitIntervalMs` і `markets`, без `commitIntervalTicks`,
+`commitMaxActions`, `indexer.disclosures`.
 
 Повна специфікація ендпоінтів, формат чисел (bigint-поля як рядки) і
 внутрішня будова — `services/relayer/README.md`'s "Indexer" section.
@@ -244,6 +318,8 @@ app/src/idl/dexxer_core.json` — байт-у-байт.
 
 ### `set_disclosure_delay` — операційна нотатка
 
+**[Застаріло з 30.09.2026: інструкції і `Config.disclosure_delay_slots` немає в програмі на слотах, див. spec §2.9.]** Нижче — запис про живу стару програму.
+
 Адмінська інструкція (`AdminConfig`-патерн, як `pause`/`set_scheduler_signer`), додана апгрейдом
 #2. Пише `Config.disclosure_delay_slots`, яке раніше писалось **лише** в `init_config` (сеттера не
 було — Task 4 знахідка, змінити демо-затримку без цієї інструкції на живому `Config` було
@@ -269,6 +345,8 @@ max_deviation_bps 200, ema_alpha_bps 3000, liq_hysteresis_ticks 3, max_stale_tic
 
 ### Legacy `UserAccount` (тижні 1–2) — стан на кінець week 5
 
+**[Застаріло з 30.09.2026: чистий старт devnet з новим keypair програми, міграції старих акаунтів немає, див. spec §2.9.5.]** Нижче — запис про живу стару програму.
+
 Інвентаризація ДО апгрейду #1 (`getProgramAccounts` crank-токеном): 24 `UserAccount`/`Position`/
 `DisclosureQueue`-трійки; 16 на 150 B (пізній week-2/3 лейаут), 4 на 118 B (без `exit_salt`), 4 на
 110 B (ще й без `last_withdraw_slot`) — **8 з 24 нечитабельні жодною типізованою інструкцією вже
@@ -279,6 +357,8 @@ max_deviation_bps 200, ema_alpha_bps 3000, liq_hysteresis_ticks 3, max_stale_tic
 `oi_long = 448 252 365`, `PoolLive.locked_total = 80 000 000`.
 
 ## Devnet-скрипти — індекс (`tests/er/devnet/`)
+
+Таблиця нижче — станом на останній деплой (тиждень 5); зміни гілки `positions-slots` — абзац після неї.
 
 Перебудовано з `ls tests/er/devnet/` + `tests/er/package.json`'s `devnet:*` скриптів (fix round 1
 Task 8 — попередня версія цієї таблиці мала неправильну назву файлу `06` і хибно писала, що `07`
@@ -298,16 +378,17 @@ week-межі: `00`–`04` — тиждень 2 (Task 5, приватний он
 | 04 | `04-withdraw.ts` | `devnet:withdraw` | Тиждень 2, Task 5, скрипт 4/4: `withdraw(300e6)` на ER, потім клієнтський L1-леґ — `undelegateIx` → поллінг base ATA |
 | — | `w3-measure.ts` | `devnet:w3measure` | Тиждень 3, Task 1: оркестратор для M-A/M-C/M-D — сама логіка живе в spike-директоріях (`spikes/01-private-counter-tee/w3-ma.ts`, `spikes/06-magic-action/w3-mc.ts`, `spikes/05-crank-tee/w3-md.ts`), цей файл лише шеллить `npx tsx` з `spikes/` |
 | 05 | `05-crank-liquidation.ts` | `devnet:liquidation` | Тиждень 2, Task 6, перевірка (c): наскрізна ліквідація через `crank-fallback`-скрипт на devnet-tee — фреш-трейдер, ~10x лонг, `set_params(mmr_bps)` робить позицію ліквідовною, поллінг `Position.liq_ticks`/`state`. Тиждень 5: те саме, як регресія 05 |
-| 06 | `06-commitment-reveal.ts` | `devnet:disclosure` | Тиждень 3, Task 8, скрипт 1/3 (**M-B**): повний цикл commitment → reveal на реальному devnet, друга позиція на тому самому трейдері (доводить «одна позиція за прогін» знято). Тиждень 5, Task 1: оновлено під queue-first close (commitment/disclosure з `DisclosureQueue`, не з `Position`) |
 | 07 | `07-balances-root.ts` | `devnet:root` | Тиждень 3, Task 8, скрипт 2/3 (**M-E**): цикл `BalancesRoot` + раунд-тріп коміту на реальному devnet, плюс 12x-вимір вартості `commit_aggregate` тепер, коли кожен комміт несе ДВА акаунти (`Pool` і `BalancesRoot`) |
 | 08 | `08-undelegate.ts` | `devnet:undelegate` | Тиждень 3, Task 8, скрипт 3/3 (**M-A** на `dexxer_core`): повний вихід трейдера з `06` — закрити другу позицію, спорожнити чергу розкриття, вивести маржу, `undelegate_user`, поллінг бази до скрабу всіх трьох PDA |
 | 09 | `09-pool-snapshot.ts` | `devnet:snapshot` | Тиждень 4, Task 3 (**M-F**): приватний робочий агрегат (`PoolLive`) проти публічного огрубленого знімка (`Pool`) наскрізно на реальному devnet, після міграції `PoolLive` |
 | 10 | `10-set-params.ts` | `devnet:setparams -- KEY=VALUE` | Тиждень 5, Task 4 (міграція): патчить окремі поля `MarketParams` на делегованому `Market`, не чіпаючи решту (наївний виклик з `MARKET_DEFAULTS` мовчки скинув би `max_conf_bps` на 50 і зламав торгівлю) |
 | 11 | `11-liq-task-migration.ts` | `devnet:liqtask` | Тиждень 5, Task 4, виміри (a)/(b)/(c): cancel невідомого `task_id`, реєстрація `liquidation_check` в `open_position` (`task_context == position`, дубльований ключ), вихід із боргом розкриття (рантайм-вимір `close_orphan_queue`) |
-| 12 | `12-close-orphan.ts` | `devnet:orphan` | Тиждень 5, Task 5, частина A, доказ: другий апгрейд програми лагодить сигнал сирітства, який читає `close_orphan_queue` (на реальній осиротілій черзі, лишеній Task 4) |
+| — | `add-market.ts` | `devnet:add-market -- SYM [--schedule]` | Мульти-маркет (spec §2.8.1/§2.9): L1 `init_market(symbol)` + `delegate_market` → поповнення ренти permission → ER `init_market_permissions` → за `--schedule` — `schedule_crank` з власним `task_id` ринку (mark-only). Кожен крок пропускається, якщо вже зроблений |
 | 13 | `13-liquidation-check.ts` | `devnet:liqcheck` | Тиждень 5, Task 7 (**M-G′**): ліквідація БЕЗ relayer-а, лише планувальник у TEE (`CRANK_ENABLED=false`, `liquidation_check` тіка́є незалежно від `crank_tick` relayer-а) |
-| 14 | `14-close-reopen.ts` | `devnet:reopen` | Тиждень 5, Task 7 (**M-H**/**M-J**): `set_disclosure_delay(0)` + живий `COMMIT_INTERVAL_TICKS=60` → Close→L1-`Disclosure`-час; той самий слот close→open негайно; 8 циклів заповнюють кільце, 9-те закриття — `QueueFull` |
-| 15 | `15-exit-debt.ts` | `devnet:exitdebt` | Тиждень 5, Task 7 (**M-I**): гаманець із 0 SOL усе життя, онбординг лише через `POST /sponsor`, торгує раз, виходить із боргом розкриття (`undelegate_user` при `dq.len > 0`), спостерігається до кінця через автоматичне відновлення relayer-а (disclosure-цикл → `close_orphan_queue` → `close_exited_user`) |
 
-`tests/er/lib/admin.ts::setDisclosureDelay` — спільний білдер для `set_disclosure_delay`,
-використаний скриптами 13–15.
+**Стан на 01.10.2026 (гілка `positions-slots`):** скрипти `06` (commitment-reveal), `12`
+(close-orphan), `14` (close-reopen), `15` (exit-debt) видалено разом з розкриттям; `08-undelegate`
+переписано під запуск `01` (його run-файл), перевірка відомого трейдера в `07` залежить від того,
+що `07` іде до `08`; `add-market` додано. Жоден скрипт на цій гілці не запускався проти мережі —
+`08-undelegate` і виявлення ліквідації в `05`/`13` потребують повторного погляду перед devnet
+(план 4). Хелпер `setDisclosureDelay` у `tests/er/lib/admin.ts` прибрано.
