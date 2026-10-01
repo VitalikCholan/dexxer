@@ -37,6 +37,7 @@
 - docs/superpowers/plans/2026-09-30-week6-slots-program.md — план 1 з 4 позицій-слотів: програма + LiteSVM (виконано; spec §2.9 «Реалізовано (програма)»)
 - docs/superpowers/plans/2026-09-30-week6-slots-relayer.md — план 2 з 4 позицій-слотів: relayer, адмін-TS і канонічний IDL (виконано 01.10.2026; spec §2.9 «Реалізовано (relayer і адмін-TS)»)
 - docs/superpowers/plans/2026-10-01-week6-slots-app.md — план 3 з 4 позицій-слотів: app (виконано 01.10.2026; spec §2.9 «Реалізовано (app)»); план 4 (деплой, виміри, smoke) — далі
+- docs/superpowers/plans/2026-10-01-week6-slots-deploy.md — план 4 з 4 позицій-слотів: чистий деплой на devnet, relayer, APK, виміри (написано 01.10.2026; гейти користувача — SOL, секрети Railway, деплой, smoke)
 
 ## Правила
 - Anchor 1.0.2, Solana 3.1.9, Rust 1.89, `ephemeral-rollups-sdk` 0.16.2 (`anchor`, `access-control`), TS SDK 0.17, `@solana/web3.js` v1 (не kit)
