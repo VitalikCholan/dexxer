@@ -87,14 +87,37 @@ program id) і ролі ключів.
 
 ### Program / PDA (devnet; нова програма позицій-слотів — бутстрап 01.10.2026, Task 3 плану 4)
 
-**Relayer на Railway НЕ задеплоєно на нову програму (Task 4 плану 4 — BLOCKED, 01.10.2026 14:36 UTC):**
-`railway redeploy --service Postgres` (і `--from-source`) відповів `Your trial has expired. Please select
-a plan to continue using Railway.` — живих деплойментів немає ні в relayer-а (останній REMOVED 25.09),
-ні в Postgres (REMOVED з 22.09, том збережено); `/healthz` — 404 «Application not found». Env уже
-переведено на план 4 (`COMMIT_INTERVAL_MS=60000`, `SIWS_DOMAIN` виставлено; `COMMIT_INTERVAL_TICKS`,
-`COMMIT_MAX_ACTIONS` видалено), `TRUNCATE`/`DELETE` старих даних БД (крок 5 нижче) **не виконано**,
-`railway up` не запускався. Після вибору плану Railway — повторити Task 4 з кроку Postgres. Застосунок
-— так само на старій програмі. Нова програма нижче працює без relayer-а: живі лише заплановані
+**Relayer на Railway — на НОВІЙ програмі з 01.10.2026 (Task 4 плану 4).** Перша спроба впала на
+`Your trial has expired` (14:36 UTC); після оплати плану власником:
+- **Postgres** повернуто `railway redeploy --service Postgres --from-source -y` (звичайний `redeploy`
+  відповідав `No deployment found` — останній деплоймент був REMOVED): `7b896600` SUCCESS 16:38:43 UTC,
+  `788c3daa` SUCCESS 16:39:27 UTC (поточний; образ `postgres-ssl:18` за тегом, том той самий).
+  Публічного TCP-проксі в Postgres нема (лише `postgres.railway.internal`), локального `psql` теж —
+  SQL виконано **всередині контейнера** `railway ssh --service Postgres -- "psql -U postgres -d railway …"`.
+- **БД — варіант A (TRUNCATE), 16:40:48 UTC:** `BEGIN; TRUNCATE pool_snapshots, roots; DELETE FROM
+  relayer_meta; COMMIT;`. До → після: `pool_snapshots` 927 → 0, `roots` 908 → 0, `relayer_meta` 2
+  (`lastTickAt`, `lastCommitAt`) → 0; `ticks` 654 676 лишено (ціни фіду). `_migrations` до деплою —
+  000…005 (006/007/008 не застосовувались ніколи — тижня 6 на Railway не було).
+- **Деплой** `railway up --service relayer --ci` з дерева `253e8f2`: деплоймент `8b33d95d` SUCCESS,
+  контейнер стартував 16:41:59.6 UTC; лог: `db: applying migration 006_auth.sql`, `007_disclosures_market.sql`,
+  `008_ticks_market.sql` (≈0.6 с на 654 676 рядках `ticks`), `index: restored persisted state { lastCommitAt: null }`,
+  `markets: SOL,BTC,ETH,HYPE,ZEC`, `sponsor: /sponsor enabled (… SIWS domain relayer-production-1ae7.up.railway.app …)`.
+  **Перший `tick n=1 market=SOL` — 16:42:06.3, через 6.7 с після старту контейнера.**
+- **Тіки (34 на ринок за перші ≈2 хв):** SOL `cu` 21 428…21 445, `bytes=449`, `candidates=1` (одна відкрита
+  позиція на SOL — з devnet-сценарію); BTC/ETH/HYPE/ZEC `cu` 15 523…15 540, `bytes=383`, `candidates=0`;
+  `tick_ms` 550…943 (перший тік ринку ≈930, далі ≈555). Повна петля по 5 ринках ≈3.3 с (тіки ринків
+  послідовні, `intervalMs: 1000`) — 27 петель за 89 с.
+- **Коміт-цикл:** 16:42:09 `root: filled=5`, `commit_aggregate` (успіх НЕ логується — лише збій;
+  видно з `/healthz.lastCommitAt` і `/pool/latest`), janitor `scanned=4 closed=4 skipped=0 errors=0`
+  (чотири вийшовші трейдери нової програми, рента кожному на власний `rent_payer`); 16:43:10 `root: filled=1`.
+  Рядків помилок (TEE `Invalid token`, 503 тощо) за перші ≈2 хв — нуль.
+- **`railway.json` relayer-а Railway НЕ читає** (`fileServiceManifest: {}`): деплоймент має
+  `restartPolicyType: ON_FAILURE`, `restartPolicyMaxRetries: 10`, `healthcheckTimeout: 30` з налаштувань
+  сервісу (лог: `Retry window: 30s`; деплой пройшов, бо перший SOL-тік був за 6.7 с). Щоб `ALWAYS`/180 с
+  набули сили — у налаштуваннях сервісу вказати config-as-code шлях `services/relayer/railway.json`
+  (або виставити політику вручну). **Не зроблено** — рішення власника.
+
+Застосунок — досі на старій програмі (план 3). Нова програма нижче працює без relayer-а: живі лише заплановані
 `crank_tick` п'яти ринків у TEE.
 
 | | Адреса |

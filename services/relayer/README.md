@@ -82,7 +82,13 @@ permission member of (privacy rule, see repo `CLAUDE.md`).
     runs only at deploy time, a later 503 restarts nothing. Because
     `/healthz` is 503 until the new process's first SOL tick,
     `railway.json`'s `healthcheckTimeout` is 180 s (was 30 s) so a slow
-    first loop does not fail a healthy deploy.
+    first loop does not fail a healthy deploy. **Caveat (measured at the
+    plan-4 deploy, 01.10.2026):** Railway does not read
+    `services/relayer/railway.json` (no config-as-code path is set on the
+    service), so the live deployment still runs `ON_FAILURE` × 10 with a 30 s
+    healthcheck from the service settings — set the config path (or the
+    policy) in the Railway service settings for these values to apply. The
+    first SOL tick came 6.7 s after container start.
 - `src/candidates.ts` — turns raw `Positions` accounts into
   `crank_tick` candidate **pairs** `[Positions, UserAccount]`: one candidate
   per OPEN slot (a trader only enters the batch of a market they hold a slot
