@@ -142,17 +142,7 @@ function l1Leg(env: LegEnv, label: string, ixs: TransactionInstruction[], onLand
 // faucet part 682 bytes, init_user part 631 — comfortably one tx.
 async function legFaucetInitUser(env: LegEnv): Promise<BatchLeg | null> {
   const { ctx, snap, feePayer, core, appendLog } = env
-  const {
-    owner,
-    config,
-    mint,
-    userAccount,
-    positions,
-    faucetPda,
-    mintAuth,
-    ownerAta,
-    exitSalt,
-  } = ctx
+  const { owner, config, mint, userAccount, positions, faucetPda, mintAuth, ownerAta, exitSalt } = ctx
   const ixs: TransactionInstruction[] = []
   if (!snap.faucet) {
     if (!snap.ownerAta) ixs.push(createAssociatedTokenAccountIdempotentInstruction(feePayer, ownerAta, owner, mint))

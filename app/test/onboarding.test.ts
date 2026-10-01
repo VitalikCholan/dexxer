@@ -16,7 +16,15 @@
 import { test, afterEach } from 'node:test'
 import assert from 'node:assert/strict'
 import { BN, BorshAccountsCoder } from '@coral-xyz/anchor'
-import { Keypair, PublicKey, SystemProgram, Transaction, type AccountInfo, type Connection, type TransactionInstruction } from '@solana/web3.js'
+import {
+  Keypair,
+  PublicKey,
+  SystemProgram,
+  Transaction,
+  type AccountInfo,
+  type Connection,
+  type TransactionInstruction,
+} from '@solana/web3.js'
 import { ASSOCIATED_TOKEN_PROGRAM_ID, TOKEN_PROGRAM_ID, getAssociatedTokenAddressSync } from '@solana/spl-token'
 import {
   DELEGATION_PROGRAM_ID,
@@ -324,7 +332,10 @@ test('returning owner after exit: no L1 leg is built until the janitor closed th
   const log: string[] = []
   const mwa = { getConnection: async () => fakeConn(new Map()) as unknown as Connection }
   const legs = await collectBatchLegs(ctx, mwa, FEE_PAYER, (s) => log.push(s), [null, null, null], snap)
-  assert.deepEqual(legs.map((l) => l.label), [])
+  assert.deepEqual(
+    legs.map((l) => l.label),
+    [],
+  )
   assert.ok(log.some((s) => s.startsWith('init_user: account exited')))
 })
 

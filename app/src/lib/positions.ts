@@ -103,7 +103,13 @@ export function decodePositions(data: Buffer): DecodedPositions {
       reason: HISTORY_REASONS[data.readUInt8(at + 89)] ?? 'User',
     })
   }
-  return { owner: key(data, DISC), slots, history, version: data.readUInt8(DISC + 3106), bump: data.readUInt8(DISC + 3107) }
+  return {
+    owner: key(data, DISC),
+    slots,
+    history,
+    version: data.readUInt8(DISC + 3106),
+    bump: data.readUInt8(DISC + 3107),
+  }
 }
 
 export function slotFor(p: DecodedPositions | null, market: PublicKey): PositionSlot | null {

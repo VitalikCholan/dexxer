@@ -68,8 +68,7 @@ export const pdas = {
    * Mirrors `tests/er/lib/crank-signer.ts` (which cites the pinned validator
    * source) and the program's own `liq_crank_signer`.
    */
-  liqCrankSigner: () =>
-    pda([CRANK_EXECUTOR_SEED, pdas.feeEscrow().toBuffer()], CRANK_PROGRAM_ID),
+  liqCrankSigner: () => pda([CRANK_EXECUTOR_SEED, pdas.feeEscrow().toBuffer()], CRANK_PROGRAM_ID),
   market: () => pdas.marketFor('SOL'),
   marketFor: (symbol: string) => pda([MARKET_SEED, symbolBytes(symbol)], DEXXER_CORE_PROGRAM_ID),
   marketRisk: (market: PublicKey) => pda([RISK_SEED, market.toBuffer()], DEXXER_CORE_PROGRAM_ID),

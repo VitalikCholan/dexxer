@@ -8,7 +8,15 @@ import type { Connection, Keypair, PublicKey, TransactionInstruction } from '@so
 import type { NonceInfo } from '@/src/lib/nonce'
 
 export type OnboardState =
-  'Disconnected' | 'NotOnboarded' | 'Funded' | 'Exited' | 'Initialized' | 'Delegated' | 'Credited' | 'Permissioned' | 'SessionSet'
+  | 'Disconnected'
+  | 'NotOnboarded'
+  | 'Funded'
+  | 'Exited'
+  | 'Initialized'
+  | 'Delegated'
+  | 'Credited'
+  | 'Permissioned'
+  | 'SessionSet'
 
 export type BatchPhase = 'Idle' | 'Collecting' | 'Signing' | 'Submitting' | 'Done' | 'Failed'
 

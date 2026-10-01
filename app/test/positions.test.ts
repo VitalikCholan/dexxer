@@ -28,7 +28,12 @@ function blank(owner: PublicKey): Buffer {
   b.writeUInt8(254, 8 + 3107)
   return b
 }
-function putSlot(b: Buffer, i: number, market: PublicKey, o: { size: bigint; margin: bigint; side: 0 | 1; state?: number; liqTicks?: number }) {
+function putSlot(
+  b: Buffer,
+  i: number,
+  market: PublicKey,
+  o: { size: bigint; margin: bigint; side: 0 | 1; state?: number; liqTicks?: number },
+) {
   const at = SLOTS + i * 96
   market.toBuffer().copy(b, at)
   b.writeBigUInt64LE(o.size, at + 32)
@@ -73,7 +78,10 @@ test('decodePositions returns only OPEN slots with their index; empty slots with
   putSlot(b, 5, Keypair.generate().publicKey, { size: 1n, margin: 1n, side: 0, state: 0 })
   const p = decodePositions(b)
   assert.equal(p.owner.toBase58(), owner.toBase58())
-  assert.deepEqual(p.slots.map((s) => s.index), [0, 3])
+  assert.deepEqual(
+    p.slots.map((s) => s.index),
+    [0, 3],
+  )
   assert.equal(p.slots[1].side, 'Short')
   assert.equal(p.slots[1].liqTicks, 1)
   assert.equal(p.slots[0].entry, 150_000_000n)
@@ -94,8 +102,14 @@ test('history is oldest-first, signed pnl and all three reasons decode, and the 
   b.writeUInt8(3, HEAD)
   b.writeUInt8(3, HEAD + 1)
   const p = decodePositions(b)
-  assert.deepEqual(p.history.map((h) => h.closedSlot), [100n, 101n, 102n])
-  assert.deepEqual(p.history.map((h) => h.reason), ['User', 'Liquidated', 'Decrease'])
+  assert.deepEqual(
+    p.history.map((h) => h.closedSlot),
+    [100n, 101n, 102n],
+  )
+  assert.deepEqual(
+    p.history.map((h) => h.reason),
+    ['User', 'Liquidated', 'Decrease'],
+  )
   assert.equal(p.history[0].pnl, -5n)
   assert.equal(p.history[0].side, 'Short')
   assert.notEqual(historyKey(p.history[0]), historyKey(p.history[1]))

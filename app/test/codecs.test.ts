@@ -6,12 +6,7 @@ import assert from 'node:assert/strict'
 import { BN, BorshAccountsCoder } from '@coral-xyz/anchor'
 import { PublicKey } from '@solana/web3.js'
 import { DEXXER_CORE_IDL } from '../src/lib/anchor'
-import {
-  decodeUserAccount,
-  readConfigDusdcMint,
-  readConfigFeePayer,
-  readConfigOracleProgram,
-} from '../src/lib/codecs'
+import { decodeUserAccount, readConfigDusdcMint, readConfigFeePayer, readConfigOracleProgram } from '../src/lib/codecs'
 
 const coder = new BorshAccountsCoder(DEXXER_CORE_IDL)
 
@@ -41,7 +36,12 @@ test('decodeUserAccount reads actions_left (u32) — the session budget set_sess
 })
 
 test('Config readers hit dusdc_mint, oracle_program and fee_payer (not magic_fee_vault)', async () => {
-  const [oracle, dusdc, feePayer, vault] = [PublicKey.unique(), PublicKey.unique(), PublicKey.unique(), PublicKey.unique()]
+  const [oracle, dusdc, feePayer, vault] = [
+    PublicKey.unique(),
+    PublicKey.unique(),
+    PublicKey.unique(),
+    PublicKey.unique(),
+  ]
   const buf = await coder.encode('Config', {
     version: 1,
     admin: PublicKey.unique(),

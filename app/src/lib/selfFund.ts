@@ -35,10 +35,16 @@ export async function canSelfFund(owner: PublicKey, minLamports: number): Promis
   try {
     const lamports = await baseConn.getBalance(owner, 'confirmed')
     const self = lamports >= minLamports
-    if (__DEV__) console.log(`[dexxer] selfFund: owner has ${lamports} lamports, min ${minLamports} → ${self ? 'self-funded' : 'sponsored'}`)
+    if (__DEV__)
+      console.log(
+        `[dexxer] selfFund: owner has ${lamports} lamports, min ${minLamports} → ${self ? 'self-funded' : 'sponsored'}`,
+      )
     return self
   } catch (e) {
-    if (__DEV__) console.log(`[dexxer] selfFund: balance read failed, defaulting to sponsored: ${e instanceof Error ? e.message : String(e)}`)
+    if (__DEV__)
+      console.log(
+        `[dexxer] selfFund: balance read failed, defaulting to sponsored: ${e instanceof Error ? e.message : String(e)}`,
+      )
     return false
   }
 }

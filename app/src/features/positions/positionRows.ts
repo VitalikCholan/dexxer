@@ -41,7 +41,10 @@ export function displaySymbol(row: PositionRow, live: DecodedMarket | null): str
 }
 
 /** What the trade instructions need — straight from the slot's own Market account, registry not involved. */
-export function controlTarget(row: PositionRow, live: DecodedMarket | null): { market: PublicKey; feed: PublicKey } | null {
+export function controlTarget(
+  row: PositionRow,
+  live: DecodedMarket | null,
+): { market: PublicKey; feed: PublicKey } | null {
   return marketMatches(row.slot.market, live) ? { market: row.slot.market, feed: live.feed } : null
 }
 
@@ -52,7 +55,11 @@ export interface PendingClose {
 }
 
 /** Fire only for the very slot that was tapped, once ITS live Market has delivered. */
-export function shouldFireClose(pending: PendingClose | null, row: PositionRow | null, live: DecodedMarket | null): boolean {
+export function shouldFireClose(
+  pending: PendingClose | null,
+  row: PositionRow | null,
+  live: DecodedMarket | null,
+): boolean {
   return (
     pending !== null &&
     row !== null &&
@@ -64,5 +71,7 @@ export function shouldFireClose(pending: PendingClose | null, row: PositionRow |
 
 /** The pending close can never fire any more (active row changed, slot gone or reused) and must be dropped. */
 export function isCloseStale(pending: PendingClose | null, row: PositionRow | null): boolean {
-  return pending !== null && (row === null || row.slot.index !== pending.index || !row.slot.market.equals(pending.market))
+  return (
+    pending !== null && (row === null || row.slot.index !== pending.index || !row.slot.market.equals(pending.market))
+  )
 }

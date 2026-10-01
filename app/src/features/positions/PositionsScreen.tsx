@@ -70,7 +70,9 @@ export function PositionsScreen() {
     )
   else if (!positionsLive.value) body = <Skeleton lines={5} />
   else if (rows.length === 0)
-    body = <EmptyState text="No open positions" action={{ label: 'Go to Trade', onPress: () => router.push('/trade') }} />
+    body = (
+      <EmptyState text="No open positions" action={{ label: 'Go to Trade', onPress: () => router.push('/trade') }} />
+    )
   else
     body = rows.map((r) => {
       const isActive = active?.slot.index === r.slot.index
