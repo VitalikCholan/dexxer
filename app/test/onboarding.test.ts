@@ -17,17 +17,22 @@ import { test, afterEach } from 'node:test'
 import assert from 'node:assert/strict'
 import { BN, BorshAccountsCoder } from '@coral-xyz/anchor'
 import { Keypair, PublicKey, SystemProgram, Transaction, type AccountInfo, type Connection, type TransactionInstruction } from '@solana/web3.js'
-import { ASSOCIATED_TOKEN_PROGRAM_ID, getAssociatedTokenAddressSync } from '@solana/spl-token'
+import { ASSOCIATED_TOKEN_PROGRAM_ID, TOKEN_PROGRAM_ID, getAssociatedTokenAddressSync } from '@solana/spl-token'
 import {
   DELEGATION_PROGRAM_ID,
   PERMISSION_PROGRAM_ID,
+  EPHEMERAL_VAULT_ID,
+  MAGIC_PROGRAM_ID,
   deriveEphemeralAta,
+  delegateBufferPdaFromDelegatedAccountAndOwnerProgram,
+  delegationMetadataPdaFromDelegatedAccount,
+  delegationRecordPdaFromDelegatedAccount,
   permissionPdaFromAccount,
 } from '@magicblock-labs/ephemeral-rollups-sdk'
 import { baseConn } from '../src/lib/solana'
 import { DEXXER_CORE_IDL, DEXXER_CORE_PROGRAM_ID } from '../src/lib/anchor'
 import { pdas } from '../src/lib/pdas'
-import { assertIxKeysMatchIdl } from './ixAccounts.test'
+import { assertIxKeysMatchIdl, type ExpectedKeys } from './ixAccounts.test'
 import { l1KeysFor, l1ProgressFrom, readL1Snapshot } from '../src/features/onboard/onboardState'
 import type { NonceInfo } from '../src/lib/nonce'
 import {
@@ -166,8 +171,69 @@ async function collect(
   const mwa = { getConnection: async () => fakeConn(tee) as unknown as Connection }
   const legs = await collectBatchLegs(ctx, mwa, feePayer, (s) => log.push(s), NONCES)
   // anchor-ts drops unknown keys silently: every built leg must carry exactly the IDL's account count.
-  for (const l of legs) assertIxKeysMatchIdl(new Transaction().add(...l.ixs))
+  for (const l of legs) assertIxKeysMatchIdl(new Transaction().add(...l.ixs), expectedKeys(ctx, feePayer))
   return { legs: legs.map(shape), log, raw: legs }
+}
+
+/** Every key each onboarding instruction must carry, by IDL account name, from the scenario's real PDAs. */
+function expectedKeys(ctx: OnboardCtx, payer: PublicKey): ExpectedKeys {
+  const tri = (k: PublicKey) => ({
+    buffer: delegateBufferPdaFromDelegatedAccountAndOwnerProgram(k, DEXXER_CORE_PROGRAM_ID),
+    record: delegationRecordPdaFromDelegatedAccount(k),
+    metadata: delegationMetadataPdaFromDelegatedAccount(k),
+  })
+  const u = tri(ctx.userAccount)
+  const p = tri(ctx.positions)
+  const perm = {
+    owner: ctx.owner,
+    config: ctx.config,
+    user_account: ctx.userAccount,
+    positions: ctx.positions,
+    user_permission: permissionPdaFromAccount(ctx.userAccount),
+    positions_permission: permissionPdaFromAccount(ctx.positions),
+    permission_program: PERMISSION_PROGRAM_ID,
+    ephemeral_vault: EPHEMERAL_VAULT_ID,
+    magic_program: MAGIC_PROGRAM_ID,
+  }
+  return {
+    faucet_init: {
+      owner: ctx.owner,
+      payer,
+      config: ctx.config,
+      faucet: ctx.faucetPda,
+      dusdc_mint: ctx.mint,
+      mint_auth: ctx.mintAuth,
+      owner_ata: ctx.ownerAta,
+      system_program: SystemProgram.programId,
+      token_program: TOKEN_PROGRAM_ID,
+    },
+    init_user: {
+      owner: ctx.owner,
+      payer,
+      config: ctx.config,
+      user_account: ctx.userAccount,
+      positions: ctx.positions,
+      system_program: SystemProgram.programId,
+    },
+    delegate_user: {
+      owner: ctx.owner,
+      payer,
+      config: ctx.config,
+      buffer_user_account: u.buffer,
+      delegation_record_user_account: u.record,
+      delegation_metadata_user_account: u.metadata,
+      user_account: ctx.userAccount,
+      buffer_positions: p.buffer,
+      delegation_record_positions: p.record,
+      delegation_metadata_positions: p.metadata,
+      positions: ctx.positions,
+      owner_program: DEXXER_CORE_PROGRAM_ID,
+      delegation_program: DELEGATION_PROGRAM_ID,
+      system_program: SystemProgram.programId,
+    },
+    init_permissions: perm,
+    set_session: perm,
+  }
 }
 
 const nowSec = () => Math.floor(Date.now() / 1000)
