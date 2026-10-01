@@ -20,6 +20,7 @@
     "devnet:liqtask": "DEXXER_NET=devnet tsx devnet/11-liq-task-migration.ts",
     "devnet:liqcheck": "DEXXER_NET=devnet tsx devnet/13-liquidation-check.ts",
     "devnet:add-market": "DEXXER_NET=devnet tsx devnet/add-market.ts",
+    "devnet:feedprints": "DEXXER_NET=devnet tsx devnet/14-feed-prints.ts",
     "selftest:hashes": "tsx lib/hashes.selftest.ts"
   },
   "dependencies": {
