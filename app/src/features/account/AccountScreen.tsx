@@ -60,7 +60,11 @@ export function AccountScreen() {
     [signTransactions, getConnection, ensureRelayerSession],
   )
 
-  const positionsPubkey = base?.positions ?? null
+  // Derived from the owner alone, never from `base`: Exit (`undelegate_user`)
+  // is owner/MWA-signed and must work without a local session key (new
+  // device, cleared storage, unfinished onboarding). `base.positions` is for
+  // trading only.
+  const positionsPubkey = useMemo(() => (owner ? pdas.positions(owner) : null), [owner])
   const user = useLiveAccount(conn, base?.userAccount ?? null, decodeUserAccount)
   const positionsLive = useLiveAccount(conn, positionsPubkey, decodePositions)
 

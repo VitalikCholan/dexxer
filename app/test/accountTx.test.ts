@@ -16,21 +16,57 @@ import { baseConn, ER_VALIDATOR } from '../src/lib/solana'
 import { assertIxKeysMatchIdl } from './ixAccounts.test'
 
 const k = () => Keypair.generate().publicKey
-const rec = (market: PublicKey): HistoryRecord =>
-  ({ market, size: 1n, entry: 1n, exit: 1n, pnl: 0n, fees: 0n, openedSlot: 1n, closedSlot: 2n, side: 'Long', reason: 'User' })
-const slot = (market: PublicKey): PositionSlot =>
-  ({ index: 0, market, size: 1n, entry: 1n, margin: 1n, liqPrice: 1n, openedSlot: 1n, oiNotional: 1n, lastLiqSample: 0n, side: 'Long', liqTicks: 0 })
+const rec = (market: PublicKey): HistoryRecord => ({
+  market,
+  size: 1n,
+  entry: 1n,
+  exit: 1n,
+  pnl: 0n,
+  fees: 0n,
+  openedSlot: 1n,
+  closedSlot: 2n,
+  side: 'Long',
+  reason: 'User',
+})
+const slot = (market: PublicKey): PositionSlot => ({
+  index: 0,
+  market,
+  size: 1n,
+  entry: 1n,
+  margin: 1n,
+  liqPrice: 1n,
+  openedSlot: 1n,
+  oiNotional: 1n,
+  lastLiqSample: 0n,
+  side: 'Long',
+  liqTicks: 0,
+})
 
 test('exitMarkets: SOL always, history and open-slot markets once each, at most 16', () => {
   const sol = k()
   const btc = k()
   const eth = k()
-  const p: DecodedPositions = { owner: k(), slots: [slot(eth)], history: [rec(btc), rec(btc), rec(sol)], version: 1, bump: 1 }
+  const p: DecodedPositions = {
+    owner: k(),
+    slots: [slot(eth)],
+    history: [rec(btc), rec(btc), rec(sol)],
+    version: 1,
+    bump: 1,
+  }
   const out = exitMarkets(p, sol).map((m) => m.toBase58())
   assert.deepEqual(new Set(out), new Set([sol, btc, eth].map((m) => m.toBase58())))
   assert.equal(out.length, 3)
-  assert.deepEqual(exitMarkets(null, sol).map((m) => m.toBase58()), [sol.toBase58()])
-  const many: DecodedPositions = { owner: k(), slots: [], history: Array.from({ length: 16 }, () => rec(k())), version: 1, bump: 1 }
+  assert.deepEqual(
+    exitMarkets(null, sol).map((m) => m.toBase58()),
+    [sol.toBase58()],
+  )
+  const many: DecodedPositions = {
+    owner: k(),
+    slots: [],
+    history: Array.from({ length: 16 }, () => rec(k())),
+    version: 1,
+    bump: 1,
+  }
   assert.equal(exitMarkets(many, sol).length, 16)
   assert.equal(exitMarkets(many, sol)[0].toBase58(), sol.toBase58(), 'SOL is never the one dropped')
 })
@@ -74,10 +110,32 @@ test('exitIx: undelegate_user carries the 12 named accounts and the markets read
     },
   })
   assert.equal(ix.keys.length, 12 + markets.length)
-  assert.deepEqual(ix.keys.slice(0, 12).map((x) => x.pubkey.toBase58()), tx.instructions[0].keys.map((x) => x.pubkey.toBase58()))
+  assert.deepEqual(
+    ix.keys.slice(0, 12).map((x) => x.pubkey.toBase58()),
+    tx.instructions[0].keys.map((x) => x.pubkey.toBase58()),
+  )
   ix.keys.slice(12).forEach((key, i) => {
     assert.ok(key.pubkey.equals(markets[i]))
     assert.equal(key.isWritable, false)
     assert.equal(key.isSigner, false)
   })
+})
+
+test('exitIx builds with no session: Positions PDA from the owner alone, markets from exitMarkets(null) = [SOL]', async () => {
+  // AccountScreen's no-session-key path: no TEE read of `Positions` (value null),
+  // the PDA derived from the owner — undelegate_user is owner-signed.
+  const owner = k()
+  const positions = pdas.positions(owner)
+  const p = {
+    owner,
+    config: pdas.config(),
+    userAccount: pdas.userAccount(owner),
+    feeEscrow: pdas.feeEscrow(),
+  } as AccountPdas
+  const markets = exitMarkets(null, pdas.market())
+  const ix = await exitIx(p, baseConn, positions, markets)
+  assert.equal(ix.keys.length, 12 + 1)
+  assert.ok(ix.keys[0].pubkey.equals(owner))
+  assert.ok(ix.keys[3].pubkey.equals(positions))
+  assert.ok(ix.keys[12].pubkey.equals(pdas.market()))
 })
