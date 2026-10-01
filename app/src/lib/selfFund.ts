@@ -13,7 +13,7 @@
 // transaction, and gets the normal wallet prompt.
 //
 // Thresholds are deliberately conservative: onboarding rent (Faucet,
-// UserAccount, Position, DisclosureQueue, ATA, eATA, three delegation
+// UserAccount, Positions, ATA, eATA, three delegation
 // records) is ≈0.03 SOL on devnet; the deposit leg is one `faucet_mint` fee.
 // Below the threshold we fall back to sponsoring rather than failing the
 // user on an "insufficient funds" mid-batch.

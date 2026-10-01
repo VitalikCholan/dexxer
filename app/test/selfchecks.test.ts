@@ -16,7 +16,6 @@ import {
 } from '../src/lib/mwa/errors'
 import { assertDeriveTicketSelfCheck } from '../src/features/trade/ticketMath'
 import { assertLiqDistancePctSelfCheck } from '../src/features/positions/PositionCard'
-import { chunk, MAX_ACCOUNTS_PER_RPC } from '../src/features/history/historyRows'
 
 // --- ports of on-chain math / hashing (golden vectors shared with Rust and tests/er) ---
 test('math.ts matches math.rs vectors', () => assertMathSelfCheck())
@@ -31,20 +30,3 @@ test('identityHash is deterministic and field-sensitive', () => assertIdentityHa
 test('isAuthorizationFailure recognises every documented shape', () => assertIsAuthorizationFailureSelfCheck())
 test('isSessionEstablishmentFailure recognises every documented shape', () =>
   assertIsSessionEstablishmentFailureSelfCheck())
-
-// --- chunk (History's ≤100-keys-per-RPC batching) ---
-test('chunk splits into slices of at most `size`, last one shorter', () => {
-  const items = Array.from({ length: 250 }, (_, i) => i)
-  const out = chunk(items, MAX_ACCOUNTS_PER_RPC)
-  assert.deepEqual(
-    out.map((c) => c.length),
-    [100, 100, 50],
-  )
-  assert.deepEqual(out.flat(), items)
-})
-test('chunk of an empty list is an empty list', () => {
-  assert.deepEqual(chunk([], MAX_ACCOUNTS_PER_RPC), [])
-})
-test('chunk rejects a non-positive size', () => {
-  assert.throws(() => chunk([1], 0), /size must be positive/)
-})

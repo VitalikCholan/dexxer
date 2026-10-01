@@ -12,12 +12,11 @@ export const DEVNET_SLOT_MS = 400
 /**
  * A `u64`/`i64` USD amount at the program's 1e6 fixed point (`PRICE_SCALE`,
  * math.rs) formatted to 2 decimals — e.g. `116_730_000n` -> `'116.73'`.
- * Shared by History (`HistoryScreen.tsx`) and Ledger's disclosure feed
- * (`ledger/DisclosuresTab.tsx`) so entry/exit prices and PnL read the same
+ * Used by History (`HistoryScreen.tsx`) so entry/exit prices and PnL read the same
  * everywhere: elsewhere in the app (`TradeTicket`, `PositionCard`,
  * `AccountScreen`, `ReceiptSection`) local `usd`/`fmtUsd`
- * helpers already do this same 2-decimal rounding — History/Ledger were the
- * two outliers still at 4dp (observed live, smoke test 23.09.2026: History
+ * helpers already do this same 2-decimal rounding — History was the
+ * outlier still at 4dp (observed live, smoke test 23.09.2026: History
  * showed `$116.7300` next to Positions' `$116.71`). Size stays 4dp
  * (`SIZE_SCALE`'s SOL amounts) — unrelated, unaffected by this helper, each
  * screen keeps its own local `fmtSol`/`sol`.
