@@ -2,10 +2,9 @@ import { Tabs } from 'expo-router'
 import React from 'react'
 import { UiIconSymbol } from '@/src/ui/UiIconSymbol'
 import { useTheme } from '@/src/theme'
-import { FEATURES } from '@/src/lib/features'
 
-// Visible order (task-8, Claude Design 5-tab layout): trade, positions,
-// history, ledger, account. Everything else (`index`, `onboard`, `position`,
+// Visible order (task-8, Claude Design 4-tab layout): trade, positions,
+// history, account. Everything else (`index`, `onboard`,
 // `demo`, `spikes`, `settings`, `info`) is `href: null` — out of the tab bar but
 // still reachable via router.push, and linked from Account → Settings →
 // Developer (see app/app/(tabs)/settings/index.tsx). Week 6: the template's
@@ -60,15 +59,6 @@ export default function TabLayout() {
         }}
       />
       <Tabs.Screen
-        name="ledger"
-        options={{
-          // Temporarily hidden — `src/lib/features.ts`.
-          href: FEATURES.ledger ? undefined : null,
-          title: 'Ledger',
-          tabBarIcon: ({ color }) => <UiIconSymbol size={28} name="list.bullet.rectangle.fill" color={color} />,
-        }}
-      />
-      <Tabs.Screen
         name="account"
         options={{
           title: 'Account',
@@ -79,7 +69,6 @@ export default function TabLayout() {
       {/* Not in the tab bar — reachable via navigation only. */}
       <Tabs.Screen name="index" options={{ href: null }} />
       <Tabs.Screen name="onboard" options={{ href: null, title: 'Onboard' }} />
-      <Tabs.Screen name="position" options={{ href: null, title: 'Position' }} />
       <Tabs.Screen name="settings" options={{ href: null, title: 'Settings' }} />
       <Tabs.Screen name="info" options={{ href: null, title: 'Info' }} />
     </Tabs>

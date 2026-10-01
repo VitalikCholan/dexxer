@@ -21,7 +21,7 @@ pub struct InitConfig<'info> {
     pub token_program: Program<'info, Token>,
     pub rent: Sysvar<'info, Rent>,
 }
-// Single admin bootstrap ix carrying 8 distinct config values; a params-struct
+// Single admin bootstrap ix carrying 7 distinct config values; a params-struct
 // refactor would churn every caller (client + LiteSVM) for no runtime benefit.
 #[allow(clippy::too_many_arguments)]
 pub fn init_config(
@@ -29,7 +29,6 @@ pub fn init_config(
     crank: Pubkey,
     oracle_program: Pubkey,
     tee_validator: Pubkey,
-    disclosure_delay_slots: u64,
     scheduler_signer: Pubkey,
     fee_payer: Pubkey,
     magic_fee_vault: Pubkey,
@@ -42,7 +41,6 @@ pub fn init_config(
     c.oracle_program = oracle_program;
     c.tee_validator = tee_validator;
     c.dusdc_mint = ctx.accounts.dusdc_mint.key();
-    c.disclosure_delay_slots = disclosure_delay_slots;
     // Week-2 Task 1 M1: scheduled ticks are NOT signed by the flat
     // `magicblock_magic_program_api::pda::CRANK_SIGNER` PDA — caller supplies
     // the real signer here as a starting value. Task 6 (fix round 3) found the
@@ -91,6 +89,8 @@ pub fn init_market(
     apply_params(m, &params);
     m.mark = 0;
     m.mark_slot = 0;
+    m.last_print = 0;
+    m.sample_seq = 0;
     m.paused_open = false;
     m.stale_ticks = 0;
     m.bump = ctx.bumps.market;
@@ -232,15 +232,6 @@ pub fn unpause(ctx: Context<AdminConfig>) -> Result<()> {
 // writing it itself.
 pub fn set_scheduler_signer(ctx: Context<AdminConfig>, new_scheduler_signer: Pubkey) -> Result<()> {
     ctx.accounts.config.scheduler_signer = new_scheduler_signer;
-    Ok(())
-}
-// Week-5 Task 5: `disclosure_delay_slots` was written once, in `init_config`,
-// and never again — an already-deployed config could not retune the reveal
-// delay without a full re-bootstrap. Same `AdminConfig` pattern as the two
-// above. `0` is a legal value (reveal in the same cycle as the commitment),
-// and is what the week-5 demo runs on devnet.
-pub fn set_disclosure_delay(ctx: Context<AdminConfig>, slots: u64) -> Result<()> {
-    ctx.accounts.config.disclosure_delay_slots = slots;
     Ok(())
 }
 

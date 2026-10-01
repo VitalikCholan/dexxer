@@ -41,6 +41,7 @@ import {
 } from "../src/sponsor.js";
 import { nonceAccountsFor, nonceSeedFor } from "../src/nonce.js";
 import { dexxerCoreProgram, DEXXER_CORE_PROGRAM_ID } from "../../../tests/er/lib/program.js";
+import { delegateUserAccounts, initUserAccounts } from "../../../tests/er/lib/trader.js";
 import { memAuthStore } from "./memAuthStore.js";
 
 /** Relayer SIWS sessions (spec §2.7) — `send` mints one for the tx's owner signer. */
@@ -92,22 +93,9 @@ const CONFIG = PublicKey.findProgramAddressSync([Buffer.from("config")], DEXXER_
 
 async function buildInitUserTx(owner: Keypair, feePayer: PublicKey, payer: PublicKey = feePayer): Promise<Transaction> {
   const core = coreProgram(owner);
-  const market = Keypair.generate().publicKey;
-  const userAccount = Keypair.generate().publicKey;
-  const position = Keypair.generate().publicKey;
-  const disclosureQueue = Keypair.generate().publicKey;
   const ix = await core.methods
     .initUser(Array.from(new Uint8Array(32)))
-    .accounts({
-      owner: owner.publicKey,
-      payer,
-      config: CONFIG,
-      market,
-      userAccount,
-      position,
-      disclosureQueue,
-      systemProgram: SystemProgram.programId,
-    })
+    .accounts(initUserAccounts(owner.publicKey, payer))
     .instruction();
   const tx = new Transaction();
   tx.feePayer = feePayer;
@@ -155,40 +143,7 @@ async function buildFaucetMintIx(owner: PublicKey, mintAuthOverride?: PublicKey)
 
 async function buildDelegateUserIx(owner: PublicKey, payer: PublicKey): Promise<TransactionInstruction> {
   const core = coreProgram(Keypair.generate());
-  const k = () => Keypair.generate().publicKey;
-  return core.methods
-    .delegateUser()
-    .accounts({
-      owner,
-      payer,
-      config: CONFIG,
-      market: k(),
-      bufferUserAccount: k(), delegationRecordUserAccount: k(), delegationMetadataUserAccount: k(), userAccount: k(),
-      bufferPosition: k(), delegationRecordPosition: k(), delegationMetadataPosition: k(), position: k(),
-      bufferDisclosureQueue: k(), delegationRecordDisclosureQueue: k(), delegationMetadataDisclosureQueue: k(), disclosureQueue: k(),
-      ownerProgram: DEXXER_CORE_PROGRAM_ID,
-      delegationProgram: k(),
-      systemProgram: SystemProgram.programId,
-    })
-    .instruction();
-}
-
-async function buildInitUserReuseQueueIx(owner: PublicKey, payer: PublicKey): Promise<TransactionInstruction> {
-  const core = coreProgram(Keypair.generate());
-  const k = () => Keypair.generate().publicKey;
-  return core.methods
-    .initUserReuseQueue(Array.from(new Uint8Array(32)))
-    .accounts({
-      owner,
-      payer,
-      config: CONFIG,
-      market: k(),
-      userAccount: k(),
-      position: k(),
-      disclosureQueue: k(),
-      systemProgram: SystemProgram.programId,
-    })
-    .instruction();
+  return core.methods.delegateUser().accounts(delegateUserAccounts(owner, payer)).instruction();
 }
 
 async function buildDelegateSplTx(owner: Keypair, feePayer: PublicKey, payer: PublicKey = feePayer): Promise<Transaction> {
@@ -424,23 +379,6 @@ test("checkWhitelist: rejects any SystemProgram instruction", async () => {
   const result = checkWhitelist(tx, feePayer.publicKey, DUSDC_MINT);
   assert.equal(result.ok, false);
   if (!result.ok) assert.match(result.error, /not in whitelist/);
-});
-
-test("checkWhitelist: accepts init_user_reuse_queue (payer=fee_payer)", async () => {
-  // The returning owner's path: the queue survived their exit, so they come
-  // back through `init_user_reuse_queue` rather than `init_user`. Same
-  // owner@0/payer@1 shape, so it is sponsorable on the same terms.
-  const owner = Keypair.generate();
-  const feePayer = Keypair.generate();
-  const tx = new Transaction();
-  tx.feePayer = feePayer.publicKey;
-  tx.recentBlockhash = FAKE_BLOCKHASH;
-  tx.add(await buildInitUserReuseQueueIx(owner.publicKey, feePayer.publicKey));
-  tx.partialSign(owner);
-
-  const result = checkWhitelist(tx, feePayer.publicKey, DUSDC_MINT);
-  assert.equal(result.ok, true);
-  if (result.ok) assert.deepEqual(result.labels, ["dexxer_core:init_user_reuse_queue"]);
 });
 
 test("checkWhitelist: rejects delegate_user whose payer is not fee_payer", async () => {

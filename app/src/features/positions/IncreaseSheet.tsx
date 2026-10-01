@@ -1,7 +1,7 @@
 // app/src/features/positions/IncreaseSheet.tsx
 //
 // Task 10: `increase_position(add_size, add_margin, limit_price)` — both
-// fields named to match the actual ix args (`app/src/idl/dexxer_core.json`),
+// fields named to match the actual ix args (`idl/dexxer_core.json`),
 // not a generic "size" field. `add_size` must be > 0 on-chain
 // (`trade.rs::increase_position`); `add_margin` defaults to 0 (size-only
 // increase is valid, margin-only is not — that needs `add_margin` alone,
@@ -15,20 +15,31 @@ import { Input } from '@/src/ui/Input'
 import { Row } from '@/src/ui/Row'
 import { Button } from '@/src/ui/Button'
 import * as math from '@/src/lib/math'
-import { type DecodedPosition } from '@/src/lib/codecs'
+import { type PositionSlot } from '@/src/lib/positions'
 import { solSize } from '@/src/lib/trade'
 
 export interface IncreaseSheetProps {
   open: boolean
   onClose: () => void
-  position: DecodedPosition
+  position: PositionSlot
+  /** Market symbol for the labels (`SOL`, `BTC`, ...). */
+  symbol: string
   markUsd: bigint | null
   mmrBps: bigint
   busy: boolean
   onSubmit: (addSizeSol: number, addMarginUsd: number) => Promise<void>
 }
 
-export function IncreaseSheet({ open, onClose, position, markUsd, mmrBps, busy, onSubmit }: IncreaseSheetProps) {
+export function IncreaseSheet({
+  open,
+  onClose,
+  position,
+  symbol,
+  markUsd,
+  mmrBps,
+  busy,
+  onSubmit,
+}: IncreaseSheetProps) {
   const { colors } = useTheme()
   const caption = useTextStyle('caption')
   const [addSize, setAddSize] = useState('0.05')
@@ -49,8 +60,8 @@ export function IncreaseSheet({ open, onClose, position, markUsd, mmrBps, busy, 
   })()
 
   return (
-    <Sheet open={open} onClose={onClose} title="Increase position">
-      <Input label="Add size" value={addSize} onChangeText={setAddSize} suffix="SOL" keyboardType="decimal-pad" />
+    <Sheet open={open} onClose={onClose} title={`Increase ${symbol}-PERP`}>
+      <Input label="Add size" value={addSize} onChangeText={setAddSize} suffix={symbol} keyboardType="decimal-pad" />
       <Input
         label="Add margin (optional)"
         value={addMargin}
@@ -59,9 +70,12 @@ export function IncreaseSheet({ open, onClose, position, markUsd, mmrBps, busy, 
         keyboardType="decimal-pad"
       />
       <Row label="New liq. price ≈" value={newLiq !== null ? `$${(Number(newLiq) / 1e6).toFixed(2)}` : '—'} />
+      {markUsd === null ? (
+        <Text style={[caption, { color: colors.textSecondary, textAlign: 'center' }]}>Waiting for market price…</Text>
+      ) : null}
       <Button
         variant="primary"
-        disabled={busy || addSizeNum <= 0}
+        disabled={busy || markUsd === null || addSizeNum <= 0}
         onPress={() => void onSubmit(addSizeNum, addMarginNum)}
       >
         {busy ? 'Signing with session key…' : 'Confirm increase'}

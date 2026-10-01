@@ -1,41 +1,36 @@
 // app/src/features/history/HistoryScreen.tsx
 //
-// Task 9 (rewritten week 5, Task 6): closed-trade history. All the data
-// plumbing — the live `DisclosureQueue` subscription, the slot poll, the
-// commitment-hash store, the revealed-`Disclosure` lookup, and the
-// queue+revealed merge — lives in `useHistoryRows.ts`; this file is render
-// only. See that file's header for the full two-source lifecycle
-// (`Position.closed` is no longer a source — week-5 Task 1's queue-first
-// model retired it).
-import { useState } from 'react'
-import { Pressable, RefreshControl, ScrollView, Text, View } from 'react-native'
+// Closed trades from the private `Positions` ring plus this device's archive
+// (`useHistoryRows.ts`). Render only. ER slots carry no unix time, so the
+// time shown is when this device first saw the record.
+import { RefreshControl, ScrollView, Text, View } from 'react-native'
 import { Page } from '@/src/ui/Page'
 import { useTheme } from '@/src/theme'
-import { FEATURES } from '@/src/lib/features'
 import { useTextStyle } from '@/src/ui/styles'
 import { Card } from '@/src/ui/Card'
 import { Row as UiRow } from '@/src/ui/Row'
-import { Badge } from '@/src/ui/Badge'
-import { Address } from '@/src/ui/Address'
 import { EmptyState } from '@/src/ui/EmptyState'
 import { Skeleton } from '@/src/ui/Skeleton'
 import { formatUsd2 } from '@/src/lib/status'
+import { pdas } from '@/src/lib/pdas'
 import { useTradeSession } from '../trade/useTradeSession'
 import { useHistoryRows } from './useHistoryRows'
+import { reasonLabel } from './historyRows'
 
-function fmtSol(raw: bigint): string {
+function fmtSize(raw: bigint): string {
   return (Number(raw) / 1_000_000_000).toFixed(4)
 }
 
 export function HistoryScreen() {
   const { owner, conn, loading, error: sessionError } = useTradeSession()
-  const { rows, dq, revealedError, refreshing, onRefresh } = useHistoryRows(owner, conn)
-  const [explainerOpen, setExplainerOpen] = useState(false)
+  const positions = owner ? pdas.positions(owner) : null
+  const { rows, live, archiveError, refreshing, onRefresh } = useHistoryRows(owner, conn, positions)
 
   const { colors, space } = useTheme()
   const heading = useTextStyle('title')
   const body = useTextStyle('body')
   const caption = useTextStyle('caption')
+  const error = sessionError ?? live.error ?? archiveError
 
   return (
     <Page>
@@ -45,23 +40,9 @@ export function HistoryScreen() {
       >
         <Text style={[heading, { color: colors.textPrimary }]}>History</Text>
 
-        {/* Commit-reveal is temporarily hidden from the UI — `src/lib/features.ts`. */}
-        {FEATURES.commitReveal ? (
-          <Pressable onPress={() => setExplainerOpen((v) => !v)}>
-            <Text style={[caption, { color: colors.textSecondary }]}>
-              {explainerOpen ? '▾' : '▸'} Why do trades become public?
-            </Text>
-            {explainerOpen ? (
-              <Text style={[caption, { color: colors.textTertiary, marginTop: 4 }]}>
-                Your trades become public only after the delay — without your address.
-              </Text>
-            ) : null}
-          </Pressable>
-        ) : null}
-
-        {sessionError || dq.error || revealedError ? (
+        {error ? (
           <Text selectable style={{ color: colors.short }}>
-            {sessionError ?? dq.error ?? revealedError}
+            {error}
           </Text>
         ) : null}
 
@@ -75,19 +56,19 @@ export function HistoryScreen() {
           <View style={{ gap: space.md }}>
             {rows.map((r) => (
               <Card key={r.key}>
-                <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
-                  <Text style={[body, { color: colors.textPrimary, fontWeight: '600' }]}>
-                    {r.side} {fmtSol(r.size)} SOL
-                  </Text>
-                  {FEATURES.commitReveal ? <Badge tone={r.tone}>{r.statusText}</Badge> : null}
-                </View>
+                <Text style={[body, { color: colors.textPrimary, fontWeight: '600' }]}>
+                  {`${reasonLabel(r.reason)} · ${r.side} ${fmtSize(r.size)} ${r.symbol}`}
+                </Text>
                 <UiRow label="Entry → Exit" value={`$${formatUsd2(r.entry)} → $${formatUsd2(r.exit)}`} mono />
                 <UiRow
                   label="PnL"
                   value={`${r.pnl >= 0n ? '+' : ''}$${formatUsd2(r.pnl)}`}
                   tone={r.pnl >= 0n ? 'success' : 'danger'}
                 />
-                {FEATURES.commitReveal && r.explorerPubkey ? <Address pubkey={r.explorerPubkey} explorer /> : null}
+                <UiRow label="Fees" value={`$${formatUsd2(r.fees)}`} mono />
+                <Text style={[caption, { color: colors.textTertiary }]}>
+                  seen {new Date(r.seenAt).toLocaleString()}
+                </Text>
               </Card>
             ))}
           </View>

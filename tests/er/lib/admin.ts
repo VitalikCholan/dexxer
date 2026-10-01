@@ -8,21 +8,26 @@
 // Every step checks on-chain state first and skips if already done, so
 // `bootstrap()` is safe to re-run against a live mb-stack.
 //
-// Ordering note (deviates from the brief's compressed one-liner, follows its
-// detailed clarification instead): `seed_pool` runs on L1 BEFORE
-// `delegate_pool`, as a plain admin_ata -> pool_ata SPL transfer while `pool`
-// is still owned by our program. This avoids needing a second (admin) eATA
-// inside the ER just to move funds there — `delegate_pool` then clones the
-// already-funded `Pool`/`pool_ata` into the ER as part of normal PDA/account
-// delegation.
+// Pool order (final review C1, plan pinned by `poolBootstrapPlan` in
+// ./poolBootstrap.ts and its unit test): `init_pool` -> `init_pool_live` ->
+// faucet + `seed_pool` -> `delegate_pool_live` -> `delegate_pool`.
+// `seed_pool` is a plain admin_ata -> pool_ata SPL transfer on L1 that also
+// raises `PoolLive`'s counters; its context takes BOTH `Pool` and `PoolLive`
+// as program-owned `Account<…>`s, so it must land while neither is delegated
+// (a delegated account is owned by the Delegation Program on L1 -> Anchor
+// 3007). The previous order (init+delegate `PoolLive`, then seed) could never
+// complete on a clean start. `delegate_pool` then moves the already-funded
+// pool ATA into the eSPL vault and clones `Pool` into the ER. NOT executed on
+// mb-stack or devnet after this change — run a fresh `bootstrap()` on
+// mb-stack before the next devnet deploy.
 //
 // Task 0 (week 2) adds `bootstrapDevnet()`: same PDAs, same instructions,
 // but against real devnet + `devnet-tee.magicblock.app` (`ER_VALIDATOR`/
 // `ORACLE` from `env.ts`'s `devnet` profile) and without the mock oracle
 // (devnet uses the real Pyth Lazer feed already live inside the TEE — see
-// `keys/README.md` and the week-2 plan's Global Constraints). The
-// faucet+seed_pool+delegate_pool block is identical between the two
-// profiles, so it is factored into `seedAndDelegatePool` below and shared.
+// `keys/README.md` and the week-2 plan's Global Constraints). The pool block
+// is identical between the two profiles, so it is factored into
+// `bootstrapPool` below and shared.
 
 import { randomBytes } from "crypto";
 import { BN, type Program } from "@coral-xyz/anchor";
@@ -37,9 +42,7 @@ import {
 } from "@solana/web3.js";
 import { getOrCreateAssociatedTokenAccount, TOKEN_PROGRAM_ID, ASSOCIATED_TOKEN_PROGRAM_ID } from "@solana/spl-token";
 import {
-  createTopUpEscrowInstruction,
   delegateSpl,
-  escrowPdaFromEscrowAuthority,
   EPHEMERAL_VAULT_ID,
   lamportsDelegatedTransferIx,
   MAGIC_PROGRAM_ID,
@@ -48,12 +51,13 @@ import {
 } from "@magicblock-labs/ephemeral-rollups-sdk";
 import { NET, ORACLE, airdrop, baseConn, ER_VALIDATOR, loadOrCreateKey, sendAndConfirmIx, teeConn, waitDelegated } from "./env.js";
 import { crankSignerPda } from "./crank-signer.js";
+import { poolBootstrapPlan, type PoolBootstrapState } from "./poolBootstrap.js";
 import {
-  ACTION_ESCROW_INDEX,
   DELEGATION_PROGRAM_ID,
   DEXXER_CORE_PROGRAM_ID,
   EPHEMERAL_SPL_TOKEN_PROGRAM_ID,
   MOCK_ORACLE_PROGRAM_ID,
+  SOL_SYMBOL,
   accountNs,
   dexxerCoreProgram,
   delegationTriple,
@@ -63,7 +67,6 @@ import {
 } from "./program.js";
 
 export const LAZER_FEED_ID = "6";
-export const DISCLOSURE_DELAY_SLOTS = 100;
 // devnet-tee's validator-scoped magic fee vault (M3, week2-results.md §Task 1):
 // `magicFeeVaultPdaFromValidator(ER_VALIDATOR)` = this address, measured with
 // 8.39 SOL funded. Local mb-stack keeps `PublicKey.default()` (no fee-vault
@@ -100,7 +103,7 @@ export interface Bootstrapped {
   marketRisk: PublicKey;
   pool: PublicKey;
   poolAta: PublicKey;
-  /** Private live pool counters (week 4, Task 1) — see `pdas.poolLive`. Both `bootstrap()`/`bootstrapDevnet()` now init+delegate it (`initAndDelegatePoolLive`, Task 3, week 4); `bootstrapDevnet()` additionally makes it (+`marketRisk`) permissioned `[crank, admin]` via `init_market_permissions` (Task 3 migration step 10). */
+  /** Private live pool counters (week 4, Task 1) — see `pdas.poolLive`. Both `bootstrap()`/`bootstrapDevnet()` init, seed and delegate it (`bootstrapPool`); `bootstrapDevnet()` additionally makes it (+`marketRisk`) permissioned `[crank, admin]` via `init_market_permissions` (Task 3 migration step 10). */
   poolLive: PublicKey;
   feed: PublicKey;
   /** `commit_aggregate`'s delegated CPI-payer PDA (Task 5 fix round 1 — see admin.rs `FeeEscrow`). */
@@ -108,13 +111,11 @@ export interface Bootstrapped {
   sigs: Record<string, string>;
 }
 
-/** `bootstrapDevnet()`'s return value: same fields as `bootstrap()`, plus the devnet fee payer and week-3's `BalancesRoot`/action-escrow. */
+/** `bootstrapDevnet()`'s return value: same fields as `bootstrap()`, plus the devnet fee payer and week-3's `BalancesRoot`. */
 export interface BootstrappedDevnet extends Bootstrapped {
   feePayer: Keypair;
   /** `[b"balances_root"]`, week 3 Task 5/7 — see `initAndDelegateBalancesRoot`. */
   balancesRoot: PublicKey;
-  /** Action-escrow balance PDA topped up for `write_commitment`/`write_disclosure` — see `topUpActionEscrow`. */
-  actionEscrow: PublicKey;
 }
 
 async function ensureFunded(pubkey: PublicKey, minSol: number, label: string) {
@@ -141,137 +142,219 @@ async function requireFunded(pubkey: PublicKey, minSol: number, label: string): 
   console.log(`ok: ${label} funded (${(bal / LAMPORTS_PER_SOL).toFixed(3)} SOL)`);
 }
 
+/** What already exists of the pool on L1 — the input of `poolBootstrapPlan`. */
+async function readPoolState(core: Program, pool: PublicKey, poolLive: PublicKey): Promise<PoolBootstrapState> {
+  const [poolInfo, poolLiveInfo] = await Promise.all([
+    baseConn.getAccountInfo(pool, "confirmed"),
+    baseConn.getAccountInfo(poolLive, "confirmed"),
+  ]);
+  // A delegated account keeps its data on L1 (owner = Delegation Program), so
+  // `capital_total` is read from the raw bytes, whoever owns them.
+  let poolSeeded = false;
+  if (poolInfo) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const p = core.coder.accounts.decode("pool", poolInfo.data) as any;
+    poolSeeded = BigInt(p.capitalTotal.toString()) > 0n;
+  }
+  return {
+    poolExists: poolInfo !== null,
+    poolSeeded,
+    poolDelegated: poolInfo !== null && poolInfo.owner.equals(DELEGATION_PROGRAM_ID),
+    poolLiveExists: poolLiveInfo !== null,
+    poolLiveDelegated: poolLiveInfo !== null && poolLiveInfo.owner.equals(DELEGATION_PROGRAM_ID),
+  };
+}
+
 /**
- * The faucet+seed_pool+delegate_pool block, identical between `bootstrap()`
- * and `bootstrapDevnet()` (neither the ixs nor the PDAs differ — only
- * `ER_VALIDATOR`, which `env.ts`'s `DEXXER_NET` profile already resolves for
- * both). Mutates `sigs` in place, matching the rest of this file's style.
+ * The pool block, identical between `bootstrap()` and `bootstrapDevnet()`
+ * (neither the ixs nor the PDAs differ — only `ER_VALIDATOR`, which
+ * `env.ts`'s `DEXXER_NET` profile already resolves for both). Final review
+ * C1: the order comes from `poolBootstrapPlan` (see the file header) and is
+ * recomputed from on-chain state on every run, so a half-finished run can be
+ * re-run; a state no order can finish (an account delegated before `Pool`
+ * was seeded) throws with the plan's message BEFORE anything is sent.
+ * Mutates `sigs` in place, matching the rest of this file's style.
  */
-async function seedAndDelegatePool(
+async function bootstrapPool(
   core: Program,
   admin: Keypair,
   config: PublicKey,
   mintAuth: PublicKey,
   mint: PublicKey,
-  pool: PublicKey,
-  poolAta: PublicKey,
   sigs: Record<string, string>,
-): Promise<void> {
-  const adminAta = await getOrCreateAssociatedTokenAccount(baseConn, admin, mint, admin.publicKey);
-  const poolInfoNow = await baseConn.getAccountInfo(pool, "confirmed");
-  const poolDelegated = poolInfoNow !== null && poolInfoNow.owner.equals(DELEGATION_PROGRAM_ID);
-  if (poolDelegated) {
-    console.log("delegate_pool: already delegated, skipped");
-    return;
-  }
+): Promise<{ pool: PublicKey; poolAta: PublicKey; poolLive: PublicKey }> {
+  const pool = pdas.pool(mint);
+  const poolAta = pdas.poolAta(mint);
+  const poolLive = pdas.poolLive(mint);
+  const plan = poolBootstrapPlan(await readPoolState(core, pool, poolLive));
+  if (!Array.isArray(plan)) throw new Error(`pool bootstrap cannot continue: ${plan.error}`);
+  console.log(`pool bootstrap plan: ${plan.length > 0 ? plan.join(" -> ") : "(all done, skipped)"}`);
 
-  const poolAcc = await accountNs(core).pool.fetch(pool);
-  if (BigInt(poolAcc.capitalTotal.toString()) === 0n) {
-    const faucetPda = pdas.faucet(admin.publicKey);
-    const faucetInfo = await baseConn.getAccountInfo(faucetPda, "confirmed");
-    if (!faucetInfo) {
-      const sig = await core.methods
-        .faucetInit(new BN(POOL_SEED_AMOUNT.toString()))
-        .accounts({
-          owner: admin.publicKey,
-          payer: admin.publicKey,
-          config,
-          faucet: faucetPda,
-          dusdcMint: mint,
-          mintAuth,
-          ownerAta: adminAta.address,
-          systemProgram: SystemProgram.programId,
-          tokenProgram: TOKEN_PROGRAM_ID,
-        })
-        .rpc();
-      sigs.faucetInitAdmin = sig;
-      console.log("faucet_init (admin)", sig);
-    } else {
-      const sig = await core.methods
-        .faucetMint(new BN(POOL_SEED_AMOUNT.toString()))
-        .accounts({
-          owner: admin.publicKey,
-          config,
-          faucet: faucetPda,
-          dusdcMint: mint,
-          mintAuth,
-          ownerAta: adminAta.address,
-          tokenProgram: TOKEN_PROGRAM_ID,
-        })
-        .rpc();
-      sigs.faucetMintAdmin = sig;
-      console.log("faucet_mint (admin)", sig);
+  for (const step of plan) {
+    switch (step) {
+      case "init_pool": {
+        const sig = await core.methods
+          .initPool()
+          .accounts({
+            admin: admin.publicKey,
+            config,
+            pool,
+            dusdcMint: mint,
+            poolAta,
+            systemProgram: SystemProgram.programId,
+            tokenProgram: TOKEN_PROGRAM_ID,
+            associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
+          })
+          .rpc();
+        sigs.initPool = sig;
+        console.log("init_pool", sig);
+        break;
+      }
+      case "init_pool_live": {
+        // Copies `Pool`'s current counters: zero on a clean start (seed_pool
+        // below raises both), the seeded values on a deployment that predates
+        // `PoolLive` (week 4 migration; `Pool` read owner-unchecked).
+        const sig = await core.methods
+          .initPoolLive()
+          .accounts({ admin: admin.publicKey, config, pool, poolLive, systemProgram: SystemProgram.programId })
+          .rpc();
+        sigs.initPoolLive = sig;
+        console.log("init_pool_live", sig);
+        break;
+      }
+      case "seed_pool": {
+        const adminAta = await getOrCreateAssociatedTokenAccount(baseConn, admin, mint, admin.publicKey);
+        const faucetPda = pdas.faucet(admin.publicKey);
+        const faucetInfo = await baseConn.getAccountInfo(faucetPda, "confirmed");
+        if (!faucetInfo) {
+          const sig = await core.methods
+            .faucetInit(new BN(POOL_SEED_AMOUNT.toString()))
+            .accounts({
+              owner: admin.publicKey,
+              payer: admin.publicKey,
+              config,
+              faucet: faucetPda,
+              dusdcMint: mint,
+              mintAuth,
+              ownerAta: adminAta.address,
+              systemProgram: SystemProgram.programId,
+              tokenProgram: TOKEN_PROGRAM_ID,
+            })
+            .rpc();
+          sigs.faucetInitAdmin = sig;
+          console.log("faucet_init (admin)", sig);
+        } else {
+          const sig = await core.methods
+            .faucetMint(new BN(POOL_SEED_AMOUNT.toString()))
+            .accounts({
+              owner: admin.publicKey,
+              config,
+              faucet: faucetPda,
+              dusdcMint: mint,
+              mintAuth,
+              ownerAta: adminAta.address,
+              tokenProgram: TOKEN_PROGRAM_ID,
+            })
+            .rpc();
+          sigs.faucetMintAdmin = sig;
+          console.log("faucet_mint (admin)", sig);
+        }
+        // `SeedPool`: `pool` and `pool_live` are `Account<…>` (program-owned,
+        // i.e. not delegated yet) — the plan guarantees that here.
+        const sig = await core.methods
+          .seedPool(new BN(POOL_SEED_AMOUNT.toString()))
+          .accounts({
+            admin: admin.publicKey,
+            config,
+            pool,
+            poolLive,
+            adminAta: adminAta.address,
+            vaultAta: poolAta,
+            tokenProgram: TOKEN_PROGRAM_ID,
+          })
+          .rpc();
+        sigs.seedPool = sig;
+        console.log("seed_pool (L1)", sig);
+        break;
+      }
+      case "delegate_pool_live": {
+        const t = delegationTriple(poolLive, DEXXER_CORE_PROGRAM_ID);
+        const sig = await core.methods
+          .delegatePoolLive()
+          .accounts({
+            admin: admin.publicKey,
+            config,
+            dusdcMint: mint,
+            bufferPoolLive: t.buffer,
+            delegationRecordPoolLive: t.record,
+            delegationMetadataPoolLive: t.metadata,
+            poolLive,
+            ownerProgram: DEXXER_CORE_PROGRAM_ID,
+            delegationProgram: DELEGATION_PROGRAM_ID,
+            systemProgram: SystemProgram.programId,
+          })
+          .rpc();
+        sigs.delegatePoolLive = sig;
+        console.log("delegate_pool_live", sig);
+        await waitDelegated(baseConn, poolLive, "pool_live");
+        break;
+      }
+      case "delegate_pool": {
+        // The shared eSPL global vault for this mint must exist first (admin
+        // acts as the first owner purely to bootstrap the vault, matching
+        // spikes/02-espl-tee).
+        const vault = espl.vault(mint);
+        const vaultInfo = await baseConn.getAccountInfo(vault, "confirmed");
+        if (!vaultInfo) {
+          const ixs = await delegateSpl(admin.publicKey, mint, 0n, {
+            validator: ER_VALIDATOR,
+            initVaultIfMissing: true,
+            idempotent: false,
+          });
+          const sig = await sendAndConfirmTransaction(baseConn, new Transaction().add(...ixs), [admin], { commitment: "confirmed" });
+          sigs.createVault = sig;
+          console.log("delegateSpl(admin, 0) — creates global vault", sig);
+        } else {
+          console.log("global vault: exists, skipped");
+        }
+        // delegate_pool: the pool PDA + its eATA; moves the pool ATA's whole
+        // (seeded) balance into the vault.
+        const poolEata = espl.eata(pool, mint);
+        const vaultAta = espl.vaultAta(mint, vault);
+        const eataDelegation = espl.eataDelegation(poolEata);
+        const pt = delegationTriple(pool, DEXXER_CORE_PROGRAM_ID);
+        const sig = await core.methods
+          .delegatePool()
+          .accounts({
+            admin: admin.publicKey,
+            config,
+            dusdcMint: mint,
+            bufferPool: pt.buffer,
+            delegationRecordPool: pt.record,
+            delegationMetadataPool: pt.metadata,
+            pool,
+            poolAta,
+            poolEata,
+            vault,
+            vaultAta,
+            eataBuffer: eataDelegation.buffer,
+            eataRecord: eataDelegation.record,
+            eataMetadata: eataDelegation.metadata,
+            esplProgram: EPHEMERAL_SPL_TOKEN_PROGRAM_ID,
+            tokenProgram: TOKEN_PROGRAM_ID,
+            systemProgram: SystemProgram.programId,
+            ownerProgram: DEXXER_CORE_PROGRAM_ID,
+            delegationProgram: DELEGATION_PROGRAM_ID,
+          })
+          .rpc();
+        sigs.delegatePool = sig;
+        console.log("delegate_pool", sig);
+        await waitDelegated(baseConn, pool, "pool");
+        break;
+      }
     }
-
-    const sig = await core.methods
-      .seedPool(new BN(POOL_SEED_AMOUNT.toString()))
-      .accounts({
-        admin: admin.publicKey,
-        config,
-        pool,
-        // Controller ruling (week-4 Task 1 fix round 1): seed_pool now writes
-        // both Pool and PoolLive, so this call needs pool_live too.
-        poolLive: pdas.poolLive(mint),
-        adminAta: adminAta.address,
-        vaultAta: poolAta,
-        tokenProgram: TOKEN_PROGRAM_ID,
-      })
-      .rpc();
-    sigs.seedPool = sig;
-    console.log("seed_pool (L1)", sig);
-  } else {
-    console.log("seed_pool: pool.capital_total already funded, skipped");
   }
-
-  // --- create the shared eSPL global vault for this mint (admin acts as the
-  // first owner purely to bootstrap the vault, matching spikes/02-espl-tee). ---
-  const vault = espl.vault(mint);
-  const vaultInfo = await baseConn.getAccountInfo(vault, "confirmed");
-  if (!vaultInfo) {
-    const ixs = await delegateSpl(admin.publicKey, mint, 0n, {
-      validator: ER_VALIDATOR,
-      initVaultIfMissing: true,
-      idempotent: false,
-    });
-    const sig = await sendAndConfirmTransaction(baseConn, new Transaction().add(...ixs), [admin], { commitment: "confirmed" });
-    sigs.createVault = sig;
-    console.log("delegateSpl(admin, 0) — creates global vault", sig);
-  } else {
-    console.log("global vault: exists, skipped");
-  }
-
-  // --- delegate_pool (pool PDA + its eATA) ---
-  const poolEata = espl.eata(pool, mint);
-  const vaultAta = espl.vaultAta(mint, vault);
-  const eataDelegation = espl.eataDelegation(poolEata);
-  const pt = delegationTriple(pool, DEXXER_CORE_PROGRAM_ID);
-  const sig = await core.methods
-    .delegatePool()
-    .accounts({
-      admin: admin.publicKey,
-      config,
-      dusdcMint: mint,
-      bufferPool: pt.buffer,
-      delegationRecordPool: pt.record,
-      delegationMetadataPool: pt.metadata,
-      pool,
-      poolAta,
-      poolEata,
-      vault,
-      vaultAta,
-      eataBuffer: eataDelegation.buffer,
-      eataRecord: eataDelegation.record,
-      eataMetadata: eataDelegation.metadata,
-      esplProgram: EPHEMERAL_SPL_TOKEN_PROGRAM_ID,
-      tokenProgram: TOKEN_PROGRAM_ID,
-      systemProgram: SystemProgram.programId,
-      ownerProgram: DEXXER_CORE_PROGRAM_ID,
-      delegationProgram: DELEGATION_PROGRAM_ID,
-    })
-    .rpc();
-  sigs.delegatePool = sig;
-  console.log("delegate_pool", sig);
-  await waitDelegated(baseConn, pool, "pool");
+  return { pool, poolAta, poolLive };
 }
 
 /**
@@ -279,7 +362,7 @@ async function seedAndDelegatePool(
  * `FeeEscrow` PDA that `commit_aggregate` now uses as its intent CPI payer
  * (see `programs/dexxer_core/src/instructions/{admin,commit}.rs`) —
  * identical between `bootstrap()`/`bootstrapDevnet()`, so factored out the
- * same way `seedAndDelegatePool` is. Idempotent: skips `init_fee_escrow` if
+ * same way `bootstrapPool` is. Idempotent: skips `init_fee_escrow` if
  * the PDA already exists, skips `delegate_fee_escrow` if already delegated.
  */
 async function initAndDelegateFeeEscrow(core: Program, admin: Keypair, config: PublicKey, sigs: Record<string, string>): Promise<PublicKey> {
@@ -366,67 +449,6 @@ async function initAndDelegateBalancesRoot(core: Program, admin: Keypair, config
   return balancesRoot;
 }
 
-/**
- * Week 4 (Task 3, migration steps 8-9): create + delegate the `PoolLive` PDA
- * that every trading/money instruction now writes (Task 1) — same
- * idempotent init-then-delegate shape as `initAndDelegateFeeEscrow`/
- * `initAndDelegateBalancesRoot` above. `init_pool_live` copies its starting
- * counters from `Pool`'s current on-chain state — on a fresh env that's
- * zero (must run BEFORE `seedAndDelegatePool`'s `seed_pool` call, which now
- * hard-requires `pool_live` to exist as an Anchor account constraint — see
- * `SeedPool` in admin.rs); on devnet, `Pool` is already seeded from weeks
- * 1-3, so this copies its current non-zero counters (the migration case).
- * Both base-layer (L1) instructions, like `init_pool`/`delegate_pool`.
- * Idempotent: skips `init_pool_live` if the PDA already exists, skips
- * `delegate_pool_live` if already delegated.
- */
-async function initAndDelegatePoolLive(
-  core: Program,
-  admin: Keypair,
-  config: PublicKey,
-  pool: PublicKey,
-  mint: PublicKey,
-  sigs: Record<string, string>,
-): Promise<PublicKey> {
-  const poolLive = pdas.poolLive(mint);
-  const info = await baseConn.getAccountInfo(poolLive, "confirmed");
-  if (!info) {
-    const sig = await core.methods
-      .initPoolLive()
-      .accounts({ admin: admin.publicKey, config, pool, poolLive, systemProgram: SystemProgram.programId })
-      .rpc();
-    sigs.initPoolLive = sig;
-    console.log("init_pool_live", sig);
-  } else {
-    console.log("init_pool_live: exists, skipped");
-  }
-  const infoNow = info ?? (await baseConn.getAccountInfo(poolLive, "confirmed"));
-  if (!infoNow || !infoNow.owner.equals(DELEGATION_PROGRAM_ID)) {
-    const t = delegationTriple(poolLive, DEXXER_CORE_PROGRAM_ID);
-    const sig = await core.methods
-      .delegatePoolLive()
-      .accounts({
-        admin: admin.publicKey,
-        config,
-        dusdcMint: mint,
-        bufferPoolLive: t.buffer,
-        delegationRecordPoolLive: t.record,
-        delegationMetadataPoolLive: t.metadata,
-        poolLive,
-        ownerProgram: DEXXER_CORE_PROGRAM_ID,
-        delegationProgram: DELEGATION_PROGRAM_ID,
-        systemProgram: SystemProgram.programId,
-      })
-      .rpc();
-    sigs.delegatePoolLive = sig;
-    console.log("delegate_pool_live", sig);
-    await waitDelegated(baseConn, poolLive, "pool_live");
-  } else {
-    console.log("delegate_pool_live: already delegated, skipped");
-  }
-  return poolLive;
-}
-
 /** Rent for a ~200-byte `EphemeralPermission` account is ≈1.5–2.5M lamports on this ER; 5M gives headroom. */
 const MIN_PERMISSION_SURPLUS = 5_000_000;
 
@@ -443,11 +465,11 @@ const MIN_PERMISSION_SURPLUS = 5_000_000;
  * transfer (`lamportsDelegatedTransferIx`, already used by
  * `scripts/admin/fund-fee-payer.ts` for `FeeEscrow`) — it requires the
  * destination to already be delegated, which both `market_risk` (week 1)
- * and `pool_live` (`initAndDelegatePoolLive`, just above) are by the time
+ * and `pool_live` (`bootstrapPool`'s `delegate_pool_live`) are by the time
  * this runs. Idempotent: skips a PDA whose ER balance already meets
  * `MIN_PERMISSION_SURPLUS`.
  */
-async function fundMarketPermissions(admin: Keypair, marketRisk: PublicKey, poolLive: PublicKey, sigs: Record<string, string>): Promise<void> {
+export async function fundMarketPermissions(admin: Keypair, marketRisk: PublicKey, poolLive: PublicKey, sigs: Record<string, string>): Promise<void> {
   const conn = await teeConn(admin);
   const targets: [string, PublicKey][] = [
     ["marketRisk", marketRisk],
@@ -491,7 +513,7 @@ async function fundMarketPermissions(admin: Keypair, marketRisk: PublicKey, pool
  * tolerates a per-account CPI failure (fix round 1 — see
  * `instructions/user.rs`), so a real failure here throws.
  */
-async function initMarketPermissions(
+export async function initMarketPermissions(
   admin: Keypair,
   config: PublicKey,
   market: PublicKey,
@@ -550,46 +572,6 @@ async function initMarketPermissions(
   return { riskPermissioned, poolLivePermissioned };
 }
 
-const ACTION_ESCROW_TOP_UP_LAMPORTS = 0.05 * LAMPORTS_PER_SOL;
-const ACTION_ESCROW_MIN_LAMPORTS = 0.02 * LAMPORTS_PER_SOL;
-
-/**
- * Week 3 (Task 7): base-layer top-up of the action-escrow balance PDA that
- * `write_commitment`/`write_disclosure`'s `escrow`/`escrow_auth` accounts
- * check (`ephemeral_balance_pda_from_payer(escrow_auth, ACTION_ESCROW_INDEX)`
- * on the Rust side, `escrowPdaFromEscrowAuthority(feePayer, ACTION_ESCROW_INDEX)`
- * here — same derivation, see `spikes/06-magic-action/tests/magic-actions.ts`
- * for the reference call). `escrowAuthority` is `feePayer` (the identity
- * `write_commitment`/`write_disclosure` require as `Config.fee_payer`); the
- * lamports themselves come from `admin` (already funded by `requireFunded`
- * above), which is the only account that needs to sign this top-up —
- * `createTopUpEscrowInstruction`'s `payer` argument, not `escrowAuthority`,
- * is the signer (see its account list: `payer` is-signer, `escrowAuthority`
- * is not). Idempotent: skips if the escrow already holds >= 0.02 SOL.
- *
- * Note (brief discrepancy, IDL/SDK wins — see task-7-report.md): the task-7
- * brief's pseudocode calls `createTopUpEscrowInstruction` with 3 args
- * (escrow, payer, amount); the installed SDK (0.17.0, `tests/er/node_modules`)
- * exports a 4-arg signature `(escrow, escrowAuthority, payer, amount, index?)`
- * — `escrowAuthority` and `payer` are distinct accounts, and both
- * `escrowPdaFromEscrowAuthority`/`createTopUpEscrowInstruction` already
- * default their `index` param to 255 (== `ACTION_ESCROW_INDEX`), passed
- * explicitly here for clarity.
- */
-async function topUpActionEscrow(admin: Keypair, feePayer: Keypair, sigs: Record<string, string>): Promise<PublicKey> {
-  const escrow = escrowPdaFromEscrowAuthority(feePayer.publicKey, ACTION_ESCROW_INDEX);
-  const bal = await baseConn.getBalance(escrow, "confirmed").catch(() => 0);
-  if (bal >= ACTION_ESCROW_MIN_LAMPORTS) {
-    console.log(`action escrow: funded (${(bal / LAMPORTS_PER_SOL).toFixed(4)} SOL), skipped`);
-    return escrow;
-  }
-  const ix = createTopUpEscrowInstruction(escrow, feePayer.publicKey, admin.publicKey, ACTION_ESCROW_TOP_UP_LAMPORTS, ACTION_ESCROW_INDEX);
-  const sig = await sendAndConfirmTransaction(baseConn, new Transaction().add(ix), [admin], { commitment: "confirmed" });
-  sigs.topUpActionEscrow = sig;
-  console.log("action escrow top-up", sig, "escrow", escrow.toBase58());
-  return escrow;
-}
-
 export async function bootstrap(): Promise<Bootstrapped> {
   const admin = loadOrCreateKey("admin");
   await ensureFunded(admin.publicKey, 50, "admin");
@@ -619,7 +601,6 @@ export async function bootstrap(): Promise<Bootstrapped> {
         admin.publicKey,
         MOCK_ORACLE_PROGRAM_ID,
         ER_VALIDATOR,
-        new BN(DISCLOSURE_DELAY_SLOTS),
         ER_VALIDATOR, // scheduler_signer (Task 5 M1: local mb-stack validator identity)
         admin.publicKey,
         PublicKey.default,
@@ -648,37 +629,13 @@ export async function bootstrap(): Promise<Bootstrapped> {
   const marketInfo = await baseConn.getAccountInfo(market, "confirmed");
   if (!marketInfo) {
     const sig = await core.methods
-      .initMarket(MARKET_DEFAULTS, LAZER_FEED_ID)
+      .initMarket(Array.from(SOL_SYMBOL), MARKET_DEFAULTS, LAZER_FEED_ID)
       .accounts({ admin: admin.publicKey, config, market, marketRisk, systemProgram: SystemProgram.programId })
       .rpc();
     sigs.initMarket = sig;
     console.log("init_market", sig);
   } else {
     console.log("init_market: exists, skipped");
-  }
-
-  // --- init_pool ---
-  const pool = pdas.pool(mint);
-  const poolAta = pdas.poolAta(mint);
-  const poolInfo = await baseConn.getAccountInfo(pool, "confirmed");
-  if (!poolInfo) {
-    const sig = await core.methods
-      .initPool()
-      .accounts({
-        admin: admin.publicKey,
-        config,
-        pool,
-        dusdcMint: mint,
-        poolAta,
-        systemProgram: SystemProgram.programId,
-        tokenProgram: TOKEN_PROGRAM_ID,
-        associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
-      })
-      .rpc();
-    sigs.initPool = sig;
-    console.log("init_pool", sig);
-  } else {
-    console.log("init_pool: exists, skipped");
   }
 
   // --- mock oracle: init_feed + set_price (only while feed is still L1-owned by us) ---
@@ -736,7 +693,7 @@ export async function bootstrap(): Promise<Bootstrapped> {
     const mt = delegationTriple(market, DEXXER_CORE_PROGRAM_ID);
     const rt = delegationTriple(marketRisk, DEXXER_CORE_PROGRAM_ID);
     const sig = await core.methods
-      .delegateMarket()
+      .delegateMarket(Array.from(SOL_SYMBOL))
       .accounts({
         admin: admin.publicKey,
         config,
@@ -761,17 +718,14 @@ export async function bootstrap(): Promise<Bootstrapped> {
     console.log("delegate_market: already delegated, skipped");
   }
 
-  // --- init + delegate PoolLive (Task 0/1 week 4): must run BEFORE
-  // seed_pool below, which now hard-requires pool_live to exist. ---
-  await initAndDelegatePoolLive(core, admin, config, pool, mint, sigs);
-
-  // --- admin dUSDC ATA + faucet + seed_pool + delegate_pool (L1, before delegating the pool) ---
-  await seedAndDelegatePool(core, admin, config, mintAuth, mint, pool, poolAta, sigs);
+  // --- pool: init_pool -> init_pool_live -> faucet + seed_pool ->
+  // delegate_pool_live -> delegate_pool (C1; see the file header) ---
+  const { pool, poolAta, poolLive } = await bootstrapPool(core, admin, config, mintAuth, mint, sigs);
 
   // --- init + delegate the fee-escrow PDA (Task 5 fix round 1) ---
   const feeEscrow = await initAndDelegateFeeEscrow(core, admin, config, sigs);
 
-  return { admin, mint, market, marketRisk, pool, poolAta, poolLive: pdas.poolLive(mint), feed, feeEscrow, sigs };
+  return { admin, mint, market, marketRisk, pool, poolAta, poolLive, feed, feeEscrow, sigs };
 }
 
 export async function bootstrapDevnet(): Promise<BootstrappedDevnet> {
@@ -820,7 +774,6 @@ export async function bootstrapDevnet(): Promise<BootstrappedDevnet> {
         crank.publicKey,
         ORACLE,
         ER_VALIDATOR,
-        new BN(DISCLOSURE_DELAY_SLOTS),
         // scheduler_signer (task-6 fix round 3): crank_signer_pda(admin) for a
         // FRESH bootstrap, not ER_VALIDATOR (Task 1 M1's value — that was the
         // signer of ALREADY-scheduled ticks on a different, simpler spike
@@ -859,37 +812,13 @@ export async function bootstrapDevnet(): Promise<BootstrappedDevnet> {
   if (!marketInfo) {
     const params = { ...MARKET_DEFAULTS, maxConfBps: 0 };
     const sig = await core.methods
-      .initMarket(params, LAZER_FEED_ID)
+      .initMarket(Array.from(SOL_SYMBOL), params, LAZER_FEED_ID)
       .accounts({ admin: admin.publicKey, config, market, marketRisk, systemProgram: SystemProgram.programId })
       .rpc();
     sigs.initMarket = sig;
     console.log("init_market", sig);
   } else {
     console.log("init_market: exists, skipped");
-  }
-
-  // --- init_pool ---
-  const pool = pdas.pool(mint);
-  const poolAta = pdas.poolAta(mint);
-  const poolInfo = await baseConn.getAccountInfo(pool, "confirmed");
-  if (!poolInfo) {
-    const sig = await core.methods
-      .initPool()
-      .accounts({
-        admin: admin.publicKey,
-        config,
-        pool,
-        dusdcMint: mint,
-        poolAta,
-        systemProgram: SystemProgram.programId,
-        tokenProgram: TOKEN_PROGRAM_ID,
-        associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
-      })
-      .rpc();
-    sigs.initPool = sig;
-    console.log("init_pool", sig);
-  } else {
-    console.log("init_pool: exists, skipped");
   }
 
   // --- delegate_market (+ market_risk); no mock-oracle feed to init/delegate
@@ -899,7 +828,7 @@ export async function bootstrapDevnet(): Promise<BootstrappedDevnet> {
     const mt = delegationTriple(market, DEXXER_CORE_PROGRAM_ID);
     const rt = delegationTriple(marketRisk, DEXXER_CORE_PROGRAM_ID);
     const sig = await core.methods
-      .delegateMarket()
+      .delegateMarket(Array.from(SOL_SYMBOL))
       .accounts({
         admin: admin.publicKey,
         config,
@@ -924,24 +853,17 @@ export async function bootstrapDevnet(): Promise<BootstrappedDevnet> {
     console.log("delegate_market: already delegated, skipped");
   }
 
-  // --- init + delegate PoolLive (Task 0/1 week 4): must run BEFORE
-  // seed_pool below, which hard-requires pool_live to exist as an Anchor
-  // account constraint (see `SeedPool` in admin.rs) — matches `bootstrap()`'s
-  // order. On a fresh devnet this is load-bearing (fix wave, 23.09.2026):
-  // `seed_pool` would fail outright without it. On an already-migrated
-  // devnet (weeks 1-3 state), `init_pool_live` just copies Pool's current
-  // non-zero counters and the later `seed_pool` call is a no-op. ---
-  const poolLive = await initAndDelegatePoolLive(core, admin, config, pool, mint, sigs);
-
-  // --- admin dUSDC ATA + faucet + seed_pool + delegate_pool (shared with `bootstrap()`) ---
-  await seedAndDelegatePool(core, admin, config, mintAuth, mint, pool, poolAta, sigs);
+  // --- pool: init_pool -> init_pool_live -> faucet + seed_pool ->
+  // delegate_pool_live -> delegate_pool (C1, shared with `bootstrap()`; see
+  // the file header). `seed_pool` needs `Pool` AND `PoolLive` still
+  // program-owned on L1, so neither is delegated before it. ---
+  const { pool, poolAta, poolLive } = await bootstrapPool(core, admin, config, mintAuth, mint, sigs);
 
   // --- init + delegate the fee-escrow PDA (Task 5 fix round 1) ---
   const feeEscrow = await initAndDelegateFeeEscrow(core, admin, config, sigs);
 
-  // --- init + delegate BalancesRoot, then top up the action escrow (week 3, Task 7) ---
+  // --- init + delegate BalancesRoot (week 3, Task 7) ---
   const balancesRoot = await initAndDelegateBalancesRoot(core, admin, config, sigs);
-  const actionEscrow = await topUpActionEscrow(admin, feePayer, sigs);
 
   // --- PoolLive migration (Task 3, steps 9-10): make MarketRisk + PoolLive
   // (already init+delegated above) permissioned [crank, admin] on the ER
@@ -962,22 +884,5 @@ export async function bootstrapDevnet(): Promise<BootstrappedDevnet> {
     );
   }
 
-  return { admin, mint, market, marketRisk, pool, poolAta, poolLive, feed, feeEscrow, sigs, feePayer, balancesRoot, actionEscrow };
-}
-
-/**
- * Week-5 Task 7 (M-H/M-J): `set_disclosure_delay` (base-layer `AdminConfig`,
- * same pattern as `pause`/`set_scheduler_signer` — see
- * `programs/dexxer_core/src/instructions/admin.rs`). `Config` is never
- * delegated, so this is a plain `baseConn` write, not a TEE one. Missing
- * from this file until now (Task 5 shipped the instruction but no client
- * builder); added here per the task-7 controller amendment rather than
- * inlined in each devnet script that needs it.
- */
-export async function setDisclosureDelay(admin: Keypair, slots: bigint): Promise<string> {
-  const core = dexxerCoreProgram(baseConn, admin);
-  return core.methods
-    .setDisclosureDelay(new BN(slots.toString()))
-    .accounts({ admin: admin.publicKey, config: pdas.config() })
-    .rpc();
+  return { admin, mint, market, marketRisk, pool, poolAta, poolLive, feed, feeEscrow, sigs, feePayer, balancesRoot };
 }

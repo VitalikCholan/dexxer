@@ -6,7 +6,7 @@
 // to finish its in-flight tick/cycle and stop, WAIT for that to actually
 // happen (bounded by a hard-kill timeout), only then close the HTTP server
 // and exit — a Railway redeploy's SIGTERM must not kill the loop mid
-// `sendRawTransaction`/`confirm` or mid `runRootCycle`/`runDisclosureCycle`.
+// `sendRawTransaction`/`confirm` or mid `runRootCycle`/`runCommitCycle`.
 //
 // --- DEXXER_NET=devnet env-forcing, and why this file has almost no static
 // imports ---
@@ -35,7 +35,7 @@ import { Connection, PublicKey } from "@solana/web3.js";
 
 type PublicKeyT = InstanceType<typeof PublicKey>;
 import { createPool, getMeta, migrate, setMeta } from "./db.js";
-import { computeSchedulerActive, healthRouter } from "./health.js";
+import { buildMarketsHealth, computeSchedulerActive, healthRouter } from "./health.js";
 import { shutdown } from "./shutdown.js";
 import type { RelayerConfig, RelayerState } from "./crank.js";
 import { attachWs, indexerRouter } from "./indexer/http.js";
@@ -63,8 +63,9 @@ if ((process.env.DEXXER_NET ?? "local") === "devnet") {
 }
 
 const { keypairFromEnv } = await import("./keys.js");
-const { COMMIT_INTERVAL_TICKS, COMMIT_MAX_ACTIONS, startCrank, requestStop } = await import("./crank.js");
-const { NET, BASE, ER, ER_WS } = await import("../../../tests/er/lib/env.js");
+const { startCrank, requestStop, withSol } = await import("./crank.js");
+const { COMMIT_INTERVAL_MS } = await import("./commit.js");
+const { NET, BASE, ER, ER_WS, teeConn } = await import("../../../tests/er/lib/env.js");
 const { accountNs, dexxerCoreProgram, pdas } = await import("../../../tests/er/lib/program.js");
 const { startMarketWatch } = await import("./marketWatch.js");
 
@@ -101,17 +102,22 @@ const authSessionTtlMs =
 // keeping Market ticking, without this relayer's own 1s loop competing.
 const crankEnabled = process.env.CRANK_ENABLED !== "false";
 
-const state: RelayerState = { lastTickAt: null, lastCommitAt: null, tick: 0, errors: [] };
+const state: RelayerState = { lastTickAt: null, lastCommitAt: null, tick: 0, errors: [], marketTicks: {} };
 
 const pool = createPool(cfg.databaseUrl);
 await migrate(pool);
 if (pool) {
+  // Final review I2: only `lastCommitAt` is restored (informational). The
+  // health gate's `lastTickAt` always starts `null` in a new process, so
+  // `/healthz.ok` is false until THIS process ticked SOL after a good
+  // discovery — a restored value would report a dead process healthy for up
+  // to `STALE_MS`. For the same reason `lastTickAt` is no longer persisted
+  // (nothing reads it back); the `meta` row an older relayer wrote stays as
+  // it is.
   try {
-    const lastTickAt = await getMeta(pool, "lastTickAt");
     const lastCommitAt = await getMeta(pool, "lastCommitAt");
-    if (lastTickAt) state.lastTickAt = Number(lastTickAt);
     if (lastCommitAt) state.lastCommitAt = Number(lastCommitAt);
-    console.log("index: restored persisted state", { lastTickAt: state.lastTickAt, lastCommitAt: state.lastCommitAt });
+    console.log("index: restored persisted state", { lastCommitAt: state.lastCommitAt });
   } catch (e) {
     console.error("index: failed to load persisted state from db", String(e));
   }
@@ -119,10 +125,8 @@ if (pool) {
   // Postgres round-trip inside the 1s tick loop would eat into its
   // cadence), never awaited by the tick loop itself.
   setInterval(() => {
-    const writes: Promise<void>[] = [];
-    if (state.lastTickAt !== null) writes.push(setMeta(pool, "lastTickAt", String(state.lastTickAt)));
-    if (state.lastCommitAt !== null) writes.push(setMeta(pool, "lastCommitAt", String(state.lastCommitAt)));
-    void Promise.all(writes).catch((e) => console.error("index: persistState failed", String(e)));
+    if (state.lastCommitAt === null) return;
+    void setMeta(pool, "lastCommitAt", String(state.lastCommitAt)).catch((e) => console.error("index: persistState failed", String(e)));
   }, 5000).unref();
 }
 
@@ -140,23 +144,61 @@ const server = app.listen(cfg.port, () => {
   console.log(`relayer: listening on :${cfg.port} net=${cfg.net}`);
 });
 
-// Task 5: public-data indexer (oracle candles, Pool/BalancesRoot snapshots,
-// Disclosure feed) — needs Postgres (`pool`) and `INDEXER_ENABLED=true`.
+// Plan 2 (Task 5): the market registry (markets.ts) — every `Market` in the
+// ER, public unauthenticated read, refreshed every MARKETS_REFRESH_MS. One
+// awaited refresh before the crank and the indexer start (hence it sits above
+// the indexer block) so both already see every market; if it fails the list
+// stays empty — the crank still ticks SOL (crank.ts's `withSol`) and the
+// indexer indexes SOL on its known feed (accounts.ts's `reconcile`) until a
+// later refresh brings the rest.
+//
+// Final review F2: a market is listed only once its `MarketRisk` permission
+// PDA is owned by the Permission Program (markets.ts `keepPrivateMarkets`).
+// That owner read goes over a CRANK-authenticated TEE connection: the crank
+// is a member of every `MarketRisk` permission (`[crank, admin]`), so it is
+// certain to see the permission account. This does not bend the "servers
+// read only public data" rule — only the ACCOUNT OWNER of the permission PDA
+// is read, never `MarketRisk` data, and nothing of it is served. The
+// connection is created lazily and dropped after any error, so a stale
+// token heals on the next refresh; the `Market` read itself stays
+// unauthenticated.
+let permissionOwnerConn: Connection | null = null;
+const readPermissionOwners = async (keys: PublicKeyT[]): Promise<(PublicKeyT | null)[]> => {
+  try {
+    permissionOwnerConn ??= await teeConn(cfg.crank);
+    const out: (PublicKeyT | null)[] = [];
+    for (let i = 0; i < keys.length; i += 100) {
+      const infos = await permissionOwnerConn.getMultipleAccountsInfo(keys.slice(i, i + 100), "confirmed");
+      out.push(...infos.map((a) => a?.owner ?? null));
+    }
+    return out;
+  } catch (e) {
+    permissionOwnerConn = null;
+    throw e;
+  }
+};
+const { createMarketRegistry, loadMarketsFromEr } = await import("./markets.js");
+const markets = createMarketRegistry({ load: loadMarketsFromEr(cfg.erRpc, readPermissionOwners) });
+await markets.refresh();
+markets.start();
+
+// Task 5: public-data indexer (oracle candles per market, Pool/BalancesRoot
+// snapshots) — needs Postgres (`pool`) and `INDEXER_ENABLED=true`.
 // Reads ONLY public accounts (see indexer/accounts.ts's header comment) —
 // never `cfg.crank`/`cfg.feePayer`.
-const indexerStats: IndexerStats = { ticks: 0, lastTickTs: null, lastPublishTimeMs: null, lastPoolSlot: null, disclosures: 0 };
+const indexerStats: IndexerStats = { ticks: 0, lastTickTs: null, lastPublishTimeMs: null, lastPoolSlot: null, feeds: {} };
 let wsHub: ReturnType<typeof attachWs> | null = null;
 let stopIndexer: (() => void) | null = null;
 if (cfg.indexerEnabled && !pool) {
   console.warn("indexer: INDEXER_ENABLED=true but no DATABASE_URL — indexer disabled (needs Postgres)");
 } else if (cfg.indexerEnabled && pool) {
   wsHub = attachWs(server);
-  app.use(indexerRouter(pool));
+  app.use(indexerRouter(pool, { markets: () => markets.list() }));
   try {
     const { startIndexer } = await import("./indexer/accounts.js");
     const hub = wsHub;
-    stopIndexer = startIndexer({ pool, stats: indexerStats, broadcast: (msg) => hub.broadcast(msg) });
-    console.log("indexer: started (oracle candles, Pool/BalancesRoot snapshots, Disclosure feed, /ws)");
+    stopIndexer = startIndexer({ pool, stats: indexerStats, broadcast: (msg) => hub.broadcast(msg), markets: () => markets.list() });
+    console.log("indexer: started (oracle candles per market, Pool/BalancesRoot snapshots, /ws)");
   } catch (e) {
     // Fix round 1 (code review): the indexer is a best-effort add-on — a
     // failure starting its subscriptions (bad IDL path, RPC unreachable at
@@ -246,8 +288,16 @@ app.use(
       oracleStale: isStale(indexerStats.lastPublishTimeMs, Date.now(), ORACLE_STALE_MS),
     }),
     getSponsorSnapshot: getSponsorHealthSnapshot,
-    commitIntervalTicks: COMMIT_INTERVAL_TICKS,
-    commitMaxActions: COMMIT_MAX_ACTIONS,
+    commitIntervalMs: COMMIT_INTERVAL_MS,
+    // The same view the crank ticks (`withSol`): SOL is listed even while the
+    // registry is empty or lacks it.
+    getMarketsHealth: () =>
+      buildMarketsHealth(
+        withSol(markets.list().map((m) => ({ symbol: m.symbol })), () => ({ symbol: "SOL" })).map((m) => m.symbol),
+        state.marketTicks,
+        indexerStats.feeds,
+        Date.now(),
+      ),
   }),
 );
 
@@ -260,23 +310,31 @@ if (!crankEnabled) {
 }
 // Kept as a reference (not just `.catch()`ed and discarded): `shutdown()`
 // below awaits this to know the loop has actually stopped. `.catch()` here
-// makes `crankDone` itself never reject — a crash still logs/records into
-// `state.errors` exactly as before, it just also resolves so shutdown never
-// hangs on a promise that rejected instead of resolving.
+// makes `crankDone` itself never reject, so shutdown never hangs on it.
+//
+// Final review I2: a `startCrank` that rejects — a boot failure (TEE auth,
+// `Config`/SOL `Market` read) or a crash of the loop — exits the process with
+// code 1. Railway's restart policy is ON_FAILURE (railway.json), and its
+// healthcheck runs only at deploy time, so a relayer that stayed up with a
+// dead crank would never be restarted. During a SIGTERM/SIGINT shutdown the
+// exit is left to `shutdown()`. (The loop's own watchdog — crank.ts
+// `CRANK_WATCHDOG_MS` — covers a loop that hangs instead of rejecting.)
+let shuttingDown = false;
 const crankDone: Promise<void> = crankEnabled
-  ? startCrank(cfg, state).catch((e) => {
-      console.error("relayer: crank loop crashed", e);
+  ? startCrank(cfg, state, markets).catch((e) => {
+      console.error("relayer: crank loop crashed — exiting with code 1 for a restart", e);
       state.errors.push(String(e instanceof Error ? e.message : e));
+      if (!shuttingDown) process.exit(1);
     })
   : Promise.resolve();
 
-let shuttingDown = false;
 function handleSignal(signal: string): void {
   if (shuttingDown) return;
   shuttingDown = true;
   stopIndexer?.();
   wsHub?.close();
   stopMarketWatch();
+  markets.stop();
   void shutdown(signal, {
     requestStop,
     crankDone,

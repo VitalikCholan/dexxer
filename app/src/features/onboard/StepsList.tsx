@@ -2,7 +2,7 @@
 //
 // Task 10: the 3-step "Set up private account" list. Maps the design's 3
 // steps onto `batchOnboarding.ts`'s actual legs (brief's own mapping): L1a
-// (faucet_init + init_user|init_user_reuse_queue) = "Create private accounts
+// (faucet_init + init_user) = "Create private accounts
 // (L1)", L1b (delegateSpl + delegate_user) = "Move them into the private
 // enclave (L1)", the ER leg (init_permissions + set_session) = "Activate
 // session key (enclave)" — week 5, Task 6 dropped the session lamports

@@ -6,17 +6,17 @@ import { Page } from '@/src/ui/Page'
 import { SettingsUiAccount } from '@/src/features/settings/SettingsUiAccount'
 import { SettingsAbout } from '@/src/features/settings/SettingsAbout'
 
-// Task 8 (5-tab layout): `onboard`/`position` dropped out of the tab bar
-// (`href: null` in app/app/(tabs)/_layout.tsx) but stay reachable from here,
+// Task 8 (5-tab layout): `onboard` dropped out of the tab bar
+// (`href: null` in app/app/(tabs)/_layout.tsx) but stays reachable from here
+// (the legacy single-`Position` screen is gone with position slots),
 // plus the dev-only UI gallery and the devnet SOL airdrop (week 6: the
 // template's demo/spikes screens and cluster switcher are gone — the app
 // runs against one network profile, `src/lib/config.ts`).
 const DEVELOPER_LINKS: {
-  href: '/onboard' | '/position' | '/account/airdrop' | '/settings/ui-gallery'
+  href: '/onboard' | '/account/airdrop' | '/settings/ui-gallery'
   label: string
 }[] = [
   { href: '/onboard', label: 'Onboard' },
-  { href: '/position', label: 'Position (legacy)' },
   { href: '/account/airdrop', label: 'Airdrop devnet SOL' },
   { href: '/settings/ui-gallery', label: 'UI gallery' },
 ]

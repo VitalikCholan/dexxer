@@ -26,11 +26,10 @@ pub fn pool(mint: &Pubkey) -> Pubkey {
 pub fn user(owner: &Pubkey) -> Pubkey {
     pda(&[USER_SEED, owner.as_ref()])
 }
-pub fn position(owner: &Pubkey, market: &Pubkey) -> Pubkey {
-    pda(&[POSITION_SEED, owner.as_ref(), market.as_ref()])
-}
-pub fn dq(owner: &Pubkey) -> Pubkey {
-    pda(&[DQ_SEED, owner.as_ref()])
+/// The trader's one `Positions` account — every market's slot lives inside
+/// it (spec §2.9.1), so the address carries no market.
+pub fn positions(owner: &Pubkey) -> Pubkey {
+    pda(&[POSITIONS_SEED, owner.as_ref()])
 }
 pub fn faucet(owner: &Pubkey) -> Pubkey {
     pda(&[FAUCET_SEED, owner.as_ref()])
@@ -43,15 +42,6 @@ pub fn balances_root() -> Pubkey {
 }
 pub fn pool_live(mint: &Pubkey) -> Pubkey {
     pda(&[POOL_LIVE_SEED, mint.as_ref()])
-}
-/// Hash-seeded (week-3 controller ruling 9): `nonce` is per-user, so two
-/// traders' first closes both land on nonce 1 and would collide on the same
-/// PDA if seeded by nonce. `hash` is `commitment_hash(&args, &salt)`.
-pub fn commitment(hash: &[u8; 32]) -> Pubkey {
-    pda(&[COMMIT_SEED, hash])
-}
-pub fn disclosure(hash: &[u8; 32]) -> Pubkey {
-    pda(&[DISCLOSURE_SEED, hash])
 }
 pub fn feed_for(oracle_program: &Pubkey, lazer_feed_id: &str) -> Pubkey {
     Pubkey::find_program_address(
@@ -95,16 +85,6 @@ pub fn permission(account: &Pubkey) -> Pubkey {
     let compat_account = ephemeral_rollups_sdk::compat::Pubkey::new_from_array(account.to_bytes());
     let (pda, _) = ephemeral_rollups_sdk::access_control::structs::EphemeralPermission::find_pda(
         &compat_account,
-    );
-    compat_pk(pda)
-}
-/// The Magic Program's action escrow balance PDA for `escrow_auth`, index `ACTION_ESCROW_INDEX`
-/// (spikes/06-magic-action, `#[action]`-gated instructions).
-pub fn action_escrow(escrow_auth: &Pubkey) -> Pubkey {
-    let compat_auth = ephemeral_rollups_sdk::compat::Pubkey::new_from_array(escrow_auth.to_bytes());
-    let pda = ephemeral_rollups_sdk::pda::ephemeral_balance_pda_from_payer(
-        &compat_auth,
-        ACTION_ESCROW_INDEX,
     );
     compat_pk(pda)
 }

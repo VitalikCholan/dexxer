@@ -1,12 +1,20 @@
 // services/relayer/src/health.ts
 //
-// GET /healthz — liveness for Railway's healthcheck (`railway.json`'s
-// `healthcheckPath`) and for a human `curl`. 503 when the crank loop has
-// gone stale (no successful tick in the last `STALE_MS`) — an uncaught
-// throw inside `startCrank` is already impossible (every await in its loop
-// is wrapped, see crank.ts), so a stale `lastTickAt` is the actual signal
-// something is wedged (stuck TEE auth, RPC outage, etc.) that should make
-// Railway restart the container.
+// GET /healthz — Railway's deploy-time healthcheck (`railway.json`'s
+// `healthcheckPath`) and a human `curl` / an external uptime monitor. 503
+// when the crank loop has gone stale (no SOL tick after a good candidate
+// discovery in the last `STALE_MS` — `lastTickAt` follows the SOL market
+// only, the one the shipped APK trades; other markets are informational in
+// `markets`, final review F3). `lastTickAt` starts `null` in every process
+// (never restored from Postgres), so a fresh process answers 503 until its
+// first such tick.
+//
+// A 503 restarts NOTHING (final review I2): Railway calls the healthcheck
+// only while a deploy goes live. What restarts a dead or wedged crank is the
+// process exiting with code 1 under the ON_FAILURE restart policy —
+// index.ts when `startCrank` rejects, crank.ts's watchdog when no loop
+// iteration completed within `CRANK_WATCHDOG_MS`. Watching `/healthz` after
+// the deploy is a job for an external uptime monitor (an open item, plan 4).
 //
 // Task 7 (eternal scheduler backstop): when `CRANK_ENABLED=false` this
 // relayer's own crank loop never starts (`lastTickAt` stays `null`
@@ -34,14 +42,15 @@
 // health-check hits stay cheap, and probes `db` with a trivial query.
 //
 // `db` is informational only — a database hiccup does not flip the 5xx
-// status (only a stale tick does); Railway restarting the relayer container
-// would not fix a Postgres outage.
+// status (only a stale tick does); restarting the relayer would not fix a
+// Postgres outage anyway.
 
 import type { Connection, PublicKey } from "@solana/web3.js";
 import express from "express";
 import type { Router } from "express";
 import type { DbPool } from "./db.js";
 import type { RelayerState } from "./crank.js";
+import { ORACLE_STALE_MS, isStale } from "./indexer/prices.js";
 
 export const STALE_MS = 60_000;
 const BALANCE_CACHE_MS = 60_000;
@@ -66,7 +75,6 @@ export interface IndexerSnapshot {
   ticks: number;
   lastTickTs: number | null;
   lastPoolSlot: number | null;
-  disclosures: number;
   wsClients: number;
   /** Week-5 Task 5: the ORACLE's `publish_time` of the newest update, epoch ms — `null` when nothing has been decoded yet. */
   lastPublishTimeMs: number | null;
@@ -79,7 +87,6 @@ const EMPTY_INDEXER_SNAPSHOT: IndexerSnapshot = {
   lastTickTs: null,
   lastPublishTimeMs: null,
   lastPoolSlot: null,
-  disclosures: 0,
   wsClients: 0,
   oracleStale: true,
 };
@@ -93,6 +100,27 @@ export interface SponsorHealthSnapshot {
 }
 const EMPTY_SPONSOR_SNAPSHOT: SponsorHealthSnapshot = { today_sol: 0, count_today: 0, maxCuPriceMicroLamports: 0 };
 
+export type MarketsHealth = Record<
+  string,
+  { lastTickAt: number | null; tickAgeMs: number | null; lastPublishTimeMs: number | null; oracleStale: boolean }
+>;
+
+/** Plan 2 Task 9: per-market crank tick age + oracle staleness. A market with no tick yet reports `null`s, not an error. */
+export function buildMarketsHealth(
+  symbols: string[],
+  marketTicks: Record<string, number>,
+  feeds: Record<string, { lastPublishTimeMs: number | null }>,
+  now: number,
+): MarketsHealth {
+  const out: MarketsHealth = {};
+  for (const s of symbols) {
+    const t = marketTicks[s] ?? null;
+    const p = feeds[s]?.lastPublishTimeMs ?? null;
+    out[s] = { lastTickAt: t, tickAgeMs: t === null ? null : now - t, lastPublishTimeMs: p, oracleStale: isStale(p, now, ORACLE_STALE_MS) };
+  }
+  return out;
+}
+
 export interface HealthPayload {
   ok: boolean;
   lastTickAt: number | null;
@@ -105,12 +133,12 @@ export interface HealthPayload {
   /** Task 7: see this file's header comment / `computeSchedulerActive` for the exact definition. */
   schedulerActive: boolean | null;
   db: "ok" | "error";
-  /** Week-5 Task 5: `COMMIT_INTERVAL_TICKS` (env, default 300) — how many 1s ticks between one `commit_aggregate`/root/orphan cycle and the next. */
-  commitIntervalTicks: number;
-  /** Week-5 Task 7: `disclosure.ts`'s `COMMIT_MAX_ACTIONS` (env, default 4, clamped to `[1, MAX_ACTIONS_PER_COMMIT=8]`) — the per-bundle post-commit-action budget the relayer requests, tuned below the program's hard ceiling because the MagicBlock bridge's own action cap is lower (measured, 0xA0000002). */
-  commitMaxActions: number;
+  /** `COMMIT_INTERVAL_MS` (env, default 300000) — wall-clock gap between one `commit_aggregate`/root/janitor cycle and the next. */
+  commitIntervalMs: number;
   indexer: IndexerSnapshot;
   sponsor: SponsorHealthSnapshot;
+  /** Plan 2 Task 9: informational per-market view. Deliberately NOT part of `ok` — a dead BTC feed is not fixed by a restart and must not 503 the whole relayer (SOL is what `lastTickAt` gates). */
+  markets: MarketsHealth;
 }
 
 /**
@@ -129,8 +157,8 @@ export function buildHealthPayload(
   sponsor?: SponsorHealthSnapshot,
   crankEnabled = true,
   schedulerActive: boolean | null = null,
-  commitIntervalTicks = 300,
-  commitMaxActions = 4,
+  commitIntervalMs = 300_000,
+  markets: MarketsHealth = {},
 ): HealthPayload {
   const stale = crankEnabled && (state.lastTickAt === null || now - state.lastTickAt > STALE_MS);
   return {
@@ -143,10 +171,10 @@ export function buildHealthPayload(
     crankEnabled,
     schedulerActive,
     db: dbStatus,
-    commitIntervalTicks,
-    commitMaxActions,
+    commitIntervalMs,
     indexer: indexer ?? EMPTY_INDEXER_SNAPSHOT,
     sponsor: sponsor ?? EMPTY_SPONSOR_SNAPSHOT,
+    markets,
   };
 }
 
@@ -164,10 +192,10 @@ export interface HealthDeps {
   getIndexerSnapshot?: () => IndexerSnapshot;
   /** Task 6: async getter (a Postgres query) for today's sponsor spend/count — undefined when sponsoring is disabled. */
   getSponsorSnapshot?: () => Promise<SponsorHealthSnapshot>;
-  /** Week-5 Task 5: `crank.ts`'s `COMMIT_INTERVAL_TICKS`, reported as-is. */
-  commitIntervalTicks: number;
-  /** Week-5 Task 7: `crank.ts`'s re-exported `COMMIT_MAX_ACTIONS`, reported as-is. */
-  commitMaxActions: number;
+  /** The relayer's `COMMIT_INTERVAL_MS`, reported as-is. */
+  commitIntervalMs: number;
+  /** Plan 2 Task 9: getter so `/healthz` reads live per-market ticks/feeds. */
+  getMarketsHealth?: () => MarketsHealth;
 }
 
 interface BalanceCache {
@@ -218,8 +246,8 @@ export function healthRouter(deps: HealthDeps): Router {
       sponsor,
       deps.crankEnabled,
       deps.getSchedulerActive?.() ?? null,
-      deps.commitIntervalTicks,
-      deps.commitMaxActions,
+      deps.commitIntervalMs,
+      deps.getMarketsHealth?.() ?? {},
     );
     res.status(payload.ok ? 200 : 503).json(payload);
   });

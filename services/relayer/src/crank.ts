@@ -1,37 +1,91 @@
 // services/relayer/src/crank.ts
 //
 // Moved from scripts/crank-fallback/index.ts (Task 4, week 4): the
-// `tick()`/`main()` loop, minus `process.exit`/`SIGINT` (index.ts now owns
-// process lifecycle — see `requestStop` below) and minus the
+// `tick()`/`main()` loop, minus `SIGINT` (index.ts owns the process
+// lifecycle — see `requestStop` below; the one `process.exit` here is the
+// watchdog's, injectable through `CrankOpts.exit`) and minus the
 // `DEXXER_NET=devnet` env-forcing dance (index.ts does that, as plain
 // top-level statements, before it dynamically imports this module — see
 // index.ts's header comment for why that has to be a dynamic import).
 //
-// `startCrank(cfg, state)` mutates the shared `RelayerState` object on every
-// successful tick/commit so `health.ts` can report `lastTickAt`/
-// `lastCommitAt`/`tick` without polling this module or the chain again.
+// `startCrank(cfg, state, registry)` mutates the shared `RelayerState` object
+// on every successful tick/commit so `health.ts` can report `lastTickAt`/
+// `lastCommitAt`/`tick`/`marketTicks` without polling this module or the
+// chain again.
 //
 // Fallback for the ER scheduler (spec §3.5): "Бекенду нема. Crank — у ER
 // (scheduler), fallback-скрипт зовні". Signer is `Config.crank` — on devnet
 // a dedicated `devnet-crank` identity (`tests/er/.keys/devnet-crank.json`
 // locally, `CRANK_KEY_B58` on Railway — see keys.ts) that is also a member
-// of every private trader's `EphemeralPermission` (`[owner, session,
-// crank]`, set during onboarding) — required for this file's
-// candidate-discovery `getProgramAccounts` call to see private `Position`
-// accounts at all.
+// of every trader's private `Positions`/`UserAccount` permission — required
+// for the candidate-discovery `getProgramAccounts` below to see them at all.
 //
-// Every `CRANK_INTERVAL_MS` (default 1000): find every `Position` account
-// on the ER via `getProgramAccounts` + a Position-discriminator memcmp
-// filter, keep the ones with `state == Open`, pair each with its owner's
-// `UserAccount`, and send `crank_tick` in chunks of <=8 candidate triples
-// (`CRANK_TX_MAX_CANDIDATES` — the legacy-transaction size ceiling, below;
-// the program itself accepts up to `MAX_CANDIDATES` = 16). `feed` is read
-// off the on-chain `Market.feed` field each tick. One log line per chunk:
-// `tick n=... slot=... mark=... mark_slot=... sig=... cu=... tick_ms=...
-// candidates=... liquidated=[...]`.
+// Position slots (spec §2.9.2): a trader's positions on every market are the
+// slots of ONE `Positions` account. Every `CRANK_INTERVAL_MS` (default 1000):
+// ONE `getProgramAccounts` over the `Positions` discriminator, every OPEN slot
+// becomes a candidate for that slot's market (candidates.ts — an account that
+// does not decode is dropped there, because handed to the program it would
+// abort the whole batch), owners whose `UserAccount` does not decode are
+// dropped too, and the rest are grouped by market.
+//
+// Which markets are ticked (final review I3, `tickSet`): SOL always
+// (`withSol`), every market the registry lists (markets.ts), every market this
+// process has ever ticked (sticky — a registry that shrinks or fails never
+// stops a market's ticks), and every market that has open candidates this
+// loop: one not known yet has its PUBLIC `Market` account read once and is
+// ticked from then on. The registry's privacy gate (a market is listed only
+// once its `MarketRisk` is permissioned) protects what the relayer
+// PUBLISHES (`/markets`, the indexer), not liquidation: ticking reads and
+// writes nothing private that the crank is not already a member of.
+//
+// Each market gets its own `crank_tick` transactions, candidates as pairs
+// `[Positions, UserAccount]`, at most `CRANK_TX_MAX_CANDIDATES` pairs per
+// transaction (the legacy-transaction size ceiling; the program's own cap is
+// 16), at least one transaction even with no candidate — liquidation
+// hysteresis counts the oracle prints a `crank_tick` accepts, so a market that
+// is not ticked is not liquidated at all. One market's send plan is
+// candidates.ts `tickCandidates`: a chunk rejected ON CHAIN is followed by a
+// zero-candidate probe; if the probe lands, the chunk is retried one
+// candidate per transaction and a pair rejected alone is quarantined for
+// `CRANK_BAD_PAIR_COOLDOWN_MS`; if the probe is rejected too, the market is
+// broken and nobody is blamed. Errors come in three classes (errors.ts, fix
+// round 2 / R1): ON-CHAIN (above); SHARED — auth, network, 429, 5xx, a
+// blockhash that never refreshes — stops the market AND the rest of the loop
+// (`runMarkets`, I4) with one reconnect, and the next loop starts at the
+// market AFTER the one that stopped it (`rotateMarkets`, wrapping), so no
+// market is starved; MARKET-LOCAL — everything else, a confirm timeout
+// included — fails that market only (after one zero-candidate tick, so its
+// mark still moves if only the candidate transaction is the problem), the
+// other markets go on. A loop in which NO transaction landed and something
+// failed off chain reconnects anyway (`shouldReconnectAfterLoop`, N1): a
+// silently dead token shows up market-locally on every market. Without a short-circuit the order is the
+// tick set's (SOL first).
+//
+// If candidate discovery itself fails, every market is still ticked with no
+// candidate (`planTick`) — the mark, the price sample and with them the
+// scheduler's `liquidation_check` keep moving — but SOL's `lastTickAt`
+// (`/healthz.ok`) does not advance, so the outage stays visible.
+//
+// Logs carry no trader key (final review I5): one line per landed
+// transaction, `tick n=... market=... mark=... mark_slot=... sig=... cu=...
+// bytes=... tick_ms=... candidates=<count> liquidated=<count>` (`formatTickLine`; a
+// field whose read failed is `null`), written by best-effort reads that run
+// AFTER the tick and are not awaited by the loop. Where one trader must be
+// told apart from another (quarantine, discovery skips) the line carries
+// `tagOf(PROCESS_SALT, key)` (logTag.ts) instead of the key.
+//
+// Liveness (final review I2): the loop never waits on the commit cycle; a
+// watchdog (`CRANK_WATCHDOG_MS`, default 120 000, min 30 000) exits the
+// process with code 1 when no loop iteration completed within that time, or
+// when one commit cycle has been in flight for longer than
+// max(3 × `COMMIT_INTERVAL_MS`, 10 min) (`cycleStuck`/`cycleDeadlineMs`, R2/N2),
+// and
+// index.ts exits with code 1 when `startCrank` rejects — Railway's
+// ON_FAILURE restart policy is what restarts the relayer (its healthcheck runs
+// only at deploy time).
 //
 // Three mb-stack/devnet-tee quirks fixed here, none reproducible on LiteSVM
-// (no real ER/RPC there) — unchanged from scripts/crank-fallback/index.ts:
+// (no real ER/RPC there) — first fixed in scripts/crank-fallback/index.ts:
 //
 // 1. Duplicate-transaction guard (`freshBlockhash()` below): `crank_tick`
 //    takes no instruction args, so two back-to-back ticks against an
@@ -39,7 +93,8 @@
 //    `getLatestBlockhash("processed")` hands out the same blockhash twice in
 //    a row — identical message bytes sign to an identical signature, and
 //    the ER then rejects the resend with "This transaction has already been
-//    processed."
+//    processed." `nextFreshBlockhash` gives up after FRESH_BLOCKHASH_LIMIT_MS
+//    (5 s) with a connection-class error instead of spinning forever (I2d).
 //
 // 2. `Connection.confirmTransaction`'s websocket-based confirmation stalls
 //    unreliably on this validator — `confirmSignature` (tests/er/lib/env.ts)
@@ -47,134 +102,377 @@
 //
 // 3. devnet-tee auth tokens are per-identity and can go stale (401) or hang
 //    past what's reasonable for a 1s tick cadence — `reconnect()` below
-//    re-derives a fresh `teeConn` and is triggered from the tick loop's
-//    catch on anything that looks like a 401/timeout/connection-reset.
+//    re-derives a fresh `teeConn` and is triggered (at most once per loop)
+//    on a SHARED error of the loop, on an auth/network error of candidate
+//    discovery, or on a 401 that the commit cycle hit on either TEE
+//    connection.
 //
-// Week 3 (Task 7): every `COMMIT_INTERVAL_TICKS` ticks (300 by default,
-// ~5 min at the default 1s cadence; env-tunable since week-5 Task 5),
-// `runRootCycle` then `runDisclosureCycle` (disclosure.ts) run root BEFORE
-// disclosure, so a `commit_aggregate` call always carries a freshly computed
-// `BalancesRoot`, and then `runOrphanCycle` (orphan.ts) reclaims the queues
-// of owners who have finished leaving. All three are wrapped in their own
-// try/catch here so a failure in any never kills the 1s tick loop.
+// Every `COMMIT_INTERVAL_MS` of WALL-CLOCK time (commit.ts; a tick count
+// would stretch with the number of markets) the loop STARTS the cycle
+// detached (`createCycleRunner`, final review I1 — at most one in flight; the
+// ticks never wait for it): in order and each step isolated from the others
+// (`runIsolated`), `runRootCycle` (a fresh `BalancesRoot`), `runCommitCycle`
+// (`commit_aggregate()` — `Pool` snapshot + `BalancesRoot`, nothing else;
+// trades are not disclosed), and the janitor (janitor.ts — L1 accounts of
+// owners who have left). `requestStop` lets the in-flight cycle finish before
+// `startCrank` resolves.
+
 
 import { ComputeBudgetProgram, Connection, PublicKey, Transaction } from "@solana/web3.js";
 import type { Keypair } from "@solana/web3.js";
 import { confirmSignature, sleep, teeConn } from "../../../tests/er/lib/env.js";
 import type { Net } from "../../../tests/er/lib/env.js";
-import { POSITION_DISC, accountNs, dexxerCoreProgram, pdas } from "../../../tests/er/lib/program.js";
-import { COMMIT_MAX_ACTIONS, createQuarantineState, runDisclosureCycle, runRootCycle } from "./disclosure.js";
-import { orphanDeps, runOrphanCycle } from "./orphan.js";
+import { POSITIONS_DISC, accountNs, dexxerCoreProgram, pdas } from "../../../tests/er/lib/program.js";
+import { marketInfoFrom } from "./markets.js";
+import type { MarketInfo, MarketRegistry } from "./markets.js";
+import { CRANK_BAD_PAIR_COOLDOWN_MS, candidatesFrom, liquidatedIn, pairAccounts, splitPairKey, tickCandidates } from "./candidates.js";
+import type { Candidate } from "./candidates.js";
+import { COMMIT_INTERVAL_MS, commitDue, createCycleRunner, runCommitCycle, runIsolated, runRootCycle } from "./commit.js";
+import { envNum } from "./env.js";
+import { classifyError, errorMessage, isSharedError, looksLikeAuthError, normalizeErrorMessage, shouldReconnectOnDiscoveryError } from "./errors.js";
+import type { ErrorClass } from "./errors.js";
+import { crankTickAccounts } from "./ixAccounts.js";
+import { janitorDeps, runJanitorCycle } from "./janitor.js";
+import { PROCESS_SALT, tagOf } from "./logTag.js";
+import { withSol } from "./withSol.js";
+
+export { withSol };
 
 type PublicKeyT = InstanceType<typeof PublicKey>;
 
 export interface RelayerState {
+  /**
+   * `Date.now()` of the last loop in which the SOL market ticked AND candidate
+   * discovery succeeded — what `/healthz.ok` gates (final review F3: SOL is
+   * the only market the shipped APK trades). A loop whose discovery failed
+   * ticks SOL with no candidate and does NOT count: nobody was checked
+   * against that print. Starts `null` in every process — never restored from
+   * Postgres (final review I2), so `/healthz.ok` reflects THIS process.
+   */
   lastTickAt: number | null;
+  /** `Date.now()` of the last `commit_aggregate` that succeeded (not of the last attempt). */
   lastCommitAt: number | null;
+  /** Last loop number in which at least one market ticked. */
   tick: number;
   /** Bounded ring of recent error strings (most recent last) — see MAX_ERRORS below. */
   errors: string[];
+  /** `Date.now()` of each market's last successful `crank_tick`, keyed by symbol — lets health tell one stuck market apart from a healthy loop. */
+  marketTicks: Record<string, number>;
 }
 
 export interface RelayerConfig {
   net: Net;
   baseRpc: string;
-  /** Not read by startCrank directly — teeConn()/baseConn (tests/er/lib/env.ts, imported below) already resolve the ER endpoint from the same process.env forcing index.ts does before import. Kept on the config shape for future consumers (Task 5 indexer). */
+  /** Not read by startCrank directly — teeConn()/baseConn (tests/er/lib/env.ts, imported below) already resolve the ER endpoint from the same process.env forcing index.ts does before import. Kept on the config shape for other consumers (index.ts's market registry). */
   erRpc: string;
   erWs: string;
   crank: Keypair;
   feePayer: Keypair;
   port: number;
-  /** Task 5 (indexer) — off until that task wires it up. */
   indexerEnabled: boolean;
-  /** Task 6 (sponsor) — off until that task wires it up. */
   sponsorEnabled: boolean;
   databaseUrl?: string;
 }
 
 const INTERVAL = Number(process.env.CRANK_INTERVAL_MS ?? 1000);
-// Week 3 (Task 7): cadence for `runRootCycle`/`runDisclosureCycle` — the
-// same interval as the `Pool` commit itself, because `commit_aggregate` IS
-// that commit.
-//
-// Week-5 Task 5: made an env knob (was a hard-coded 300 = ~5 min at the
-// default 1s INTERVAL). The reveal delay and this interval together decide
-// how long a closed trade takes to reach L1, and the week-5 demo needs that
-// measured in a minute rather than five — see `/healthz.commitIntervalTicks`
-// and README's env table. A non-positive or unparseable value falls back to
-// the default rather than spinning the cycle every tick.
-const DEFAULT_COMMIT_INTERVAL_TICKS = 300;
-function parseCommitInterval(raw: string | undefined): number {
-  const n = Number(raw ?? DEFAULT_COMMIT_INTERVAL_TICKS);
-  return Number.isFinite(n) && n >= 1 ? Math.trunc(n) : DEFAULT_COMMIT_INTERVAL_TICKS;
-}
-export const COMMIT_INTERVAL_TICKS = parseCommitInterval(process.env.COMMIT_INTERVAL_TICKS);
-// Fix round 1 (MINOR finding, controller review): re-exported next to the
-// other env-derived constants rather than sitting alone right after the
-// import.
-export { COMMIT_MAX_ACTIONS };
-// How many candidates actually fit in ONE legacy (non-v0) transaction, which
-// is what this client sends. Since week-5 Task 1 a candidate is a
-// `[Position, UserAccount, DisclosureQueue]` triple, so a chunk costs 3
-// account keys instead of 2: 8 triples plus the ComputeBudget instruction
-// measure ~1175 bytes, and 9 overflow the 1232-byte packet limit
-// (`Transaction too large`). The on-chain cap
-// (`programs/dexxer_core/src/state/mod.rs`'s `MAX_CANDIDATES` = 16) is
-// deliberately left higher — a v0 transaction with an address-lookup table
-// could use all of it — but this client must chunk at the tx ceiling, or a
-// market with 9+ open positions would fail EVERY tick and stop both
-// liquidations and the mark/EMA advance.
-const CRANK_TX_MAX_CANDIDATES = 8;
 const MAX_ERRORS = 50;
+// Final review F7: a market failing every 1 s tick with the same message
+// would flush the whole 50-entry ring (and the log) within a minute, hiding
+// every other error — record a market's repeat only once per window.
+const MARKET_ERROR_WINDOW_MS = 60_000;
+// Solana RPC's `getMultipleAccounts` limit per call.
+const MULTIPLE_ACCOUNTS_MAX = 100;
+/** No loop iteration completed within this → `process.exit(1)` (I2). Min 30 s: a NaN/0 would kill a healthy relayer. */
+export const CRANK_WATCHDOG_MS = envNum("CRANK_WATCHDOG_MS", 120_000, 30_000);
+/** `freshBlockhash` gives up after this (I2d). */
+const FRESH_BLOCKHASH_LIMIT_MS = 5_000;
 
 let stopRequested = false;
 
-/** index.ts calls this from its SIGTERM/SIGINT handler; the in-flight tick still finishes. */
+/** index.ts calls this from its SIGTERM/SIGINT handler; the in-flight tick and the in-flight commit cycle still finish. */
 export function requestStop(): void {
   stopRequested = true;
 }
 
-function looksLikeAuthOrTimeout(e: unknown): boolean {
-  const msg = String(e instanceof Error ? e.message : e);
-  return /\b401\b|unauthor|timeout|timed out|ETIMEDOUT|ECONNRESET|fetch failed/i.test(msg);
-}
-
 function pushError(state: RelayerState, e: unknown): void {
-  state.errors.push(String(e instanceof Error ? e.message : e));
+  state.errors.push(errorMessage(e));
   if (state.errors.length > MAX_ERRORS) state.errors.shift();
 }
 
-interface Ctx {
-  market: PublicKeyT;
-  marketRisk: PublicKeyT;
-  pool: PublicKeyT;
-  /** Private live pool counters (week 4, Task 1) — `crank_tick`/`commit_aggregate` both need this now. */
-  poolLive: PublicKeyT;
-  /** Week 3 (Task 7): `runRootCycle`/`runDisclosureCycle` — see disclosure.ts. */
-  balancesRoot: PublicKeyT;
-  feeEscrow: PublicKeyT;
+/** Record a market's error only when it differs from the last one recorded for that market, or the window since that record has elapsed (F7). `msg` is normalised by the caller (`normalizeErrorMessage`, m5). */
+export function shouldRecordError(prev: { msg: string; at: number } | undefined, msg: string, now: number, windowMs: number): boolean {
+  return prev === undefined || prev.msg !== msg || now - prev.at >= windowMs;
 }
 
-export async function startCrank(cfg: RelayerConfig, state: RelayerState): Promise<void> {
+export interface RunMarketsResult {
+  ticked: string[];
+  failed: string[];
+  /** Markets not tried in this loop because a SHARED error stopped it (I4). */
+  notTicked: string[];
+  solTicked: boolean;
+  needsReconnect: boolean;
+  /** Base58 of the market whose SHARED error stopped the loop, else null — the next loop starts after it (`rotateMarkets`). */
+  stoppedAt: string | null;
+  /** At least one market landed a transaction — the connection works (N1). */
+  landedAny: boolean;
+  /** Markets that failed with a non-on-chain error (shared or market-local) (N1). */
+  nonOnChainFailures: number;
+}
+
+/** What one market's tick reports back: a market that landed something can still have hit a SHARED error afterwards. */
+export type MarketTickOutcome = { sharedError: boolean } | void;
+
+/**
+ * Ticks the markets in order, each in its own try/catch: a market rejected ON
+ * CHAIN or failing MARKET-LOCALLY is recorded and counts as failed, and the
+ * others' mark/EMA advance and liquidations go on (R1). The FIRST SHARED
+ * error (a throw that `isShared`, or a market that ticked and then reported
+ * `sharedError`) stops the loop (I4): all markets share one connection, so
+ * the later sends would fail the same way — `needsReconnect` is set,
+ * `stoppedAt` names the market, the caller reconnects once and starts the
+ * next loop after that market (`rotateMarkets`).
+ */
+export async function runMarkets(
+  markets: MarketInfo[],
+  tickFn: (m: MarketInfo) => Promise<MarketTickOutcome>,
+  onError: (m: MarketInfo, e: unknown) => void,
+  classify: (e: unknown) => ErrorClass,
+): Promise<RunMarketsResult> {
+  const out: RunMarketsResult = {
+    ticked: [], failed: [], notTicked: [], solTicked: false, needsReconnect: false, stoppedAt: null, landedAny: false, nonOnChainFailures: 0,
+  };
+  for (let i = 0; i < markets.length; i++) {
+    const m = markets[i];
+    let stop = false;
+    try {
+      const r = await tickFn(m);
+      out.ticked.push(m.symbol);
+      out.landedAny = true;
+      if (m.symbol === "SOL") out.solTicked = true;
+      stop = Boolean(r && r.sharedError);
+    } catch (e) {
+      out.failed.push(m.symbol);
+      onError(m, e);
+      const c = classify(e);
+      if (c !== "on-chain") out.nonOnChainFailures += 1;
+      stop = c === "shared";
+    }
+    if (stop) {
+      out.needsReconnect = true;
+      out.stoppedAt = m.market.toBase58();
+      out.notTicked = markets.slice(i + 1).map((x) => x.symbol);
+      break;
+    }
+  }
+  return out;
+}
+
+export function groupOpenByMarket<T extends { market: string }>(rows: T[]): Map<string, T[]> {
+  const out = new Map<string, T[]>();
+  for (const r of rows) out.set(r.market, [...(out.get(r.market) ?? []), r]);
+  return out;
+}
+
+export type Discovery = { ok: true; candidates: Candidate[] } | { ok: false };
+
+/**
+ * What one loop ticks. Discovery failed → every market is still ticked, with
+ * NO candidate (never last loop's): `liq_due` counts a price sample only when
+ * it checks a position, so a sample nobody was checked against costs nothing,
+ * while not ticking would freeze every market's mark/EMA and `sample_seq` —
+ * and with them the scheduler's `liquidation_check`, which only reads the
+ * market. Such a loop does not count for health (`lastTickAt`), so a
+ * discovery outage stays visible on `/healthz`.
+ */
+export function planTick(d: Discovery): { byMarket: Map<string, Candidate[]>; countsForHealth: boolean } {
+  return d.ok ? { byMarket: groupOpenByMarket(d.candidates), countsForHealth: true } : { byMarket: new Map(), countsForHealth: false };
+}
+
+/** Markets (base58) that have open positions but are not in `ticked`. */
+export function untickedMarkets(byMarket: Map<string, unknown[]>, ticked: MarketInfo[]): string[] {
+  const known = new Set(ticked.map((m) => m.market.toBase58()));
+  return [...byMarket.keys()].filter((k) => !known.has(k)).sort();
+}
+
+/**
+ * The crank's tick set for one loop (final review I3): SOL first (`withSol`),
+ * then the registry's markets (the registry's entry wins for a market it
+ * lists), then every market of the sticky map the registry no longer lists.
+ * `unknown` = markets that have open candidates but are in neither — the
+ * caller reads their public `Market` account and ticks them too. Pure: the
+ * caller adds the result to the sticky map.
+ */
+export function tickSet(
+  sticky: Map<string, MarketInfo>,
+  registry: MarketInfo[],
+  sol: () => MarketInfo,
+  byMarket: Map<string, unknown[]>,
+): { markets: MarketInfo[]; unknown: string[] } {
+  const out = new Map<string, MarketInfo>();
+  for (const m of withSol(registry, sol)) out.set(m.market.toBase58(), m);
+  for (const [key, m] of sticky) if (!out.has(key)) out.set(key, m);
+  const markets = [...out.values()];
+  return { markets, unknown: untickedMarkets(byMarket, markets) };
+}
+
+/**
+ * The loop's market order (R1.3): `resumeAfter` = the market whose SHARED
+ * error stopped the previous loop → start at the market after it, wrapping;
+ * null, or a market no longer in the set → the set's own order (SOL first).
+ */
+export function rotateMarkets<T extends { market: { toBase58(): string } }>(markets: T[], resumeAfter: string | null): T[] {
+  if (resumeAfter === null) return markets;
+  const i = markets.findIndex((m) => m.market.toBase58() === resumeAfter);
+  if (i < 0) return markets;
+  return [...markets.slice(i + 1), ...markets.slice(0, i + 1)];
+}
+
+/**
+ * Reconnect after this loop? (N1) Yes on a SHARED error (`needsReconnect`).
+ * Also when NO market landed a transaction AND something failed in a
+ * non-on-chain way (a market, or candidate discovery): a silently dead TEE
+ * token or an unhealthy node shows up as every send timing out or every call
+ * answering a JSON-RPC-body error — `market-local` by text, but together it
+ * is the connection. One landed transaction proves the connection works; a
+ * loop whose only failures are on-chain rejections proves it too.
+ */
+export function shouldReconnectAfterLoop(
+  r: { needsReconnect: boolean; landedAny: boolean; nonOnChainFailures: number },
+  discoveryError: unknown | undefined,
+  classify: (e: unknown) => ErrorClass,
+): boolean {
+  if (r.needsReconnect) return true;
+  if (r.landedAny) return false;
+  const discoveryNonOnChain = discoveryError !== undefined && classify(discoveryError) !== "on-chain";
+  return r.nonOnChainFailures > 0 || discoveryNonOnChain;
+}
+
+/**
+ * How long one commit cycle may be in flight (R2, N2): 3 × `COMMIT_INTERVAL_MS`,
+ * but never below 10 min — a janitor pass may legitimately wait out L1
+ * confirm timeouts on top of root + commit.
+ */
+export function cycleDeadlineMs(commitIntervalMs: number): number {
+  return Math.max(3 * commitIntervalMs, 600_000);
+}
+
+/** One commit cycle in flight for longer than `limitMs` (`cycleDeadlineMs`): wedged, restart. */
+export function cycleStuck(startedAt: number | null, now: number, limitMs: number): boolean {
+  return startedAt !== null && now - startedAt > limitMs;
+}
+
+/** No loop iteration completed within `limitMs` (I2): the process is wedged and must be restarted. */
+export function watchdogExpired(lastLoopDoneAt: number, now: number, limitMs: number): boolean {
+  return now - lastLoopDoneAt > limitMs;
+}
+
+/**
+ * A blockhash different from `last` (quirk 1 in the header), polled every
+ * `pollMs`; gives up after `limitMs` with an error that is connection-class
+ * (it is not an on-chain failure), so the loop stops and reconnects (I2d).
+ */
+export async function nextFreshBlockhash<T extends { blockhash: string }>(
+  get: () => Promise<T>,
+  last: string | null,
+  o: { limitMs: number; pollMs: number; now: () => number; sleep: (ms: number) => Promise<void> },
+): Promise<T> {
+  const deadline = o.now() + o.limitMs;
+  for (;;) {
+    const res = await get();
+    if (res.blockhash !== last) return res;
+    if (o.now() >= deadline) throw new Error(`freshBlockhash timeout: no new blockhash within ${o.limitMs} ms`);
+    await o.sleep(o.pollMs);
+  }
+}
+
+export interface TickLineFields {
+  n: number;
+  market: string;
+  mark: string | null;
+  markSlot: string | null;
+  sig: string;
+  cu: number | null;
+  /** Serialized length of the sent transaction (`tx.serialize().length`) — the 1232-byte budget of a chunk. */
+  bytes: number;
+  tickMs: number;
+  candidates: number;
+  /** How many of the chunk's candidates lost their slot on this market in this tick — a count, never keys (I5). */
+  liquidated: number | null;
+}
+
+/** The one log line per landed `crank_tick` (parsed by scripts/demo/week1-cli.ts `parseTickLine`). */
+export function formatTickLine(f: TickLineFields): string {
+  return `tick n=${f.n} market=${f.market} mark=${f.mark} mark_slot=${f.markSlot} sig=${f.sig} cu=${f.cu} bytes=${f.bytes} tick_ms=${f.tickMs} candidates=${f.candidates} liquidated=${f.liquidated}`;
+}
+
+export interface CrankOpts {
+  /** What the watchdog calls when it fires. Default `process.exit` — only `startCrank` starts the watchdog, tests never call it. */
+  exit?: (code: number) => void;
+}
+
+/** R2/N2: a commit cycle in flight for longer than this exits the process too. */
+const CYCLE_DEADLINE_MS = cycleDeadlineMs(COMMIT_INTERVAL_MS);
+
+interface WatchdogHooks {
+  loopDone: () => void;
+  stopWatchdog: () => void;
+  /** Set by `runCrank` once the cycle runner exists. */
+  cycleStartedAt: () => number | null;
+}
+
+export async function startCrank(cfg: RelayerConfig, state: RelayerState, registry: MarketRegistry, opts: CrankOpts = {}): Promise<void> {
+  const exit = opts.exit ?? ((code: number) => process.exit(code));
+  // Started before the boot reads: a TEE auth or RPC call that hangs at boot
+  // is a wedge too.
+  let lastLoopDoneAt = Date.now();
+  const hooks: WatchdogHooks = {
+    loopDone: () => {
+      lastLoopDoneAt = Date.now();
+    },
+    stopWatchdog: () => clearInterval(watchdog),
+    cycleStartedAt: () => null,
+  };
+  const watchdog = setInterval(
+    () => {
+      const now = Date.now();
+      if (watchdogExpired(lastLoopDoneAt, now, CRANK_WATCHDOG_MS)) {
+        console.error(`crank: watchdog — no loop iteration completed for ${now - lastLoopDoneAt} ms (CRANK_WATCHDOG_MS=${CRANK_WATCHDOG_MS}); exiting with code 1 for a restart`);
+        exit(1);
+        return;
+      }
+      const started = hooks.cycleStartedAt();
+      if (cycleStuck(started, now, CYCLE_DEADLINE_MS)) {
+        console.error(`crank: watchdog — commit cycle in flight for ${now - (started ?? now)} ms (> max(3 × COMMIT_INTERVAL_MS, 600000) = ${CYCLE_DEADLINE_MS}); exiting with code 1 for a restart`);
+        exit(1);
+      }
+    },
+    Math.min(10_000, CRANK_WATCHDOG_MS / 4),
+  );
+  watchdog.unref();
+  try {
+    await runCrank(cfg, state, registry, hooks);
+  } finally {
+    clearInterval(watchdog);
+  }
+}
+
+async function runCrank(cfg: RelayerConfig, state: RelayerState, registry: MarketRegistry, hooks: WatchdogHooks): Promise<void> {
   let conn = await teeConn(cfg.crank);
   let prog = dexxerCoreProgram(conn, cfg.crank);
-  // Week 3 (Task 7): separate connection/program pair, authenticated as
-  // `feePayer` — `commit_aggregate`'s only accepted `payer` signer, distinct
-  // from `crank`'s identity (see disclosure.ts's `DisclosureCtx`).
+  // Separate connection/program pair, authenticated as `feePayer` —
+  // `commit_aggregate`'s only accepted `payer` signer, distinct from
+  // `crank`'s identity (commit.ts's `CommitCtx`).
   let feePayerConn = await teeConn(cfg.feePayer);
   let feePayerProg = dexxerCoreProgram(feePayerConn, cfg.feePayer);
-  // Week-5 Task 5: the orphan janitor's base-layer half (`close_exited_user`)
-  // is a plain L1 transaction signed by `fee_payer` — no TEE auth, no
-  // reconnect dance, so this pair is built once and never re-derived.
+  // The janitor's `close_exited_user` is a plain L1 transaction signed by
+  // `fee_payer` — no TEE auth, no reconnect dance, so this pair is built once
+  // and never re-derived.
   const baseConn = new Connection(cfg.baseRpc, "confirmed");
   const baseFeePayerProg = dexxerCoreProgram(baseConn, cfg.feePayer);
   let lastBlockhash: string | null = null;
-  // Fix round 1: ONE `QuarantineState` for the whole process lifetime — see
-  // disclosure.ts's header comment. `disclosureCycle` is a separate counter
-  // from the 1s tick counter `n` below: it increments once per
-  // `COMMIT_INTERVAL_TICKS`, which is what `QuarantineState.until` counts in.
-  const quarantine = createQuarantineState();
-  let disclosureCycle = 0;
+  // Set by the detached commit cycle on a 401 from either TEE connection; the
+  // loop reconnects at its next iteration.
+  let cycleWantsReconnect = false;
 
   async function reconnect(): Promise<void> {
     conn = await teeConn(cfg.crank);
@@ -187,109 +485,162 @@ export async function startCrank(cfg: RelayerConfig, state: RelayerState): Promi
 
   /** A blockhash guaranteed different from the one the previous tick used. */
   async function freshBlockhash(): Promise<{ blockhash: string; lastValidBlockHeight: number }> {
-    for (;;) {
-      const res = await conn.getLatestBlockhash("processed");
-      if (res.blockhash !== lastBlockhash) {
-        lastBlockhash = res.blockhash;
-        return res;
-      }
-      await sleep(200);
-    }
+    const c = conn;
+    const res = await nextFreshBlockhash(() => c.getLatestBlockhash("processed"), lastBlockhash, {
+      limitMs: FRESH_BLOCKHASH_LIMIT_MS,
+      pollMs: 200,
+      now: Date.now,
+      sleep,
+    });
+    lastBlockhash = res.blockhash;
+    return res;
   }
 
-  async function tick(ctx: Ctx, n: number): Promise<void> {
-    const positions = await conn.getProgramAccounts(prog.programId, {
-      filters: [{ memcmp: { offset: 0, bytes: POSITION_DISC } }],
-    });
-    const openCandidates = positions
-      .map((p) => ({ key: p.pubkey, acc: prog.coder.accounts.decode("position", p.account.data) }))
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      .filter((p) => "open" in (p.acc as any).state);
-
-    // Stale-layout leftovers (pre-migration test accounts) must not stall a
-    // whole chunk's real liquidation candidates — filter client-side by
-    // attempting a decode against the CURRENT UserAccount coder first (see
-    // scripts/crank-fallback/index.ts's original Task 6 finding).
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const userAccountPdas = openCandidates.map((p) => pdas.userAccount(new PublicKey((p.acc as any).owner)));
-    const userAccountInfos = userAccountPdas.length > 0 ? await conn.getMultipleAccountsInfo(userAccountPdas, "confirmed") : [];
-    const open = openCandidates.filter((_, i) => {
-      const info = userAccountInfos[i];
-      if (!info) return false;
+  /** ONE `getProgramAccounts` per tick for every market's candidates. The crank's own TEE token reads these private accounts — it is a permission member of each. */
+  async function openCandidates(n: number): Promise<Candidate[]> {
+    const rows = await conn.getProgramAccounts(prog.programId, { filters: [{ memcmp: { offset: 0, bytes: POSITIONS_DISC } }] });
+    const found = candidatesFrom(
+      rows.map((r) => ({ pubkey: r.pubkey, data: r.account.data })),
+      (pubkey, reason) => console.error(`crank n=${n}: skipping account tag=${tagOf(PROCESS_SALT, pubkey)} — not a Positions account (${reason})`),
+    );
+    // A pair whose UserAccount does not decode is skipped by the program, but
+    // dropping it here keeps the chunk's room for real candidates.
+    const owners = [...new Map(found.map((c) => [c.owner.toBase58(), c.owner])).values()];
+    const userAccounts = owners.map((o) => pdas.userAccount(o));
+    // In pages of 100 — the RPC's per-call limit; one oversized call would
+    // fail discovery, and with it every market's tick.
+    const infos: Awaited<ReturnType<Connection["getMultipleAccountsInfo"]>> = [];
+    for (let i = 0; i < userAccounts.length; i += MULTIPLE_ACCOUNTS_MAX) {
+      infos.push(...(await conn.getMultipleAccountsInfo(userAccounts.slice(i, i + MULTIPLE_ACCOUNTS_MAX), "confirmed")));
+    }
+    const ok = new Set<string>();
+    owners.forEach((o, i) => {
+      const info = infos[i];
+      if (!info) {
+        console.error(`crank n=${n}: skipping owner tag=${tagOf(PROCESS_SALT, o)} — UserAccount not found`);
+        return;
+      }
       try {
         prog.coder.accounts.decode("userAccount", info.data);
-        return true;
+        ok.add(o.toBase58());
       } catch (e) {
-        console.error(`tick n=${n}: skipping candidate ${openCandidates[i].key.toBase58()} — paired UserAccount ${userAccountPdas[i].toBase58()} failed to decode (stale layout?): ${String(e)}`);
-        return false;
+        console.error(`crank n=${n}: skipping owner tag=${tagOf(PROCESS_SALT, o)} — UserAccount failed to decode: ${errorMessage(e)}`);
       }
     });
+    return found.filter((c) => ok.has(c.owner.toBase58()));
+  }
 
-    // Feed read off the live Market account each tick (works unchanged for
-    // both a local mock-oracle feed and devnet's real Pricing Oracle feed —
-    // both are simply whatever `init_market` wrote into `Market.feed`).
-    const marketAcc = await accountNs(prog).market.fetch(ctx.market);
-    const feed = marketAcc.feed as PublicKeyT;
-
-    const slot = await conn.getSlot("confirmed");
-    const liquidated: string[] = [];
-    // At least one iteration even with zero open positions, so the market's
-    // mark/EMA still advances every tick.
-    for (let i = 0; i < Math.max(1, open.length); i += CRANK_TX_MAX_CANDIDATES) {
-      const chunk = open.slice(i, i + CRANK_TX_MAX_CANDIDATES);
-      // Triples since week-5 Task 1: a liquidation is a close, and a close
-      // pushes its `ClosedRecord` into the owner's `DisclosureQueue`, so the
-      // tick has to carry that account for every candidate it might liquidate.
-      const remaining = chunk.flatMap((p) => {
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const owner = new PublicKey((p.acc as any).owner);
-        return [
-          { pubkey: p.key, isWritable: true, isSigner: false },
-          { pubkey: pdas.userAccount(owner), isWritable: true, isSigner: false },
-          { pubkey: pdas.disclosureQueue(owner), isWritable: true, isSigner: false },
-        ];
-      });
-      const ix = await prog.methods
-        .crankTick()
-        .accounts({ crank: cfg.crank.publicKey, config: pdas.config(), market: ctx.market, marketRisk: ctx.marketRisk, poolLive: ctx.poolLive, feed })
-        .remainingAccounts(remaining)
-        .instruction();
-
-      const sendT0 = Date.now();
-      const { blockhash } = await freshBlockhash();
-      // 16 candidates measured 166k CU in LiteSVM when none liquidate and 367k
-      // when all of them do (week-5 Task 1 put a `DisclosureQueue` in every
-      // triple) — the liquidating case is well past the 200k default, so the
-      // limit has to be raised explicitly even though a chunk is only 8 here.
-      const txn = new Transaction({ feePayer: cfg.crank.publicKey, recentBlockhash: blockhash })
-        .add(ComputeBudgetProgram.setComputeUnitLimit({ units: 1_400_000 }))
-        .add(ix);
-      txn.sign(cfg.crank);
-      const sig = await conn.sendRawTransaction(txn.serialize(), { skipPreflight: true });
-      await confirmSignature(conn, sig);
-      const tickMs = Date.now() - sendT0;
-
-      const tx = await conn.getTransaction(sig, { commitment: "confirmed", maxSupportedTransactionVersion: 0 });
-      const cu = tx?.meta?.computeUnitsConsumed ?? null;
-
-      for (const p of chunk) {
-        const after = await accountNs(prog).position.fetch(p.key);
-        // Week-5 Task 1: a liquidated position is reset straight to `Empty`
-        // (the record now lives in the owner's queue), so "was open before the
-        // tick, empty after it" is what a liquidation looks like from here.
-        if ("empty" in after.state) liquidated.push(p.key.toBase58());
-      }
-
-      const market = await accountNs(prog).market.fetch(ctx.market);
+  /**
+   * The log line of a landed tick, from reads made AFTER it — fired and
+   * forgotten: the tick path does not wait for them, and a failed read only
+   * turns its field into `null` (and a debug line), never the landed tick
+   * into a failed one.
+   */
+  function logLanded(m: MarketInfo, chunk: Candidate[], n: number, sig: string, bytes: number, tickMs: number): void {
+    const c = conn;
+    const p = prog;
+    void (async () => {
+      const [tx, after, market] = await Promise.allSettled([
+        c.getTransaction(sig, { commitment: "confirmed", maxSupportedTransactionVersion: 0 }),
+        chunk.length > 0 ? c.getMultipleAccountsInfo(chunk.map((x) => x.positions), "confirmed") : Promise.resolve([]),
+        accountNs(p).market.fetch(m.market),
+      ]);
+      // A slot of this market that was open before the tick and is gone after
+      // it was closed by this tick: a liquidation. Logged as a count.
+      const liquidated = after.status === "fulfilled" ? liquidatedIn(chunk, after.value.map((a) => a?.data ?? null)).length : null;
       console.log(
-        `tick n=${n} slot=${slot} mark=${market.mark.toString()} mark_slot=${market.markSlot.toString()} sig=${sig} cu=${cu} tick_ms=${tickMs} candidates=${chunk.length} liquidated=${JSON.stringify(liquidated)}`,
+        formatTickLine({
+          n,
+          market: m.symbol,
+          mark: market.status === "fulfilled" ? market.value.mark.toString() : null,
+          markSlot: market.status === "fulfilled" ? market.value.markSlot.toString() : null,
+          sig,
+          cu: tx.status === "fulfilled" ? (tx.value?.meta?.computeUnitsConsumed ?? null) : null,
+          bytes,
+          tickMs,
+          candidates: chunk.length,
+          liquidated,
+        }),
       );
+      for (const r of [tx, after, market]) {
+        if (r.status === "rejected") console.debug(`crank: post-tick read failed market=${m.symbol}: ${errorMessage(r.reason)}`);
+      }
+    })().catch((e) => console.debug(`crank: post-tick log failed market=${m.symbol}: ${errorMessage(e)}`));
+  }
+
+  /** One `crank_tick` over one chunk of a market's candidates. Resolves once it is confirmed, throws only if it did not land. */
+  async function tickChunk(m: MarketInfo, poolLive: PublicKeyT, chunk: Candidate[], n: number): Promise<void> {
+    const ix = await prog.methods
+      .crankTick()
+      .accounts(crankTickAccounts(cfg.crank.publicKey, m, poolLive))
+      .remainingAccounts(pairAccounts(chunk, (o) => pdas.userAccount(o)))
+      .instruction();
+
+    const sendT0 = Date.now();
+    // The guard is per-connection, not per-market: every send in the tick
+    // (all markets, all chunks) waits for a blockhash the previous send did
+    // not use — cheap at the ER's ~80 slots/s.
+    const { blockhash } = await freshBlockhash();
+    // Plan 1 measured 16 candidates in LiteSVM at 142k–172k CU with no
+    // liquidation and 162k–192k with 16 liquidations (it depends on the PDA
+    // bumps) — close to or above the 200k default, so the limit is raised
+    // explicitly.
+    const txn = new Transaction({ feePayer: cfg.crank.publicKey, recentBlockhash: blockhash })
+      .add(ComputeBudgetProgram.setComputeUnitLimit({ units: 1_400_000 }))
+      .add(ix);
+    txn.sign(cfg.crank);
+    const raw = txn.serialize();
+    const sig = await conn.sendRawTransaction(raw, { skipPreflight: true });
+    await confirmSignature(conn, sig);
+    logLanded(m, chunk, n, sig, raw.length, Date.now() - sendT0);
+  }
+
+  // Pairs that failed `crank_tick` alone: pairKey → excluded until (ms).
+  // Process lifetime, shared by all markets (the key carries the market).
+  const badPairs = new Map<string, number>();
+  // I3: every market this process has ticked, by base58 — never shrinks.
+  const tickMarkets = new Map<string, MarketInfo>();
+  const symbolOf = (market: string): string => tickMarkets.get(market)?.symbol ?? market; // a Market address is public
+
+  /**
+   * One market for one loop (`tickCandidates`). The market counts as ticked
+   * if at least one of its transactions landed — one bad pair must not hold
+   * SOL's `lastTickAt` hostage. If none landed, the error that decided it is
+   * rethrown for `runMarkets` (a SHARED one if the market stopped on one);
+   * errors of a market that did tick are still recorded.
+   */
+  async function tickMarket(m: MarketInfo, poolLive: PublicKeyT, open: Candidate[], n: number): Promise<MarketTickOutcome> {
+    const r = await tickCandidates(open, {
+      send: (chunk) => tickChunk(m, poolLive, chunk, n),
+      classify: classifyError,
+      quarantine: badPairs,
+      now: Date.now(),
+      cooldownMs: CRANK_BAD_PAIR_COOLDOWN_MS,
+    });
+    // m3: a released key may belong to any market — the market comes from the key.
+    for (const key of r.released) {
+      const k = splitPairKey(key);
+      console.log(`crank n=${n} market=${symbolOf(k.market)}: pair tag=${tagOf(PROCESS_SALT, k.positions)} back in the batches after its cooldown`);
     }
+    for (const key of r.quarantined) {
+      const k = splitPairKey(key);
+      console.warn(`crank n=${n} market=${symbolOf(k.market)}: pair tag=${tagOf(PROCESS_SALT, k.positions)} failed crank_tick alone on chain — excluded for ${CRANK_BAD_PAIR_COOLDOWN_MS} ms`);
+    }
+    if (r.landed === 0) {
+      const decisive = r.sharedError ? r.errors.find(isSharedError) : r.errors[0];
+      throw decisive ?? new Error(`market ${m.symbol}: no crank_tick landed`);
+    }
+    for (const e of r.errors) onMarketError(m, e);
+    return { sharedError: r.sharedError };
   }
 
   const config = await accountNs(prog).config.fetch(pdas.config());
-  const market = pdas.market();
-  const marketRisk = pdas.marketRisk(market);
+  const solMarket = pdas.market();
+  // Read ONCE at start: SOL's `MarketInfo` (feed + public params), used
+  // whenever the registry's list has no SOL entry (`withSol`) — so a registry
+  // that cannot read the ER leaves SOL ticking, never idle.
+  const solInfo = marketInfoFrom(solMarket, await accountNs(prog).market.fetch(solMarket));
+  const solFallback = (): MarketInfo => solInfo;
   const pool = pdas.pool(config.dusdcMint as PublicKeyT);
   const poolLive = pdas.poolLive(config.dusdcMint as PublicKeyT);
   const balancesRoot = pdas.balancesRoot();
@@ -298,81 +649,166 @@ export async function startCrank(cfg: RelayerConfig, state: RelayerState): Promi
     net: cfg.net,
     crank: cfg.crank.publicKey.toBase58(),
     feePayer: cfg.feePayer.publicKey.toBase58(),
-    market: market.toBase58(),
+    solMarket: solMarket.toBase58(),
+    markets: withSol(registry.list(), solFallback).map((mi) => mi.symbol),
     pool: pool.toBase58(),
     balancesRoot: balancesRoot.toBase58(),
     intervalMs: INTERVAL,
-    commitIntervalTicks: COMMIT_INTERVAL_TICKS,
+    commitIntervalMs: COMMIT_INTERVAL_MS,
+    watchdogMs: CRANK_WATCHDOG_MS,
   });
 
+  // Last logged set of candidate markets whose `Market` could not be read —
+  // logged on change only, not at the 1s cadence.
+  let lastUnresolved = "";
+  /** I3: candidate markets nobody listed — read the PUBLIC `Market` once, cache it, tick it. A failed read is retried next loop. */
+  async function resolveUnknown(keys: string[], n: number): Promise<MarketInfo[]> {
+    const found: MarketInfo[] = [];
+    const failed: string[] = [];
+    for (const key of keys) {
+      try {
+        const pk = new PublicKey(key);
+        const info = marketInfoFrom(pk, await accountNs(prog).market.fetch(pk));
+        tickMarkets.set(key, info);
+        found.push(info);
+        console.warn(`crank n=${n}: market ${info.symbol} (${key}) has open positions but is not in the registry — ticked from now on`);
+      } catch {
+        failed.push(key);
+      }
+    }
+    const joined = failed.join(",");
+    if (joined !== lastUnresolved) {
+      if (joined) console.warn(`crank n=${n}: open positions on markets whose Market account could not be read — not cranked this loop, retried next loop: ${joined}`);
+      lastUnresolved = joined;
+    }
+    return found;
+  }
+
+  // F7: last recorded (normalised) error per market symbol.
+  const lastMarketError = new Map<string, { msg: string; at: number }>();
+  const onMarketError = (m: MarketInfo, e: unknown): void => {
+    const msg = errorMessage(e);
+    const key = normalizeErrorMessage(msg); // m5: a new signature is not a new error
+    const now = Date.now();
+    if (!shouldRecordError(lastMarketError.get(m.symbol), key, now, MARKET_ERROR_WINDOW_MS)) return;
+    lastMarketError.set(m.symbol, { msg: key, at: now });
+    console.error(`tick failed market=${m.symbol}`, msg);
+    pushError(state, `${m.symbol}: ${msg}`);
+  };
+
+  // I1: root → commit → janitor, detached from the ticks, one at a time.
+  const cycle = createCycleRunner(
+    async () => {
+      const commitCtx = { conn, prog, crank: cfg.crank, feePayerConn, feePayerProg, feePayer: cfg.feePayer, pool, poolLive, balancesRoot, feeEscrow };
+      const onStepError = (name: string, e: unknown): void => {
+        console.error(`${name} cycle failed`, errorMessage(e));
+        pushError(state, e);
+        if (looksLikeAuthError(e)) cycleWantsReconnect = true;
+      };
+      const ok = await runIsolated(
+        [
+          ["root", () => runRootCycle(commitCtx)],
+          ["commit", async () => {
+            await runCommitCycle(commitCtx);
+          }],
+          ["janitor", async () => {
+            const r = await runJanitorCycle(janitorDeps({ baseConn, baseProg: baseFeePayerProg, feePayer: cfg.feePayer }));
+            for (const err of r.errors) pushError(state, err);
+            if (r.closed.length > 0 || r.errors.length > 0) {
+              console.log(`janitor: scanned=${r.scanned} closed=${r.closed.length} skipped=${r.skipped} errors=${r.errors.length} aborted=${r.aborted} low_balance=${r.lowBalance}`);
+            }
+          }],
+        ],
+        onStepError,
+      );
+      if (ok.includes("commit")) state.lastCommitAt = Date.now();
+    },
+    (e) => {
+      // Not expected (`runIsolated` catches per step) — recorded, never thrown.
+      console.error("commit cycle failed", errorMessage(e));
+      pushError(state, e);
+    },
+  );
+
+  hooks.cycleStartedAt = () => cycle.startedAt();
+  let lastCommitAttemptAt: number | null = null;
+  // R1.3: the market whose SHARED error stopped the previous loop (base58).
+  let resumeAfter: string | null = null;
   let n = 0;
   while (!stopRequested) {
     const t0 = Date.now();
     n += 1;
+    // At most ONE reconnect per loop — every market shares the same `conn`,
+    // so one fresh token fixes all of them.
+    let needReconnect = cycleWantsReconnect;
+    cycleWantsReconnect = false;
+    let discovery: Discovery;
+    let discoveryError: unknown | undefined;
     try {
-      await tick({ market, marketRisk, pool, poolLive, balancesRoot, feeEscrow }, n);
-      state.lastTickAt = Date.now();
-      state.tick = n;
+      discovery = { ok: true, candidates: await openCandidates(n) };
     } catch (e) {
-      console.error("tick failed", String(e));
+      // Discovery failed: the markets are still ticked below, with no
+      // candidate (`planTick`); this loop does not count for `lastTickAt`.
+      console.error(`crank n=${n}: candidate discovery failed — ticking every market without candidates`, errorMessage(e));
       pushError(state, e);
-      if (looksLikeAuthOrTimeout(e)) {
-        try {
-          await reconnect();
-        } catch (re) {
-          console.error("reconnect failed", String(re));
-          pushError(state, re);
-        }
+      needReconnect ||= shouldReconnectOnDiscoveryError(e); // R1.4: auth/network only
+      discoveryError = e;
+      discovery = { ok: false };
+    }
+    const plan = planTick(discovery);
+    try {
+      const set = tickSet(tickMarkets, registry.list(), solFallback, plan.byMarket);
+      for (const mi of set.markets) tickMarkets.set(mi.market.toBase58(), mi);
+      // R1.3: after a SHARED short-circuit, start at the market after the one
+      // that stopped the previous loop.
+      const markets = rotateMarkets([...set.markets, ...(await resolveUnknown(set.unknown, n))], resumeAfter);
+      const r = await runMarkets(markets, (m) => tickMarket(m, poolLive, plan.byMarket.get(m.market.toBase58()) ?? [], n), onMarketError, classifyError);
+      resumeAfter = r.stoppedAt;
+      const now = Date.now();
+      for (const sym of r.ticked) state.marketTicks[sym] = now;
+      if (r.ticked.length > 0) state.tick = n;
+      // F3: `lastTickAt` (and so `/healthz.ok`) follows SOL alone — a healthy
+      // BTC tick must not hide a stuck SOL, the only market the shipped APK
+      // trades. Other markets are informational in `/healthz.markets`. A loop
+      // whose discovery failed does not count: SOL was ticked, but nobody was
+      // checked against its print.
+      if (r.solTicked && plan.countsForHealth) state.lastTickAt = now;
+      if (r.notTicked.length > 0) console.warn(`crank n=${n}: shared error — not ticked this loop: ${r.notTicked.join(",")}; reconnecting, next loop starts after ${symbolOf(r.stoppedAt ?? "")}`);
+      // N1: also when nothing landed and something failed off chain.
+      const reconnectAfter = shouldReconnectAfterLoop(r, discoveryError, classifyError);
+      if (reconnectAfter && !r.needsReconnect) console.warn(`crank n=${n}: no crank_tick landed in this loop and something failed off chain — reconnecting`);
+      needReconnect ||= reconnectAfter;
+    } catch (e) {
+      // Not expected (`runMarkets` catches per market) — never stop the loop.
+      console.error("tick failed", errorMessage(e));
+      pushError(state, e);
+      needReconnect ||= isSharedError(e);
+    }
+    if (needReconnect) {
+      try {
+        await reconnect();
+      } catch (re) {
+        console.error("reconnect failed", errorMessage(re));
+        pushError(state, re);
       }
     }
 
-    // Root BEFORE disclosure, so `commit_aggregate` always carries a
-    // freshly computed `BalancesRoot`. Each cycle is its own try/catch, so
-    // neither ever kills this 1s tick loop.
-    if (n % COMMIT_INTERVAL_TICKS === 0) {
-      disclosureCycle += 1;
-      const cycleCtx = { conn, prog, crank: cfg.crank, feePayerConn, feePayerProg, feePayer: cfg.feePayer, pool, poolLive, balancesRoot, feeEscrow, quarantine, cycle: disclosureCycle };
-      try {
-        await runRootCycle(cycleCtx);
-      } catch (e) {
-        console.error("runRootCycle failed", String(e));
-        pushError(state, e);
-      }
-      try {
-        await runDisclosureCycle(cycleCtx);
-        state.lastCommitAt = Date.now();
-      } catch (e) {
-        console.error("runDisclosureCycle failed", String(e));
-        pushError(state, e);
-      }
-      // Week-5 Task 5: the exit-with-debt janitor, LAST in the cycle — the
-      // disclosure cycle above is what drains a departing owner's ring, and
-      // only a drained ring can be reclaimed, so running it after gives an
-      // owner who finished paying their debt this very cycle a chance at
-      // being cleaned up in the same one. Its own try/catch, like the other
-      // two: a stuck orphan must never touch the 1s tick loop.
-      try {
-        const r = await runOrphanCycle(
-          orphanDeps({
-            erConn: conn,
-            erProg: prog,
-            crank: cfg.crank,
-            baseConn,
-            baseProg: baseFeePayerProg,
-            feePayer: cfg.feePayer,
-            magicFeeVault: config.magicFeeVault as PublicKeyT,
-          }),
-        );
-        if (r.closedInEr.length > 0 || r.closedOnBase.length > 0 || r.errors > 0) {
-          console.log(`orphan cycle: scanned=${r.scanned} closedInEr=${r.closedInEr.length} closedOnBase=${r.closedOnBase.length} skipped=${r.skipped} errors=${r.errors}`);
-        }
-      } catch (e) {
-        console.error("runOrphanCycle failed", String(e));
-        pushError(state, e);
-      }
+    // I1: started, not awaited — the ticks never wait for an L1 close or a
+    // commit's confirm. A cycle still in flight is not doubled; the next due
+    // check after it finished starts the next one.
+    const now = Date.now();
+    if (!cycle.busy() && commitDue(lastCommitAttemptAt, now, COMMIT_INTERVAL_MS)) {
+      lastCommitAttemptAt = now;
+      cycle.trigger();
     }
 
+    hooks.loopDone();
     await sleep(Math.max(0, INTERVAL - (Date.now() - t0)));
   }
+  // The watchdog guards the loop, not the shutdown (shutdown.ts has its own
+  // hard-kill timeout).
+  hooks.stopWatchdog();
+  if (cycle.busy()) console.log("crank: stop requested — waiting for the in-flight commit cycle");
+  await cycle.idle();
   console.log("crank stopped (requestStop)");
 }

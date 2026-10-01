@@ -1,7 +1,7 @@
 // app/src/features/onboard/onboardLegs.ts
 //
 // What onboarding still has to send for an owner, as transaction legs:
-// faucet_init (+ATA-create if missing) + init_user|init_user_reuse_queue,
+// faucet_init (+ATA-create if missing) + init_user,
 // delegateSpl, delegate_user — the L1 legs, fee_payer-sponsored unless the
 // owner self-funds — and init_permissions + set_session on the ER,
 // owner-paid. Each builder decides from ONE L1 snapshot (`onboardState.ts`)
@@ -35,20 +35,11 @@
 // whole drain surface by construction (relayer's own words: "with it goes
 // the only SystemProgram instruction this endpoint ever accepted").
 //
-// `init_user` vs `init_user_reuse_queue` (week-5 Task 2): a fresh owner (no
-// `UserAccount` PDA on L1 yet) gets `init_user`. A RETURNING owner — one
-// who previously called `undelegate_user` and is not yet re-delegated — has
-// a `UserAccount` that already exists, is NOT owned by the Delegation
-// Program, and carries `exited == true`; `init_user`'s `init` constraint
-// would fail outright on that already-initialized PDA, so
-// `init_user_reuse_queue` (same account list, `mut` instead of `init`,
-// gated on `exited`) is used instead. It also requires `DisclosureQueue` to
-// be a plain, non-delegated `dexxer_core`-owned account — which only holds
-// once the relayer's orphan janitor (`close_orphan_queue`) has drained and
-// undelegated a queue that outlived its owner's exit with debt still owed;
-// until then the returning owner's re-onboarding fails with a decode error
-// on `disclosure_queue` (still Delegation-Program-owned) — a known,
-// documented gap, not a bug (see the brief's smoke-test step 8).
+// Two accounts (position slots): `init_user` creates `UserAccount` and the
+// zero-copy `Positions` (16 slots) together, `delegate_user` delegates both,
+// `init_permissions` makes both private. A returning owner whose accounts are
+// `exited` gets NO leg at all: only the relayer's janitor (`close_exited_user`)
+// can remove them, after which onboarding starts fresh (state `Exited`).
 //
 // --- Fix round 1 (task-6 controller ruling) changes, kept for history -----
 //
@@ -91,8 +82,8 @@ import type { NonceInfo, NonceSlot } from '@/src/lib/nonce'
 import {
   eataDelegated,
   isDelegated,
+  isExitedOnL1,
   l1KeysFor,
-  needsReuseQueue,
   readL1Snapshot,
   sessionFresh,
   type L1Snapshot,
@@ -144,26 +135,14 @@ function l1Leg(env: LegEnv, label: string, ixs: TransactionInstruction[], onLand
   }
 }
 
-// --- L1a: [createAta?] + faucet_init + init_user|init_user_reuse_queue ---
+// --- L1a: [createAta?] + faucet_init + init_user ---
 // (fee_payer fronts every bit of this leg's rent — the ATA-create too,
 // week-5 Task 6, on top of fix round 1's faucet_init/init_user coverage.)
 // Measured 25.09 on a nonce (advance + 2 ComputeBudget prepended):
 // faucet part 682 bytes, init_user part 631 — comfortably one tx.
 async function legFaucetInitUser(env: LegEnv): Promise<BatchLeg | null> {
   const { ctx, snap, feePayer, core, appendLog } = env
-  const {
-    owner,
-    config,
-    mint,
-    market,
-    userAccount,
-    position,
-    disclosureQueue,
-    faucetPda,
-    mintAuth,
-    ownerAta,
-    exitSalt,
-  } = ctx
+  const { owner, config, mint, userAccount, positions, faucetPda, mintAuth, ownerAta, exitSalt } = ctx
   const ixs: TransactionInstruction[] = []
   if (!snap.faucet) {
     if (!snap.ownerAta) ixs.push(createAssociatedTokenAccountIdempotentInstruction(feePayer, ownerAta, owner, mint))
@@ -190,19 +169,12 @@ async function legFaucetInitUser(env: LegEnv): Promise<BatchLeg | null> {
     owner,
     payer: feePayer,
     config,
-    market,
     userAccount,
-    position,
-    disclosureQueue,
+    positions,
     systemProgram: SystemProgram.programId,
   }
   if (!snap.userAccount) {
     ixs.push(await core.methods.initUser(Array.from(exitSalt)).accounts(initAccounts).instruction())
-  } else if (needsReuseQueue(snap)) {
-    // Returning owner (week-5 Task 2): the PDA survived a prior exit and is
-    // still `dexxer_core`-owned but `exited == true` — `init_user`'s `init`
-    // constraint would fail on it, so re-initialize in place instead.
-    ixs.push(await core.methods.initUserReuseQueue(Array.from(exitSalt)).accounts(initAccounts).instruction())
   } else {
     appendLog('init_user: exists, skipped')
   }
@@ -244,33 +216,27 @@ async function legDelegateUser(env: LegEnv): Promise<BatchLeg | null> {
     appendLog('delegate: already delegated, skipped')
     return null
   }
-  const { owner, config, market, userAccount, position, disclosureQueue } = ctx
+  const { owner, config, userAccount, positions } = ctx
   const ut = delegationTriple(userAccount)
-  const pt = delegationTriple(position)
-  const dt = delegationTriple(disclosureQueue)
+  const pt = delegationTriple(positions)
   const ix = await core.methods
     .delegateUser()
     .accounts({
       owner,
       // Week 5, Task 3 (P1) split this payer out of `owner`; Task 6
-      // sponsors it — `fee_payer` fronts the three delegation records'
-      // rent, closing fix round 1's residual "still ≈0.0033-0.0035 SOL"
+      // sponsors it — `fee_payer` fronts the delegation records'
+      // rent for both accounts, closing fix round 1's residual "still ≈0.0033-0.0035 SOL"
       // gap (see file header).
       payer: feePayer,
       config,
-      market,
       bufferUserAccount: ut.buffer,
       delegationRecordUserAccount: ut.record,
       delegationMetadataUserAccount: ut.metadata,
       userAccount,
-      bufferPosition: pt.buffer,
-      delegationRecordPosition: pt.record,
-      delegationMetadataPosition: pt.metadata,
-      position,
-      bufferDisclosureQueue: dt.buffer,
-      delegationRecordDisclosureQueue: dt.record,
-      delegationMetadataDisclosureQueue: dt.metadata,
-      disclosureQueue,
+      bufferPositions: pt.buffer,
+      delegationRecordPositions: pt.record,
+      delegationMetadataPositions: pt.metadata,
+      positions,
       ownerProgram: DEXXER_CORE_PROGRAM_ID,
       delegationProgram: DELEGATION_PROGRAM_ID,
       systemProgram: SystemProgram.programId,
@@ -292,20 +258,17 @@ async function legDelegateUser(env: LegEnv): Promise<BatchLeg | null> {
 // header for why they are not batched like the L1 ones.
 async function legPermissionsSession(env: LegEnv): Promise<BatchLeg | null> {
   const { ctx, snap, mwa, appendLog } = env
-  const { owner, config, market, userAccount, position, disclosureQueue, session } = ctx
+  const { owner, config, userAccount, positions, session } = ctx
   const ownerTee = await mwa.getConnection(owner)
   const coreEr = dexxerCoreProgram(ownerTee, owner)
   const userPermission = permissionPdaFromAccount(userAccount)
   const permAccounts = {
     owner,
     config,
-    market,
     userAccount,
-    position,
-    disclosureQueue,
+    positions,
     userPermission,
-    positionPermission: permissionPdaFromAccount(position),
-    dqPermission: permissionPdaFromAccount(disclosureQueue),
+    positionsPermission: permissionPdaFromAccount(positions),
     permissionProgram: PERMISSION_PROGRAM_ID,
     ephemeralVault: EPHEMERAL_VAULT_ID,
     magicProgram: MAGIC_PROGRAM_ID,
@@ -381,9 +344,15 @@ export async function collectBatchLegs(
   nonces: (NonceInfo | null)[] = [null, null, null],
   l1?: L1Snapshot,
 ): Promise<BatchLeg[]> {
+  const snap = l1 ?? (await readL1Snapshot(baseConn, l1KeysFor(ctx.owner, ctx.mint)))
+  if (isExitedOnL1(snap)) {
+    // Exited accounts can only be closed by the relayer's janitor; sending anything now would fail.
+    appendLog('init_user: account exited, waiting for the janitor to close it')
+    return []
+  }
   const env: LegEnv = {
     ctx,
-    snap: l1 ?? (await readL1Snapshot(baseConn, l1KeysFor(ctx.owner, ctx.mint))),
+    snap,
     feePayer: feePayerPubkey,
     sponsored: !feePayerPubkey.equals(ctx.owner),
     core: dexxerCoreProgram(baseConn, ctx.owner),

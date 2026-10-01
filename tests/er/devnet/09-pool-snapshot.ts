@@ -222,7 +222,7 @@ async function main() {
   const poolBeforeCommit = await accountNs(coreBase).pool.fetch(boot.pool);
   const prevSlot = BigInt(poolBeforeCommit.lastCommitSlot.toString());
   const commitIx = await feePayerCore.methods
-    .commitAggregate(4)
+    .commitAggregate()
     .accounts({
       config: pdas.config(),
       payer: feePayer.publicKey,

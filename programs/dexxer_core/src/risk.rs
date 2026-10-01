@@ -130,9 +130,9 @@ pub fn settle(margin: u64, pnl: i64, fee: u64) -> Result<Settlement> {
 }
 
 /// Check if a position is liquidatable now (at current mark price).
-pub fn liquidatable_now(pos: &Position, market: &Market, mark: u64) -> Result<bool> {
+pub fn liquidatable_now(pos: &PositionSlot, market: &Market, mark: u64) -> Result<bool> {
     let notional = math::notional(pos.size, mark)?;
-    let upnl = math::upnl(pos.side, pos.size, pos.entry, mark)?;
+    let upnl = math::upnl(pos.side(), pos.size, pos.entry, mark)?;
     let close_fee = math::fee(notional, market.close_fee_bps as u32)?;
     let eq = math::equity(pos.margin, upnl, close_fee)?;
     Ok(math::is_liquidatable(eq, notional, market.mmr_bps))
@@ -225,6 +225,8 @@ mod tests {
             max_deviation_bps: 200,
             mark: 150_000_000,
             mark_slot: 1,
+            last_print: 0,
+            sample_seq: 0,
             ema_alpha_bps: 3000,
             liq_hysteresis_ticks: 2,
             max_stale_ticks: 30,

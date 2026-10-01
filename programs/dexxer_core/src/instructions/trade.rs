@@ -12,24 +12,28 @@ use crate::{
 use anchor_lang::prelude::*;
 use anchor_lang::solana_program::instruction::{AccountMeta, Instruction};
 use ephemeral_rollups_sdk::consts::MAGIC_PROGRAM_ID;
-use solana_keccak_hasher::hashv;
 
 /// STACK BUDGET — read before adding an account here. Week-5 Task 1's four new
 /// fields put `Trade::try_accounts` 8 bytes over the SBF 4096-byte frame
 /// (`anchor build`: "Stack offset of 4104 exceeded max offset of 4096", plus
 /// five "function call overwrites values in the frame" errors). Boxing `config`
-/// bought back a `Config`'s worth of frame — `Config::INIT_SPACE` is 275 B — so
-/// roughly 270 B of headroom is left. Week-5 Task 3 spent some of it on
-/// `liq_crank_signer` (an `UncheckedAccount`, cheap); if a future field does
-/// not fit, box the next-largest account (`market`, then `market_risk`). The
-/// build fails loudly on overflow, so this is a warning, not an invariant to
-/// trust blindly.
+/// bought back a `Config`'s worth of frame, roughly 270 B of headroom. Week-5
+/// Task 3 spent some of it on `liq_crank_signer` (an `UncheckedAccount`,
+/// cheap); week-6 slots Task 1 gave one account back (the boxed
+/// `disclosure_queue`, gone with trade disclosure — 12 accounts now), and
+/// slots Task 4 replaced the boxed by-value `Position` with an
+/// `AccountLoader<Positions>`, which keeps only an `AccountInfo` reference on
+/// the frame (the 3.1 KiB account is read in place, never copied), so it is
+/// cheaper than the `Box<Account<Position>>` it replaced. If a future field
+/// does not fit, box the next-largest account (`market`, then `market_risk`).
+/// The build fails loudly on overflow, so this is a warning, not an invariant
+/// to trust blindly.
 #[derive(Accounts)]
 pub struct Trade<'info> {
     pub signer: Signer<'info>,
-    // Boxed: week-5 Task 1 added four accounts to this context, which tipped
+    // Boxed: week-5 Task 1 added accounts to this context, which tipped
     // `Trade::try_accounts` 8 bytes past the SBF stack limit (build error, same
-    // failure mode as `user_account`/`position` below). `Config` is the largest
+    // failure mode as `user_account` below). `Config` is the largest
     // read-only account here, so it is the cheapest one to move to the heap.
     #[account(seeds = [CONFIG_SEED], bump = config.bump)]
     pub config: Box<Account<'info, Config>>,
@@ -46,30 +50,24 @@ pub struct Trade<'info> {
     pub pool_live: Account<'info, PoolLive>,
     // Boxed: week-3 Task 0 grew `UserAccount` by `exit_salt: [u8; 32]`, which
     // tipped this context's account-validation stack frame 8 bytes past the
-    // SBF limit (same failure mode `Position` below already worked around) —
-    // moves `UserAccount`'s deserialize buffer off the stack onto the heap.
+    // SBF limit — moves `UserAccount`'s deserialize buffer off the stack onto
+    // the heap.
     #[account(mut, seeds = [USER_SEED, user_account.owner.as_ref()], bump = user_account.bump)]
     pub user_account: Box<Account<'info, UserAccount>>,
-    // Boxed: with all the other accounts in this context inline, Position
-    // pushes the account-validation stack frame past the SBF limit (same
-    // failure mode as InitUser's Position/DisclosureQueue in instructions/user.rs).
+    // Every position of this trader, one slot per market (spec §2.9.1). The
+    // market is NOT in the address: each handler finds the slot whose `market`
+    // equals `market.key()` (`open_index`/`alloc`), so a slot of another
+    // market can never be acted on. Zero-copy — `load()`/`load_mut()` read
+    // the account in place; every `RefMut` is dropped before a CPI takes it.
     #[account(
         mut,
-        seeds = [POSITION_SEED, user_account.owner.as_ref(), market.key().as_ref()],
-        bump = position.bump,
-        constraint = position.owner == user_account.owner @ DexxerError::Unauthorized,
-        has_one = market
+        seeds = [POSITIONS_SEED, user_account.owner.as_ref()],
+        bump = positions.load()?.bump,
+        constraint = positions.load()?.owner == user_account.owner @ DexxerError::Unauthorized
     )]
-    pub position: Box<Account<'info, Position>>,
+    pub positions: AccountLoader<'info, Positions>,
     /// CHECK: validated in oracle::read_price (key == market.feed, owner == config.oracle_program)
     pub feed: UncheckedAccount<'info>,
-    // Week-5 Task 1: `finalize_close` pushes the `ClosedRecord` straight into
-    // the owner's ring, so every trading instruction that can close a position
-    // (`close_position`, `decrease_position` to zero) needs it. Boxed for the
-    // same SBF stack reason as `user_account`/`position` above — this is the
-    // biggest per-user account of the three.
-    #[account(mut, seeds = [DQ_SEED, user_account.owner.as_ref()], bump = disclosure_queue.bump)]
-    pub disclosure_queue: Box<Account<'info, DisclosureQueue>>,
     // The per-position liquidation task's payer AND authority (week-5 Task 3):
     // `open_position` registers the task with this PDA as the `ScheduleTask`
     // CPI payer, which is what makes the PROGRAM the task's authority, and
@@ -85,15 +83,15 @@ pub struct Trade<'info> {
     /// any already-existing writable account is accepted and left byte-identical
     /// (week-5 Task 0, measurement 6).
     ///
-    /// PINNED TO `position` anyway (fix round 1, M-1). "Any writable account"
+    /// PINNED TO `positions` anyway (fix round 1, M-1). "Any writable account"
     /// plus `mut` would let a caller name ANOTHER trader's delegated account
     /// here, write-locking it for the duration of the transaction — a free
     /// contention/DoS handle on someone else's position, which the placeholder's
     /// inertness does nothing to prevent. Pinning it costs nothing (every client
-    /// already passes the position PDA) and additionally guarantees that the
+    /// already passes the `Positions` PDA) and additionally guarantees that the
     /// registration and the later cancel name the same account. Anchor permits
     /// the duplicate key because neither field is `init`.
-    #[account(mut, constraint = task_context.key() == position.key() @ DexxerError::InvalidCandidate)]
+    #[account(mut, constraint = task_context.key() == positions.key() @ DexxerError::InvalidCandidate)]
     pub task_context: UncheckedAccount<'info>,
     /// CHECK: address-checked; gates the Task 3 scheduler CPI via `.executable`
     #[account(address = MAGIC_PROGRAM_ID)]
@@ -142,9 +140,8 @@ fn liq_task_accounts<'info>(a: &'info Trade<'info>) -> &'info [AccountInfo<'info
         a.market_risk.to_account_info(),
         a.pool_live.to_account_info(),
         a.feed.to_account_info(),
-        a.position.to_account_info(),
+        a.positions.to_account_info(),
         a.user_account.to_account_info(),
-        a.disclosure_queue.to_account_info(),
     ];
     Box::leak(infos.into_boxed_slice())
 }
@@ -152,9 +149,11 @@ fn liq_task_accounts<'info>(a: &'info Trade<'info>) -> &'info [AccountInfo<'info
 /// `open_position`'s tail: register this position's liquidation task.
 ///
 /// Open-time registration (not init-time) is week-5 Task 0's ruling: the task
-/// account list is frozen at registration, and at `init_user` time the
-/// `Position` exists but carries no market yet — more importantly, a task
-/// registered per user rather than per open could never be cancelled on close.
+/// account list is frozen at registration, and at `init_user` time no slot
+/// carries a market yet — more importantly, a task registered per user rather
+/// than per open could never be cancelled on close. The id is per (trader,
+/// market) — `liq_task_id(positions, market)` — so each open slot has its own
+/// task, and a tick on a market whose slot is no longer open is a no-op.
 /// The task registry is invisible from L1 and from an un-tokened TEE RPC
 /// (Task 0, measurement 4), so registering one leaks nothing about the owner.
 fn register_liq_task<'info>(a: &'info Trade<'info>) -> Result<()> {
@@ -181,9 +180,8 @@ fn register_liq_task<'info>(a: &'info Trade<'info>) -> Result<()> {
             AccountMeta::new(a.market_risk.key(), false),
             AccountMeta::new(a.pool_live.key(), false),
             AccountMeta::new_readonly(a.feed.key(), false),
-            AccountMeta::new(a.position.key(), false),
+            AccountMeta::new(a.positions.key(), false),
             AccountMeta::new(a.user_account.key(), false),
-            AccountMeta::new(a.disclosure_queue.key(), false),
         ],
         data: anchor_lang::InstructionData::data(&crate::instruction::LiquidationCheck {}),
     };
@@ -192,7 +190,7 @@ fn register_liq_task<'info>(a: &'info Trade<'info>) -> Result<()> {
         &a.magic_program,
         liq_task_accounts(a),
         inner,
-        liq_task_id(&a.position.key()),
+        liq_task_id(&a.positions.key(), &a.market.key()),
         a.fee_escrow.bump,
     )
 }
@@ -205,7 +203,7 @@ fn register_liq_task<'info>(a: &'info Trade<'info>) -> Result<()> {
 /// NOT cancel: neither carries a `task_context`/`magic_program`, and a
 /// scheduled tick cancelling the task it is running inside is untested. A task
 /// left over a liquidated position is a measured-safe no-op (week-5 Task 0) —
-/// it ticks, sees `PositionState::Empty`, and returns — until the next
+/// it ticks, finds no open slot on its market, and returns — until the next
 /// `open_position` re-registers it (an update) or `undelegate_user` cancels it.
 fn cancel_liq_task<'info>(a: &'info Trade<'info>) -> Result<()> {
     if !a.magic_program.executable {
@@ -217,7 +215,7 @@ fn cancel_liq_task<'info>(a: &'info Trade<'info>) -> Result<()> {
         escrow.as_ref(),
         &a.task_context,
         &a.magic_program,
-        liq_task_id(&a.position.key()),
+        liq_task_id(&a.positions.key(), &a.market.key()),
         a.fee_escrow.bump,
     )
 }
@@ -240,11 +238,12 @@ pub fn open_position<'info>(
     let a = &mut ctx.accounts;
     require!(!a.config.paused, DexxerError::Paused);
     require!(!a.market.paused_open, DexxerError::OpenPaused);
-    require!(
-        a.position.state == PositionState::Empty,
-        DexxerError::PositionNotEmpty
-    );
     assert_trader(&a.signer.key(), &mut a.user_account, clock.unix_timestamp)?;
+    let market_key = a.market.key();
+    // Pick the slot before any money moves: `PositionNotEmpty` if this market
+    // already has a position, `NoFreeSlot` when all sixteen are taken. The
+    // slot itself is written only after every computation below succeeded.
+    let idx = a.positions.load()?.alloc(&market_key)?;
     let px = read_price(&a.feed.to_account_info(), &a.market, &a.config, &clock)?;
     check_open_quality(&px, &a.market)?;
     check_deviation(&px, &a.market)?;
@@ -306,18 +305,25 @@ pub fn open_position<'info>(
         .open_positions
         .checked_add(1)
         .ok_or(DexxerError::MathOverflow)?;
-    let p = &mut a.position;
-    p.state = PositionState::Open;
-    p.side = side;
-    p.size = size;
-    p.entry = px.price;
-    p.margin = margin;
-    p.liq_price = chk.liq_price;
-    p.opened_slot = clock.slot;
-    p.liq_ticks = 0;
-    p.closed = None;
-    // Exact at open: entry == px.price, so notional(size, entry) == entry_notional.
-    p.oi_notional = entry_notional;
+    {
+        let mut positions = a.positions.load_mut()?;
+        positions.slots[idx] = PositionSlot {
+            market: market_key,
+            size,
+            entry: px.price,
+            margin,
+            liq_price: chk.liq_price,
+            opened_slot: clock.slot,
+            // Exact at open: entry == px.price, so notional(size, entry) == entry_notional.
+            oi_notional: entry_notional,
+            // Only oracle prints seen AFTER the open may count against it.
+            last_liq_sample: a.market.sample_seq,
+            state: SLOT_OPEN,
+            side: side.as_u8(),
+            liq_ticks: 0,
+            _pad: [0; 5],
+        };
+    } // RefMut dropped before the scheduler CPI borrows the account
     seed_mark(&mut a.market, px.price, clock.slot);
     // Every mutation above is done: hand the accounts over as a shared,
     // `'info`-scoped reference so the scheduler CPI can borrow them (see
@@ -329,10 +335,8 @@ pub fn add_margin(mut ctx: Context<Trade>, amount: u64) -> Result<()> {
     let clock = Clock::get()?;
     let a = &mut ctx.accounts;
     require!(amount > 0, DexxerError::AmountZero);
-    require!(
-        a.position.state == PositionState::Open,
-        DexxerError::PositionNotOpen
-    );
+    let market_key = a.market.key();
+    let idx = a.positions.load()?.open_index(&market_key)?;
     assert_trader(&a.signer.key(), &mut a.user_account, clock.unix_timestamp)?;
     require!(
         a.user_account.free_margin >= amount,
@@ -352,13 +356,15 @@ pub fn add_margin(mut ctx: Context<Trade>, amount: u64) -> Result<()> {
         .locked_total
         .checked_add(amount)
         .ok_or(DexxerError::MathOverflow)?;
-    let p = &mut a.position;
+    let mut positions = a.positions.load_mut()?;
+    let p = &mut positions.slots[idx];
     p.margin = p
         .margin
         .checked_add(amount)
         .ok_or(DexxerError::MathOverflow)?;
     // margin > notional (leverage below 1x) has no liquidation price
-    p.liq_price = math::liq_price(p.side, p.entry, p.size, p.margin, a.market.mmr_bps).unwrap_or(0);
+    p.liq_price =
+        math::liq_price(p.side(), p.entry, p.size, p.margin, a.market.mmr_bps).unwrap_or(0);
     Ok(())
 }
 
@@ -368,32 +374,34 @@ pub fn close_position<'info>(
 ) -> Result<()> {
     let clock = Clock::get()?;
     let a = &mut ctx.accounts;
-    require!(
-        a.position.state == PositionState::Open,
-        DexxerError::PositionNotOpen
-    );
+    let market_key = a.market.key();
+    let (idx, side) = {
+        let positions = a.positions.load()?;
+        let idx = positions.open_index(&market_key)?;
+        (idx, positions.slots[idx].side())
+    };
     assert_trader(&a.signer.key(), &mut a.user_account, clock.unix_timestamp)?;
     let px = read_price(&a.feed.to_account_info(), &a.market, &a.config, &clock)?;
-    match a.position.side {
+    match side {
         Side::Long => require!(px.price >= limit_price, DexxerError::SlippageExceeded),
         Side::Short => require!(px.price <= limit_price, DexxerError::SlippageExceeded),
     }
     let fee_bps = a.market.close_fee_bps as u32;
-    let delay = a.config.disclosure_delay_slots;
-    let market_key = a.market.key();
-    finalize_close(
-        market_key,
-        &mut a.market_risk,
-        &mut a.pool_live,
-        &mut a.user_account,
-        &mut a.position,
-        &mut a.disclosure_queue,
-        px.price,
-        fee_bps,
-        CloseReason::User,
-        &clock,
-        delay,
-    )?;
+    {
+        let mut positions = a.positions.load_mut()?;
+        finalize_close(
+            market_key,
+            &mut a.market_risk,
+            &mut a.pool_live,
+            &mut a.user_account,
+            &mut positions,
+            idx,
+            px.price,
+            fee_bps,
+            CloseReason::User,
+            &clock,
+        )?;
+    } // RefMut dropped before the cancel CPI borrows the account
     cancel_liq_task(ctx.accounts)
 }
 
@@ -403,38 +411,40 @@ pub fn increase_position(
     add_margin: u64,
     limit_price: u64,
 ) -> Result<()> {
-    // No task work here: the position stays `Open`, so its task stays
+    // No task work here: the position stays open, so its task stays
     // registered and keeps ticking against the updated size/entry.
 
     let clock = Clock::get()?;
     let a = &mut ctx.accounts;
     require!(!a.config.paused, DexxerError::Paused);
     require!(!a.market.paused_open, DexxerError::OpenPaused);
-    require!(
-        a.position.state == PositionState::Open,
-        DexxerError::PositionNotOpen
-    );
+    let market_key = a.market.key();
+    // A copy of the slot: every read below uses it, the write-back happens in
+    // one place at the end.
+    let (idx, pos) = {
+        let positions = a.positions.load()?;
+        let idx = positions.open_index(&market_key)?;
+        (idx, positions.slots[idx])
+    };
     require!(add_size > 0, DexxerError::AmountZero);
     assert_trader(&a.signer.key(), &mut a.user_account, clock.unix_timestamp)?;
     let px = read_price(&a.feed.to_account_info(), &a.market, &a.config, &clock)?;
     check_open_quality(&px, &a.market)?;
     check_deviation(&px, &a.market)?;
-    let side = a.position.side;
+    let side = pos.side();
     match side {
         Side::Long => require!(px.price <= limit_price, DexxerError::SlippageExceeded),
         Side::Short => require!(px.price >= limit_price, DexxerError::SlippageExceeded),
     }
-    let new_size = a
-        .position
+    let new_size = pos
         .size
         .checked_add(add_size)
         .ok_or(DexxerError::MathOverflow)?;
-    let new_margin = a
-        .position
+    let new_margin = pos
         .margin
         .checked_add(add_margin)
         .ok_or(DexxerError::MathOverflow)?;
-    let new_entry = math::vwap_entry(a.position.size, a.position.entry, add_size, px.price)?;
+    let new_entry = math::vwap_entry(pos.size, pos.entry, add_size, px.price)?;
     // OI check on the delta only: pretend the existing exposure is not there.
     // Use the position's own tracked `oi_notional`, not a recompute of
     // `notional(size, entry)` off the stored (VWAP, rounds-up) entry — the same
@@ -455,13 +465,13 @@ pub fn increase_position(
         Side::Long => {
             risk_view.oi_long = risk_view
                 .oi_long
-                .checked_sub(a.position.oi_notional)
+                .checked_sub(pos.oi_notional)
                 .ok_or(DexxerError::MathOverflow)?
         }
         Side::Short => {
             risk_view.oi_short = risk_view
                 .oi_short
-                .checked_sub(a.position.oi_notional)
+                .checked_sub(pos.oi_notional)
                 .ok_or(DexxerError::MathOverflow)?
         }
     }
@@ -474,6 +484,26 @@ pub fn increase_position(
         new_margin,
         new_entry,
     )?;
+    // Final review C1: an increase may never touch a position that is
+    // liquidatable at the current mark. It used to reset `liq_ticks`, so a
+    // dust increase after every print kept a liquidatable position alive
+    // forever. The check runs on the WOULD-BE slot (new size, margin, VWAP
+    // entry, liq price) before any state is written or money moves, against
+    // the stored `Market.mark` — the price both liquidation paths use. An
+    // unmarked market (`mark == 0`) has nothing to liquidate against.
+    if a.market.mark != 0 {
+        let would_be = PositionSlot {
+            size: new_size,
+            margin: new_margin,
+            entry: new_entry,
+            liq_price: chk.liq_price,
+            ..pos
+        };
+        require!(
+            !risk::liquidatable_now(&would_be, &a.market, a.market.mark)?,
+            DexxerError::PositionLiquidatable
+        );
+    }
     let delta_notional = math::notional(add_size, px.price)?;
     let fee = math::fee(delta_notional, a.market.open_fee_bps as u32)?;
     let cost = add_margin
@@ -516,12 +546,14 @@ pub fn increase_position(
                 .ok_or(DexxerError::MathOverflow)?
         }
     }
-    let p = &mut a.position;
+    let mut positions = a.positions.load_mut()?;
+    let p = &mut positions.slots[idx];
     p.size = new_size;
     p.margin = new_margin;
     p.entry = new_entry;
     p.liq_price = chk.liq_price;
-    p.liq_ticks = 0;
+    // `liq_ticks` is deliberately left alone (C1): only a healthy check in
+    // `liq_due` resets it.
     // Track the exact OI contribution in lock-step with the ledger above
     // (delta_notional, not a recompute off the rounded VWAP entry).
     p.oi_notional = p
@@ -538,43 +570,47 @@ pub fn decrease_position<'info>(
 ) -> Result<()> {
     let clock = Clock::get()?;
     let a = &mut ctx.accounts;
+    let market_key = a.market.key();
+    // A copy of the slot for every read; writes go through `load_mut` below.
+    let (idx, pos) = {
+        let positions = a.positions.load()?;
+        let idx = positions.open_index(&market_key)?;
+        (idx, positions.slots[idx])
+    };
     require!(
-        a.position.state == PositionState::Open,
-        DexxerError::PositionNotOpen
-    );
-    require!(
-        close_size > 0 && close_size <= a.position.size,
+        close_size > 0 && close_size <= pos.size,
         DexxerError::InvalidInput
     );
     assert_trader(&a.signer.key(), &mut a.user_account, clock.unix_timestamp)?;
     let px = read_price(&a.feed.to_account_info(), &a.market, &a.config, &clock)?;
-    match a.position.side {
+    let side = pos.side();
+    match side {
         Side::Long => require!(px.price >= limit_price, DexxerError::SlippageExceeded),
         Side::Short => require!(px.price <= limit_price, DexxerError::SlippageExceeded),
     }
-    let market_key = a.market.key();
-    if close_size == a.position.size {
+    if close_size == pos.size {
         let fee_bps = a.market.close_fee_bps as u32;
-        let delay = a.config.disclosure_delay_slots;
-        finalize_close(
-            market_key,
-            &mut a.market_risk,
-            &mut a.pool_live,
-            &mut a.user_account,
-            &mut a.position,
-            &mut a.disclosure_queue,
-            px.price,
-            fee_bps,
-            CloseReason::User,
-            &clock,
-            delay,
-        )?;
+        {
+            let mut positions = a.positions.load_mut()?;
+            finalize_close(
+                market_key,
+                &mut a.market_risk,
+                &mut a.pool_live,
+                &mut a.user_account,
+                &mut positions,
+                idx,
+                px.price,
+                fee_bps,
+                CloseReason::User,
+                &clock,
+            )?;
+        } // RefMut dropped before the cancel CPI borrows the account
+
         // A decrease that takes the size to zero IS a close — same task
         // teardown as `close_position`.
         return cancel_liq_task(ctx.accounts);
     }
-    let remaining = a
-        .position
+    let remaining = pos
         .size
         .checked_sub(close_size)
         .ok_or(DexxerError::MathOverflow)?;
@@ -583,18 +619,12 @@ pub fn decrease_position<'info>(
         DexxerError::PositionTooSmall
     );
     // Floor: the remainder keeps the rounding, in the pool's favour.
-    let released = ((a.position.margin as u128)
+    let released = ((pos.margin as u128)
         .checked_mul(close_size as u128)
         .ok_or(DexxerError::MathOverflow)?)
-    .checked_div(a.position.size as u128)
+    .checked_div(pos.size as u128)
     .ok_or(DexxerError::MathOverflow)? as u64;
-    let pnl = math::decrease_pnl(
-        a.position.side,
-        a.position.size,
-        close_size,
-        a.position.entry,
-        px.price,
-    )?;
+    let pnl = math::decrease_pnl(side, pos.size, close_size, pos.entry, px.price)?;
     let fee = math::fee(
         math::notional(close_size, px.price)?,
         a.market.close_fee_bps as u32,
@@ -613,14 +643,15 @@ pub fn decrease_position<'info>(
     // Pro-rata share of the position's own tracked OI contribution (floor,
     // pool-favouring, same direction as `released` margin above) — not a
     // recompute off the stored entry, which would suffer the same VWAP
-    // double-rounding underflow risk as `finalize_close` (see Position::oi_notional).
-    let closed_oi = ((a.position.oi_notional as u128)
+    // double-rounding underflow risk as `finalize_close` (see
+    // `PositionSlot::oi_notional`).
+    let closed_oi = ((pos.oi_notional as u128)
         .checked_mul(close_size as u128)
         .ok_or(DexxerError::MathOverflow)?)
-    .checked_div(a.position.size as u128)
+    .checked_div(pos.size as u128)
     .ok_or(DexxerError::MathOverflow)? as u64;
     let r = &mut a.market_risk;
-    match a.position.side {
+    match side {
         Side::Long => {
             r.oi_long = r
                 .oi_long
@@ -634,7 +665,8 @@ pub fn decrease_position<'info>(
                 .ok_or(DexxerError::MathOverflow)?
         }
     }
-    let p = &mut a.position;
+    let mut positions = a.positions.load_mut()?;
+    let p = &mut positions.slots[idx];
     p.size = remaining;
     p.margin = p
         .margin
@@ -651,34 +683,59 @@ pub fn decrease_position<'info>(
         p.margin >= math::required_margin(rem_notional, a.market.imr_bps)?,
         DexxerError::InsufficientMargin
     );
-    p.liq_price = math::liq_price(p.side, p.entry, p.size, p.margin, a.market.mmr_bps).unwrap_or(0);
+    p.liq_price = math::liq_price(side, p.entry, p.size, p.margin, a.market.mmr_bps).unwrap_or(0);
+    // Final review I3: the realised part goes into the owner's history, like
+    // a close — otherwise its PnL would never show. The slot stays open, so
+    // this is its own kind, `HISTORY_REASON_DECREASE`, not a `CloseReason`.
+    // No CPI follows on this path; the `RefMut` ends with the function.
+    positions.push_history(HistoryRecord {
+        market: market_key,
+        size: close_size,
+        entry: pos.entry,
+        exit: px.price,
+        pnl,
+        fees: s.fee_taken,
+        opened_slot: pos.opened_slot,
+        closed_slot: clock.slot,
+        side: pos.side,
+        reason: HISTORY_REASON_DECREASE,
+        _pad: [0; 6],
+    });
     Ok(())
 }
 
-/// Shared by close_position, decrease_position (full) and crank liquidation.
+/// Shared by close_position, decrease_position (full) and both liquidation
+/// paths (`crank_tick`, `liquidation_check`).
 ///
-/// Queue-first (week-5 Task 1): the `ClosedRecord` is pushed into `dq` and the
-/// `Position` is reset to `Empty` in this same instruction, so a trader can
-/// reopen immediately and no crank round-trip (`mark_committed`, now gone) sits
-/// between a close and the next trade. `dq.push` is fallible (`QueueFull`), and
-/// it is the LAST thing that can fail here — a full ring reverts the entire
-/// close rather than settling the money and losing the record.
+/// Settles the money on the slot `idx` of `positions` — which every caller
+/// found by `market_key` (`open_index`/`find_open`), so it is always this
+/// market's open slot — records the close in the owner's private history
+/// ring, and clears the slot to all-zero bytes in one step, so a trader can
+/// reopen immediately. Trades are not disclosed (spec §2.9), so nothing is
+/// queued; the history ring overwrites its oldest record, so nothing here can
+/// fail on a full buffer — only on a genuine accounting error.
 #[allow(clippy::too_many_arguments)]
 pub fn finalize_close(
     market_key: Pubkey,
     risk_acc: &mut MarketRisk,
     pool: &mut PoolLive,
     user: &mut UserAccount,
-    pos: &mut Position,
-    dq: &mut DisclosureQueue,
+    positions: &mut Positions,
+    idx: usize,
     exit: u64,
     fee_bps: u32,
     reason: CloseReason,
     clock: &Clock,
-    delay_slots: u64,
 ) -> Result<Settlement> {
+    let pos = positions.slots[idx];
+    // Defence in depth: every caller already resolved `idx` from `market_key`.
+    require!(
+        pos.is_open() && pos.market == market_key,
+        DexxerError::PositionNotOpen
+    );
+    let side = pos.side();
     let notional_exit = math::notional(pos.size, exit)?;
-    let pnl = math::upnl(pos.side, pos.size, pos.entry, exit)?;
+    let pnl = math::upnl(side, pos.size, pos.entry, exit)?;
     let fee = math::fee(notional_exit, fee_bps)?;
     let s = risk::settle(pos.margin, pnl, fee)?;
     risk::settle_into_pool(pool, pos.margin, &s, reason == CloseReason::Liquidated)?;
@@ -699,7 +756,7 @@ pub fn finalize_close(
     // (every candidate in the batch, not just this one) even though nothing
     // is actually wrong. `oi_notional` is exact by construction, so this
     // subtraction can only fail on a genuine accounting bug.
-    match pos.side {
+    match side {
         Side::Long => {
             risk_acc.oi_long = risk_acc
                 .oi_long
@@ -713,51 +770,25 @@ pub fn finalize_close(
                 .ok_or(DexxerError::MathOverflow)?
         }
     }
-    pos.oi_notional = 0;
     risk_acc.open_positions = risk_acc
         .open_positions
         .checked_sub(1)
         .ok_or(DexxerError::MathOverflow)?;
-    user.nonce = user.nonce.checked_add(1).ok_or(DexxerError::MathOverflow)?;
-    // week 3 may replace this salt source with VRF/TEE randomness
-    let salt = hashv(&[
-        pos.owner.as_ref(),
-        &user.nonce.to_le_bytes(),
-        &clock.slot.to_le_bytes(),
-    ])
-    .to_bytes();
-    dq.push(ClosedRecord {
+    positions.push_history(HistoryRecord {
         market: market_key,
-        side: pos.side,
         size: pos.size,
         entry: pos.entry,
         exit,
         pnl,
         fees: s.fee_taken,
-        reason,
         opened_slot: pos.opened_slot,
         closed_slot: clock.slot,
-        salt,
-        nonce: user.nonce,
-        reveal_after_slot: clock
-            .slot
-            .checked_add(delay_slots)
-            .ok_or(DexxerError::MathOverflow)?,
-        commitment_written: false,
-    })?;
-    // Fully `Empty`, field by field: the next `open_position` overwrites
-    // `state`/`side`/`size`/`entry`/`margin`/`liq_price`/`opened_slot`, but
-    // leaving any of them set in between would show a phantom trade to the
-    // owner's client, so nothing is left behind. `closed` stays in the layout
-    // (no account migration) and is now always `None`.
-    pos.state = PositionState::Empty;
-    pos.closed = None;
-    pos.side = Side::Long;
-    pos.size = 0;
-    pos.entry = 0;
-    pos.margin = 0;
-    pos.liq_price = 0;
-    pos.opened_slot = 0;
-    pos.liq_ticks = 0;
+        side: pos.side,
+        reason: reason.as_u8(),
+        _pad: [0; 6],
+    });
+    // Every byte back to zero, `market` included: leaving any field set would
+    // show a phantom trade to the owner's client.
+    positions.clear_slot(idx);
     Ok(s)
 }

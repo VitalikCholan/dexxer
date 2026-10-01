@@ -4,6 +4,9 @@
 // them, read from the public `Market` (plus the public `Pool` snapshot for
 // the default OI cap). Grouped rows, pure so they run under `npm test`.
 // Current open interest is not here — it lives in the private `MarketRisk`.
+import { type PublicKey } from '@solana/web3.js'
+import { DEXXER_ERROR_MESSAGES } from '@/src/lib/errors'
+import { MAX_SLOTS, slotFor, type DecodedPositions, type PositionSlot } from '@/src/lib/positions'
 import { formatBps, formatCompactUsd, maxLeverage } from './headerStats'
 import { type TicketMarket } from './marketLimits'
 
@@ -26,8 +29,28 @@ function usd(raw: bigint): string {
   return `$${(Number(raw) / 1e6).toLocaleString('en-US', { maximumFractionDigits: 0 })}`
 }
 
-function sol(raw: bigint): string {
-  return `${(Number(raw) / 1e9).toString()} SOL`
+function size(raw: bigint, symbol: string): string {
+  return `${(Number(raw) / 1e9).toString()} ${symbol}`
+}
+
+/** What Trade shows instead of sending an open that would fail: the same copy as the on-chain `NoFreeSlot` (6049). */
+export const SLOTS_FULL_TEXT = DEXXER_ERROR_MESSAGES[6049]
+
+export interface SlotGate {
+  /** The selected market's own slot — never another market's. */
+  slot: PositionSlot | null
+  /** Open slots across all markets. */
+  openCount: number
+  /** Why Open is blocked BEFORE sending, or null: all 16 slots are taken and none is this market's. */
+  openBlocked: string | null
+}
+
+/** The selected market's slot and the 16-slot gate — `open_position` takes the first empty slot and fails with 6049 when none is left. */
+export function slotGate(p: DecodedPositions | null, market: PublicKey): SlotGate {
+  const slot = slotFor(p, market)
+  const openCount = p?.slots.length ?? 0
+  const full = openCount >= MAX_SLOTS && slot === null
+  return { slot, openCount, openBlocked: full ? SLOTS_FULL_TEXT : null }
 }
 
 export function tradingRules(m: TicketMarket, poolCapital: bigint | null): RuleGroup[] {
@@ -51,10 +74,11 @@ export function tradingRules(m: TicketMarket, poolCapital: bigint | null): RuleG
     {
       title: 'Position limits',
       rows: [
-        { label: 'Min position size', value: sol(m.minSize) },
+        { label: 'Min position size', value: size(m.minSize, m.symbol) },
         { label: 'Max position size', value: `${usd(m.maxPosition)} notional` },
         { label: 'OI cap, per side', value: oiCap },
         { label: 'Positions per market', value: '1' },
+        { label: 'Open markets at once', value: String(MAX_SLOTS) },
       ],
     },
     {

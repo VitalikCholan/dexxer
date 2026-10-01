@@ -1,7 +1,7 @@
 // app/src/features/trade/TradeActivity.tsx
 //
-// C.6-A "Positions (n) / Open Orders (n)" under the ticket: the open
-// position at a glance without leaving Trade, with a jump to the Positions
+// C.6-A "Positions (n) / Open Orders (n)" under the ticket: the selected
+// market's open position (its `Positions` slot) at a glance without leaving Trade, with a jump to the Positions
 // tab for Increase / Decrease / Add margin. Open Orders is always 0 — the
 // program has no conditional orders yet (limit / TP / SL are backlog B);
 // the tab is here so the layout does not change when they land.
@@ -14,7 +14,7 @@ import { Segment } from '@/src/ui/Segment'
 import { Card } from '@/src/ui/Card'
 import { Row } from '@/src/ui/Row'
 import { formatUsd2 } from '@/src/lib/status'
-import { type DecodedPosition } from '@/src/lib/codecs'
+import { type PositionSlot } from '@/src/lib/positions'
 import { computeUpnl } from '@/src/lib/trade'
 
 function sol(raw: bigint): string {
@@ -24,13 +24,20 @@ function signedUsd(raw: bigint): string {
   return `${raw >= 0n ? '+' : '−'}$${formatUsd2(raw >= 0n ? raw : -raw)}`
 }
 
-export function TradeActivity({ position, markUsd }: { position: DecodedPosition | null; markUsd: bigint | null }) {
+export function TradeActivity({
+  symbol,
+  position: open,
+  markUsd,
+}: {
+  symbol: string
+  position: PositionSlot | null
+  markUsd: bigint | null
+}) {
   const { colors, space } = useTheme()
   const caption = useTextStyle('caption')
   const link = useTextStyle('bodyStrong')
   const [tab, setTab] = useState<'positions' | 'orders'>('positions')
 
-  const open = position?.state === 'Open' ? position : null
   const upnl = open && markUsd !== null ? computeUpnl(open.side, open.size, open.entry, markUsd) : null
 
   return (
@@ -54,8 +61,8 @@ export function TradeActivity({ position, markUsd }: { position: DecodedPosition
       ) : (
         <View style={{ gap: space.xs }}>
           <Row
-            label="SOL-PERP"
-            value={`${open.side} ${sol(open.size)} SOL`}
+            label={`${symbol}-PERP`}
+            value={`${open.side} ${sol(open.size)} ${symbol}`}
             tone={open.side === 'Long' ? 'success' : 'danger'}
           />
           <Row label="Entry" value={`$${formatUsd2(open.entry)}`} mono />

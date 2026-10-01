@@ -2,8 +2,8 @@
 //
 // Anchor `Program` construction for `dexxer_core`, mirroring
 // `tests/er/lib/program.ts` (the devnet reference this app's onboarding flow
-// repeats through MWA). The IDL is the plain JSON copied from
-// `target/idl/dexxer_core.json` (see task-7 brief) — not an `anchor build`
+// repeats through MWA). The IDL is the canonical `idl/dexxer_core.json` at the
+// repo root (CI compares it with `anchor build`; no app copy) — not an `anchor build`
 // generated TS module — so, like the reference, `Program`'s generic account
 // namespace can't statically know field names; callers use `accountNs()`
 // to escape-hatch into `program.account.<name>.fetch(...)`.
@@ -20,7 +20,7 @@
 // against accidentally bypassing MWA/session signing.
 import { AnchorProvider, Program, type Idl } from '@coral-xyz/anchor'
 import { Connection, PublicKey, Transaction, type VersionedTransaction } from '@solana/web3.js'
-import idlJson from '../idl/dexxer_core.json'
+import idlJson from '../../../idl/dexxer_core.json' // the canonical IDL at the repo root; Metro reads it via watchFolders
 
 export const DEXXER_CORE_IDL = idlJson as unknown as Idl
 export const DEXXER_CORE_PROGRAM_ID = new PublicKey((idlJson as unknown as { address: string }).address)

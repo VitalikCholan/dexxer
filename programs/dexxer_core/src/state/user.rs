@@ -1,12 +1,13 @@
 use anchor_lang::prelude::*;
 
-/// Layout version of `UserAccount`. Bumped to 2 by week-5 Task 2, which
+/// Layout version of `UserAccount`. Bumped to 3 by the slots plan Task 7
+/// (`rent_payer` + `_reserved`). Bumped to 2 by week-5 Task 2, which
 /// appended `exited`. A v1 account (one byte shorter) can no longer be
 /// deserialized into this struct at all — `crank_tick` skips such a candidate
 /// instead of aborting its batch, and the app offers re-onboarding. No read
 /// path asserts this value; it is written on (re-)initialization and carried
 /// for off-chain readers.
-pub const USER_ACCOUNT_VERSION: u8 = 2;
+pub const USER_ACCOUNT_VERSION: u8 = 3;
 
 #[account]
 #[derive(InitSpace)]
@@ -18,7 +19,6 @@ pub struct UserAccount {
     pub actions_left: u32,
     pub free_margin: u64,
     pub locked_margin: u64,
-    pub nonce: u64,
     // Week-2 Task 5 fix round 2 (controller ruling): per-account withdraw
     // cooldown, guarding the shared `FeeEscrow`'s commit budget against a
     // sybil griefing a withdraw(1)-per-tx drain loop (see instructions/user.rs).
@@ -29,10 +29,14 @@ pub struct UserAccount {
     /// from the published leaf hash.
     pub exit_salt: [u8; 32],
     pub bump: u8,
-    /// Week-5 Task 2 (spec §2.6.3): set by `undelegate_user`, cleared by
-    /// `init_user_reuse_queue`. Marks an account that has left the ER and is
-    /// sitting scrubbed and dormant on L1 — the gate that lets re-onboarding
-    /// re-initialize it in place instead of `init`-ing a PDA that already
-    /// exists. Appended at the END so every earlier field keeps its offset.
+    /// Week-5 Task 2 (spec §2.6.3): set by `undelegate_user`. Marks an account
+    /// that has left the ER and is sitting scrubbed and dormant on L1 — the
+    /// gate for `close_exited_user` (and against re-delegating it in
+    /// `delegate_user`).
     pub exited: bool,
+    /// Who funded this owner's rent at `init_user` — `Config.fee_payer` for a
+    /// sponsored onboarding, the owner for a self-funded one. `close_exited_user`
+    /// returns the lamports here, not to whoever signs the close (risk #39).
+    pub rent_payer: Pubkey,
+    pub _reserved: [u8; 32],
 }

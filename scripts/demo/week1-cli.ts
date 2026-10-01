@@ -14,10 +14,16 @@ import { createInterface } from "node:readline";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Readable } from "node:stream";
-import { assert, erConn, sendAndConfirmIx, sleep } from "../../tests/er/lib/env.js";
+import { assert, erConn, sendAndConfirmIx, sleep, teeConn } from "../../tests/er/lib/env.js";
 import { bootstrap, MARKET_DEFAULTS } from "../../tests/er/lib/admin.js";
 import { accountNs, dexxerCoreProgram, pdas } from "../../tests/er/lib/program.js";
-import { closePosition, onboardTrader, openPosition, readLastClosedRecord, readPosition, setPrice, type Trader } from "../../tests/er/lib/trader.js";
+import { closePosition, onboardTrader, openPosition, readPositions, setPrice, type Trader } from "../../tests/er/lib/trader.js";
+import { slotFor, type Positions } from "../../tests/er/lib/positions.js";
+
+/** `t`'s `Positions` (slots + private history ring), read on the ER with its own token. */
+async function positionsOf(t: Trader): Promise<Positions> {
+  return readPositions(await teeConn(t.kp), t.positions);
+}
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const CRANK_SCRIPT = resolve(HERE, "..", "crank-fallback", "index.ts");
@@ -40,15 +46,22 @@ process.on("exit", () => {
 
 interface TickRecord {
   n: number;
-  slot: number;
-  mark: string;
+  market: string;
+  /** `null` when the crank's best-effort read after the tick failed. */
+  mark: string | null;
   sig: string;
   cu: number | null;
   tickMs: number;
   candidates: number;
-  liquidated: string[];
+  /** How many candidates of the tick lost their slot — a count since the final review (I5); A's liquidation itself is detected from `readPositions`. */
+  liquidated: number | null;
 }
 
+/**
+ * One landed `crank_tick` = one `tick n=... sig=...` line on the crank's
+ * stdout (services/relayer/src/crank.ts `formatTickLine`). Other crank lines
+ * (`crank n=...`) carry no `sig` and are not ticks.
+ */
 function parseTickLine(line: string): TickRecord | null {
   if (!line.startsWith("tick ")) return null;
   const fields: Record<string, string> = {};
@@ -57,16 +70,17 @@ function parseTickLine(line: string): TickRecord | null {
     if (eq === -1) continue;
     fields[token.slice(0, eq)] = token.slice(eq + 1);
   }
-  if (fields.n === undefined) return null;
+  if (fields.n === undefined || fields.sig === undefined) return null;
+  const numOrNull = (v: string | undefined): number | null => (v === undefined || v === "null" ? null : Number(v));
   return {
     n: Number(fields.n),
-    slot: Number(fields.slot),
-    mark: fields.mark,
+    market: fields.market,
+    mark: fields.mark === undefined || fields.mark === "null" ? null : fields.mark,
     sig: fields.sig,
-    cu: fields.cu === "null" ? null : Number(fields.cu),
+    cu: numOrNull(fields.cu),
     tickMs: Number(fields.tick_ms),
     candidates: Number(fields.candidates),
-    liquidated: JSON.parse(fields.liquidated ?? "[]") as string[],
+    liquidated: numOrNull(fields.liquidated),
   };
 }
 
@@ -136,42 +150,37 @@ async function main() {
     console.log("set_price(141)", setPrice141Sig);
 
     const liqDeadline = Date.now() + 30_000;
-    // Week-5 Task 1: a liquidation is a close, so the record goes into A's
-    // `DisclosureQueue` and the `Position` is freed to `Empty` in the same
-    // tick — a queued record, not a `Closed` state, is the liquidation signal.
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    let recA: any = null;
+    // Spec §2.9: a liquidation frees A's SOL slot and appends the record to
+    // A's private history ring in the same tick — the freed slot is the
+    // liquidation signal, the newest history record says why.
+    let posA: Positions;
     for (;;) {
-      recA = await readLastClosedRecord(A);
-      if (recA !== null) break;
+      posA = await positionsOf(A);
+      if (slotFor(posA, boot.market) === null) break;
       if (Date.now() >= liqDeadline) throw new Error("A was not liquidated within 30s of the price move to $141");
       await sleep(300);
     }
     const ticksToLiquidation = tickLog.length - ticksBeforeMove;
     assert(ticksToLiquidation >= 2, `A liquidated after >= 2 ticks of the price move (got ${ticksToLiquidation})`);
-    assert("empty" in (await readPosition(A)).state, "A.state == Empty (the close frees it on the spot)");
-    assert("liquidated" in recA.reason, "A's queued record reason == Liquidated");
+    const recA = posA.history.at(-1);
+    assert(recA?.reason === "liquidated", `A's newest history record reason == liquidated (got ${recA?.reason})`);
     console.log(`A liquidated after ${ticksToLiquidation} tick(s); closed record:`, {
       exit: recA.exit.toString(),
       pnl: recA.pnl.toString(),
       fees: recA.fees.toString(),
     });
 
-    const posB = await readPosition(B);
-    assert("open" in posB.state, "B.state == Open (untouched by liquidation)");
+    assert(slotFor(await positionsOf(B), boot.market) !== null, "B's SOL slot is open (untouched by liquidation)");
 
     console.log("=== 5. close B manually ===");
     const closeBSig = await closePosition(boot, B, 0);
     console.log("close_position B", closeBSig);
-    const posBAfter = await readPosition(B);
-    assert("empty" in posBAfter.state, "B.state == Empty after close");
-    const recB = await readLastClosedRecord(B);
-    assert(recB !== null && "user" in recB.reason, "B's queued record reason == User");
+    const posBAfter = await positionsOf(B);
+    assert(slotFor(posBAfter, boot.market) === null, "B's SOL slot is free after close");
+    const recB = posBAfter.history.at(-1);
+    assert(recB?.reason === "user", `B's newest history record reason == user (got ${recB?.reason})`);
     const expectedPnl = 45_000_000n; // 5 SOL x (150 - 141) = $45, short profits on a price drop
-    assert(
-      BigInt(recB.pnl.toString()) === expectedPnl,
-      `B's queued record pnl == +$45 (5 x (150-141)) (got ${recB.pnl.toString()})`,
-    );
+    assert(recB.pnl === expectedPnl, `B's newest history record pnl == +$45 (5 x (150-141)) (got ${recB.pnl.toString()})`);
 
     console.log("=== 6. invariant from ER state ===");
     // week-4 Task 1: trading writes PoolLive now, not the public Pool

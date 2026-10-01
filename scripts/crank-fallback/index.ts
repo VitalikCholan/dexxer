@@ -1,6 +1,6 @@
 // scripts/crank-fallback/index.ts
 //
-// Thin local-run shim (Task 4, week 4): the real tick/disclosure loop moved
+// Thin local-run shim (Task 4, week 4): the real tick/commit loop moved
 // to services/relayer/src/crank.ts (`startCrank`) — see that file's header
 // comment and services/relayer/README.md for the actual crank service
 // (Railway, `npm run crank` from scripts/, or `npm start` from

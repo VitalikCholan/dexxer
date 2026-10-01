@@ -11,7 +11,7 @@ import { Pressable, Text, View } from 'react-native'
 import { useTheme } from '@/src/theme'
 import { useTextStyle } from '@/src/ui/styles'
 import { Segment } from '@/src/ui/Segment'
-import { type DecodedPosition } from '@/src/lib/codecs'
+import { type PositionSlot } from '@/src/lib/positions'
 import { type TicketMarket } from './marketLimits'
 import { TradingRulesPanel } from './TradingRulesPanel'
 import { TradingChart } from '../chart/TradingChart'
@@ -20,17 +20,20 @@ import { type Tf } from '../chart/chartData'
 export type { Tf }
 
 export interface ChartSectionProps {
+  /** Selected market symbol — the chart's candles. */
+  symbol: string
   tf: Tf
   onTfChange: (tf: Tf) => void
   /** Live mark, raw 1e6. */
   markUsd: bigint | null
-  position: DecodedPosition | null
+  /** The selected market's slot, for the entry / liq lines. */
+  position: PositionSlot | null
   market: TicketMarket | null
   /** Latest public `Pool.capital_total`, raw 1e6 — for the default OI cap. */
   poolCapital: bigint | null
 }
 
-export function ChartSection({ tf, onTfChange, markUsd, position, market, poolCapital }: ChartSectionProps) {
+export function ChartSection({ symbol, tf, onTfChange, markUsd, position, market, poolCapital }: ChartSectionProps) {
   const { colors, space } = useTheme()
   const micro = useTextStyle('micro')
   const [open, setOpen] = useState(true)
@@ -61,7 +64,7 @@ export function ChartSection({ tf, onTfChange, markUsd, position, market, poolCa
         </Pressable>
       </View>
       {!open ? null : tab === 'chart' ? (
-        <TradingChart tf={tf} onTfChange={onTfChange} markUsd={markUsd} position={position} />
+        <TradingChart symbol={symbol} tf={tf} onTfChange={onTfChange} markUsd={markUsd} position={position} />
       ) : (
         <TradingRulesPanel market={market} poolCapital={poolCapital} />
       )}

@@ -21,9 +21,7 @@
 //
 // The ATA `CreateIdempotent` moved the other way — from owner-funded to
 // fee_payer-funded (`ATA_SHAPE.payerIdx = 0`), one of the two rent costs
-// the 0-SOL onboarding goal takes off a first-time owner. `init_user_reuse_queue`
-// (week-5 Task 2, the returning owner's `init_user`) joined the whitelist on
-// the same owner@0/payer@1 terms.
+// the 0-SOL onboarding goal takes off a first-time owner.
 //
 // The relayer never originates anything here and never calls
 // `sendRawTransaction` — it only `partialSign`s with `fee_payer` and hands
@@ -54,18 +52,16 @@
 // --- Whitelist -------------------------------------------------------
 //
 // dexxer_core, matched by the 8-byte Anchor discriminator baked into
-// `app/src/idl/dexxer_core.json` (same IDL `tests/er/lib/program.ts`
+// `idl/dexxer_core.json` (canonical IDL, loaded via `DEXXER_IDL_DIR`; same IDL `tests/er/lib/program.ts`
 // already loads for every other relayer subsystem):
 //   faucet_init, init_user       — owner@0, payer@1 (payer must be fee_payer)
-//   init_user_reuse_queue        — owner@0, payer@1 (week-5 Task 2: the
-//                                   returning owner, whose queue outlived
-//                                   their exit)
 //   delegate_user                — owner@0, payer@1 (week-5 Task 3 P1: the
-//                                   three delegation records got their own
-//                                   payer, split out of `owner`)
-// `init_position`/`init_dq`/`delegate_position`/`delegate_dq` don't exist as
-// standalone instructions — `init_user`/`delegate_user` cover all three
-// per-user PDAs in one call. `init_permissions`/`set_session` are the ER
+//                                   delegation records — two since spec
+//                                   §2.9 — got their own payer, split out
+//                                   of `owner`)
+// There is no per-market or per-queue instruction to whitelist: `init_user`/
+// `delegate_user` cover both per-user PDAs (`UserAccount`, `Positions` —
+// spec §2.9) in one call. `init_permissions`/`set_session` are the ER
 // leg and are deliberately absent (see the Task-5 note above).
 //
 // eSPL: the exact instruction shape `delegateSpl(owner, mint, amount,
@@ -209,7 +205,7 @@ export const DEFAULT_SPONSOR_MAX_CU_PRICE_MICROLAMPORTS = 500_000;
 
 // --- whitelist -----------------------------------------------------------
 
-const CORE_WHITELIST = new Set(["faucet_init", "init_user", "init_user_reuse_queue", "delegate_user", "faucet_mint"]);
+const CORE_WHITELIST = new Set(["faucet_init", "init_user", "delegate_user", "faucet_mint"]);
 
 interface CoreIx {
   name: string;
@@ -249,9 +245,6 @@ interface IxShape {
 const CORE_SHAPES: Record<string, IxShape> = {
   faucet_init: { ownerIdx: 0, payerIdx: 1 },
   init_user: { ownerIdx: 0, payerIdx: 1 },
-  // Week-5 Task 2: the returning owner's `init_user` — same owner@0/payer@1
-  // shape, so it is sponsorable on exactly the same terms.
-  init_user_reuse_queue: { ownerIdx: 0, payerIdx: 1 },
   // Week-5 Task 3 (P1): `DelegateUser` gained `payer: Signer` at index 1.
   delegate_user: { ownerIdx: 0, payerIdx: 1 },
   // Live fakewallet smoke (24.09, week-5 M-K): a 0-SOL-onboarded owner has

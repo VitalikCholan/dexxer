@@ -10,7 +10,6 @@ pub struct Config {
     pub oracle_program: Pubkey,
     pub tee_validator: Pubkey,
     pub dusdc_mint: Pubkey,
-    pub disclosure_delay_slots: u64,
     // Week 2 (spec §8 Q2, controller ruling task-2 #1): scheduler/fee-payer/
     // fee-vault identities and the crank's Magic Actions task id, all
     // consumed by later tasks' instructions. Layout freezes here.

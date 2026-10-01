@@ -66,7 +66,7 @@ async function ensureNonceAccounts(owner: PublicKey, appendLog: (s: string) => v
  * Collects whatever's left (`collectBatchLegs`), signs every leg's
  * transaction in ONE `mwa.signTransactions([...])` call, then submits each
  * sequentially — L1a before L1b (L1b's `delegate_user` needs L1a's
- * `init_user`/`init_user_reuse_queue` to have landed), then the ER leg. The
+ * `init_user` to have landed), then the ER leg. The
  * two L1 legs go through `/sponsor` first (fee_payer co-signs — findings
  * A.1/A.2, and week-5 Task 6's ATA-create/`delegate_user` extension); the ER
  * leg doesn't (finding A.3, attempted and permanently reverted — see file
@@ -178,7 +178,7 @@ function logLegSizes(legs: BatchLeg[], txs: Transaction[]) {
 /**
  * Sends one signed leg and waits for it: re-signs alone if its blockhash
  * expired while earlier legs confirmed (Finding D), routes sponsored legs
- * through `/sponsor` first, and after `delegate_user` polls until the three
+ * through `/sponsor` first, and after `delegate_user` polls until the two
  * PDAs show as delegated on L1 (the ER validator only clones a delegated
  * account after L1 shows it so).
  */
@@ -231,14 +231,13 @@ async function submitLeg(
   const sig = await leg.conn.sendRawTransaction(raw, { skipPreflight: true })
   await confirmOnConn(leg.conn, sig)
   appendLog(`${leg.label} ${sig}`)
-  // `delegate_user`'s three accounts don't appear as delegated on L1
+  // `delegate_user`'s two accounts don't appear as delegated on L1
   // immediately after the tx confirms — poll BEFORE the next leg (the ER
   // leg reads these same PDAs on the ER validator, which only clones a
   // delegated account after L1 shows it delegated), mirroring the
   // legacy flow's ordering.
   if (leg.label === 'delegate_user') {
     await waitDelegated(ctx.userAccount, 'UserAccount', appendLog)
-    await waitDelegated(ctx.position, 'Position', appendLog)
-    await waitDelegated(ctx.disclosureQueue, 'DisclosureQueue', appendLog)
+    await waitDelegated(ctx.positions, 'Positions', appendLog)
   }
 }

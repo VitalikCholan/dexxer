@@ -46,23 +46,9 @@ fn random_sequences_keep_pool_invariants() {
     .unwrap();
     h.warp(slot, ts);
     w.set_price(&mut h, price, 5, ts, slot);
-    let mut traders: Vec<Trader> = (0..4)
+    let traders: Vec<Trader> = (0..4)
         .map(|_| w.new_trader(&mut h, 2_000_000_000))
         .collect();
-    // Tracks, per trader index, whether a full `DisclosureQueue` has already
-    // triggered a replacement trader. Since week-5 Task 1 a close frees the
-    // position immediately, so a trader is reusable indefinitely — until its
-    // ring fills up: nothing in this loop drains it (no `commit_aggregate`,
-    // and the default 100-slot delay keeps records un-due anyway), after which
-    // a close is a hard `QueueFull` and a liquidation is silently skipped. Such
-    // a trader is retired from the draw (see below) and replaced exactly once.
-    let mut replaced: Vec<bool> = vec![false; traders.len()];
-
-    // A trader whose ring is full can no longer close or be liquidated.
-    fn ring_full(h: &Harness, t: &Trader) -> bool {
-        h.account::<DisclosureQueue>(&t.dq).len as usize >= DQ_CAPACITY
-    }
-
     // Per-kind success/attempt counters for the final report.
     let mut opened_ok = 0u32;
     let mut opened_attempt = 0u32;
@@ -107,38 +93,23 @@ fn random_sequences_keep_pool_invariants() {
         // #6) — staleness is `max_staleness_secs` (2s) old, independent of
         // whether a crank_tick happened to run this step.
         w.set_price(&mut h, price, 5, ts, slot);
-        // Draw uniformly among traders whose ring still has room. This
-        // exclusion IS still needed (unlike the crank-candidate one below,
-        // which fix round 1 removed): nothing in this loop ever drains a ring,
-        // so a full trader can never close again for the rest of the run and
-        // every close/decrease-to-zero drawn for it would be a guaranteed
-        // `QueueFull` — burning steps that should be producing real closes and
-        // liquidations. Falls back to the full roster on the
-        // essentially-unreachable case every tracked trader is full at once.
-        let alive: Vec<usize> = (0..traders.len())
-            .filter(|&idx| !ring_full(&h, &traders[idx]))
-            .collect();
-        let i = if alive.is_empty() {
-            rng.below(traders.len() as u64) as usize
-        } else {
-            alive[rng.below(alive.len() as u64) as usize]
-        };
+        let i = rng.below(traders.len() as u64) as usize;
         let side = if rng.below(2) == 0 {
             Side::Long
         } else {
             Side::Short
         };
         let size = 100_000_000 + rng.below(20_000_000_000); // 0.1 .. 20.1 SOL
-        let st = h.account::<Position>(&traders[i].position).state;
+        let is_open = h.slot(&traders[i], &w.market).is_some();
         // ~50% trade attempts / ~50% cranks: comfortably clears the "≥120 of
         // 300 steps are trade attempts" bar while still giving positions
         // enough crank ticks against a moving price to actually land a
         // liquidation (a higher trade bias closes positions out from under
         // themselves before an adverse crank ever gets a chance at them).
         let do_trade = rng.below(2) == 0;
-        let op = match st {
-            PositionState::Empty if do_trade => Op::Open,
-            PositionState::Open if do_trade => match rng.below(4) {
+        let op = match is_open {
+            false if do_trade => Op::Open,
+            true if do_trade => match rng.below(4) {
                 0 => Op::AddMargin,
                 1 => Op::Increase,
                 2 => Op::Decrease,
@@ -215,7 +186,7 @@ fn random_sequences_keep_pool_invariants() {
             }
             Op::Decrease => {
                 decrease_attempt += 1;
-                let sz = h.account::<Position>(&traders[i].position).size;
+                let sz = h.slot(&traders[i], &w.market).expect("open slot").size;
                 let r = h.send(
                     &[ixs::decrease_position(
                         &traders[i].kp.pubkey(),
@@ -234,13 +205,17 @@ fn random_sequences_keep_pool_invariants() {
             }
             Op::Close => {
                 close_attempt += 1;
-                let pos = h.account::<Position>(&traders[i].position);
+                let pos = h.slot(&traders[i], &w.market).expect("open slot");
                 let r = h.send(
                     &[ixs::close_position(
                         &traders[i].kp.pubkey(),
                         &traders[i],
                         &w,
-                        if pos.side == Side::Long { 0 } else { u64::MAX },
+                        if pos.side() == Side::Long {
+                            0
+                        } else {
+                            u64::MAX
+                        },
                     )],
                     &[&traders[i].kp],
                 );
@@ -261,32 +236,21 @@ fn random_sequences_keep_pool_invariants() {
                 w.set_price(&mut h, price, 5, ts, slot);
                 let was_open: Vec<bool> = traders
                     .iter()
-                    .map(|t| h.account::<Position>(&t.position).state == PositionState::Open)
+                    .map(|t| h.slot(t, &w.market).is_some())
                     .collect();
-                // Cranking every tracked trader (not just the currently Open
-                // ones) worked when the roster stayed <= MAX_CANDIDATES, but
-                // the state-aware draw above now closes positions fast enough
-                // that the roster (replaced 1:1, see below) can grow past
-                // that — so cap the candidate list to the Open positions,
-                // bounded to what one crank_tick accepts.
-                // Full-ring traders are deliberately NOT filtered out here:
-                // since fix round 1 the program skips such a candidate
-                // (`msg!("liq skipped: queue full ...")`) instead of failing
-                // the tick, and leaving them in is what exercises that path
-                // under the randomized run.
+                // Candidates are the Open positions, bounded to what one
+                // crank_tick accepts.
                 let all: Vec<&Trader> = traders
                     .iter()
-                    .filter(|t| h.account::<Position>(&t.position).state == PositionState::Open)
+                    .filter(|t| h.slot(t, &w.market).is_some())
                     .take(MAX_CANDIDATES)
                     .collect();
                 h.send(&[ixs::crank_tick(&w.crank.pubkey(), &w, &all)], &[&w.crank])
                     .unwrap_or_else(|e| panic!("step {step}: crank must not fail: {e:?}"));
-                // A liquidation is a close now, so a liquidated position reads
-                // back as `Empty` with one more record in its ring.
+                // A liquidation is a close, so a liquidated position's slot
+                // reads back as not open.
                 for (idx, t) in traders.iter().enumerate() {
-                    if was_open[idx]
-                        && h.account::<Position>(&t.position).state == PositionState::Empty
-                    {
+                    if was_open[idx] && h.slot(t, &w.market).is_none() {
                         liquidated += 1;
                     }
                 }
@@ -298,10 +262,9 @@ fn random_sequences_keep_pool_invariants() {
         // OI == Σ notional at entry over open positions
         let (mut ol, mut os) = (0u64, 0u64);
         for t in &traders {
-            let p = h.account::<Position>(&t.position);
-            if p.state == PositionState::Open {
+            if let Some(p) = h.slot(t, &w.market) {
                 let n = math::notional(p.size, p.entry).unwrap();
-                if p.side == Side::Long {
+                if p.side() == Side::Long {
                     ol += n
                 } else {
                     os += n
@@ -317,9 +280,11 @@ fn random_sequences_keep_pool_invariants() {
         );
         // liq price ordering for open positions
         for t in &traders {
-            let p = h.account::<Position>(&t.position);
-            if p.state == PositionState::Open && p.liq_price > 0 {
-                match p.side {
+            let Some(p) = h.slot(t, &w.market) else {
+                continue;
+            };
+            if p.liq_price > 0 {
+                match p.side() {
                     Side::Long => assert!(
                         p.liq_price < p.entry,
                         "step {step}: long liq_price {} !< entry {}",
@@ -332,23 +297,6 @@ fn random_sequences_keep_pool_invariants() {
                         p.liq_price,
                         p.entry
                     ),
-                }
-            }
-        }
-        // Any trader whose ring filled up is replaced exactly once: it can no
-        // longer close or be liquidated, so leaving it as the only roster
-        // would starve the run of both.
-        for idx in 0..traders.len() {
-            if !replaced[idx] && ring_full(&h, &traders[idx]) {
-                replaced[idx] = true;
-                // Raised from the original 12: the state-aware draw closes
-                // positions fast enough that a low cap exhausted the whole
-                // roster well before 300 steps. The crank candidate list above
-                // is decoupled from this count (filtered to Open + bounded to
-                // MAX_CANDIDATES), so growing the roster further is safe.
-                if traders.len() < 64 {
-                    traders.push(w.new_trader(&mut h, 2_000_000_000));
-                    replaced.push(false);
                 }
             }
         }

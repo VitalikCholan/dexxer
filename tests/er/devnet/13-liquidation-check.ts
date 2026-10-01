@@ -1,6 +1,6 @@
 // tests/er/devnet/13-liquidation-check.ts
 //
-// Week-5 Task 7, M-G': liquidation WITHOUT the relayer, via the per-position
+// Week-5 Task 7, M-G': liquidation WITHOUT the relayer, via the per-market
 // scheduler task alone (week-5 Task 3's `liquidation_check`, registered by
 // `open_position`, ticking at ~3.75s independent of anything the relayer's
 // own `crank_tick` loop does — week-5 Task 0 measurement 1). The relayer's
@@ -8,8 +8,7 @@
 // under test here as a NON-dependency: it also runs `crank_tick`'s
 // candidate-liquidation path, so if it stayed on, a liquidation could be
 // attributed to either mechanism. `CRANK_ENABLED=false` (Railway env,
-// `services/relayer/src/index.ts`) skips `startCrank` entirely — disclosure/
-// orphan cycles included — while `Market.mark` keeps moving on its own
+// `services/relayer/src/index.ts`) skips `startCrank` entirely while `Market.mark` keeps moving on its own
 // (week-4 Task 7's separate, always-on market-wide `schedule_crank` task,
 // `iterations = i64::MAX`, unrelated to the relayer process).
 //
@@ -18,8 +17,9 @@
 // — mirrors 05-crank-liquidation.ts, NOT trader.ts's `onboardTrader`, which
 // assumes a local-net faucet airdrop that doesn't exist on real devnet),
 // open a ~10x long, force it liquidatable via a temporary `set_params`
-// (same shape as 05), then poll the Position (owner TEE token) for
-// `state == Empty` + `DisclosureQueue.len == 1` + `reason == Liquidated`.
+// (same shape as 05), then poll the trader's `Positions` (owner TEE token)
+// until the SOL slot is gone and the newest history record's reason is
+// `liquidated` (spec §2.9).
 // `finally`: restore `Market` params AND flip `CRANK_ENABLED` back to
 // `true` on Railway, verified via `/healthz` — both are mandatory (shared
 // devnet market; the relayer is the only always-on liquidator once this
@@ -44,20 +44,16 @@ const { execFileSync } = await import("child_process");
 const { BN } = await import("@coral-xyz/anchor");
 const { SystemProgram, Transaction, sendAndConfirmTransaction, LAMPORTS_PER_SOL } = await import("@solana/web3.js");
 const { getOrCreateAssociatedTokenAccount, getAssociatedTokenAddressSync, TOKEN_PROGRAM_ID } = await import("@solana/spl-token");
-const {
-  DELEGATION_PROGRAM_ID,
-  EPHEMERAL_VAULT_ID,
-  MAGIC_PROGRAM_ID,
-  PERMISSION_PROGRAM_ID,
-  delegateSpl,
-  permissionPdaFromAccount,
-} = await import("@magicblock-labs/ephemeral-rollups-sdk");
+const { delegateSpl } = await import("@magicblock-labs/ephemeral-rollups-sdk");
 const envMod = await import("../lib/env.js");
 const { ER_VALIDATOR, NET, baseConn, loadOrCreateKey, sendAndConfirmIx, sleep, teeConn, waitDelegated } = envMod;
 const assert: (cond: unknown, msg: string) => asserts cond = envMod.assert;
-const { DEXXER_CORE_PROGRAM_ID, accountNs, dexxerCoreProgram, delegationTriple, pdas } = await import("../lib/program.js");
+const { accountNs, dexxerCoreProgram, pdas } = await import("../lib/program.js");
 const { bootstrapDevnet } = await import("../lib/admin.js");
-const { creditDeposit, initPermissions, tradeAccounts, U64_MAX } = await import("../lib/trader.js");
+const {
+  creditDeposit, delegateUserAccounts, initPermissions, initUserAccounts, permissionAccounts, readPositions, tradeAccounts, U64_MAX,
+} = await import("../lib/trader.js");
+const { slotFor } = await import("../lib/positions.js");
 
 if (NET !== "devnet") {
   console.error(`FAIL: DEXXER_NET must be "devnet" (got "${NET}"). Run: DEXXER_NET=devnet npm run devnet:liqcheck`);
@@ -180,10 +176,9 @@ async function main() {
 
     const core = dexxerCoreProgram(baseConn, owner);
     const config = pdas.config();
-    const market = pdas.market();
+    const market = boot.market;
     const userAccount = pdas.userAccount(owner.publicKey);
-    const position = pdas.position(owner.publicKey, market);
-    const disclosureQueue = pdas.disclosureQueue(owner.publicKey);
+    const positions = pdas.positions(owner.publicKey);
     const faucetPda = pdas.faucet(owner.publicKey);
     const mintAuth = pdas.mintAuth();
     const ownerAta = getAssociatedTokenAddressSync(boot.mint, owner.publicKey);
@@ -194,27 +189,15 @@ async function main() {
       .accounts({ owner: owner.publicKey, payer: owner.publicKey, config, faucet: faucetPda, dusdcMint: boot.mint, mintAuth, ownerAta, systemProgram: SystemProgram.programId, tokenProgram: TOKEN_PROGRAM_ID })
       .rpc();
     const { randomBytes } = await import("crypto");
-    const exitSalt = new Uint8Array(randomBytes(32));
-    const initUserSig = await core.methods
-      .initUser(Array.from(exitSalt))
-      .accounts({ owner: owner.publicKey, payer: owner.publicKey, config, market, userAccount, position, disclosureQueue, systemProgram: SystemProgram.programId })
-      .rpc();
+    const exitSalt = Array.from(randomBytes(32));
+    const initUserSig = await core.methods.initUser(exitSalt).accounts(initUserAccounts(owner.publicKey, owner.publicKey)).rpc();
     console.log("faucet_init", faucetSig, "init_user", initUserSig);
 
     const delegateSplIxs = await delegateSpl(owner.publicKey, boot.mint, DEPOSIT, { validator: ER_VALIDATOR, initVaultIfMissing: false, idempotent: false });
     const delegateSplSig = await sendAndConfirmTransaction(baseConn, new Transaction().add(...delegateSplIxs), [owner], { commitment: "confirmed" });
-    const ut = delegationTriple(userAccount, DEXXER_CORE_PROGRAM_ID);
-    const pt = delegationTriple(position, DEXXER_CORE_PROGRAM_ID);
-    const dt = delegationTriple(disclosureQueue, DEXXER_CORE_PROGRAM_ID);
     const delegateUserSig = await core.methods
       .delegateUser()
-      .accounts({
-        owner: owner.publicKey, payer: owner.publicKey, config, market,
-        bufferUserAccount: ut.buffer, delegationRecordUserAccount: ut.record, delegationMetadataUserAccount: ut.metadata, userAccount,
-        bufferPosition: pt.buffer, delegationRecordPosition: pt.record, delegationMetadataPosition: pt.metadata, position,
-        bufferDisclosureQueue: dt.buffer, delegationRecordDisclosureQueue: dt.record, delegationMetadataDisclosureQueue: dt.metadata, disclosureQueue,
-        ownerProgram: DEXXER_CORE_PROGRAM_ID, delegationProgram: DELEGATION_PROGRAM_ID, systemProgram: SystemProgram.programId,
-      })
+      .accounts(delegateUserAccounts(owner.publicKey, owner.publicKey))
       .rpc();
     console.log("delegateSpl", delegateSplSig, "delegate_user", delegateUserSig);
     out.faucetSig = faucetSig;
@@ -222,10 +205,9 @@ async function main() {
     out.delegateSplSig = delegateSplSig;
     out.delegateUserSig = delegateUserSig;
     await waitDelegated(baseConn, userAccount, "UserAccount");
-    await waitDelegated(baseConn, position, "Position");
-    await waitDelegated(baseConn, disclosureQueue, "DisclosureQueue");
+    await waitDelegated(baseConn, positions, "Positions");
 
-    const trader = { kp: owner, userAccount, position, disclosureQueue, userAta: ownerAta };
+    const trader = { kp: owner, userAccount, positions, userAta: ownerAta };
     const creditSig = await creditDeposit(boot, trader, DEPOSIT);
     const initPermSig = await initPermissions(trader);
     console.log("credit_deposit", creditSig, "init_permissions", initPermSig);
@@ -236,12 +218,9 @@ async function main() {
     const coreOwnerEr = dexxerCoreProgram(ownerConn, owner);
 
     const expiry = Math.floor(Date.now() / 1000) + 3600;
-    const userPermission = permissionPdaFromAccount(userAccount);
-    const positionPermission = permissionPdaFromAccount(position);
-    const dqPermission = permissionPdaFromAccount(disclosureQueue);
     const setSessionIx = await coreOwnerEr.methods
       .setSession(session.publicKey, new BN(expiry), 20)
-      .accounts({ owner: owner.publicKey, config, market, userAccount, position, disclosureQueue, userPermission, positionPermission, dqPermission, permissionProgram: PERMISSION_PROGRAM_ID, ephemeralVault: EPHEMERAL_VAULT_ID, magicProgram: MAGIC_PROGRAM_ID })
+      .accounts(permissionAccounts(owner.publicKey))
       .instruction();
     const setSessionSig = await sendAndConfirmIx(ownerConn, owner, setSessionIx);
     const fundSessionSig = await sendAndConfirmTransaction(
@@ -253,7 +232,7 @@ async function main() {
     console.log("set_session", setSessionSig, "fund session", fundSessionSig);
     out.setSessionSig = setSessionSig;
 
-    console.log("\n=== step 3: open_position (~10x long, session-signed) — this registers the per-position liquidation_check task ===");
+    console.log("\n=== step 3: open_position (~10x long, session-signed) — this registers the per-market liquidation_check task ===");
     const marketBeforeOpen = await accountNs(coreOwnerEr).market.fetch(market);
     const price = BigInt(marketBeforeOpen.mark.toString());
     assert(price > 0n, `Market.mark is seeded before opening — got ${price.toString()}`);
@@ -266,15 +245,15 @@ async function main() {
     const coreSessionEr = dexxerCoreProgram(sessionConn, session);
     const openIx = await coreSessionEr.methods
       .openPosition({ long: {} }, new BN(sizeLamports.toString()), new BN(marginUsd.toString()), new BN(U64_MAX.toString()))
-      .accounts({ signer: session.publicKey, ...tradeAccounts(boot, { userAccount, position, disclosureQueue }) })
+      .accounts({ signer: session.publicKey, ...tradeAccounts({ config, poolLive: boot.poolLive }, { userAccount, positions }, boot) })
       .instruction();
     const openSig = await sendAndConfirmIx(sessionConn, session, openIx);
     console.log("open_position (session-signed)", openSig);
     out.openSig = openSig;
 
-    const positionAfterOpen = await accountNs(coreOwnerEr).position.fetch(position);
-    assert("open" in positionAfterOpen.state, `Position.state == Open after open_position`);
-    console.log("Position after open:", { entry: positionAfterOpen.entry.toString(), margin: positionAfterOpen.margin.toString(), size: positionAfterOpen.size.toString() });
+    const slotAfterOpen = slotFor(await readPositions(ownerConn, positions), market);
+    assert(slotAfterOpen !== null, "Positions has an open SOL slot after open_position");
+    console.log("SOL slot after open:", { index: slotAfterOpen.index, entry: slotAfterOpen.entry.toString(), margin: slotAfterOpen.margin.toString(), size: slotAfterOpen.size.toString() });
 
     console.log("\n=== step 4: admin set_params to force liquidatable (temporary, mandatory restore) ===");
     const adminConn = await teeConn(admin);
@@ -295,22 +274,24 @@ async function main() {
       out.setParamsSig = setParamsSig;
       const tSetParams = Date.now();
 
-      console.log("\n=== step 5: poll Position (owner TEE token) up to 3 min for liquidation, WITHOUT the relayer ===");
+      console.log("\n=== step 5: poll Positions (owner TEE token) up to 3 min for liquidation, WITHOUT the relayer ===");
       for (let i = 0; i < POLL_TRIES; i++) {
         liqPollTries = i + 1;
-        const pos = await accountNs(coreOwnerEr).position.fetch(position);
-        liqTicksSeen.push(Number(pos.liqTicks));
+        const p = await readPositions(ownerConn, positions);
+        const slot = slotFor(p, market);
+        if (slot) liqTicksSeen.push(slot.liqTicks);
         const mkt = await accountNs(coreOwnerEr).market.fetch(market);
         marketMarkSeen.push(mkt.mark.toString());
-        const dq = await accountNs(coreOwnerEr).disclosureQueue.fetch(disclosureQueue);
-        if ("empty" in pos.state && dq.len > 0) {
+        // Spec §2.9: a liquidation frees the slot and appends a `liquidated`
+        // record to the private history ring (a fresh trader: no older record).
+        const last = p.history.at(-1);
+        if (!slot && last?.reason === "liquidated") {
           liquidated = true;
-          closedInfo = dq.records[(dq.head + dq.len - 1) % dq.records.length];
-          const reason = closedInfo && typeof closedInfo === "object" ? Object.keys((closedInfo as { reason: object }).reason)[0] : "?";
-          console.log(`Position liquidated after ${((Date.now() - tSetParams) / 1000).toFixed(1)}s, ${liqPollTries} polls, liq_ticks history: ${JSON.stringify(liqTicksSeen)}, reason=${reason}`);
+          closedInfo = last;
+          console.log(`Position liquidated after ${((Date.now() - tSetParams) / 1000).toFixed(1)}s, ${liqPollTries} polls, liq_ticks history: ${JSON.stringify(liqTicksSeen)}, reason=${last.reason}`);
           out.liquidatedAfterSeconds = (Date.now() - tSetParams) / 1000;
-          out.reason = reason;
-          out.dqLen = dq.len;
+          out.reason = last.reason;
+          out.historyLen = p.history.length;
           break;
         }
         await sleep(POLL_DELAY_MS);
@@ -340,7 +321,7 @@ async function main() {
     out.liqPollTries = liqPollTries;
     out.closedInfo = closedInfo;
     out.owner = owner.publicKey.toBase58();
-    out.position = position.toBase58();
+    out.positions = positions.toBase58();
   } finally {
     console.log("\n=== step 6: CRANK_ENABLED=true on Railway (mandatory) ===");
     if (crankDisabled) {
@@ -361,7 +342,7 @@ async function main() {
     console.log(
       "\n13-LIQUIDATION-CHECK",
       liquidated && restoredParams && restoredCrankEnabled ? "PASS" : "FAIL",
-      JSON.stringify(out),
+      JSON.stringify(out, (_k, v) => (typeof v === "bigint" ? v.toString() : v)),
     );
     if (!liquidated) process.exitCode = 1;
   }

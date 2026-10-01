@@ -1,0 +1,131 @@
+import { test } from 'node:test'
+import assert from 'node:assert/strict'
+import { Keypair } from '@solana/web3.js'
+import { positionRows } from '../src/features/positions/positionRows'
+import type { DecodedPositions, PositionSlot } from '../src/lib/positions'
+import type { MarketInfo } from '../src/lib/markets'
+
+const k = () => Keypair.generate().publicKey
+const slot = (index: number, market = k()): PositionSlot => ({
+  index,
+  market,
+  size: 1n,
+  entry: 1n,
+  margin: 1n,
+  liqPrice: 1n,
+  openedSlot: 1n,
+  oiNotional: 1n,
+  lastLiqSample: 0n,
+  side: 'Long',
+  liqTicks: 0,
+})
+const mi = (symbol: string, market = k()): MarketInfo => ({
+  symbol,
+  market,
+  feed: k(),
+  params: {
+    maxLevBps: 1,
+    imrBps: 1,
+    mmrBps: 1,
+    openFeeBps: 1,
+    closeFeeBps: 1,
+    liqFeeBps: 1,
+    oiCap: 0n,
+    maxPosition: 1n,
+    minSize: 1n,
+    maxStalenessSecs: 1n,
+    pausedOpen: false,
+  },
+})
+
+test('positionRows: every open slot in index order, symbol from the registry, unknown market still listed', () => {
+  const btc = mi('BTC')
+  const stray = k()
+  const p: DecodedPositions = {
+    owner: k(),
+    slots: [slot(2, stray), slot(5, btc.market)],
+    history: [],
+    version: 1,
+    bump: 1,
+  }
+  const rows = positionRows(p, [mi('SOL'), btc])
+  assert.deepEqual(
+    rows.map((r) => r.slot.index),
+    [2, 5],
+  )
+  assert.equal(rows[1].symbol, 'BTC')
+  assert.equal(rows[1].market?.symbol, 'BTC')
+  assert.equal(rows[0].market, null)
+  assert.match(rows[0].symbol, /…$/)
+  assert.deepEqual(positionRows(null, [btc]), [])
+})
+
+test('positionRows: a registry market without a slot never appears', () => {
+  const p: DecodedPositions = { owner: k(), slots: [], history: [], version: 1, bump: 1 }
+  assert.deepEqual(positionRows(p, [mi('SOL'), mi('BTC')]), [])
+})
+
+import { PublicKey } from '@solana/web3.js'
+import { controlTarget, displaySymbol, marketMatches } from '../src/features/positions/positionRows'
+import { pdas } from '../src/lib/pdas'
+import type { DecodedMarket } from '../src/lib/codecs'
+
+const live = (symbol: string): DecodedMarket => ({
+  mark: 1n,
+  maxLevBps: 1,
+  imrBps: 1,
+  mmrBps: 1,
+  openFeeBps: 1,
+  closeFeeBps: 1,
+  symbol,
+  feed: k(),
+})
+
+test('controlTarget: an unregistered market is controllable from its own Market account; a stale/other Market is not', () => {
+  const btc = live('BTC')
+  const stray = pdas.marketFor('BTC')
+  const row = { slot: slot(1, stray), symbol: 'x…', market: null }
+  assert.deepEqual(controlTarget(row, btc), { market: stray, feed: btc.feed })
+  assert.equal(controlTarget(row, live('ETH')), null)
+  assert.equal(controlTarget(row, null), null)
+  assert.equal(marketMatches(stray, live('bad symbol!')), false)
+})
+
+test('displaySymbol: registry, else live Market symbol, else shortened key', () => {
+  const stray = pdas.marketFor('BTC')
+  const row = { slot: slot(1, stray), symbol: stray.toBase58().slice(0, 4) + '…', market: null }
+  assert.equal(displaySymbol(row, live('BTC')), 'BTC')
+  assert.equal(displaySymbol(row, null), row.symbol)
+  assert.equal(displaySymbol({ ...row, market: mi('SOL', stray) }, null), 'SOL')
+  void PublicKey
+})
+
+import { isCloseStale, shouldFireClose } from '../src/features/positions/positionRows'
+
+test('shouldFireClose: only the tapped slot, with its own live Market', () => {
+  const m = pdas.marketFor('BTC')
+  const row = { slot: slot(3, m), symbol: 'BTC', market: null }
+  const pending = { index: 3, market: m }
+  assert.equal(shouldFireClose(pending, row, live('BTC')), true)
+  assert.equal(shouldFireClose(null, row, live('BTC')), false)
+  assert.equal(shouldFireClose(pending, { ...row, slot: slot(4, m) }, live('BTC')), false, 'different index')
+  assert.equal(
+    shouldFireClose(pending, { ...row, slot: slot(3, pdas.marketFor('ETH')) }, live('ETH')),
+    false,
+    'slot reused for another market',
+  )
+  assert.equal(shouldFireClose(pending, row, null), false, 'market not delivered')
+  assert.equal(shouldFireClose(pending, row, live('ETH')), false, 'stale/mismatched market')
+  assert.equal(shouldFireClose(pending, null, live('BTC')), false)
+})
+
+test('isCloseStale: dropped when the row vanishes, changes, or the slot is reused', () => {
+  const m = pdas.marketFor('BTC')
+  const row = { slot: slot(3, m), symbol: 'BTC', market: null }
+  const pending = { index: 3, market: m }
+  assert.equal(isCloseStale(pending, row), false)
+  assert.equal(isCloseStale(pending, null), true)
+  assert.equal(isCloseStale(pending, { ...row, slot: slot(4, m) }), true)
+  assert.equal(isCloseStale(pending, { ...row, slot: slot(3, pdas.marketFor('ETH')) }), true)
+  assert.equal(isCloseStale(null, null), false)
+})

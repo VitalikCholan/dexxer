@@ -1,68 +1,56 @@
 // tests/er/q2-permissions.ts
 //
-// Spec §8 Q2: proves that `init_permissions` creates three
-// `EphemeralPermission` accounts (for UserAccount, Position, DisclosureQueue)
+// Spec §8 Q2: proves that `init_permissions` creates two
+// `EphemeralPermission` accounts (for UserAccount and Positions — spec §2.9)
 // in a single ER transaction, and that calling it again is a no-op (the
 // program checks `perm.lamports() > 0` and skips the CPI per account).
 //
 // Assumes Q1 has already run for the same user (same persisted `.keys/`),
-// i.e. UserAccount/Position/DisclosureQueue are delegated to the ER.
+// i.e. UserAccount/Positions are delegated to the ER.
 //
 // Run: `npm run q1 && npm run q2` (from tests/er).
 
-import { PERMISSION_PROGRAM_ID, permissionPdaFromAccount } from "@magicblock-labs/ephemeral-rollups-sdk";
+import { PERMISSION_PROGRAM_ID } from "@magicblock-labs/ephemeral-rollups-sdk";
 import { assert, baseConn, erConn, loadOrCreateKey, waitDelegated } from "./lib/env.js";
 import { pdas } from "./lib/program.js";
-import { initPermissions } from "./lib/trader.js";
+import { initPermissions, permissionAccounts } from "./lib/trader.js";
 
 async function permissionAccountsExist(label: string) {
   const user = loadOrCreateKey("user");
-  const market = pdas.market();
-  const userAccount = pdas.userAccount(user.publicKey);
-  const position = pdas.position(user.publicKey, market);
-  const disclosureQueue = pdas.disclosureQueue(user.publicKey);
-
-  const userPermission = permissionPdaFromAccount(userAccount);
-  const positionPermission = permissionPdaFromAccount(position);
-  const dqPermission = permissionPdaFromAccount(disclosureQueue);
+  const { userAccount, positions, userPermission, positionsPermission } = permissionAccounts(user.publicKey);
 
   for (const [name, pk] of [
     ["userPermission", userPermission],
-    ["positionPermission", positionPermission],
-    ["dqPermission", dqPermission],
+    ["positionsPermission", positionsPermission],
   ] as const) {
     const info = await erConn.getAccountInfo(pk, "confirmed");
     assert(info !== null, `${label}: ${name} (${pk.toBase58()}) exists on ER`);
     assert(info!.owner.equals(PERMISSION_PROGRAM_ID), `${label}: ${name} owner == PERMISSION_PROGRAM_ID`);
   }
-  return { userAccount, position, disclosureQueue, userPermission, positionPermission, dqPermission };
+  return { userAccount, positions, userPermission, positionsPermission };
 }
 
 async function main() {
   const user = loadOrCreateKey("user");
-  const market = pdas.market();
   const userAccount = pdas.userAccount(user.publicKey);
-  const position = pdas.position(user.publicKey, market);
-  const disclosureQueue = pdas.disclosureQueue(user.publicKey);
+  const positions = pdas.positions(user.publicKey);
 
-  // Preconditions: the three PDAs must already be delegated (Q1 does this).
+  // Preconditions: both PDAs must already be delegated (Q1 does this).
   await waitDelegated(baseConn, userAccount, "UserAccount", 5, 500);
-  await waitDelegated(baseConn, position, "Position", 5, 500);
-  await waitDelegated(baseConn, disclosureQueue, "DisclosureQueue", 5, 500);
+  await waitDelegated(baseConn, positions, "Positions", 5, 500);
 
   const lamportsBefore: Record<string, number> = {};
   for (const [name, pk] of [
     ["userAccount", userAccount],
-    ["position", position],
-    ["disclosureQueue", disclosureQueue],
+    ["positions", positions],
   ] as const) {
     const info = await erConn.getAccountInfo(pk, "confirmed");
     assert(info !== null, `${name} exists on ER before init_permissions`);
     lamportsBefore[name] = info!.lamports;
   }
 
-  console.log("=== init_permissions (ER, first call — creates 3 permissions) ===");
-  const sig1 = await initPermissions({ kp: user, userAccount, position, disclosureQueue });
+  console.log("=== init_permissions (ER, first call — creates 2 permissions) ===");
+  const sig1 = await initPermissions({ kp: user });
   console.log("init_permissions (1st)", sig1);
 
   const tx1 = await erConn.getTransaction(sig1, { commitment: "confirmed", maxSupportedTransactionVersion: 0 });
@@ -73,8 +61,7 @@ async function main() {
   const lamportsAfter1: Record<string, number> = {};
   for (const [name, pk] of [
     ["userAccount", userAccount],
-    ["position", position],
-    ["disclosureQueue", disclosureQueue],
+    ["positions", positions],
   ] as const) {
     const info = await erConn.getAccountInfo(pk, "confirmed");
     lamportsAfter1[name] = info!.lamports;
@@ -92,15 +79,14 @@ async function main() {
   }
 
   console.log("=== init_permissions (ER, second call — idempotent, no-op) ===");
-  const sig2 = await initPermissions({ kp: user, userAccount, position, disclosureQueue });
+  const sig2 = await initPermissions({ kp: user });
   console.log("init_permissions (2nd, idempotent)", sig2);
 
   await permissionAccountsExist("after 2nd call");
 
   for (const [name, pk] of [
     ["userAccount", userAccount],
-    ["position", position],
-    ["disclosureQueue", disclosureQueue],
+    ["positions", positions],
   ] as const) {
     const info = await erConn.getAccountInfo(pk, "confirmed");
     assert(
@@ -112,15 +98,13 @@ async function main() {
   console.log("\nQ2 PASS", {
     user: user.publicKey.toBase58(),
     userAccount: userAccount.toBase58(),
-    position: position.toBase58(),
-    disclosureQueue: disclosureQueue.toBase58(),
+    positions: positions.toBase58(),
     userPermission: after1.userPermission.toBase58(),
-    positionPermission: after1.positionPermission.toBase58(),
-    dqPermission: after1.dqPermission.toBase58(),
+    positionsPermission: after1.positionsPermission.toBase58(),
     sig1,
     cu1,
     sig2,
-    message: `3 permissions in 1 tx, CU=${cu1}`,
+    message: `2 permissions in 1 tx, CU=${cu1}`,
   });
 }
 

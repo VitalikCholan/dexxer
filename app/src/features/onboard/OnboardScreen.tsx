@@ -113,7 +113,13 @@ export function OnboardScreen() {
           ) : null}
         </View>
 
-        <StepsList state={state} progress={batchProgress} />
+        {state === 'Exited' ? (
+          <Text style={[body, { color: colors.textSecondary }]}>
+            Your account is being closed after exit — wait for the relayer to close it (up to 5 min) and try again.
+          </Text>
+        ) : (
+          <StepsList state={state} progress={batchProgress} />
+        )}
 
         {error ? <Text style={{ color: colors.short }}>{error}</Text> : null}
 

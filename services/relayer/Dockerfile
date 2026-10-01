@@ -7,9 +7,9 @@
 # image needs tests/er/lib's own package.json + node_modules installed
 # alongside services/relayer's own.
 #
-# app/src/idl/dexxer_core.json is the only IDL asset committed to git
-# (target/idl/ is fully gitignored, `anchor build` output; CI's "IDL copy in
-# app matches build" step keeps the two in sync) — DEXXER_IDL_DIR points
+# idl/dexxer_core.json is the canonical IDL committed to git
+# (target/idl/ is fully gitignored, `anchor build` output; CI's "Canonical IDL
+# matches build" step keeps the two in sync) — DEXXER_IDL_DIR points
 # tests/er/lib/program.ts at this copy instead of its default `target/idl`.
 # mock_oracle.json is NOT copied: it isn't committed, and the relayer runs
 # exclusively against DEXXER_NET=devnet's real Pricing Oracle, never the
@@ -33,9 +33,9 @@ RUN npm --prefix services/relayer ci --omit=dev
 COPY services/relayer services/relayer
 
 # The one committed IDL asset (see header comment).
-COPY app/src/idl/dexxer_core.json app/src/idl/dexxer_core.json
+COPY idl/dexxer_core.json idl/dexxer_core.json
 
-ENV DEXXER_IDL_DIR=/app/app/src/idl
+ENV DEXXER_IDL_DIR=/app/idl
 ENV NODE_ENV=production
 
 WORKDIR /app/services/relayer

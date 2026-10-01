@@ -8,7 +8,7 @@
 // base58 satisfies that).
 //
 // Onboarding's `set_session` (owner-signed, via MWA) authorizes this key as
-// a `UserAccount`/`Position`/`DisclosureQueue` permission member
+// a `UserAccount`/`Positions` permission member
 // (`app/src/features/onboard/useOnboarding.ts`); once that lands, the
 // session key can sign ER instructions on its own, same as `crank`/`admin`
 // in `tests/er/lib/trader.ts`.

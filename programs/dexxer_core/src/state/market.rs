@@ -20,6 +20,14 @@ pub struct Market {
     pub max_deviation_bps: u16,
     pub mark: u64,
     pub mark_slot: u64,
+    /// Identity (`posted_slot`) of the latest oracle print `crank_tick`
+    /// ACCEPTED (a print on which its deviation breaker tripped is not
+    /// recorded). Compared by identity (`!=`), not order.
+    pub last_print: u64,
+    /// Number of distinct oracle prints `crank_tick` has accepted (risk #38) —
+    /// a tripped print is not a sample. Only `crank_tick` writes it; `liq_due`
+    /// counts a tick per new value.
+    pub sample_seq: u64,
     pub ema_alpha_bps: u16,
     pub liq_hysteresis_ticks: u8,
     pub max_stale_ticks: u16,
@@ -63,17 +71,9 @@ impl MarketParams {
             max_conf_bps: 50,
             max_deviation_bps: 200,
             ema_alpha_bps: 3000,
-            // 3, not 2, since week-5 Task 3 (fix round 1): `Position.liq_ticks`
-            // is now incremented by TWO independent callers — the 1 s relayer
-            // `crank_tick` and the ~3.75 s scheduled `liquidation_check` — and
-            // a scheduled tick landing between two crank ticks counts the SAME
-            // mark sample a second time. At 2 the gate could therefore be
-            // satisfied by effectively one price sample, which is exactly what
-            // the hysteresis exists to prevent (the same double-count `crank_tick`
-            // already rejects within one tx via its duplicate-candidate check).
-            // Worst-case interleaving crank/sched/crank spans 3 ticks and at
-            // least 2 distinct mark samples, restoring the ">1 sample" intent.
-            liq_hysteresis_ticks: 3,
+            // 2 distinct price samples (`Market.sample_seq` guards
+            // the count, risk #38 — it was 3 while two callers double-counted).
+            liq_hysteresis_ticks: 2,
             max_stale_ticks: 30,
         }
     }
@@ -100,14 +100,6 @@ pub fn validate_symbol(symbol: &[u8; 8]) -> bool {
             .iter()
             .all(|b| b.is_ascii_uppercase() || b.is_ascii_digit())
         && symbol[len..].iter().all(|&b| b == 0)
-}
-
-/// The SOL market's address. The SOL position is the one `init_user` /
-/// `init_user_reuse_queue` pin to the `UserAccount`, so it enters and leaves
-/// with it (`undelegate_user`, `close_exited_user`); every other market's
-/// position uses the per-market instructions (`instructions/positions.rs`).
-pub fn sol_market_key() -> Pubkey {
-    Pubkey::find_program_address(&[super::MARKET_SEED, &super::SOL_SYMBOL], &crate::ID).0
 }
 
 #[cfg(test)]

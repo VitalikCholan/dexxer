@@ -3,11 +3,12 @@
 // State machine driving the onboarding screen:
 //   NotOnboarded -> Funded -> Initialized -> Delegated -> Credited ->
 //   Permissioned -> SessionSet
+// (`Exited`: the previous accounts are still waiting for the relayer's janitor
+// to close them — nothing is sent until they are gone.)
 //
 // `advance()` runs `runBatchedOnboarding` (`batchOnboarding.ts`) —
-// faucet_init (+ATA-create if missing) + init_user (or
-// init_user_reuse_queue for a returning owner) + delegateSpl +
-// delegate_user collected into three fee_payer-sponsored L1 transactions, and
+// faucet_init (+ATA-create if missing) + init_user +
+// delegateSpl + delegate_user collected into three fee_payer-sponsored L1 transactions, and
 // init_permissions + set_session collected into one owner-paid ER
 // transaction, all signed in ONE `mwa.signTransactions([...])` call
 // (week-5 Task 6: no more session-lamports top-up leg — see
@@ -138,8 +139,7 @@ export function useOnboarding(): UseOnboarding {
     const config = pdas.config()
     const market = pdas.market()
     const userAccount = pdas.userAccount(o)
-    const position = pdas.position(o, market)
-    const disclosureQueue = pdas.disclosureQueue(o)
+    const positions = pdas.positions(o)
     const faucetPda = pdas.faucet(o)
     const mintAuth = pdas.mintAuth()
     const pool = pdas.pool(mint)
@@ -155,8 +155,7 @@ export function useOnboarding(): UseOnboarding {
       mint,
       market,
       userAccount,
-      position,
-      disclosureQueue,
+      positions,
       faucetPda,
       mintAuth,
       pool,

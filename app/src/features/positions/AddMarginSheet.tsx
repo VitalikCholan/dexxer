@@ -14,17 +14,21 @@ import { Row } from '@/src/ui/Row'
 import { Button } from '@/src/ui/Button'
 import { formatUsd2 } from '@/src/lib/status'
 import { notional } from '@/src/lib/math'
-import { type DecodedPosition } from '@/src/lib/codecs'
+import { type PositionSlot } from '@/src/lib/positions'
 import { usdAmount } from '@/src/lib/trade'
 import { liqAfterAddMargin } from '../trade/ticketMath'
 
 export interface AddMarginSheetProps {
   open: boolean
   onClose: () => void
-  position: DecodedPosition
+  position: PositionSlot
+  /** Market symbol for the labels (`SOL`, `BTC`, ...). */
+  symbol: string
   freeMarginUsd: bigint | null
   mmrBps: bigint
   busy: boolean
+  /** The position's Market has loaded (its feed is needed to sign). */
+  ready: boolean
   /** Raw 1e6 amount — `add_margin`'s argument. */
   onSubmit: (amount: bigint) => Promise<void>
 }
@@ -33,9 +37,11 @@ export function AddMarginSheet({
   open,
   onClose,
   position,
+  symbol,
   freeMarginUsd,
   mmrBps,
   busy,
+  ready,
   onSubmit,
 }: AddMarginSheetProps) {
   const { colors } = useTheme()
@@ -55,7 +61,7 @@ export function AddMarginSheet({
   const liqAfter = add > 0n ? (newLiq !== null ? `$${formatUsd2(newLiq)}` : 'none') : '—'
 
   return (
-    <Sheet open={open} onClose={onClose} title="Add margin">
+    <Sheet open={open} onClose={onClose} title={`Add margin · ${symbol}-PERP`}>
       <Input
         label="Amount"
         value={amount}
@@ -81,7 +87,10 @@ export function AddMarginSheet({
       {tooMuch ? (
         <Text style={[caption, { color: colors.short }]}>More than your free margin — deposit first</Text>
       ) : null}
-      <Button variant="primary" disabled={busy || add === 0n || tooMuch} onPress={() => void onSubmit(add)}>
+      {!ready ? (
+        <Text style={[caption, { color: colors.textSecondary, textAlign: 'center' }]}>Waiting for market price…</Text>
+      ) : null}
+      <Button variant="primary" disabled={busy || !ready || add === 0n || tooMuch} onPress={() => void onSubmit(add)}>
         {busy ? 'Signing with session key…' : 'Confirm add margin'}
       </Button>
       <Text style={[caption, { color: colors.textSecondary, textAlign: 'center' }]}>
