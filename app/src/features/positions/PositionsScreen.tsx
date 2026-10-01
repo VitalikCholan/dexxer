@@ -1,100 +1,49 @@
 // app/src/features/positions/PositionsScreen.tsx
 //
-// Task 10: one open-position card (design: "one market, one position") with
-// Close/Increase/Decrease and (week 6, C.4) Add margin, driven by `useTradeSession`'s session key — same
-// no-MWA-prompt signing Trade already uses. `close_position`'s limit price
-// uses the permissive sentinel (mirrors `TradeScreen`'s old inline Close);
-// increase/decrease use `math.ts`'s slippage-limit helpers off the live mark.
-import { useCallback, useState } from 'react'
+// Position slots: one `PositionCard` per OPEN slot of `Positions` (one live
+// subscription for the screen). Only the selected card's public `Market` is
+// subscribed (`mark`); actions/sheets act on that card, signed by the session key.
+import { useMemo, useState } from 'react'
 import { router } from 'expo-router'
-import { ScrollView } from 'react-native'
+import { Pressable, ScrollView } from 'react-native'
 import { Page } from '@/src/ui/Page'
 import { useTheme } from '@/src/theme'
 import { Skeleton } from '@/src/ui/Skeleton'
 import { EmptyState } from '@/src/ui/EmptyState'
-import { showToast } from '@/src/ui/Toast'
 import { useLiveAccount } from '@/src/lib/live'
-import { decodeMarket, decodePosition, decodeUserAccount } from '@/src/lib/codecs'
-import { describeTxError } from '@/src/lib/errors'
-import {
-  addMargin,
-  closePosition,
-  decreasePosition,
-  increasePosition,
-  solSize,
-  U64_MAX,
-  usdAmount,
-} from '@/src/lib/trade'
-import * as math from '@/src/lib/math'
+import { decodeMarket, decodeUserAccount } from '@/src/lib/codecs'
+import { decodePositions } from '@/src/lib/positions'
+import { useMarkets } from '@/src/lib/markets'
 import { PositionCard } from './PositionCard'
 import { IncreaseSheet } from './IncreaseSheet'
 import { DecreaseSheet } from './DecreaseSheet'
 import { AddMarginSheet } from './AddMarginSheet'
+import { positionRows } from './positionRows'
+import { usePositionActions } from './usePositionActions'
 import { useTradeSession } from '../trade/useTradeSession'
 import { useOnboardingGate } from '../onboard/useOnboardingGate'
 
 export function PositionsScreen() {
   const { space } = useTheme()
-  const { session, conn, accounts, loading, error: sessionError } = useTradeSession()
+  const { session, conn, base, loading, error: sessionError } = useTradeSession()
   const gate = useOnboardingGate()
+  const markets = useMarkets()
 
-  const positionLive = useLiveAccount(conn, accounts?.position ?? null, decodePosition)
-  const marketLive = useLiveAccount(conn, accounts?.market ?? null, decodeMarket)
-  const userLive = useLiveAccount(conn, accounts?.userAccount ?? null, decodeUserAccount)
+  const positionsLive = useLiveAccount(conn, base?.positions ?? null, decodePositions)
+  const userLive = useLiveAccount(conn, base?.userAccount ?? null, decodeUserAccount)
+  const rows = useMemo(() => positionRows(positionsLive.value, markets.data ?? []), [positionsLive.value, markets.data])
 
-  const [busy, setBusy] = useState(false)
+  const [selectedIndex, setSelectedIndex] = useState<number | null>(null)
   const [sheet, setSheet] = useState<'increase' | 'decrease' | 'margin' | null>(null)
+  const selected = rows.find((r) => r.slot.index === selectedIndex) ?? null
 
-  const position = positionLive.value
+  // The selected card's market, read live for `mark` (one subscriber, not one per card).
+  const marketLive = useLiveAccount(conn, selected?.market ? selected.slot.market : null, decodeMarket)
   const mark = marketLive.value?.mark ?? null
-  const mmrBps = marketLive.value ? BigInt(marketLive.value.mmrBps) : 500n
+  const mmrBps = BigInt(marketLive.value?.mmrBps ?? selected?.market?.params.mmrBps ?? 500)
 
-  const run = useCallback(async (label: string, fn: () => Promise<string>) => {
-    setBusy(true)
-    try {
-      await fn()
-      showToast({ tone: 'success', text: `${label} confirmed` })
-      setSheet(null)
-    } catch (e) {
-      showToast({ tone: 'danger', text: describeTxError(e) })
-    } finally {
-      setBusy(false)
-    }
-  }, [])
-
-  const handleClose = useCallback(() => {
-    if (!conn || !session || !accounts) return
-    void run('Close', () => closePosition(conn, session, accounts))
-  }, [conn, session, accounts, run])
-
-  const handleIncrease = useCallback(
-    (addSizeSol: number, addMarginUsd: number) => {
-      if (!conn || !session || !accounts || !position || mark === null) return Promise.resolve()
-      const limit = math.openSlippageLimit(position.side, mark)
-      return run('Increase', () =>
-        increasePosition(conn, session, accounts, solSize(addSizeSol), usdAmount(addMarginUsd), limit),
-      )
-    },
-    [conn, session, accounts, position, mark, run],
-  )
-
-  const handleDecrease = useCallback(
-    (closeSizeSol: number) => {
-      if (!conn || !session || !accounts || !position) return Promise.resolve()
-      // Raw price units end to end — `Number(U64_MAX) / 1e6` used to come back as 2^64 (see trade.ts).
-      const limitPrice =
-        mark !== null ? math.closeSlippageLimit(position.side, mark) : position.side === 'Long' ? 0n : U64_MAX
-      return run('Decrease', () => decreasePosition(conn, session, accounts, solSize(closeSizeSol), limitPrice))
-    },
-    [conn, session, accounts, position, mark, run],
-  )
-
-  const handleAddMargin = useCallback(
-    (amount: bigint) => {
-      if (!conn || !session || !accounts) return Promise.resolve()
-      return run('Add margin', () => addMargin(conn, session, accounts, amount))
-    },
-    [conn, session, accounts, run],
+  const actions = usePositionActions(base, conn, session, selected?.market ?? null, selected?.slot ?? null, mark, () =>
+    setSheet(null),
   )
 
   return (
@@ -109,47 +58,64 @@ export function PositionsScreen() {
           />
         ) : sessionError ? (
           <EmptyState text={sessionError} />
-        ) : !position || position.state !== 'Open' ? (
-          <EmptyState text="No open position" action={{ label: 'Go to Trade', onPress: () => router.push('/trade') }} />
+        ) : rows.length === 0 ? (
+          <EmptyState text="No open positions" action={{ label: 'Go to Trade', onPress: () => router.push('/trade') }} />
         ) : (
-          <PositionCard
-            position={position}
-            mark={mark}
-            busy={busy}
-            onClose={handleClose}
-            onIncrease={() => setSheet('increase')}
-            onDecrease={() => setSheet('decrease')}
-            onAddMargin={() => setSheet('margin')}
-          />
+          rows.map((r) => {
+            const isSel = selected?.slot.index === r.slot.index
+            const choose = (s: typeof sheet) => {
+              setSelectedIndex(r.slot.index)
+              setSheet(s)
+            }
+            return (
+              <Pressable key={r.slot.index} onPress={() => setSelectedIndex(r.slot.index)}>
+                <PositionCard
+                  position={r.slot}
+                  symbol={r.symbol}
+                  mark={isSel && r.market ? mark : null}
+                  busy={actions.busy}
+                  note={r.market ? undefined : 'Market not in the registry yet'}
+                  // A card is closed only once expanded (mark visible); the first tap selects it.
+                  onClose={() => (isSel ? actions.close() : choose(null))}
+                  onIncrease={() => choose('increase')}
+                  onDecrease={() => choose('decrease')}
+                  onAddMargin={() => choose('margin')}
+                />
+              </Pressable>
+            )
+          })
         )}
 
-        {position && position.state === 'Open' ? (
+        {selected?.market ? (
           <>
             <IncreaseSheet
               open={sheet === 'increase'}
               onClose={() => setSheet(null)}
-              position={position}
+              position={selected.slot}
+              symbol={selected.symbol}
               markUsd={mark}
               mmrBps={mmrBps}
-              busy={busy}
-              onSubmit={handleIncrease}
+              busy={actions.busy}
+              onSubmit={actions.increase}
             />
             <DecreaseSheet
               open={sheet === 'decrease'}
               onClose={() => setSheet(null)}
-              position={position}
+              position={selected.slot}
+              symbol={selected.symbol}
               markUsd={mark}
-              busy={busy}
-              onSubmit={handleDecrease}
+              busy={actions.busy}
+              onSubmit={actions.decrease}
             />
             <AddMarginSheet
               open={sheet === 'margin'}
               onClose={() => setSheet(null)}
-              position={position}
+              position={selected.slot}
+              symbol={selected.symbol}
               freeMarginUsd={userLive.value?.freeMargin ?? null}
               mmrBps={mmrBps}
-              busy={busy}
-              onSubmit={handleAddMargin}
+              busy={actions.busy}
+              onSubmit={actions.addMargin}
             />
           </>
         ) : null}

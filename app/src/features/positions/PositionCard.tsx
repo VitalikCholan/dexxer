@@ -88,6 +88,8 @@ export interface PositionCardProps {
   onIncrease: () => void
   onDecrease: () => void
   onAddMargin: () => void
+  /** Registry does not know this market: no mark/uPnL, actions disabled, this note shown. */
+  note?: string
 }
 
 export function PositionCard({
@@ -99,6 +101,7 @@ export function PositionCard({
   onIncrease,
   onDecrease,
   onAddMargin,
+  note,
 }: PositionCardProps) {
   const { colors, space } = useTheme()
   const heading = useTextStyle('heading')
@@ -123,6 +126,7 @@ export function PositionCard({
         </Text>
         <Badge tone={p.side === 'Long' ? 'success' : 'danger'}>{p.side}</Badge>
       </View>
+      {note ? <Text style={[caption, { color: colors.textTertiary }]}>{note}</Text> : null}
       <Row label="Size" value={`${sol(p.size)} ${symbol}`} />
       <Row label="Entry" value={`$${formatUsd2(p.entry)}`} mono />
       <Row label="Mark" value={mark !== null ? `$${formatUsd2(mark)}` : '—'} mono />
@@ -149,24 +153,24 @@ export function PositionCard({
       ) : null}
       <View style={{ flexDirection: 'row', gap: space.sm }}>
         <View style={{ flex: 1 }}>
-          <Button variant="secondary" disabled={busy} onPress={onIncrease}>
+          <Button variant="secondary" disabled={busy || !!note} onPress={onIncrease}>
             Increase
           </Button>
         </View>
         <View style={{ flex: 1 }}>
-          <Button variant="secondary" disabled={busy} onPress={onDecrease}>
+          <Button variant="secondary" disabled={busy || !!note} onPress={onDecrease}>
             Decrease
           </Button>
         </View>
       </View>
       <View style={{ flexDirection: 'row', gap: space.sm }}>
         <View style={{ flex: 1 }}>
-          <Button variant="secondary" disabled={busy} onPress={onAddMargin}>
+          <Button variant="secondary" disabled={busy || !!note} onPress={onAddMargin}>
             Add margin
           </Button>
         </View>
         <View style={{ flex: 1 }}>
-          <Button variant="destructive" disabled={busy} onPress={onClose}>
+          <Button variant="destructive" disabled={busy || !!note} onPress={onClose}>
             Close
           </Button>
         </View>
