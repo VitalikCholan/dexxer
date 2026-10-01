@@ -489,6 +489,65 @@ Owner, ER: `require!(Position.Empty && DisclosureQueue порожня && free_ma
 - **Тести на кінець плану 4.** App 140, relayer 244 (237 + 7 skipped), unit 69, LiteSVM 89.
 - **Лишається відкритим.** Стійкість задач до рестарту TEE; `crank_tick` з 12 парами (найбільше було `candidates=2`); `dataSlice` для відбору кандидатів; ретеншн `ticks`; зовнішній uptime-монітор на `/healthz` (relayer непомітно лежав з 25.09 до 01.10, ≈6 діб); перенесення налаштувань сервісу Railway в `.railway/railway.ts` (політика `ALWAYS` / 180 с уже застосована напряму); `solana program close G2ok…` — незворотне рішення власника (рента старої програми, старі задачі помруть із нею), **не виконано**; smoke 8–9 і повторний smoke фіксів; Postgres-тести `indexerDb.test.ts` (немає Docker; міграцію 008 перевірено лише логом деплою); `bootstrap()` на mb-stack; лог успішного коміту; `CRANK_WATCHDOG_MS` проти довжини петлі; скасування запланованого кранка не-SOL ринку; справжні рядки помилок TEE для класифікатора; CU `credit_deposit`/`withdraw` і `ComputeBudget` 1.4M в ER; гейтинг EMA новим принтом; поповнення `FeeEscrow`; Sybil #27.
 
+### 2.10 Дизайн тижня 6, частина 4: графік — 16 таймфреймів, матеріалізовані свічки, бекфіл Pyth Pro, атрибуція **(week 6, 01.10.2026)**
+
+Джерело рішень — брейншторм 01.10 після мерджу PR #11 (бек-лог C.5 «Графік як у TradingView», частина, що лишилась після PR #9). Торкається лише індексера relayer-а та апки; програма, ER, оракул і приватна модель не змінюються. Рішення користувача: **(1)** бекфіл історії — **Pyth Pro History API** з ключем у env relayer-а (безключовий шим Pyth Benchmarks `benchmarks.pyth.network/v1/shims/tradingview/*` виміряно 01.10 — 404 на кожному ендпоінті, включно з `config`; вимкнений); **(2)** порожні секунди на `1s` — whitespace-точки в апці, нічого не вигадується; **(3)** атрибуція — вбудований логотип lightweight-charts (`attributionLogo: true`); **(4)** ретеншн сирих тіків 7 діб; **(5)** сховище — підхід A: три матеріалізовані яруси `1m/1h/1d`, решта таймфреймів — похідні на читанні.
+
+**Межі.** Індексер і далі читає лише публічне: фід оракула й публічний історичний API того самого фіду. Обсяг і VWAP — свідомо ні (обсяг угод приватний, в оракула його нема). Ключ Pyth Pro — секрет relayer-а того ж класу, що `crank`/`fee_payer`: не потрапляє в апку, не дає доступу до приватного стану. Pricing Oracle MagicBlock лише републікує Pyth Lazer в акаунти й історії не має (skill `magicblock`, `pricing-oracle`), тому Pyth Pro (теж Lazer) — єдине джерело «того самого» фіду; ідентичність фіду для бекфілу — **Lazer feed id**, не рядок символу.
+
+**2.10.1 Таймфрейми й бакетування**
+
+16 таймфреймів: `1s 1m 5m 15m 30m 1h 2h 4h 6h 8h 12h 24h 2D 5D 1W 1M` (ярлики — як у бек-лозі; `24h`, не `1D`). Чиста логіка існує у двох TS-копіях — `services/relayer/src/indexer/timeframes.ts` і `app/src/features/chart/timeframes.ts` — і пінить їх спільний набір golden-векторів (той самий патерн, що `hashes` тижня 3).
+
+- `bucketStart(tf, ms)`: для всіх, крім `1W`/`1M`, — `floor(ms / width) * width` від епохи (`2D`/`5D` теж від епохи, не від понеділка — закріплено вектором); `1W` — понеділок 00:00 UTC (епоха — четвер, тому не кратне); `1M` — перше число місяця 00:00 UTC.
+- `prevBucket(tf, t)` — початок попереднього бакета; для `1M` — місячна арифметика (`Date.UTC(y, m − 1, 1)`), для решти — `t − width`. `nthPrevBucket(tf, t, n)` — ітерація.
+- `tierOf(tf)`: `1s → ticks`; `1m 5m 15m 30m → 1m`; `1h 2h 4h 6h 8h 12h → 1h`; `24h 2D 5D 1W 1M → 1d`. Кожен tf — ціле число бакетів ярусу (календарні — змінне).
+- `mergeCandles(lower: Candle[], tf)`: групує за `bucketStart(tf, c.t)`; `o` першої, `h` max, `l` min, `c` останньої; вхід має бути відсортований за `t`.
+- Golden-вектори: межа року (31.12 → 01.01), високосний лютий 2028, неділя 23:59:59.999 UTC → понеділок, `2D` на непарну добу від епохи, `1M` з 31 на 30 днів, `1s` на межі мілісекунд.
+
+**2.10.2 Схема й запис**
+
+- Міграція `009_candles.sql`: `candles(market text, tf text, t bigint, o bigint, h bigint, l bigint, c bigint, source text NOT NULL, PRIMARY KEY (market, tf, t))`, `tf ∈ {'1m','1h','1d'}` (CHECK). `source ∈ {'oracle','pyth_pro'}`.
+- Та сама міграція один раз згортає наявні тіки (≈655 тис., SOL з 22.09) у три яруси SQL-ом: `(array_agg(price ORDER BY ts))[1]` → `o`, `[array_length]` → `c`, `MIN`/`MAX` → `l`/`h`, групування за `(ts / width) * width`; `source = 'oracle'`, `ON CONFLICT DO NOTHING` (повторний запуск міграції безпечний). Виконується до ретеншну, тож історія власних тіків не губиться.
+- Запис: `insertTick` розширюється до одного запиту, що вставляє тік і робить три upsert-и в `candles` (`ON CONFLICT (market, tf, t) DO UPDATE SET h = GREATEST(candles.h, EXCLUDED.h), l = LEAST(candles.l, EXCLUDED.l), c = EXCLUDED.c, source = 'oracle'`; `o` не змінюється). Свічка оракула переважає бекфіл і за `source` (upsert ставить `'oracle'`, якщо бакет уже був від Pyth Pro — відтоді він живий).
+- Ретеншн: у коміт-циклі relayer-а (`createCycleRunner`, крок під `runIsolated`, кожні `COMMIT_INTERVAL_MS`) — `DELETE FROM ticks WHERE ts < $now − TICKS_RETENTION_MS`; env `TICKS_RETENTION_MS` (дефолт 604800000 = 7 діб, мін. 3600000). `candles` без ретеншну (`1m` ≈ 525 тис. рядків/ринок/рік — прийнятно). Перший прохід після деплою видалить ≈600 тис. рядків одним `DELETE` — очікувано секунди, Railway Postgres витримає; якщо ні — чанкувати за `ts` (рішення на деплої).
+
+**2.10.3 Бекфіл (`services/relayer/src/indexer/backfill.ts`)**
+
+- Увімкнений лише при `PYTH_PRO_API_KEY`; без ключа — один лог на старті і нічого (fail-open: свічки накопичуються з тіків). Запуск — після першого завантаження реєстру ринків, далі кожні `BACKFILL_INTERVAL_MS` (дефолт 86400000, мін. 600000); не блокує ні петлю тіків, ні коміт-цикл.
+- Резолюція символу: `symbol → lazerFeedId` з `MARKET_CATALOG` (`tests/er/lib/markets.ts`; relayer уже імпортує звідти) → безключовий `GET https://pyth.dourolabs.app/v1/symbols?asset_type=crypto` → запис із `pyth_lazer_id == lazerFeedId` → його `symbol` (`Crypto.HYPE/USD`), кеш на процес. Ринок без запису в каталозі або без збігу `pyth_lazer_id` — пропуск з логом, символ не вгадується (правило ідентичності фіду).
+- Три вікна на ринок, резолюції Pyth Pro `1`/`60`/`D` → яруси `1m`/`1h`/`1d`: `BACKFILL_1M_DAYS` (дефолт 7), `BACKFILL_1H_DAYS` (90), `BACKFILL_1D_FROM` (ISO-дата, дефолт `2025-04-01` — початок історії Pyth Pro). Канал `fixed_rate@200ms` (≥ `min_channel` усіх пʼяти ринків; `HYPE` — `real_time`, `ZEC` — `fixed_rate@200ms`). `GET /v1/{channel}/history?symbol=&resolution=&from=&to=` з `Authorization: Bearer`, чанки за часом (`1` — по 2 доби, `60` — по 90 діб, `D` — одним запитом), послідовно, пауза `BACKFILL_REQUEST_GAP_MS` (500) між запитами; стеля рядків на відповідь — перевірити на деплої, за потреби зменшити чанк.
+- Відповідь — TradingView UDF `{s: "ok", t[], o[], h[], l[], c[]}` або `{s: "no_data"}`; `t` — секунди → мс; ціни — числа → 1e6-цілі `Math.round(x * 1e6)` (`BigInt`); `source = 'pyth_pro'`, `INSERT … ON CONFLICT DO NOTHING` — свічка оракула ніколи не перетирається; заразом латаються дірки простоїв relayer-а (наприклад, 25.09–01.10). Бакети Pyth Pro і наші мають збігатися за початком (UTC-вирівняні хвилини/години/доби) — закріплено тестом на фікстурі; розбіжність → рядок не пишеться і лог.
+- Ізоляція: кожна пара ринок × ярус — `runIsolated`; 401 (ключ) — лог і вимкнення до рестарту; 429/5xx/мережа — лог, наступний запуск. `/healthz` отримує `backfill: { enabled, lastRunAt, lastOkAt, lastError, rows }`.
+
+**2.10.4 `GET /prices?tf=&limit=&market=`**
+
+Форма відповіді незмінна: `{ market, tf, candles: [{ t, o, h, l, c }] }` (числа, як зараз). `tf` — лише з 16; невідомий → 400 з повним списком у `error`. `limit` — як зараз (`clampLimit`, дефолт 300, стеля 1000). `1s` — з `ticks` (`sinceTs = now − (limit + 1) × 1000`, існуючий `aggregateCandles`). Решта: `tier = tierOf(tf)`, `since = nthPrevBucket(tf, bucketStart(tf, now), limit)`, `SELECT … FROM candles WHERE market = $1 AND tf = $2 AND t >= $3 ORDER BY t` → `mergeCandles(rows, tf)` → останні `limit`. Найважчі запити: `12h × 1000` → 12 000 рядків `1h`; `1M × 1000` → ≤ 30 400 рядків `1d` (реально — скільки є з квітня 2025). Поточний бакет завжди живий, бо кожен тік upsert-ить `1m/1h/1d`. `source` клієнту не віддається. `/mark`, `/ws` — без змін.
+
+**2.10.5 App**
+
+- `app/src/features/chart/timeframes.ts` — копія чистої логіки з тими ж golden-векторами; `TF_MS`/`Tf` із `chartData.ts` переїжджають (`Tf` = union 16 рядків, `TIMEFRAMES` — упорядкований список). `useCandles(symbol, tf: Tf, limit)`; `QK.candles(symbol, tf)` без змін. `refetchInterval`: 30 с для `≥ 1m`, 15 с для `1s`.
+- Живі дані: `withLiveMark` (один останній mark) замінюється на `foldMarks(candles, marks: {ts, price}[], tf)` — WS-кадри `mark` обраного ринку накопичуються в локальному хвості з моменту останнього успішного fetch-у (скидається при новій відповіді `/prices`) і згортаються в бакети за `bucketStart`; так `1s` живе між запитами без частих fetch-ів, а решта tf отримує той самий код. Хвіст обмежено (`MARK_TAIL_MAX = 2000` записів).
+- `1s` + whitespace: `fillWhitespace(points, 1000)` вставляє `{ time }`-точки (без значень) у пропуски між сусідніми бакетами — лише на клієнті, лише для `1s`; `chartHtml.ts` передає їх у серію як є (lightweight-charts підтримує whitespace-дані для всіх типів серій, включно з кастомними). EMA рахується лише по реальних точках і теж отримує whitespace у пропусках, щоб вісь збігалася.
+- Атрибуція: `attributionLogo: true` у `chartHtml.ts` — логотип TradingView у куті графіка; клік іде через `onShouldStartLoadWithRequest` у системний браузер (уже реалізовано). Запис у spec/README про ліцензію Apache-2.0 і NOTICE lightweight-charts.
+- Пілюлі tf: усі 16 у тому самому горизонтальному `ScrollView`, обрана прокручується у видиму область при монтуванні/зміні (`scrollTo` за виміряним x). Зірочок для tf немає (YAGNI). Збережений tf у `useChartPrefs`/`TradeScreen` валідовується проти `TIMEFRAMES` (невідомий → `1m`).
+- Hermes-пастка плану 4 не актуальна (байтового коду немає); дати — лише через `Date.UTC`/`getUTC*`, без локального часу.
+
+**2.10.6 Тести, верифікація, документи**
+
+- Relayer: golden `bucketStart`/`prevBucket`/`nthPrevBucket`, `tierOf`, `mergeCandles` (вкл. календарні tf), `since`-розрахунок; парсер Pyth Pro на фікстурах (`ok`, `no_data`, зсунутий бакет → відкинуто), конверсія 1e6, резолюція символу за `pyth_lazer_id` з фікстури `/v1/symbols`, пропуск ринку без каталогу; `/prices` через `supertest` з моком store для всіх 16 tf і 400 на невідомий; env-парсинг нових змінних. Postgres (`TEST_DATABASE_URL`, у CI skip, як `indexerDb.test.ts`): міграція 009 з роллапом наявних тіків, upsert тіка в три яруси, `DO NOTHING` бекфілу проти свічки оракула і навпаки (`oracle` переважає), ретеншн.
+- App: ті самі golden-вектори, `foldMarks` (той самий бакет / новий бакет / кілька tf), `fillWhitespace`, валідація збереженого tf; `tsc --noEmit`, `lint:check`, `format:check`, `npm test` — усі чотири, як у плані 3.
+- Devnet: `railway up --service relayer --ci`; лог міграції 009 і `SELECT tf, count(*) FROM candles GROUP BY tf` через `railway ssh … psql`; `/prices` на кожному з 16 tf × 5 ринків (статус, кількість, монотонність `t`, `t` кратний/вирівняний за `bucketStart`); лог бекфілу з ключем і `/healthz.backfill`; розмір `ticks` до/після ретеншну. Апка — AVD з fakewallet: перемикання 16 tf на SOL і HYPE, `1s` з пропусками, логотип клікабельний і відкриває браузер.
+- Документи: цей підрозділ; CLAUDE.md «Правила тижня 6: графік»; `docs/deployments.md` (нові env: `PYTH_PRO_API_KEY`, `BACKFILL_*`, `TICKS_RETENTION_MS`); `services/relayer/README.md` (ендпоінт, env, бекфіл, ліцензія); бек-лог C.5 → ✅/🟡 після деплою.
+
+**2.10.7 Ризики й відкрите**
+
+- Pyth Pro: trial-ключ може мати ліміти запитів/термін — бекфіл робить ≤ 3 × 5 × (чанки) запитів на добу, але стеля рядків на відповідь і поведінка 429 не виміряні; при втраті ключа індексер лише втрачає бекфіл.
+- Розбіжність цін оракул ↔ Pyth Pro: обидва — Lazer, але оракул MagicBlock публікує принти з власною каденцією (1.7–2.5 с), тож `o/c` хвилинних свічок можуть відрізнятися на останній принт; `source` зберігається саме для цього, в UI не показується.
+- Міграція 009 на живій БД: роллап 655 тис. рядків і перший `DELETE` ретеншну — одноразові важкі запити; виміряти тривалість у лозі деплою.
+- Вирівнювання `1W` у Pyth Pro (понеділок?) не використовується — тижні й місяці ми рахуємо самі з `1d`; `W`/`M` Pyth Pro не запитуються.
+- Дві TS-копії `timeframes.ts` пінить лише golden-набір; спільний пакет між `services/relayer` і `app` — подальша робота, не в цьому скоупі.
+
 ## 3. Маржинальна математика й ліквідація
 
 ### 3.1 Одиниці
