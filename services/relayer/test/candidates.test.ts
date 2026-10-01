@@ -18,6 +18,7 @@ import {
   type Candidate,
   type TickCandidatesDeps,
 } from "../src/candidates.js";
+import { classifyError } from "../src/errors.js";
 
 const k = () => Keypair.generate().publicKey;
 function positionsBytes(owner: PublicKey, open: PublicKey[]): Buffer {
@@ -162,7 +163,7 @@ const SIG = "5VERv8NMvzbJMEkV8xnrLkEaWRtSz9CosKDYjCJjBRnbJLgp8uirBgmQpjKhoR4tjF3
 const ON_CHAIN_3002 = `transaction ${SIG} failed: {"InstructionError":[1,{"Custom":3002}]}`;
 const TIMEOUT = `confirmSignature timeout waiting for ${SIG}`;
 const deps = (send: (chunk: Candidate[]) => Promise<void>, q = new Map<string, number>(), extra: Partial<TickCandidatesDeps> = {}): TickCandidatesDeps => ({
-  send, isOnChainFailure: looksLikeOnChainFailure, quarantine: q, now: 0, cooldownMs: 10, ...extra,
+  send, classify: classifyError, quarantine: q, now: 0, cooldownMs: 10, ...extra,
 });
 function fakeSend(bad: Set<Candidate>, fail?: (chunk: Candidate[]) => string | null) {
   const sent: Candidate[][] = [];
@@ -187,7 +188,7 @@ test("tickCandidates: a bad pair fails its chunk ON CHAIN -> zero-candidate prob
   assert.equal(r.errors.length, 2);
   assert.deepEqual(r.quarantined, [pairKey(bad)]);
   assert.deepEqual([...q.entries()], [[pairKey(bad), 60_100]]);
-  assert.equal(r.connectionError, false);
+  assert.equal(r.sharedError, false);
   assert.equal(r.marketFailed, false);
   // Next loop: the bad pair stays out, the others go together.
   const next = fakeSend(new Set([bad]));
@@ -205,7 +206,7 @@ test("tickCandidates: other chunks are still sent when one chunk fails on chain"
   assert.equal(r.landed, 3);
 });
 
-test("tickCandidates: a connection-class error (401) stops the market: no singles, no probe, nobody quarantined", async () => {
+test("tickCandidates: a SHARED error (401) stops the market: no singles, no probe, no zero tick, nobody quarantined", async () => {
   const a = cand();
   const b = cand();
   const q = new Map<string, number>();
@@ -214,7 +215,19 @@ test("tickCandidates: a connection-class error (401) stops the market: no single
   assert.deepEqual(sent, [[a, b]]);
   assert.equal(r.landed, 0);
   assert.equal(q.size, 0);
-  assert.equal(r.connectionError, true);
+  assert.equal(r.sharedError, true);
+});
+
+test("tickCandidates: a MARKET-LOCAL chunk failure (confirm timeout) -> no singles, one zero-candidate tick, the market's later chunks skipped (R1)", async () => {
+  const cands = Array.from({ length: 4 }, cand);
+  const q = new Map<string, number>();
+  const { sent, send } = fakeSend(new Set(), (chunk) => (chunk.length > 0 ? TIMEOUT : null));
+  const r = await tickCandidates(cands, deps(send, q, { size: 2 }));
+  assert.deepEqual(sent, [[cands[0], cands[1]], []], "zero tick once, then stop this market");
+  assert.equal(r.landed, 1, "the zero tick advances mark and price sample");
+  assert.equal(q.size, 0);
+  assert.equal(r.sharedError, false);
+  assert.equal(r.marketLocalError, true);
 });
 
 test("tickCandidates: a lone bad candidate -> probe lands -> quarantined (not resent alone)", async () => {
@@ -246,28 +259,39 @@ test("tickCandidates: market-wide on-chain failure -> the probe fails on chain t
   assert.equal(r.landed, 0);
   assert.equal(q.size, 0);
   assert.equal(r.marketFailed, true);
-  assert.equal(r.connectionError, false);
+  assert.equal(r.sharedError, false);
 });
 
-test("tickCandidates: the probe failing for a connection-class reason stops the market as a connection error", async () => {
+test("tickCandidates: the probe failing for a SHARED reason stops the market as a shared error", async () => {
+  const a = cand();
+  const b = cand();
+  const { sent, send } = fakeSend(new Set([a]), (chunk) => (chunk.length === 0 ? "fetch failed" : null));
+  const r = await tickCandidates([a, b], deps(send));
+  assert.deepEqual(sent, [[a, b], []]);
+  assert.equal(r.sharedError, true);
+  assert.equal(r.quarantined.length, 0);
+});
+
+test("tickCandidates: the probe failing market-locally (confirm timeout) fails the market, nobody blamed, not shared", async () => {
   const a = cand();
   const b = cand();
   const { sent, send } = fakeSend(new Set([a]), (chunk) => (chunk.length === 0 ? TIMEOUT : null));
   const r = await tickCandidates([a, b], deps(send));
   assert.deepEqual(sent, [[a, b], []]);
-  assert.equal(r.connectionError, true);
+  assert.equal(r.sharedError, false);
+  assert.equal(r.marketFailed, true);
   assert.equal(r.quarantined.length, 0);
 });
 
-test("tickCandidates: a connection-class error among the singles stops them", async () => {
+test("tickCandidates: a shared error among the singles stops them", async () => {
   const a = cand();
   const b = cand();
   const c = cand();
   let singles = 0;
   const { sent, send } = fakeSend(new Set([a]), (chunk) => (chunk.length === 1 && ++singles === 2 ? "fetch failed" : null));
   const r = await tickCandidates([a, b, c], deps(send));
-  assert.deepEqual(sent, [[a, b, c], [], [a], [b]], "c is not sent after b's connection error");
-  assert.equal(r.connectionError, true);
+  assert.deepEqual(sent, [[a, b, c], [], [a], [b]], "c is not sent after b's shared error");
+  assert.equal(r.sharedError, true);
   assert.deepEqual(r.quarantined, [pairKey(a)]);
 });
 
@@ -280,7 +304,11 @@ test("tickCandidates: no candidates -> one zero-candidate tick; it failing leave
   assert.equal(r.landed, 0);
   assert.deepEqual(down.sent, [[]], "the empty tick is not resent");
   assert.equal(r.errors.length, 1);
-  assert.equal(r.connectionError, true);
+  assert.equal(r.sharedError, true);
+  const local = fakeSend(new Set(), () => TIMEOUT);
+  const rl = await tickCandidates([], deps(local.send));
+  assert.deepEqual(local.sent, [[]], "an empty tick failing market-locally is not resent");
+  assert.equal(rl.marketLocalError, true);
   const onChain = fakeSend(new Set(), () => ON_CHAIN_3002);
   const r2 = await tickCandidates([], deps(onChain.send));
   assert.deepEqual(onChain.sent, [[]], "an empty tick failing on chain is not probed again");
@@ -293,7 +321,7 @@ test("looksLikeOnChainFailure (re-exported from errors.ts): only a landed-and-re
   assert.equal(looksLikeOnChainFailure(new Error(TIMEOUT)), false);
 });
 
-test("tickCandidates: an RPC error (429/5xx, not on chain) is connection-class — no singles, nobody quarantined (m2)", async () => {
+test("tickCandidates: an RPC error (429/5xx) is SHARED — no singles, no zero tick, nobody quarantined (m2, R1)", async () => {
   const a = cand();
   const b = cand();
   const q = new Map<string, number>();
@@ -302,5 +330,5 @@ test("tickCandidates: an RPC error (429/5xx, not on chain) is connection-class �
   assert.deepEqual(sent, [[a, b]], "no singles, no zero-candidate tick: the next send would fail the same way");
   assert.equal(q.size, 0);
   assert.equal(r.landed, 0);
-  assert.equal(r.connectionError, true);
+  assert.equal(r.sharedError, true);
 });

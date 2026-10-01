@@ -106,3 +106,20 @@ test("runRootCycle: a failed set_balances_root batch THROWS (so runIsolated reco
   assert.deepEqual(failed, ["root"]);
   assert.deepEqual(ok, ["commit"], "the commit step still runs");
 });
+
+test("createCycleRunner.startedAt: the start time of the cycle in flight, null before and after (R2)", async () => {
+  let t = 5_000;
+  let release: () => void = () => {};
+  const runner = createCycleRunner(
+    () => new Promise<void>((r) => { release = r; }),
+    () => {},
+    () => t,
+  );
+  assert.equal(runner.startedAt(), null);
+  runner.trigger();
+  t = 9_000;
+  assert.equal(runner.startedAt(), 5_000, "the start, not now");
+  release();
+  await runner.idle();
+  assert.equal(runner.startedAt(), null);
+});

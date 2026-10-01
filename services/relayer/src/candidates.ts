@@ -9,6 +9,7 @@ import { AccountMeta, PublicKey } from "@solana/web3.js";
 import { decodePositions, slotFor } from "../../../tests/er/lib/positions.js";
 import { envNum } from "./env.js";
 import { looksLikeOnChainFailure } from "./errors.js";
+import type { ErrorClass } from "./errors.js";
 
 // Pairs: 2 keys per candidate. The largest count whose transaction (6 fixed
 // accounts + ComputeBudget) stays within 1232 B — pinned by
@@ -115,8 +116,7 @@ export function applyQuarantine(open: Candidate[], quarantine: Map<string, numbe
 /**
  * Retry a failed chunk one candidate per transaction? Only if it had more than
  * one candidate (a single one already failed alone) and it failed ON CHAIN
- * (m2): any other failure is connection-class and says nothing about who is in
- * the chunk — every send would fail the same way.
+ * (m2): any other failure says nothing about who is in the chunk.
  */
 export function shouldRetrySingly(chunkSize: number, onChainFailure: boolean): boolean {
   return chunkSize > 1 && onChainFailure;
@@ -127,8 +127,8 @@ export { looksLikeOnChainFailure };
 export interface TickCandidatesDeps {
   /** One `crank_tick` over the chunk; resolves once it is confirmed, throws if it failed. */
   send: (chunk: Candidate[]) => Promise<void>;
-  /** The production classifier (errors.ts): landed and rejected by the program. Everything else is connection-class. */
-  isOnChainFailure: (e: unknown) => boolean;
+  /** The production classifier (errors.ts `classifyError`). */
+  classify: (e: unknown) => ErrorClass;
   /** pairKey → quarantined until (ms). Lives as long as the process; mutated here. */
   quarantine: Map<string, number>;
   now: number;
@@ -136,45 +136,53 @@ export interface TickCandidatesDeps {
   size?: number;
 }
 export interface TickCandidatesResult {
-  /** Transactions of this market that landed in this loop (the probe included). */
+  /** Transactions of this market that landed in this loop (probe / zero tick included). */
   landed: number;
   errors: unknown[];
   /** Pairs put into quarantine in this loop. */
   quarantined: string[];
   /** Pairs whose quarantine ended in this loop. */
   released: string[];
-  /** A connection-class error stopped this market; the caller stops the loop and reconnects (I4). */
-  connectionError: boolean;
-  /** The market itself failed on chain (the zero-candidate probe was rejected too): nobody blamed, nobody quarantined (m1). */
+  /** A SHARED error stopped this market; the caller stops the loop and reconnects (I4, R1). */
+  sharedError: boolean;
+  /** A MARKET-LOCAL error stopped this market's candidate sends; the other markets go on, no reconnect (R1). */
+  marketLocalError: boolean;
+  /** The market itself failed (the probe was rejected, on chain or market-locally): nobody blamed, nobody quarantined (m1). */
   marketFailed: boolean;
 }
 
 /**
  * Every `crank_tick` of one market for one loop. Chunks are sent in order.
  *
- * - A connection-class failure (anything not on chain: auth, timeout, fetch
- *   failed, 429, 5xx) stops the market at once — no singles, no probe, no
- *   quarantine: whoever is in the next transaction, it would fail the same
- *   way (m2, I4).
- * - A chunk rejected ON CHAIN is followed by one zero-candidate probe for the
- *   market (m1). Probe rejected on chain too → the market is broken (oracle
- *   account, paused config…), not a pair: no singles, no quarantine, the
- *   market's remaining chunks are skipped. Probe lands → it counts as the
- *   market's tick (mark and price sample advance), and the chunk's
- *   candidates are retried one per transaction, so one bad pair cannot keep
- *   the rest of its chunk from being checked (chunk membership follows the
- *   `getProgramAccounts` order — it would be the same chunk every loop). A
- *   candidate rejected alone on chain is quarantined for `cooldownMs`.
+ * - SHARED failure (auth, network, 429, 5xx, a blockhash that never
+ *   refreshes) — stop the market at once: no singles, no probe, no zero
+ *   tick, no quarantine; the caller stops the loop (R1).
+ * - MARKET-LOCAL failure of a candidate chunk (anything else not on chain —
+ *   a confirm timeout included) — no singles (it says nothing about who is in
+ *   the chunk), but ONE zero-candidate tick for this market, so its mark and
+ *   price sample still advance if only the candidate transaction is the
+ *   problem; then the market's remaining chunks are skipped (each would likely
+ *   cost the same confirm timeout). The other markets are not affected.
+ * - ON-CHAIN rejection of a chunk — one zero-candidate probe (m1). Probe
+ *   rejected (on chain or market-locally) → the market is broken, not a pair:
+ *   nobody blamed, remaining chunks skipped. Probe lands → it counts as the
+ *   market's tick, and the chunk's candidates are retried one per
+ *   transaction, so one bad pair cannot keep the rest of its chunk from being
+ *   checked (chunk membership follows the `getProgramAccounts` order — it
+ *   would be the same chunk every loop). A candidate rejected alone on chain
+ *   is quarantined for `cooldownMs`; a single failing market-locally stops
+ *   the singles.
  *
- * There is no separate fallback zero-candidate tick: with candidates, either
- * something landed, or the probe was tried, or a connection error stopped
- * the market; without candidates the only chunk IS a zero-candidate tick.
+ * Without candidates the only chunk IS a zero-candidate tick and is never
+ * resent.
  */
 export async function tickCandidates(open: Candidate[], deps: TickCandidatesDeps): Promise<TickCandidatesResult> {
-  const out: TickCandidatesResult = { landed: 0, errors: [], quarantined: [], released: [], connectionError: false, marketFailed: false };
+  const out: TickCandidatesResult = {
+    landed: 0, errors: [], quarantined: [], released: [], sharedError: false, marketLocalError: false, marketFailed: false,
+  };
   const { kept, released } = applyQuarantine(open, deps.quarantine, deps.now);
   out.released = released;
-  type Attempt = "landed" | "onchain" | "connection";
+  type Attempt = "landed" | ErrorClass;
   const attempt = async (chunk: Candidate[]): Promise<Attempt> => {
     try {
       await deps.send(chunk);
@@ -182,9 +190,10 @@ export async function tickCandidates(open: Candidate[], deps: TickCandidatesDeps
       return "landed";
     } catch (e) {
       out.errors.push(e);
-      if (deps.isOnChainFailure(e)) return "onchain";
-      out.connectionError = true;
-      return "connection";
+      const c = deps.classify(e);
+      if (c === "shared") out.sharedError = true;
+      if (c === "market-local") out.marketLocalError = true;
+      return c;
     }
   };
   const quarantine = (c: Candidate): void => {
@@ -196,15 +205,20 @@ export async function tickCandidates(open: Candidate[], deps: TickCandidatesDeps
   for (const chunk of chunkCandidates(kept, deps.size)) {
     const r = await attempt(chunk);
     if (r === "landed") continue;
-    if (r === "connection") return out;
-    // Rejected on chain.
+    if (r === "shared") return out;
     if (chunk.length === 0) {
-      out.marketFailed = true;
+      // The zero-candidate tick itself failed: nothing to probe or resend.
+      if (r === "on-chain") out.marketFailed = true;
       return out;
     }
+    if (r === "market-local") {
+      await attempt([]); // once; whatever it gives, this market is done for this loop
+      return out;
+    }
+    // Rejected on chain.
     const probe = await attempt([]);
-    if (probe === "connection") return out;
-    if (probe === "onchain") {
+    if (probe === "shared") return out;
+    if (probe !== "landed") {
       out.marketFailed = true;
       return out;
     }
@@ -214,8 +228,8 @@ export async function tickCandidates(open: Candidate[], deps: TickCandidatesDeps
     }
     for (const c of chunk) {
       const s = await attempt([c]);
-      if (s === "connection") return out;
-      if (s === "onchain") quarantine(c);
+      if (s === "shared" || s === "market-local") return out;
+      if (s === "on-chain") quarantine(c);
     }
   }
   return out;

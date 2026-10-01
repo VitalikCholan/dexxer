@@ -1,9 +1,10 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
-  formatTickLine, groupOpenByMarket, nextFreshBlockhash, planTick, runMarkets, shouldRecordError, tickSet, untickedMarkets, watchdogExpired, withSol,
+  cycleStuck, formatTickLine, groupOpenByMarket, nextFreshBlockhash, planTick, rotateMarkets, runMarkets, shouldRecordError, tickSet, untickedMarkets,
+  watchdogExpired, withSol,
 } from "../src/crank.js";
-import { isConnectionClass } from "../src/errors.js";
+import { isSharedError } from "../src/errors.js";
 import type { MarketInfo } from "../src/markets.js";
 import { marketInfoFrom } from "../src/markets.js";
 import { pdas, symbolBytes } from "../../../tests/er/lib/program.js";
@@ -42,9 +43,11 @@ test("untickedMarkets names markets that have open positions but are not ticked"
   assert.deepEqual(untickedMarkets(new Map(), [btc]), []);
 });
 
-// Final review I4/m6: the production classifier and real error strings.
+// Final review I4/m6 + fix round 2 (R1): the production classifier and real
+// error strings; only a SHARED error stops the loop.
 const ON_CHAIN = 'transaction 5abc failed: {"InstructionError":[1,{"Custom":3002}]}';
-async function run(markets: MarketInfo[], failing: Record<string, string>, connectionAfterTick: string[] = []) {
+const CONFIRM_TIMEOUT = "confirmSignature timeout waiting for 5abc";
+async function run(markets: MarketInfo[], failing: Record<string, string>, sharedAfterTick: string[] = []) {
   const errors: string[] = [];
   const called: string[] = [];
   const r = await runMarkets(
@@ -52,10 +55,10 @@ async function run(markets: MarketInfo[], failing: Record<string, string>, conne
     async (m) => {
       called.push(m.symbol);
       if (failing[m.symbol]) throw new Error(failing[m.symbol]);
-      return { connectionError: connectionAfterTick.includes(m.symbol) };
+      return { sharedError: sharedAfterTick.includes(m.symbol) };
     },
     (m, e) => errors.push(`${m.symbol}:${String(e)}`),
-    isConnectionClass,
+    isSharedError,
   );
   return { r, errors, called };
 }
@@ -70,17 +73,32 @@ test("runMarkets: one market failing ON CHAIN does not stop the others (F6)", as
   assert.equal(errors.length, 1);
 });
 
-test("runMarkets: the first connection-class error stops the loop — later markets NOT ticked, needsReconnect (I4)", async () => {
-  for (const msg of ["401 Unauthorized", "confirmSignature timeout waiting for 5abc", "fetch failed", "429 Too Many Requests", "503 Service Unavailable"]) {
-    const { r, called } = await run([mk("SOL"), mk("BTC"), mk("ETH")], { SOL: msg, BTC: "HTTP 401" });
+test("runMarkets: the first SHARED error stops the loop — later markets NOT ticked, needsReconnect, stoppedAt (I4, R1)", async () => {
+  for (const msg of ["401 Unauthorized", "fetch failed", "429 Too Many Requests", "503 Service Unavailable"]) {
+    const sol = mk("SOL");
+    const { r, called } = await run([sol, mk("BTC"), mk("ETH")], { SOL: msg, BTC: "HTTP 401" });
     assert.deepEqual(called, ["SOL"], msg);
     assert.deepEqual(r.failed, ["SOL"]);
     assert.deepEqual(r.notTicked, ["BTC", "ETH"]);
     assert.equal(r.needsReconnect, true);
+    assert.equal(r.stoppedAt, sol.market.toBase58());
   }
 });
 
-test("runMarkets: a market that ticked but then hit a connection error stops the loop too (I4)", async () => {
+test("runMarkets: a MARKET-LOCAL error (confirm timeout, build error) on market 1 -> markets 2..n still ticked, no reconnect (R1)", async () => {
+  for (const msg of [CONFIRM_TIMEOUT, "Invalid arguments: feed not provided."]) {
+    const { r, called, errors } = await run([mk("SOL"), mk("BTC"), mk("ETH")], { SOL: msg });
+    assert.deepEqual(called, ["SOL", "BTC", "ETH"], msg);
+    assert.deepEqual(r.failed, ["SOL"]);
+    assert.deepEqual(r.ticked, ["BTC", "ETH"]);
+    assert.deepEqual(r.notTicked, []);
+    assert.equal(r.needsReconnect, false);
+    assert.equal(r.stoppedAt, null);
+    assert.equal(errors.length, 1, "recorded");
+  }
+});
+
+test("runMarkets: a market that ticked but then hit a SHARED error stops the loop too (I4)", async () => {
   const { r, called } = await run([mk("SOL"), mk("BTC"), mk("ETH")], {}, ["BTC"]);
   assert.deepEqual(called, ["SOL", "BTC"]);
   assert.deepEqual(r.ticked, ["SOL", "BTC"], "BTC landed something before the error");
@@ -180,13 +198,13 @@ test("nextFreshBlockhash: returns the first blockhash different from the last on
   assert.equal(r.blockhash, "B");
 });
 
-test("nextFreshBlockhash: gives up after the limit with a connection-class error (I2d)", async () => {
+test("nextFreshBlockhash: gives up after the limit with a SHARED error (I2d, R1)", async () => {
   let t = 0;
   let calls = 0;
   const p = nextFreshBlockhash(async () => { calls += 1; return { blockhash: "A", lastValidBlockHeight: 1 }; }, "A", {
     limitMs: 5_000, pollMs: 200, now: () => t, sleep: async (ms) => { t += ms; },
   });
-  await assert.rejects(p, (e: Error) => /freshBlockhash timeout/.test(e.message) && isConnectionClass(e));
+  await assert.rejects(p, (e: Error) => /freshBlockhash timeout/.test(e.message) && isSharedError(e));
   assert.ok(calls >= 25 && calls <= 27, `polled until the limit (${calls})`);
 });
 
@@ -196,4 +214,46 @@ test("formatTickLine: counts, never keys; unreadable fields are null (I5)", () =
   const nulls = formatTickLine({ n: 8, market: "BTC", mark: null, markSlot: null, sig: "5sig", cu: null, tickMs: 90, candidates: 0, liquidated: null });
   assert.equal(nulls, "tick n=8 market=BTC mark=null mark_slot=null sig=5sig cu=null tick_ms=90 candidates=0 liquidated=null");
   assert.ok(!/\[/.test(line), "no key list");
+});
+
+// --- fix round 2 (R1.3): no market is permanently starved ---
+
+test("rotateMarkets: no short-circuit -> registry order; after one -> start at the market AFTER the one that stopped it, wrapping", () => {
+  const [sol, btc, eth] = [mk("SOL"), mk("BTC"), mk("ETH")];
+  const list = [sol, btc, eth];
+  assert.deepEqual(rotateMarkets(list, null).map((m) => m.symbol), ["SOL", "BTC", "ETH"]);
+  assert.deepEqual(rotateMarkets(list, sol.market.toBase58()).map((m) => m.symbol), ["BTC", "ETH", "SOL"]);
+  assert.deepEqual(rotateMarkets(list, btc.market.toBase58()).map((m) => m.symbol), ["ETH", "SOL", "BTC"]);
+  assert.deepEqual(rotateMarkets(list, eth.market.toBase58()).map((m) => m.symbol), ["SOL", "BTC", "ETH"], "wraps");
+  assert.deepEqual(rotateMarkets([sol, eth], btc.market.toBase58()).map((m) => m.symbol), ["SOL", "ETH"], "a market gone from the set: registry order");
+  assert.deepEqual(rotateMarkets([], sol.market.toBase58()), []);
+});
+
+test("rotation carried across loops: a market whose ticks always hit a SHARED error does not starve the others", async () => {
+  const [sol, btc, eth] = [mk("SOL"), mk("BTC"), mk("ETH")];
+  let resumeAfter: string | null = null;
+  const ticked = new Set<string>();
+  for (let loop = 0; loop < 3; loop++) {
+    const { r } = await run(rotateMarkets([sol, btc, eth], resumeAfter), { SOL: "fetch failed" });
+    r.ticked.forEach((x) => ticked.add(x));
+    resumeAfter = r.stoppedAt;
+  }
+  assert.deepEqual([...ticked].sort(), ["BTC", "ETH"], "BTC and ETH are reached although SOL stops every loop it is tried in");
+});
+
+test("SOL failing market-locally every loop does not starve the others (R1)", async () => {
+  let resumeAfter: string | null = null;
+  for (let loop = 0; loop < 3; loop++) {
+    const { r, called } = await run(rotateMarkets([mk("SOL"), mk("BTC"), mk("ETH")], resumeAfter), { SOL: CONFIRM_TIMEOUT });
+    assert.deepEqual(called, ["SOL", "BTC", "ETH"], `loop ${loop}`);
+    assert.deepEqual(r.ticked, ["BTC", "ETH"]);
+    assert.equal(r.needsReconnect, false);
+    resumeAfter = r.stoppedAt;
+  }
+});
+
+test("cycleStuck: only a cycle in flight for longer than the limit (R2)", () => {
+  assert.equal(cycleStuck(null, 10_000_000, 900_000), false, "no cycle in flight");
+  assert.equal(cycleStuck(1_000, 1_000 + 900_000, 900_000), false, "exactly at the limit");
+  assert.equal(cycleStuck(1_000, 1_000 + 900_001, 900_000), true);
 });

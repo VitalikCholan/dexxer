@@ -48,10 +48,16 @@
 // zero-candidate probe; if the probe lands, the chunk is retried one
 // candidate per transaction and a pair rejected alone is quarantined for
 // `CRANK_BAD_PAIR_COOLDOWN_MS`; if the probe is rejected too, the market is
-// broken and nobody is blamed. The FIRST connection-class error (errors.ts:
-// anything not on chain — auth, timeout, fetch failed, 429, 5xx) stops the
-// market AND the rest of the loop (`runMarkets`, I4): one reconnect, then
-// the next loop starts again with SOL.
+// broken and nobody is blamed. Errors come in three classes (errors.ts, fix
+// round 2 / R1): ON-CHAIN (above); SHARED — auth, network, 429, 5xx, a
+// blockhash that never refreshes — stops the market AND the rest of the loop
+// (`runMarkets`, I4) with one reconnect, and the next loop starts at the
+// market AFTER the one that stopped it (`rotateMarkets`, wrapping), so no
+// market is starved; MARKET-LOCAL — everything else, a confirm timeout
+// included — fails that market only (after one zero-candidate tick, so its
+// mark still moves if only the candidate transaction is the problem), the
+// other markets go on, no reconnect. Without a short-circuit the order is the
+// tick set's (SOL first).
 //
 // If candidate discovery itself fails, every market is still ticked with no
 // candidate (`planTick`) — the mark, the price sample and with them the
@@ -68,7 +74,9 @@
 //
 // Liveness (final review I2): the loop never waits on the commit cycle; a
 // watchdog (`CRANK_WATCHDOG_MS`, default 120 000, min 30 000) exits the
-// process with code 1 when no loop iteration completed within that time, and
+// process with code 1 when no loop iteration completed within that time, or
+// when one commit cycle has been in flight for more than 3 ×
+// `COMMIT_INTERVAL_MS` (`cycleStuck`, R2), and
 // index.ts exits with code 1 when `startCrank` rejects — Railway's
 // ON_FAILURE restart policy is what restarts the relayer (its healthcheck runs
 // only at deploy time).
@@ -92,8 +100,9 @@
 // 3. devnet-tee auth tokens are per-identity and can go stale (401) or hang
 //    past what's reasonable for a 1s tick cadence — `reconnect()` below
 //    re-derives a fresh `teeConn` and is triggered (at most once per loop)
-//    on a connection-class error of the loop, or on a 401 that the commit
-//    cycle hit on either TEE connection.
+//    on a SHARED error of the loop, on an auth/network error of candidate
+//    discovery, or on a 401 that the commit cycle hit on either TEE
+//    connection.
 //
 // Every `COMMIT_INTERVAL_MS` of WALL-CLOCK time (commit.ts; a tick count
 // would stretch with the number of markets) the loop STARTS the cycle
@@ -117,7 +126,7 @@ import { CRANK_BAD_PAIR_COOLDOWN_MS, candidatesFrom, liquidatedIn, pairAccounts,
 import type { Candidate } from "./candidates.js";
 import { COMMIT_INTERVAL_MS, commitDue, createCycleRunner, runCommitCycle, runIsolated, runRootCycle } from "./commit.js";
 import { envNum } from "./env.js";
-import { errorMessage, isConnectionClass, looksLikeAuthError, looksLikeOnChainFailure, normalizeErrorMessage } from "./errors.js";
+import { classifyError, errorMessage, isSharedError, looksLikeAuthError, normalizeErrorMessage, shouldReconnectOnDiscoveryError } from "./errors.js";
 import { crankTickAccounts } from "./ixAccounts.js";
 import { janitorDeps, runJanitorCycle } from "./janitor.js";
 import { PROCESS_SALT, tagOf } from "./logTag.js";
@@ -194,31 +203,34 @@ export function shouldRecordError(prev: { msg: string; at: number } | undefined,
 export interface RunMarketsResult {
   ticked: string[];
   failed: string[];
-  /** Markets not tried in this loop because a connection-class error stopped it (I4). */
+  /** Markets not tried in this loop because a SHARED error stopped it (I4). */
   notTicked: string[];
   solTicked: boolean;
   needsReconnect: boolean;
+  /** Base58 of the market whose SHARED error stopped the loop, else null — the next loop starts after it (`rotateMarkets`). */
+  stoppedAt: string | null;
 }
 
-/** What one market's tick reports back: a market that landed something can still have hit a connection error afterwards. */
-export type MarketTickOutcome = { connectionError: boolean } | void;
+/** What one market's tick reports back: a market that landed something can still have hit a SHARED error afterwards. */
+export type MarketTickOutcome = { sharedError: boolean } | void;
 
 /**
  * Ticks the markets in order, each in its own try/catch: a market rejected ON
- * CHAIN must not stop the others' mark/EMA advance or their liquidations. The
- * FIRST connection-class error (a throw that `isConnectionClass`, or a market
- * that ticked and then reported `connectionError`) stops the loop (I4): all
- * markets share one connection, so the later sends would fail the same way —
- * `needsReconnect` is set, the caller reconnects once, and the next loop
- * starts again from the first market (SOL).
+ * CHAIN or failing MARKET-LOCALLY is recorded and counts as failed, and the
+ * others' mark/EMA advance and liquidations go on (R1). The FIRST SHARED
+ * error (a throw that `isShared`, or a market that ticked and then reported
+ * `sharedError`) stops the loop (I4): all markets share one connection, so
+ * the later sends would fail the same way — `needsReconnect` is set,
+ * `stoppedAt` names the market, the caller reconnects once and starts the
+ * next loop after that market (`rotateMarkets`).
  */
 export async function runMarkets(
   markets: MarketInfo[],
   tickFn: (m: MarketInfo) => Promise<MarketTickOutcome>,
   onError: (m: MarketInfo, e: unknown) => void,
-  isConnectionClass: (e: unknown) => boolean,
+  isShared: (e: unknown) => boolean,
 ): Promise<RunMarketsResult> {
-  const out: RunMarketsResult = { ticked: [], failed: [], notTicked: [], solTicked: false, needsReconnect: false };
+  const out: RunMarketsResult = { ticked: [], failed: [], notTicked: [], solTicked: false, needsReconnect: false, stoppedAt: null };
   for (let i = 0; i < markets.length; i++) {
     const m = markets[i];
     let stop = false;
@@ -226,14 +238,15 @@ export async function runMarkets(
       const r = await tickFn(m);
       out.ticked.push(m.symbol);
       if (m.symbol === "SOL") out.solTicked = true;
-      stop = Boolean(r && r.connectionError);
+      stop = Boolean(r && r.sharedError);
     } catch (e) {
       out.failed.push(m.symbol);
       onError(m, e);
-      stop = isConnectionClass(e);
+      stop = isShared(e);
     }
     if (stop) {
       out.needsReconnect = true;
+      out.stoppedAt = m.market.toBase58();
       out.notTicked = markets.slice(i + 1).map((x) => x.symbol);
       break;
     }
@@ -289,6 +302,23 @@ export function tickSet(
   return { markets, unknown: untickedMarkets(byMarket, markets) };
 }
 
+/**
+ * The loop's market order (R1.3): `resumeAfter` = the market whose SHARED
+ * error stopped the previous loop → start at the market after it, wrapping;
+ * null, or a market no longer in the set → the set's own order (SOL first).
+ */
+export function rotateMarkets<T extends { market: { toBase58(): string } }>(markets: T[], resumeAfter: string | null): T[] {
+  if (resumeAfter === null) return markets;
+  const i = markets.findIndex((m) => m.market.toBase58() === resumeAfter);
+  if (i < 0) return markets;
+  return [...markets.slice(i + 1), ...markets.slice(0, i + 1)];
+}
+
+/** One commit cycle in flight for longer than `limitMs` (R2, 3 × `COMMIT_INTERVAL_MS`): wedged, restart. */
+export function cycleStuck(startedAt: number | null, now: number, limitMs: number): boolean {
+  return startedAt !== null && now - startedAt > limitMs;
+}
+
 /** No loop iteration completed within `limitMs` (I2): the process is wedged and must be restarted. */
 export function watchdogExpired(lastLoopDoneAt: number, now: number, limitMs: number): boolean {
   return now - lastLoopDoneAt > limitMs;
@@ -336,37 +366,53 @@ export interface CrankOpts {
   exit?: (code: number) => void;
 }
 
+/** R2: a commit cycle in flight for longer than this exits the process too. */
+const CYCLE_DEADLINE_MS = 3 * COMMIT_INTERVAL_MS;
+
+interface WatchdogHooks {
+  loopDone: () => void;
+  stopWatchdog: () => void;
+  /** Set by `runCrank` once the cycle runner exists. */
+  cycleStartedAt: () => number | null;
+}
+
 export async function startCrank(cfg: RelayerConfig, state: RelayerState, registry: MarketRegistry, opts: CrankOpts = {}): Promise<void> {
   const exit = opts.exit ?? ((code: number) => process.exit(code));
   // Started before the boot reads: a TEE auth or RPC call that hangs at boot
   // is a wedge too.
   let lastLoopDoneAt = Date.now();
+  const hooks: WatchdogHooks = {
+    loopDone: () => {
+      lastLoopDoneAt = Date.now();
+    },
+    stopWatchdog: () => clearInterval(watchdog),
+    cycleStartedAt: () => null,
+  };
   const watchdog = setInterval(
     () => {
       const now = Date.now();
-      if (!watchdogExpired(lastLoopDoneAt, now, CRANK_WATCHDOG_MS)) return;
-      console.error(`crank: watchdog — no loop iteration completed for ${now - lastLoopDoneAt} ms (CRANK_WATCHDOG_MS=${CRANK_WATCHDOG_MS}); exiting with code 1 for a restart`);
-      exit(1);
+      if (watchdogExpired(lastLoopDoneAt, now, CRANK_WATCHDOG_MS)) {
+        console.error(`crank: watchdog — no loop iteration completed for ${now - lastLoopDoneAt} ms (CRANK_WATCHDOG_MS=${CRANK_WATCHDOG_MS}); exiting with code 1 for a restart`);
+        exit(1);
+        return;
+      }
+      const started = hooks.cycleStartedAt();
+      if (cycleStuck(started, now, CYCLE_DEADLINE_MS)) {
+        console.error(`crank: watchdog — commit cycle in flight for ${now - (started ?? now)} ms (> 3 × COMMIT_INTERVAL_MS = ${CYCLE_DEADLINE_MS}); exiting with code 1 for a restart`);
+        exit(1);
+      }
     },
     Math.min(10_000, CRANK_WATCHDOG_MS / 4),
   );
   watchdog.unref();
   try {
-    await runCrank(cfg, state, registry, () => {
-      lastLoopDoneAt = Date.now();
-    }, () => clearInterval(watchdog));
+    await runCrank(cfg, state, registry, hooks);
   } finally {
     clearInterval(watchdog);
   }
 }
 
-async function runCrank(
-  cfg: RelayerConfig,
-  state: RelayerState,
-  registry: MarketRegistry,
-  loopDone: () => void,
-  stopWatchdog: () => void,
-): Promise<void> {
+async function runCrank(cfg: RelayerConfig, state: RelayerState, registry: MarketRegistry, hooks: WatchdogHooks): Promise<void> {
   let conn = await teeConn(cfg.crank);
   let prog = dexxerCoreProgram(conn, cfg.crank);
   // Separate connection/program pair, authenticated as `feePayer` —
@@ -514,13 +560,13 @@ async function runCrank(
    * One market for one loop (`tickCandidates`). The market counts as ticked
    * if at least one of its transactions landed — one bad pair must not hold
    * SOL's `lastTickAt` hostage. If none landed, the error that decided it is
-   * rethrown for `runMarkets` (a connection-class one if the market stopped
-   * on one); errors of a market that did tick are still recorded.
+   * rethrown for `runMarkets` (a SHARED one if the market stopped on one);
+   * errors of a market that did tick are still recorded.
    */
   async function tickMarket(m: MarketInfo, poolLive: PublicKeyT, open: Candidate[], n: number): Promise<MarketTickOutcome> {
     const r = await tickCandidates(open, {
       send: (chunk) => tickChunk(m, poolLive, chunk, n),
-      isOnChainFailure: looksLikeOnChainFailure,
+      classify: classifyError,
       quarantine: badPairs,
       now: Date.now(),
       cooldownMs: CRANK_BAD_PAIR_COOLDOWN_MS,
@@ -535,11 +581,11 @@ async function runCrank(
       console.warn(`crank n=${n} market=${symbolOf(k.market)}: pair tag=${tagOf(PROCESS_SALT, k.positions)} failed crank_tick alone on chain — excluded for ${CRANK_BAD_PAIR_COOLDOWN_MS} ms`);
     }
     if (r.landed === 0) {
-      const decisive = r.connectionError ? r.errors.find(isConnectionClass) : r.errors[0];
+      const decisive = r.sharedError ? r.errors.find(isSharedError) : r.errors[0];
       throw decisive ?? new Error(`market ${m.symbol}: no crank_tick landed`);
     }
     for (const e of r.errors) onMarketError(m, e);
-    return { connectionError: r.connectionError };
+    return { sharedError: r.sharedError };
   }
 
   const config = await accountNs(prog).config.fetch(pdas.config());
@@ -638,7 +684,10 @@ async function runCrank(
     },
   );
 
+  hooks.cycleStartedAt = () => cycle.startedAt();
   let lastCommitAttemptAt: number | null = null;
+  // R1.3: the market whose SHARED error stopped the previous loop (base58).
+  let resumeAfter: string | null = null;
   let n = 0;
   while (!stopRequested) {
     const t0 = Date.now();
@@ -655,15 +704,18 @@ async function runCrank(
       // candidate (`planTick`); this loop does not count for `lastTickAt`.
       console.error(`crank n=${n}: candidate discovery failed — ticking every market without candidates`, errorMessage(e));
       pushError(state, e);
-      needReconnect ||= isConnectionClass(e);
+      needReconnect ||= shouldReconnectOnDiscoveryError(e); // R1.4: auth/network only
       discovery = { ok: false };
     }
     const plan = planTick(discovery);
     try {
       const set = tickSet(tickMarkets, registry.list(), solFallback, plan.byMarket);
       for (const mi of set.markets) tickMarkets.set(mi.market.toBase58(), mi);
-      const markets = [...set.markets, ...(await resolveUnknown(set.unknown, n))];
-      const r = await runMarkets(markets, (m) => tickMarket(m, poolLive, plan.byMarket.get(m.market.toBase58()) ?? [], n), onMarketError, isConnectionClass);
+      // R1.3: after a SHARED short-circuit, start at the market after the one
+      // that stopped the previous loop.
+      const markets = rotateMarkets([...set.markets, ...(await resolveUnknown(set.unknown, n))], resumeAfter);
+      const r = await runMarkets(markets, (m) => tickMarket(m, poolLive, plan.byMarket.get(m.market.toBase58()) ?? [], n), onMarketError, isSharedError);
+      resumeAfter = r.stoppedAt;
       const now = Date.now();
       for (const sym of r.ticked) state.marketTicks[sym] = now;
       if (r.ticked.length > 0) state.tick = n;
@@ -673,13 +725,13 @@ async function runCrank(
       // whose discovery failed does not count: SOL was ticked, but nobody was
       // checked against its print.
       if (r.solTicked && plan.countsForHealth) state.lastTickAt = now;
-      if (r.notTicked.length > 0) console.warn(`crank n=${n}: connection-class error — not ticked this loop: ${r.notTicked.join(",")}; reconnecting`);
+      if (r.notTicked.length > 0) console.warn(`crank n=${n}: shared error — not ticked this loop: ${r.notTicked.join(",")}; reconnecting, next loop starts after ${symbolOf(r.stoppedAt ?? "")}`);
       needReconnect ||= r.needsReconnect;
     } catch (e) {
       // Not expected (`runMarkets` catches per market) — never stop the loop.
       console.error("tick failed", errorMessage(e));
       pushError(state, e);
-      needReconnect ||= isConnectionClass(e);
+      needReconnect ||= isSharedError(e);
     }
     if (needReconnect) {
       try {
@@ -699,12 +751,12 @@ async function runCrank(
       cycle.trigger();
     }
 
-    loopDone();
+    hooks.loopDone();
     await sleep(Math.max(0, INTERVAL - (Date.now() - t0)));
   }
   // The watchdog guards the loop, not the shutdown (shutdown.ts has its own
   // hard-kill timeout).
-  stopWatchdog();
+  hooks.stopWatchdog();
   if (cycle.busy()) console.log("crank: stop requested — waiting for the in-flight commit cycle");
   await cycle.idle();
   console.log("crank stopped (requestStop)");

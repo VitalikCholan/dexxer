@@ -127,6 +127,8 @@ export interface CycleRunner {
   /** Starts a cycle unless one is in flight; true if it started one. */
   trigger(): boolean;
   busy(): boolean;
+  /** `now()` when the cycle in flight started, null when none is (R2's `cycleStuck`). */
+  startedAt(): number | null;
   /** Resolves when no cycle is in flight (at once if none is). Never rejects. */
   idle(): Promise<void>;
 }
@@ -137,11 +139,13 @@ export interface CycleRunner {
  * time; a cycle's rejection goes to `onError` (never an unhandled rejection)
  * and clears the flag; `idle()` lets shutdown wait for the cycle in flight.
  */
-export function createCycleRunner(run: () => Promise<void>, onError: (e: unknown) => void): CycleRunner {
+export function createCycleRunner(run: () => Promise<void>, onError: (e: unknown) => void, now: () => number = Date.now): CycleRunner {
   let inFlight: Promise<void> | null = null;
+  let startedAt: number | null = null;
   return {
     trigger() {
       if (inFlight) return false;
+      startedAt = now();
       let started: Promise<void>;
       try {
         started = run();
@@ -152,10 +156,12 @@ export function createCycleRunner(run: () => Promise<void>, onError: (e: unknown
         .catch(onError)
         .finally(() => {
           inFlight = null;
+          startedAt = null;
         });
       return true;
     },
     busy: () => inFlight !== null,
+    startedAt: () => startedAt,
     idle: () => inFlight ?? Promise.resolve(),
   };
 }

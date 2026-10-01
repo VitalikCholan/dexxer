@@ -16,11 +16,13 @@
 // after an attempt the program REJECTED (on chain). The cooldown memory is per
 // process: a restart forgets it and retries each failing owner once.
 //
-// Final review I1: the pass runs inside the detached commit cycle, and it is
-// cut short whenever the network is the problem — the first connection-class
-// failure (errors.ts: timeout, fetch failed, 429, 5xx, any non-on-chain
-// error) ABORTS the pass without a cooldown for that owner (it is not their
-// fault) and is reported in `errors`; the pass is skipped altogether while
+// Final review I1 / fix round 2 (R1.5): the pass runs inside the detached
+// commit cycle, and it is cut short whenever the network is the problem — the
+// first SHARED failure (errors.ts: auth, fetch failed, 429, 5xx) ABORTS the
+// pass without a cooldown for that owner (it is not their fault) and is
+// reported in `errors`; a close the program rejected ON CHAIN puts that owner
+// on the cooldown; anything else (e.g. a confirm timeout) counts as an
+// attempt, sets no cooldown, and the pass goes on; the pass is skipped altogether while
 // the fee payer's base balance is below `JANITOR_MIN_FEE_PAYER_SOL` (default
 // 0.002 SOL), so it never drains the key that pays `/sponsor` and
 // `/nonce`.
@@ -33,7 +35,7 @@ import { Connection, Keypair, PublicKey } from "@solana/web3.js";
 import type { Program } from "@coral-xyz/anchor";
 import { USER_DISC, accountNs, pdas } from "../../../tests/er/lib/program.js";
 import { envNum } from "./env.js";
-import { errorMessage, isConnectionClass } from "./errors.js";
+import { classifyError, errorMessage } from "./errors.js";
 import { sendAndConfirmIx } from "../../../tests/er/lib/env.js";
 import { closeExitedUserAccounts } from "../../../tests/er/lib/trader.js";
 
@@ -141,13 +143,16 @@ export async function runJanitorCycle(deps: JanitorDeps, opts: JanitorOpts = {})
       out.closed.push(key);
       log(`janitor: closed ${key} rent_payer=${o.rentPayer.toBase58()} sig=${sig}`);
     } catch (e) {
-      if (isConnectionClass(e)) {
+      const c = classifyError(e);
+      if (c === "shared") {
         // The network, not the owner: no cooldown, and no more sends into it.
         out.aborted = true;
         out.errors.push(`janitor: pass aborted at ${key}: ${errorMessage(e)}`);
         break;
       }
-      state.failedAt.set(key, now());
+      // On chain: the program rejected this owner's close — cooldown. Anything
+      // else: counted as an attempt (above), no cooldown, next owner.
+      if (c === "on-chain") state.failedAt.set(key, now());
       out.errors.push(`janitor ${key}: ${errorMessage(e)}`);
     }
   }

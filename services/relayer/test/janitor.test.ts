@@ -11,8 +11,10 @@ import {
 } from "../src/janitor.js";
 
 // Final review m6: the production classifier decides, so the fakes throw the
-// real strings — an on-chain rejection puts one owner on a cooldown, anything
-// else (timeout, fetch failed, 429, 5xx) aborts the pass.
+// real strings — an on-chain rejection puts one owner on a cooldown, a SHARED
+// error (auth, fetch failed, 429, 5xx) aborts the pass, anything else
+// (market-local, e.g. a confirm timeout) counts the attempt and goes on, no
+// cooldown (fix round 2, R1.5).
 const ON_CHAIN = 'transaction 5VERv8NMvzbJMEkV8xnrLkEaWRtSz9CosKDYjCJjBRnbJLgp8uirBgmQpjKhoR4tjF3ZpRzrFmBV6UjKdiSZkQUW failed: {"InstructionError":[0,{"Custom":6000}]}';
 
 const k = () => Keypair.generate().publicKey;
@@ -138,10 +140,10 @@ test("EXITED_OFFSET is the only byte that differs between exited=true/false enco
 
 // --- final review I1: the janitor never hammers a sick RPC, never spends below a floor ---
 
-test("a connection-class failure aborts the pass: no cooldown for that owner, the rest not attempted, reported in errors", async () => {
+test("a SHARED failure aborts the pass: no cooldown for that owner, the rest not attempted, reported in errors", async () => {
   const a = { owner: k(), rentPayer: k() };
   const b = { owner: k(), rentPayer: k() };
-  for (const msg of ["confirmSignature timeout waiting for 5abc", "fetch failed", "429 Too Many Requests", "502 Bad Gateway"]) {
+  for (const msg of ["401 Unauthorized", "fetch failed", "429 Too Many Requests", "502 Bad Gateway"]) {
     const { deps, closed } = fakes([a, b], new Set([a.owner.toBase58(), b.owner.toBase58()]));
     deps.closeExitedUser = async (o) => {
       if (o.owner.equals(a.owner)) throw new Error(msg);
@@ -158,7 +160,28 @@ test("a connection-class failure aborts the pass: no cooldown for that owner, th
   }
 });
 
-test("a connection-class failure of the delegation check aborts the pass too", async () => {
+test("any other failure (confirm timeout) counts the attempt, sets no cooldown and the pass goes on (R1.5)", async () => {
+  const a = { owner: k(), rentPayer: k() };
+  const b = { owner: k(), rentPayer: k() };
+  const { deps, closed } = fakes([a, b], new Set([a.owner.toBase58(), b.owner.toBase58()]));
+  let calls = 0;
+  deps.closeExitedUser = async (o) => {
+    calls += 1;
+    if (o.owner.equals(a.owner)) throw new Error("confirmSignature timeout waiting for 5abc");
+    closed.push(o);
+    return "sig";
+  };
+  const state = createJanitorState();
+  const r = await runJanitorCycle(deps, { state, maxAttempts: 2 });
+  assert.equal(r.aborted, false);
+  assert.equal(calls, 2, "both attempted — the failed one counted toward the cap");
+  assert.deepEqual(closed.map((c) => c.owner.toBase58()), [b.owner.toBase58()]);
+  assert.equal(state.failedAt.size, 0, "no cooldown");
+  assert.equal(r.errors.length, 1);
+  assert.match(r.errors[0], /confirmSignature timeout/);
+});
+
+test("a SHARED failure of the delegation check aborts the pass too", async () => {
   const a = { owner: k(), rentPayer: k() };
   const { deps } = fakes([a], new Set([a.owner.toBase58()]));
   deps.bothUnderProgram = async () => {
