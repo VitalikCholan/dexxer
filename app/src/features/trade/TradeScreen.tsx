@@ -7,7 +7,11 @@
 // screen (Task 10); week 6 (C.4) brings partial/full close back as the
 // ticket's Close tab (`decrease_position`). Week 6 (C.6-A): the chart
 // collapses (`ChartSection`), and Positions (n) / Open Orders (n) sit
-// under the ticket (`TradeActivity`).
+// under the ticket (`TradeActivity`). Position slots: everything is for the
+// globally selected market (`useSelectedMarket`) — its PDA, live `Market`
+// (feed, params), mark and candles, and its slot of the owner's `Positions`
+// (`slotGate`: never another market's slot; Open blocked when all 16 slots
+// are taken elsewhere).
 import { useCallback, useMemo, useState } from 'react'
 import { router } from 'expo-router'
 import { ScrollView, Text, View } from 'react-native'
@@ -20,9 +24,12 @@ import { Skeleton } from '@/src/ui/Skeleton'
 import { showToast } from '@/src/ui/Toast'
 import { useLiveAccount } from '@/src/lib/live'
 import { useCandles, useIndexerConnected, useMark, usePoolHistory } from '@/src/lib/indexer'
-import { decodePosition, decodeUserAccount, readMarket, type SideName } from '@/src/lib/codecs'
+import { decodeUserAccount, readMarket, type SideName } from '@/src/lib/codecs'
 import { describeTxError } from '@/src/lib/errors'
-import { decreasePosition, openPosition } from '@/src/lib/trade'
+import { useSelectedMarket } from '@/src/lib/markets'
+import { pdas } from '@/src/lib/pdas'
+import { decodePositions } from '@/src/lib/positions'
+import { decreasePosition, openPosition, tradeAccountsFor } from '@/src/lib/trade'
 import * as math from '@/src/lib/math'
 import { ChartSection, type Tf } from './ChartSection'
 import { TradeActivity } from './TradeActivity'
@@ -31,6 +38,7 @@ import { MarketInfoCard } from './MarketInfoCard'
 import { maxLeverage, rangeStats } from './headerStats'
 import { TradeTicket, type MarketParams } from './TradeTicket'
 import { decodeTicketMarket } from './marketLimits'
+import { slotGate } from './tradingRules'
 import { useTradeSession } from './useTradeSession'
 import { LOW_SESSION_ACTIONS } from '@/src/lib/session'
 import { useOnboardingGate } from '../onboard/useOnboardingGate'
@@ -39,21 +47,30 @@ export function TradeScreen() {
   const { colors, space } = useTheme()
   const caption = useTextStyle('caption')
 
-  const { session, conn, accounts, loading, error: sessionError } = useTradeSession()
+  const { symbol } = useSelectedMarket()
+  const { session, conn, base, loading, error: sessionError } = useTradeSession()
   const gate = useOnboardingGate()
   const [tf, setTf] = useState<Tf>('1m')
   const [busy, setBusy] = useState(false)
 
-  const positionLive = useLiveAccount(conn, accounts?.position ?? null, decodePosition)
-  const marketLive = useLiveAccount(conn, accounts?.market ?? null, decodeTicketMarket)
-  const userLive = useLiveAccount(conn, accounts?.userAccount ?? null, decodeUserAccount)
-  const mark = useMark()
-  const change24h = useCandles('15m', 96)
+  const marketPda = useMemo(() => pdas.marketFor(symbol), [symbol])
+  const positionsLive = useLiveAccount(conn, base?.positions ?? null, decodePositions)
+  const marketLive = useLiveAccount(conn, base ? marketPda : null, decodeTicketMarket)
+  const userLive = useLiveAccount(conn, base?.userAccount ?? null, decodeUserAccount)
+  const mark = useMark(symbol)
+  const change24h = useCandles(symbol, '15m', 96)
   const pool = usePoolHistory(1)
   const indexerConnected = useIndexerConnected()
 
-  const position = positionLive.value
-  const marketMark = marketLive.value?.mark ?? null
+  // Right after a switch the subscription still holds the previous market for
+  // one render — never pair its feed or params with the new market's PDA.
+  const market = marketLive.value?.symbol === symbol ? marketLive.value : null
+  const accounts = useMemo(
+    () => (base && market ? tradeAccountsFor(base, { market: marketPda, feed: market.feed }) : null),
+    [base, market, marketPda],
+  )
+  const { slot: position, openBlocked } = slotGate(positionsLive.value, marketPda)
+  const marketMark = market?.mark ?? null
   const markUsd = mark.data?.price ?? marketMark
   const markUsdNum = markUsd !== null ? Number(markUsd) / 1e6 : null
 
@@ -96,32 +113,36 @@ export function TradeScreen() {
   const sessionUsedUp = !sessionExpired && actionsLeft === 0
   const sessionLow = !sessionExpired && actionsLeft !== null && actionsLeft > 0 && actionsLeft <= LOW_SESSION_ACTIONS
 
-  const marketParams: MarketParams | null = marketLive.value
+  const marketParams: MarketParams | null = market
     ? {
-        imrBps: BigInt(marketLive.value.imrBps),
-        mmrBps: BigInt(marketLive.value.mmrBps),
-        openFeeBps: BigInt(marketLive.value.openFeeBps),
-        closeFeeBps: BigInt(marketLive.value.closeFeeBps),
-        minSize: marketLive.value.minSize,
+        imrBps: BigInt(market.imrBps),
+        mmrBps: BigInt(market.mmrBps),
+        openFeeBps: BigInt(market.openFeeBps),
+        closeFeeBps: BigInt(market.closeFeeBps),
+        minSize: market.minSize,
       }
     : null
 
   const handleOpen = useCallback(
     async (side: SideName, size: bigint, margin: bigint, limitPrice: bigint) => {
       if (!conn || !session || !accounts) return
+      if (openBlocked) {
+        showToast({ tone: 'danger', text: openBlocked })
+        return
+      }
       setBusy(true)
       try {
         const mkt = await readMarket(conn, accounts.market)
         if (!mkt || mkt.mark === 0n) throw new Error('Market has no mark price yet')
         await openPosition(conn, session, accounts, side === 'Long' ? 'long' : 'short', size, margin, limitPrice)
-        showToast({ tone: 'success', text: `Opened ${side} ${Number(size) / 1_000_000_000} SOL` })
+        showToast({ tone: 'success', text: `Opened ${side} ${Number(size) / 1_000_000_000} ${symbol}` })
       } catch (e) {
         showToast({ tone: 'danger', text: describeTxError(e) })
       } finally {
         setBusy(false)
       }
     },
-    [conn, session, accounts],
+    [conn, session, accounts, openBlocked, symbol],
   )
 
   const handleClose = useCallback(
@@ -133,7 +154,8 @@ export function TradeScreen() {
         await decreasePosition(conn, session, accounts, closeSize, limit)
         showToast({
           tone: 'success',
-          text: closeSize === position.size ? 'Position closed' : `Closed ${Number(closeSize) / 1_000_000_000} SOL`,
+          text:
+            closeSize === position.size ? 'Position closed' : `Closed ${Number(closeSize) / 1_000_000_000} ${symbol}`,
         })
       } catch (e) {
         showToast({ tone: 'danger', text: describeTxError(e) })
@@ -141,27 +163,29 @@ export function TradeScreen() {
         setBusy(false)
       }
     },
-    [conn, session, accounts, position, markUsd],
+    [conn, session, accounts, position, markUsd, symbol],
   )
 
   return (
     <Page>
       <ScrollView contentContainerStyle={{ gap: space.lg, paddingVertical: space.lg }}>
         <TradeHeader
+          symbol={symbol}
           markUsdNum={markUsdNum}
           pctChange={pctChange}
           dotColor={dotColor}
-          maxLeverage={marketLive.value ? maxLeverage(marketLive.value.maxLevBps, marketLive.value.imrBps) : null}
+          maxLeverage={market ? maxLeverage(market.maxLevBps, market.imrBps) : null}
           range={rangeStats(change24h.data, now * 1000)}
           poolLiquidity={pool.data?.length ? pool.data[pool.data.length - 1].capitalTotal : null}
         />
 
         <ChartSection
+          symbol={symbol}
           tf={tf}
           onTfChange={setTf}
           markUsd={markUsd}
           position={position}
-          market={marketLive.value}
+          market={market}
           poolCapital={pool.data?.length ? pool.data[pool.data.length - 1].capitalTotal : null}
         />
 
@@ -194,9 +218,9 @@ export function TradeScreen() {
             </Button>
           </View>
         ) : null}
-        {gate.status === 'needs_setup' ? null : sessionError || positionLive.error || marketLive.error ? (
+        {gate.status === 'needs_setup' ? null : sessionError || positionsLive.error || marketLive.error ? (
           <Text style={[caption, { color: colors.short }]}>
-            {sessionError ?? positionLive.error ?? marketLive.error}
+            {sessionError ?? positionsLive.error ?? marketLive.error}
           </Text>
         ) : null}
 
@@ -204,10 +228,14 @@ export function TradeScreen() {
           <Skeleton lines={4} />
         ) : (
           <TradeTicket
+            // A market switch starts a fresh ticket: no size typed for one market lands on another.
+            key={symbol}
+            symbol={symbol}
             markUsd={markUsd}
             market={marketParams}
             freeMarginUsd={userLive.value?.freeMargin ?? null}
             position={position}
+            openBlocked={openBlocked}
             busy={busy}
             disabled={tradingPaused || sessionExpired || sessionUsedUp || !session}
             onOpen={handleOpen}
@@ -215,9 +243,9 @@ export function TradeScreen() {
           />
         )}
 
-        <TradeActivity position={position} markUsd={markUsd} />
+        <TradeActivity symbol={symbol} position={position} markUsd={markUsd} />
 
-        <MarketInfoCard market={marketLive.value} />
+        <MarketInfoCard symbol={symbol} market={market} />
       </ScrollView>
     </Page>
   )

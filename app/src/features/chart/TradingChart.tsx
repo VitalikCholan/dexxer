@@ -16,7 +16,7 @@ import { useTheme } from '@/src/theme'
 import { useTextStyle } from '@/src/ui/styles'
 import { Sheet } from '@/src/ui/Sheet'
 import { useCandles } from '@/src/lib/indexer'
-import { type DecodedPosition } from '@/src/lib/codecs'
+import { type PositionSlot } from '@/src/lib/positions'
 import { CHART_TYPES, ema, seriesFor, withLiveMark, type ChartType, type Tf } from './chartData'
 import { chartHtml, type ChartColors } from './chartHtml'
 import { useChartPrefs } from './useChartPrefs'
@@ -26,11 +26,14 @@ const EMA_PERIOD = 20
 const TIMEFRAMES: Tf[] = ['1m', '5m', '15m']
 
 export interface TradingChartProps {
+  /** Market symbol whose candles are drawn. */
+  symbol: string
   tf: Tf
   onTfChange: (tf: Tf) => void
   /** Live mark, raw 1e6. */
   markUsd: bigint | null
-  position: DecodedPosition | null
+  /** The same market's slot — entry / liq lines; null when there is none. */
+  position: PositionSlot | null
 }
 
 function Pill({ label, active, onPress }: { label: string; active?: boolean; onPress: () => void }) {
@@ -55,11 +58,11 @@ function Pill({ label, active, onPress }: { label: string; active?: boolean; onP
   )
 }
 
-export function TradingChart({ tf, onTfChange, markUsd, position }: TradingChartProps) {
+export function TradingChart({ symbol, tf, onTfChange, markUsd, position }: TradingChartProps) {
   const { colors, space } = useTheme()
   const caption = useTextStyle('caption')
   const body = useTextStyle('body')
-  const candles = useCandles(tf)
+  const candles = useCandles(symbol, tf)
   const [prefs, setPrefs] = useChartPrefs()
   const [picker, setPicker] = useState(false)
   const [ready, setReady] = useState(false)
@@ -90,11 +93,12 @@ export function TradingChart({ tf, onTfChange, markUsd, position }: TradingChart
     () => (prefs.ema ? ema(seriesFor('candles', merged).data as { time: number; close: number }[], EMA_PERIOD) : null),
     [prefs.ema, merged],
   )
-  const open = position?.state === 'Open' ? position : null
   const lines = useMemo(
     () =>
-      prefs.positions && open ? { entry: Number(open.entry) / 1e6, liq: Number(open.liqPrice) / 1e6 } : ({} as const),
-    [prefs.positions, open],
+      prefs.positions && position
+        ? { entry: Number(position.entry) / 1e6, liq: Number(position.liqPrice) / 1e6 }
+        : ({} as const),
+    [prefs.positions, position],
   )
 
   function send(msg: unknown) {

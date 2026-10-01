@@ -12,19 +12,21 @@ import { Sheet } from '@/src/ui/Sheet'
 import { Input } from '@/src/ui/Input'
 import { Row } from '@/src/ui/Row'
 import { Button } from '@/src/ui/Button'
-import { type DecodedPosition } from '@/src/lib/codecs'
+import { type PositionSlot } from '@/src/lib/positions'
 import { computeUpnl, solSize } from '@/src/lib/trade'
 
 export interface DecreaseSheetProps {
   open: boolean
   onClose: () => void
-  position: DecodedPosition
+  position: PositionSlot
+  /** Market symbol for the labels (`SOL`, `BTC`, ...). */
+  symbol: string
   markUsd: bigint | null
   busy: boolean
   onSubmit: (closeSizeSol: number) => Promise<void>
 }
 
-export function DecreaseSheet({ open, onClose, position, markUsd, busy, onSubmit }: DecreaseSheetProps) {
+export function DecreaseSheet({ open, onClose, position, symbol, markUsd, busy, onSubmit }: DecreaseSheetProps) {
   const { colors } = useTheme()
   const caption = useTextStyle('caption')
   const maxSol = Number(position.size) / 1e9
@@ -41,14 +43,14 @@ export function DecreaseSheet({ open, onClose, position, markUsd, busy, onSubmit
       : null
 
   return (
-    <Sheet open={open} onClose={onClose} title="Decrease position">
+    <Sheet open={open} onClose={onClose} title={`Decrease ${symbol}-PERP`}>
       <Input
         label="Close size"
         value={closeSize}
         onChangeText={setCloseSize}
-        suffix="SOL"
+        suffix={symbol}
         keyboardType="decimal-pad"
-        hint={`Max: ${maxSol.toFixed(4)} SOL`}
+        hint={`Max: ${maxSol.toFixed(4)} ${symbol}`}
         onMax={() => setCloseSize(maxSol.toFixed(4))}
       />
       <Row

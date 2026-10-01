@@ -13,12 +13,15 @@ import { Input } from '@/src/ui/Input'
 import { Row } from '@/src/ui/Row'
 import { Button } from '@/src/ui/Button'
 import { formatUsd2 } from '@/src/lib/status'
-import { type DecodedPosition } from '@/src/lib/codecs'
+import { type PositionSlot } from '@/src/lib/positions'
 import { computeUpnl, solSize } from '@/src/lib/trade'
 import { closeBlock, closePreview } from './ticketMath'
 
 export interface CloseTabProps {
-  position: DecodedPosition | null
+  /** The selected market's slot — null when the trader has no position on it. */
+  position: PositionSlot | null
+  /** Market symbol for the size labels. */
+  symbol: string
   markUsd: bigint | null
   /** `Market.close_fee_bps` / `min_size` — null while the market is loading. */
   closeFeeBps: bigint | null
@@ -36,14 +39,14 @@ function signedUsd(raw: bigint): string {
   return `${raw >= 0n ? '+' : '−'}$${formatUsd2(raw >= 0n ? raw : -raw)}`
 }
 
-export function CloseTab({ position, markUsd, closeFeeBps, minSize, busy, disabled, onClose }: CloseTabProps) {
+export function CloseTab({ position, symbol, markUsd, closeFeeBps, minSize, busy, disabled, onClose }: CloseTabProps) {
   const { colors, space } = useTheme()
   const caption = useTextStyle('caption')
   const [closeSizeText, setCloseSizeText] = useState('')
   /** Set by MAX, cleared by typing: sends the exact size rather than its 4-dp rendering. */
   const [all, setAll] = useState(false)
 
-  if (!position || position.state !== 'Open') {
+  if (!position) {
     return <Text style={[caption, { color: colors.textSecondary }]}>No open position to close.</Text>
   }
 
@@ -67,9 +70,9 @@ export function CloseTab({ position, markUsd, closeFeeBps, minSize, busy, disabl
 
   const warning =
     block === 'exceeds'
-      ? `More than the open ${sol(position.size)} SOL`
+      ? `More than the open ${sol(position.size)} ${symbol}`
       : block === 'remainder_below_min'
-        ? `Would leave less than the ${minSize !== null ? sol(minSize) : '—'} SOL minimum — close all instead`
+        ? `Would leave less than the ${minSize !== null ? sol(minSize) : '—'} ${symbol} minimum — close all instead`
         : null
 
   return (
@@ -77,7 +80,7 @@ export function CloseTab({ position, markUsd, closeFeeBps, minSize, busy, disabl
       <View style={{ gap: space.xs }}>
         <Row
           label="Position"
-          value={`${position.side} ${sol(position.size)} SOL @ $${formatUsd2(position.entry)}`}
+          value={`${position.side} ${sol(position.size)} ${symbol} @ $${formatUsd2(position.entry)}`}
           tone={position.side === 'Long' ? 'success' : 'danger'}
         />
         <Row
@@ -94,9 +97,9 @@ export function CloseTab({ position, markUsd, closeFeeBps, minSize, busy, disabl
           setAll(false)
           setCloseSizeText(t)
         }}
-        suffix="SOL"
+        suffix={symbol}
         keyboardType="decimal-pad"
-        hint={`Open: ${sol(position.size)} SOL`}
+        hint={`Open: ${sol(position.size)} ${symbol}`}
         onMax={() => {
           setAll(true)
           setCloseSizeText(sol(position.size))
@@ -120,7 +123,7 @@ export function CloseTab({ position, markUsd, closeFeeBps, minSize, busy, disabl
         disabled={disabled || busy || markUsd === null || block !== null}
         onPress={() => void onClose(closeSize)}
       >
-        {busy ? 'Signing with session key…' : full ? 'Close position' : `Close ${sol(closeSize)} SOL`}
+        {busy ? 'Signing with session key…' : full ? 'Close position' : `Close ${sol(closeSize)} ${symbol}`}
       </Button>
     </View>
   )

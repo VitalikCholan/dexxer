@@ -10,7 +10,6 @@ import assert from 'node:assert/strict'
 import {
   IndexerShapeError,
   parseCandles,
-  parseDisclosure,
   parseMark,
   parsePoolSnapshot,
   parseRootLatest,
@@ -27,38 +26,32 @@ const POOL = {
   insurance: '0',
   bad_debt_total: '0',
 }
-const DISCLOSURE = {
-  pubkey: 'Fg6PaFpoGXkYsidMpWTK6W2BeZ7FEfcYkg476zPFsLnS',
-  side: 'Long',
-  size: '1000000000',
-  entry: '150000000',
-  exit: '151000000',
-  pnl: '-5',
-  fees: '7',
-  reason: 'User',
-  opened_slot: '10',
-  closed_slot: '20',
-  nonce: '3',
-  ts: 1_700_000_000_000,
-}
 
 test('parseMark: decimal-string price -> bigint; a null price is a valid "no mark yet"', () => {
-  assert.deepEqual(parseMark({ price: '151234567', slot: 5, ts: 1, publishTime: 1, stale: false }), {
+  assert.deepEqual(parseMark({ price: '151234567', slot: 5, ts: 1, publishTime: 1, stale: false, market: 'SOL' }), {
     price: 151_234_567n,
     slot: 5,
     ts: 1,
     stale: false,
+    market: 'SOL',
   })
-  assert.equal(parseMark({ price: null, slot: null, ts: null, publishTime: null, stale: true }).price, null)
+  assert.equal(
+    parseMark({ price: null, slot: null, ts: null, publishTime: null, stale: true, market: 'SOL' }).price,
+    null,
+  )
 })
-test('parseMark rejects a non-numeric price and a missing stale flag, naming the field', () => {
+test('parseMark rejects a non-numeric price, a missing stale flag and a missing market, naming the field', () => {
   assert.throws(
-    () => parseMark({ price: '1.5e9', slot: 1, ts: 1, stale: false }),
+    () => parseMark({ price: '1.5e9', slot: 1, ts: 1, stale: false, market: 'SOL' }),
     (e: unknown) => e instanceof IndexerShapeError && /price/.test(e.message),
   )
   assert.throws(
-    () => parseMark({ price: '1', slot: 1, ts: 1 }),
+    () => parseMark({ price: '1', slot: 1, ts: 1, market: 'SOL' }),
     (e: unknown) => e instanceof IndexerShapeError && /stale/.test(e.message),
+  )
+  assert.throws(
+    () => parseMark({ price: '1', slot: 1, ts: 1, stale: false }),
+    (e: unknown) => e instanceof IndexerShapeError && /market/.test(e.message),
   )
 })
 
@@ -73,16 +66,6 @@ test('parsePoolSnapshot fails by name when the backend renames a column', () => 
   assert.throws(
     () => parsePoolSnapshot(renamed),
     (e: unknown) => e instanceof IndexerShapeError && /capital_total/.test(e.message),
-  )
-})
-
-test('parseDisclosure: signed pnl stays signed; ts must be a number', () => {
-  const d = parseDisclosure(DISCLOSURE)
-  assert.equal(d.pnl, -5n)
-  assert.equal(d.openedSlot, 10n)
-  assert.throws(
-    () => parseDisclosure({ ...DISCLOSURE, ts: '1700000000000' }),
-    (e: unknown) => e instanceof IndexerShapeError && /ts/.test(e.message),
   )
 })
 
@@ -104,12 +87,13 @@ test('parseRootLatest: null before the first commit; leavesHex must be strings',
 })
 
 test('parseWsFrame: known frames are validated like their REST twins; an unknown type is ignored (null), not an error', () => {
-  const mark = parseWsFrame({ type: 'mark', price: '7', ts: 1, stale: false })
-  assert.deepEqual(mark, { type: 'mark', price: 7n, ts: 1, stale: false })
+  const mark = parseWsFrame({ type: 'mark', market: 'BTC', price: '7', ts: 1, stale: false })
+  assert.deepEqual(mark, { type: 'mark', market: 'BTC', price: 7n, ts: 1, stale: false })
+  assert.throws(() => parseWsFrame({ type: 'mark', price: '7', ts: 1, stale: false }), IndexerShapeError)
   const pool = parseWsFrame({ type: 'pool', ...POOL })
   assert.equal(pool?.type, 'pool')
-  const disc = parseWsFrame({ type: 'disclosure', ...DISCLOSURE })
-  assert.equal(disc?.type, 'disclosure')
+  // Disclosure is gone with position slots: an old relayer's frame is just an unknown type.
+  assert.equal(parseWsFrame({ type: 'disclosure', pubkey: 'x', side: 'Long' }), null)
   assert.equal(parseWsFrame({ type: 'heartbeat' }), null)
   assert.throws(() => parseWsFrame({ type: 'pool', slot: 1 }), IndexerShapeError)
   assert.throws(() => parseWsFrame('not an object'), IndexerShapeError)

@@ -8,6 +8,9 @@
 // `math.marginForLeverage`); typing a custom Margin overrides it until
 // either changes again — `open_position` only ever sees the Margin field's
 // current value, leverage is a UI convenience, not a program argument.
+// Position slots: `position` is the SELECTED market's slot (null = no
+// position there: Open only, no Close tab); `openBlocked` (all 16 slots taken
+// elsewhere, `tradingRules.ts`'s `slotGate`) disables Open before sending.
 // Insufficient-margin gate (post-launch smoke-test fix, 23.09.2026): see
 // `deriveTicket`'s doc comment in `ticketMath.ts` (week 6: the pure math
 // moved there so it runs under `npm test`; this file is render-only).
@@ -25,7 +28,8 @@ import { CloseTab } from './CloseTab'
 import * as math from '@/src/lib/math'
 import { formatUsd2 } from '@/src/lib/status'
 import { deriveTicket, impliedLeverage, safeLiq } from './ticketMath'
-import { type DecodedPosition, type SideName } from '@/src/lib/codecs'
+import { type SideName } from '@/src/lib/codecs'
+import { type PositionSlot } from '@/src/lib/positions'
 import { solSize, usdAmount } from '@/src/lib/trade'
 
 export interface MarketParams {
@@ -40,7 +44,12 @@ export interface TradeTicketProps {
   markUsd: bigint | null
   market: MarketParams | null
   freeMarginUsd: bigint | null
-  position: DecodedPosition | null
+  /** Selected market symbol — the size field's unit. */
+  symbol: string
+  /** The selected market's slot; null when the trader has none there. */
+  position: PositionSlot | null
+  /** Set when Open must not be sent (no free slot): shown above the slider, and the Open button is disabled. */
+  openBlocked: string | null
   busy: boolean
   disabled?: boolean
   /** Raw program units: size 1e9, margin/limit 1e6 — no number round trip on the way to `openPosition`. */
@@ -53,7 +62,10 @@ export function TradeTicket({ position, onClose, ...open }: TradeTicketProps) {
   const { colors } = useTheme()
   const caption = useTextStyle('caption')
   const [tab, setTab] = useState<'open' | 'close'>('open')
-  const hasOpenPosition = position?.state === 'Open'
+  const hasOpenPosition = position !== null
+  // No slot on this market: the Close tab is not offered at all, and a full
+  // close drops back to Open (render-time adjust, as in OpenForm below).
+  if (!hasOpenPosition && tab === 'close') setTab('open')
 
   return (
     <Card>
@@ -61,10 +73,14 @@ export function TradeTicket({ position, onClose, ...open }: TradeTicketProps) {
         compact
         value={tab}
         onChange={setTab}
-        options={[
-          { value: 'open', label: 'Open' },
-          { value: 'close', label: 'Close' },
-        ]}
+        options={
+          hasOpenPosition
+            ? [
+                { value: 'open', label: 'Open' },
+                { value: 'close', label: 'Close' },
+              ]
+            : [{ value: 'open', label: 'Open' }]
+        }
       />
       {tab === 'open' ? (
         <OpenForm {...open} hasOpenPosition={hasOpenPosition} />
@@ -73,6 +89,7 @@ export function TradeTicket({ position, onClose, ...open }: TradeTicketProps) {
           // A fresh position starts with an empty field, not the last close's text.
           key={hasOpenPosition ? `${position.entry}` : 'none'}
           position={position}
+          symbol={open.symbol}
           markUsd={open.markUsd}
           closeFeeBps={open.market?.closeFeeBps ?? null}
           minSize={open.market?.minSize ?? null}
@@ -90,7 +107,17 @@ export function TradeTicket({ position, onClose, ...open }: TradeTicketProps) {
 
 type OpenFormProps = Omit<TradeTicketProps, 'position' | 'onClose'> & { hasOpenPosition: boolean }
 
-function OpenForm({ markUsd, market, freeMarginUsd, hasOpenPosition, busy, disabled, onOpen }: OpenFormProps) {
+function OpenForm({
+  markUsd,
+  market,
+  freeMarginUsd,
+  symbol,
+  openBlocked,
+  hasOpenPosition,
+  busy,
+  disabled,
+  onOpen,
+}: OpenFormProps) {
   const { colors, space } = useTheme()
   const caption = useTextStyle('caption')
 
@@ -183,7 +210,7 @@ function OpenForm({ markUsd, market, freeMarginUsd, hasOpenPosition, busy, disab
       />
       <View style={{ flexDirection: 'row', gap: space.md }}>
         <View style={{ flex: 1 }}>
-          <Input label="Size" value={sizeSol} onChangeText={setSizeSol} suffix="SOL" keyboardType="decimal-pad" />
+          <Input label="Size" value={sizeSol} onChangeText={setSizeSol} suffix={symbol} keyboardType="decimal-pad" />
         </View>
         <View style={{ flex: 1 }}>
           <Input
@@ -200,6 +227,7 @@ function OpenForm({ markUsd, market, freeMarginUsd, hasOpenPosition, busy, disab
       {derived.insufficient ? (
         <Text style={[caption, { color: colors.short }]}>Insufficient margin — lower size or leverage, or deposit</Text>
       ) : null}
+      {openBlocked ? <Text style={[caption, { color: colors.short }]}>{openBlocked}</Text> : null}
       <LeverageSlider value={leverage} onChange={setLeverage} />
       <View style={{ gap: space.xs }}>
         <Row label="Entry ≈" value={markUsd !== null ? `$${formatUsd2(markUsd)}` : '—'} />
@@ -209,7 +237,7 @@ function OpenForm({ markUsd, market, freeMarginUsd, hasOpenPosition, busy, disab
       </View>
       <Button
         variant={side === 'long' ? 'primary' : 'destructive'}
-        disabled={disabled || busy || markUsd === null || derived.insufficient}
+        disabled={disabled || busy || markUsd === null || derived.insufficient || openBlocked !== null}
         onPress={() => void onOpen(sideName, sizeBig, marginBig, limit ?? 0n)}
       >
         {busy ? 'Signing with session key…' : side === 'long' ? 'Open Long' : 'Open Short'}

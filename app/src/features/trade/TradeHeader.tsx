@@ -1,7 +1,8 @@
 // app/src/features/trade/TradeHeader.tsx
 //
 // Fix round 1: split out of TradeScreen.tsx to keep it under the
-// ~200-line guideline. Week 6 (C.6-A) market header: SOL mark + SOL-PERP +
+// ~200-line guideline. Week 6 (C.6-A) market header: the market switch
+// (`MarketPicker`, position slots), then the mark + `<SYMBOL>-PERP` +
 // max-leverage badge and the "Pyth Lazer" freshness pill on top, the big
 // mark price with its 24h change, then a stats row — High / Low over the
 // fetched candles and the pool's liquidity from the public 5-min `Pool`
@@ -13,12 +14,15 @@ import { useTextStyle } from '@/src/ui/styles'
 import { Badge } from '@/src/ui/Badge'
 import { SolIcon } from '@/src/ui/SolIcon'
 import { formatCompactUsd, type RangeStats } from './headerStats'
+import { MarketPicker } from './MarketPicker'
 
 function fmtUsd(n: number): string {
   return n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
 }
 
 export interface TradeHeaderProps {
+  /** Selected market symbol (`SOL`, `BTC`, ...). */
+  symbol: string
   markUsdNum: number | null
   pctChange: number | null
   dotColor: string
@@ -29,7 +33,15 @@ export interface TradeHeaderProps {
   poolLiquidity: bigint | null
 }
 
-export function TradeHeader({ markUsdNum, pctChange, dotColor, maxLeverage, range, poolLiquidity }: TradeHeaderProps) {
+export function TradeHeader({
+  symbol,
+  markUsdNum,
+  pctChange,
+  dotColor,
+  maxLeverage,
+  range,
+  poolLiquidity,
+}: TradeHeaderProps) {
   const { colors, space, radius, border } = useTheme()
   const display = useTextStyle('display', { mono: true })
   const heading = useTextStyle('heading')
@@ -46,10 +58,11 @@ export function TradeHeader({ markUsdNum, pctChange, dotColor, maxLeverage, rang
 
   return (
     <View style={{ gap: space.md }}>
+      <MarketPicker />
       <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: space.sm }}>
         <View style={{ flexDirection: 'row', alignItems: 'center', gap: space.sm }}>
-          <SolIcon />
-          <Text style={[heading, { color: colors.textPrimary }]}>SOL-PERP</Text>
+          {symbol === 'SOL' ? <SolIcon /> : null}
+          <Text style={[heading, { color: colors.textPrimary }]}>{`${symbol}-PERP`}</Text>
           {maxLeverage !== null ? (
             // `Badge` pins itself to `flex-start`; the wrapper re-centres it on the row.
             <View style={{ justifyContent: 'center' }}>

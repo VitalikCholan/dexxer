@@ -8,8 +8,10 @@
 import { BN } from '@coral-xyz/anchor'
 import { Connection, Keypair, PublicKey, Transaction, type TransactionInstruction } from '@solana/web3.js'
 import { dexxerCoreProgram } from './anchor'
-import { readPosition, type SideName } from './codecs'
+import { type SideName } from './codecs'
 import { confirmOnConn } from './confirm'
+import { pdas } from './pdas'
+import { decodePositions, slotFor } from './positions'
 
 /** u64::MAX — the permissive ("no slippage protection") limit for a Short close (mirrors `tests/er/lib/trader.ts`'s `U64_MAX`). */
 export const U64_MAX = 18_446_744_073_709_551_615n
@@ -36,26 +38,31 @@ export function computeUpnl(side: SideName, size: bigint, entry: bigint, mark: b
   return (size * diff) / 1_000_000_000n
 }
 
-/** Accounts every `Trade` instruction (`open_position`/`close_position`) needs beyond `signer` — see `programs/dexxer_core/src/instructions/trade.rs`'s `Trade` context. */
+/**
+ * Accounts every `Trade` instruction (`open/close/increase/decrease_position`,
+ * `add_margin`) needs beyond `signer` — 12 in all, in the IDL's order:
+ * `programs/dexxer_core/src/instructions/trade.rs`'s `Trade` context.
+ */
 export interface TradeAccounts {
   config: PublicKey
+  /** The selected market's PDA; the trader's position on it is the `Positions` slot whose `market` equals it. */
   market: PublicKey
   marketRisk: PublicKey
   /** Private live pool counters (week 4, Task 1) — `Trade` writes here, never the public `pool` snapshot. */
   poolLive: PublicKey
   userAccount: PublicKey
-  position: PublicKey
+  /** The owner's zero-copy `Positions` (16 slots + history ring). */
+  positions: PublicKey
+  /** The market's oracle feed (`Market.feed`). */
   feed: PublicKey
-  /** Week 5, Task 1: a close pushes its `ClosedRecord` straight into the owner's ring, so every trade ix carries it. */
-  disclosureQueue: PublicKey
   /** Week 5, Task 3: pays the per-position liquidation task's scheduler CPI, and is that task's authority. */
   feeEscrow: PublicKey
   /**
    * Week 5, Task 3's Magic Actions task context. An inert writable placeholder
    * on-chain: the Magic Program never creates, writes or reassigns it, and any
    * already-existing writable account is accepted (Task 0, measurement 6).
-   * Every client passes the position PDA so registration and cancel name the
-   * same account.
+   * Every client passes the `Positions` PDA so registration and cancel name
+   * the same account.
    */
   taskContext: PublicKey
   magicProgram: PublicKey
@@ -64,6 +71,14 @@ export interface TradeAccounts {
    * `liquidation_check` tick carries. `open_position` rejects any other value.
    */
   liqCrankSigner: PublicKey
+}
+
+/** The market-independent accounts, derived once per owner (`useTradeSession`'s `base`). */
+export type BaseTradeAccounts = Omit<TradeAccounts, 'market' | 'marketRisk' | 'feed' | 'taskContext'>
+
+/** One market's full account set: its PDA, risk PDA and feed on top of the owner's base; `taskContext` = `positions`. */
+export function tradeAccountsFor(base: BaseTradeAccounts, m: { market: PublicKey; feed: PublicKey }): TradeAccounts {
+  return { ...base, market: m.market, marketRisk: pdas.marketRisk(m.market), feed: m.feed, taskContext: base.positions }
 }
 
 /** Sign with the session `Keypair` locally (no MWA prompt) and send+confirm on `conn` — fee payer = session, per file header/Task 8 brief. */
@@ -132,7 +147,7 @@ export async function addMargin(
  * `close_position` on the ER, signed ONLY by `session`. `limitPrice`
  * defaults to `0n`, a "no slippage protection" sentinel — `close_position`'s
  * Short branch requires `exec_price <= limit_price`, so a literal 0 would
- * always reject a short close; this reads the position's side first and
+ * always reject a short close; this reads the side of this market's slot first and
  * maps the sentinel to the permissive bound for that side (0 for Long,
  * u64::MAX for Short), same as `tests/er/lib/trader.ts`'s `closePosition`.
  */
@@ -142,9 +157,10 @@ export async function closePosition(
   accounts: TradeAccounts,
   limitPrice = 0n,
 ): Promise<string> {
-  const posState = await readPosition(conn, accounts.position)
-  if (!posState) throw new Error('closePosition: Position account not found')
-  const isShort = posState.side === 'Short'
+  const info = await conn.getAccountInfo(accounts.positions, 'confirmed')
+  const slot = info ? slotFor(decodePositions(info.data), accounts.market) : null
+  if (!slot) throw new Error('closePosition: no open position on this market')
+  const isShort = slot.side === 'Short'
   const limitArg = limitPrice === 0n ? (isShort ? U64_MAX : 0n) : limitPrice
   const core = dexxerCoreProgram(conn, session.publicKey)
   const ix = await core.methods

@@ -3,7 +3,16 @@
 // reconnect policy, cache patching and the history cap run under node.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { backoffMs, IndexerWs, MAX_BACKOFF_MS, POOL_HISTORY_MAX, QK, type PoolSnapshot } from '../src/lib/indexer'
+import {
+  backoffMs,
+  IndexerWs,
+  MAX_BACKOFF_MS,
+  POOL_HISTORY_MAX,
+  QK,
+  WS_URL,
+  type Mark,
+  type PoolSnapshot,
+} from '../src/lib/indexer'
 
 type Handler = ((ev: { data: unknown }) => void) | null
 class FakeSocket {
@@ -83,6 +92,28 @@ test('a pool frame patches the poolHistory cache, newest last, capped at POOL_HI
   assert.equal(hist.length, POOL_HISTORY_MAX)
   assert.equal(hist[hist.length - 1].slot, POOL_HISTORY_MAX + 5)
   assert.equal(hist[0].slot, 6, 'oldest entries are dropped first')
+})
+
+test('the shared socket subscribes to every market', () => {
+  assert.ok(WS_URL.endsWith('/ws?markets=*'), WS_URL)
+})
+
+test("a mark frame patches only its own market's mark cache, keeping the last REST slot", () => {
+  const h = harness()
+  h.ws.retain()
+  h.sockets[0].open()
+  const solMark: Mark = { price: 150_000_000n, slot: 9, ts: 1, stale: false, market: 'SOL' }
+  h.cache.data.set(JSON.stringify(QK.mark('SOL')), solMark)
+  h.cache.data.set(JSON.stringify(QK.mark('BTC')), { price: 1n, slot: 4, ts: 1, stale: false, market: 'BTC' })
+  h.sockets[0].push({ type: 'mark', market: 'BTC', price: '65000000000', ts: 2, stale: false })
+  assert.deepEqual(h.cache.data.get(JSON.stringify(QK.mark('BTC'))), {
+    price: 65_000_000_000n,
+    slot: 4,
+    ts: 2,
+    stale: false,
+    market: 'BTC',
+  })
+  assert.equal(h.cache.data.get(JSON.stringify(QK.mark('SOL'))), solMark, 'SOL cache untouched')
 })
 
 test('frames this build does not know are ignored; malformed known frames and non-JSON are counted, never thrown', () => {

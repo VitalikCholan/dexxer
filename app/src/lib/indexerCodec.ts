@@ -9,7 +9,7 @@
 // validates the shape and converts the relayer's "u64/i64 as decimal string"
 // convention to `bigint`, throwing `IndexerShapeError` that NAMES the field.
 // Shapes: services/relayer/src/indexer/{http,store,accounts}.ts.
-import type { Candle, Disclosure, Mark, PoolSnapshot, RootLatest } from './indexer'
+import type { Candle, Mark, PoolSnapshot, RootLatest } from './indexer'
 
 export class IndexerShapeError extends Error {
   constructor(
@@ -23,28 +23,28 @@ export class IndexerShapeError extends Error {
 
 const DECIMAL = /^-?\d+$/
 
-function obj(v: unknown, where: string): Record<string, unknown> {
+export function obj(v: unknown, where: string): Record<string, unknown> {
   if (typeof v !== 'object' || v === null || Array.isArray(v)) throw new IndexerShapeError(where, 'expected an object')
   return v as Record<string, unknown>
 }
-function num(o: Record<string, unknown>, k: string, where: string): number {
+export function num(o: Record<string, unknown>, k: string, where: string): number {
   const v = o[k]
   if (typeof v !== 'number' || !Number.isFinite(v))
     throw new IndexerShapeError(where, `${k}: expected a number, got ${describe(v)}`)
   return v
 }
-function str(o: Record<string, unknown>, k: string, where: string): string {
+export function str(o: Record<string, unknown>, k: string, where: string): string {
   const v = o[k]
   if (typeof v !== 'string') throw new IndexerShapeError(where, `${k}: expected a string, got ${describe(v)}`)
   return v
 }
-function bool(o: Record<string, unknown>, k: string, where: string): boolean {
+export function bool(o: Record<string, unknown>, k: string, where: string): boolean {
   const v = o[k]
   if (typeof v !== 'boolean') throw new IndexerShapeError(where, `${k}: expected a boolean, got ${describe(v)}`)
   return v
 }
 /** A u64/i64 the relayer serialised as a decimal string (`store.ts`: never `Number(...)`-coerced, values can exceed 2^53). */
-function big(o: Record<string, unknown>, k: string, where: string): bigint {
+export function big(o: Record<string, unknown>, k: string, where: string): bigint {
   const v = o[k]
   if (typeof v !== 'string' || !DECIMAL.test(v))
     throw new IndexerShapeError(where, `${k}: expected a decimal string, got ${describe(v)}`)
@@ -54,13 +54,13 @@ function describe(v: unknown): string {
   return v === undefined ? 'undefined' : v === null ? 'null' : Array.isArray(v) ? 'array' : typeof v
 }
 
-/** `GET /mark` (and the `mark` WS frame, which carries no `slot`). */
+/** `GET /mark?market=` (and the `mark` WS frame, which carries no `slot`). `market` is the symbol; the relayer always sends it. */
 export function parseMark(v: unknown): Mark {
   const o = obj(v, 'mark')
   const price = o.price === null ? null : big(o, 'price', 'mark')
   const slot = o.slot === null || o.slot === undefined ? null : num(o, 'slot', 'mark')
   const ts = o.ts === null ? null : num(o, 'ts', 'mark')
-  return { price, slot, ts, stale: bool(o, 'stale', 'mark') }
+  return { price, slot, ts, stale: bool(o, 'stale', 'mark'), market: str(o, 'market', 'mark') }
 }
 
 /** One row of `GET /pool/history` / `GET /pool/latest`, and the `pool` WS frame. */
@@ -75,25 +75,6 @@ export function parsePoolSnapshot(v: unknown): PoolSnapshot {
     feesAccrued: big(o, 'fees_accrued', 'pool'),
     insurance: big(o, 'insurance', 'pool'),
     badDebtTotal: big(o, 'bad_debt_total', 'pool'),
-  }
-}
-
-/** One row of `GET /disclosures`, and the `disclosure` WS frame. */
-export function parseDisclosure(v: unknown): Disclosure {
-  const o = obj(v, 'disclosure')
-  return {
-    pubkey: str(o, 'pubkey', 'disclosure'),
-    side: str(o, 'side', 'disclosure'),
-    size: big(o, 'size', 'disclosure'),
-    entry: big(o, 'entry', 'disclosure'),
-    exit: big(o, 'exit', 'disclosure'),
-    pnl: big(o, 'pnl', 'disclosure'),
-    fees: big(o, 'fees', 'disclosure'),
-    reason: str(o, 'reason', 'disclosure'),
-    openedSlot: big(o, 'opened_slot', 'disclosure'),
-    closedSlot: big(o, 'closed_slot', 'disclosure'),
-    nonce: big(o, 'nonce', 'disclosure'),
-    ts: num(o, 'ts', 'disclosure'),
   }
 }
 
@@ -124,13 +105,12 @@ export function parseRootLatest(v: unknown): RootLatest | null {
 }
 
 export type WsFrame =
-  | { type: 'mark'; price: bigint | null; ts: number; stale: boolean }
-  | ({ type: 'pool' } & PoolSnapshot)
-  | ({ type: 'disclosure' } & Disclosure)
+  { type: 'mark'; market: string; price: bigint | null; ts: number; stale: boolean } | ({ type: 'pool' } & PoolSnapshot)
 
 /**
  * One `/ws` frame. A `type` this build does not know is ignored (`null`) so
- * the relayer can add frames without breaking older clients; a KNOWN type
+ * the relayer can add frames without breaking older clients (and an old
+ * relayer's `disclosure` frame — gone with position slots — is just unknown); a KNOWN type
  * with the wrong shape throws — that is the contract breach worth seeing.
  */
 export function parseWsFrame(v: unknown): WsFrame | null {
@@ -138,12 +118,10 @@ export function parseWsFrame(v: unknown): WsFrame | null {
   switch (o.type) {
     case 'mark': {
       const m = parseMark({ ...o, slot: null })
-      return { type: 'mark', price: m.price, ts: num(o, 'ts', 'ws.mark'), stale: m.stale }
+      return { type: 'mark', market: m.market, price: m.price, ts: num(o, 'ts', 'ws.mark'), stale: m.stale }
     }
     case 'pool':
       return { type: 'pool', ...parsePoolSnapshot(o) }
-    case 'disclosure':
-      return { type: 'disclosure', ...parseDisclosure(o) }
     default:
       return null
   }

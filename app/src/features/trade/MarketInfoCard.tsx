@@ -14,7 +14,7 @@ import { Row } from '@/src/ui/Row'
 import { formatBps, maxLeverage } from './headerStats'
 import { type TicketMarket } from './marketLimits'
 
-export function MarketInfoCard({ market }: { market: TicketMarket | null }) {
+export function MarketInfoCard({ symbol, market }: { symbol: string; market: TicketMarket | null }) {
   const { colors, space, border } = useTheme()
   const body = useTextStyle('body')
   const caption = useTextStyle('caption')
@@ -27,9 +27,9 @@ export function MarketInfoCard({ market }: { market: TicketMarket | null }) {
   ]
 
   return (
-    <Card title="About SOL-PERP">
+    <Card title={`About ${symbol}-PERP`}>
       <Text style={[body, { color: colors.textSecondary }]}>
-        {`Trade SOL price movements with up to ${lev ?? '—'}× leverage, settled in dUSDC. Only you can see your open position.`}
+        {`Trade ${symbol} price movements with up to ${lev ?? '—'}× leverage, settled in dUSDC. Only you can see your open position.`}
       </Text>
       <View style={{ gap: space.xs }}>
         <Row label="Max leverage" value={lev !== null ? `${lev}×` : '—'} />

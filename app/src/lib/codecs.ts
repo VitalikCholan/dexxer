@@ -127,6 +127,8 @@ export interface DecodedMarket {
   closeFeeBps: number
   /** Market symbol (`SOL`, `BTC`, ...) — the 8-byte field trimmed of NUL padding. */
   symbol: string
+  /** The market's oracle feed — the `feed` account of every trade instruction on it. */
+  feed: PublicKey
 }
 
 export function decodeMarket(data: Buffer): DecodedMarket {
@@ -137,7 +139,11 @@ export function decodeMarket(data: Buffer): DecodedMarket {
     mmrBps: data.readUInt32LE(MARKET_MMR_BPS_OFFSET),
     openFeeBps: data.readUInt16LE(MARKET_OPEN_FEE_BPS_OFFSET),
     closeFeeBps: data.readUInt16LE(MARKET_CLOSE_FEE_BPS_OFFSET),
-    symbol: data.subarray(MARKET_SYMBOL_OFFSET, MARKET_SYMBOL_OFFSET + 8).toString('utf8').replace(/\0+$/, ''),
+    symbol: data
+      .subarray(MARKET_SYMBOL_OFFSET, MARKET_SYMBOL_OFFSET + 8)
+      .toString('utf8')
+      .replace(/\0+$/, ''),
+    feed: new PublicKey(data.subarray(MARKET_FEED_OFFSET, MARKET_FEED_OFFSET + 32)),
   }
 }
 
@@ -160,10 +166,7 @@ export async function readMarket(conn: Connection, market: PublicKey): Promise<D
  * locked_margin(8) + last_withdraw_slot(8) = 109 (v3 dropped `nonce`).
  */
 const USER_ACCOUNT_EXIT_SALT_OFFSET =
-  USER_ACCOUNT_FREE_MARGIN_OFFSET +
-  8 /* free_margin */ +
-  8 /* locked_margin */ +
-  8 /* last_withdraw_slot */
+  USER_ACCOUNT_FREE_MARGIN_OFFSET + 8 /* free_margin */ + 8 /* locked_margin */ + 8 /* last_withdraw_slot */
 
 export function readUserAccountExitSalt(data: Buffer): Uint8Array {
   return Uint8Array.from(data.subarray(USER_ACCOUNT_EXIT_SALT_OFFSET, USER_ACCOUNT_EXIT_SALT_OFFSET + 32))

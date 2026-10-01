@@ -53,16 +53,15 @@ export function AccountScreen() {
   const { signTransactions } = useMwaSigning()
   const { getConnection } = useTeeConnection()
   const { ensureRelayerSession } = useRelayerSession()
-  const { owner, conn, accounts, loading, error } = useTradeSession()
+  const { owner, conn, base, loading, error } = useTradeSession()
   const gate = useOnboardingGate()
   const mwa = useMemo(
     () => ({ signTransactions, getConnection, ensureRelayerSession }),
     [signTransactions, getConnection, ensureRelayerSession],
   )
 
-  // Task 4 adds `TradeAccounts.positions`; until then derive it here.
-  const positionsPubkey = useMemo(() => (owner ? pdas.positions(owner) : null), [owner])
-  const user = useLiveAccount(conn, accounts?.userAccount ?? null, decodeUserAccount)
+  const positionsPubkey = base?.positions ?? null
+  const user = useLiveAccount(conn, base?.userAccount ?? null, decodeUserAccount)
   const positionsLive = useLiveAccount(conn, positionsPubkey, decodePositions)
 
   const [sheet, setSheet] = useState<OpenSheet>(null)

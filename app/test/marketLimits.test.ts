@@ -9,10 +9,11 @@ import { DEXXER_CORE_IDL } from '../src/lib/anchor'
 import { decodeTicketMarket } from '../src/features/trade/marketLimits'
 
 test('decodeTicketMarket: every public Market parameter, plus the shared decodeMarket fields', async () => {
+  const feed = PublicKey.unique()
   const data = await new BorshAccountsCoder(DEXXER_CORE_IDL).encode('Market', {
     version: 1,
     symbol: [...Buffer.from('SOL-PERP')],
-    feed: PublicKey.unique(),
+    feed,
     max_lev_bps: 100_000,
     imr_bps: 1_000,
     mmr_bps: 500,
@@ -50,4 +51,5 @@ test('decodeTicketMarket: every public Market parameter, plus the shared decodeM
   assert.equal(m.mark, 151_234_567n)
   assert.equal(m.mmrBps, 500)
   assert.equal(m.closeFeeBps, 7)
+  assert.ok(m.feed.equals(feed), 'trade instructions take the feed from the live Market')
 })

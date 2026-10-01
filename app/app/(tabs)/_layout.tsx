@@ -5,7 +5,7 @@ import { useTheme } from '@/src/theme'
 import { FEATURES } from '@/src/lib/features'
 
 // Visible order (task-8, Claude Design 5-tab layout): trade, positions,
-// history, ledger, account. Everything else (`index`, `onboard`, `position`,
+// history, ledger, account. Everything else (`index`, `onboard`,
 // `demo`, `spikes`, `settings`, `info`) is `href: null` — out of the tab bar but
 // still reachable via router.push, and linked from Account → Settings →
 // Developer (see app/app/(tabs)/settings/index.tsx). Week 6: the template's
@@ -79,7 +79,6 @@ export default function TabLayout() {
       {/* Not in the tab bar — reachable via navigation only. */}
       <Tabs.Screen name="index" options={{ href: null }} />
       <Tabs.Screen name="onboard" options={{ href: null, title: 'Onboard' }} />
-      <Tabs.Screen name="position" options={{ href: null, title: 'Position' }} />
       <Tabs.Screen name="settings" options={{ href: null, title: 'Settings' }} />
       <Tabs.Screen name="info" options={{ href: null, title: 'Info' }} />
     </Tabs>

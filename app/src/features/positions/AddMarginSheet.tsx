@@ -14,14 +14,16 @@ import { Row } from '@/src/ui/Row'
 import { Button } from '@/src/ui/Button'
 import { formatUsd2 } from '@/src/lib/status'
 import { notional } from '@/src/lib/math'
-import { type DecodedPosition } from '@/src/lib/codecs'
+import { type PositionSlot } from '@/src/lib/positions'
 import { usdAmount } from '@/src/lib/trade'
 import { liqAfterAddMargin } from '../trade/ticketMath'
 
 export interface AddMarginSheetProps {
   open: boolean
   onClose: () => void
-  position: DecodedPosition
+  position: PositionSlot
+  /** Market symbol for the labels (`SOL`, `BTC`, ...). */
+  symbol: string
   freeMarginUsd: bigint | null
   mmrBps: bigint
   busy: boolean
@@ -33,6 +35,7 @@ export function AddMarginSheet({
   open,
   onClose,
   position,
+  symbol,
   freeMarginUsd,
   mmrBps,
   busy,
@@ -55,7 +58,7 @@ export function AddMarginSheet({
   const liqAfter = add > 0n ? (newLiq !== null ? `$${formatUsd2(newLiq)}` : 'none') : '—'
 
   return (
-    <Sheet open={open} onClose={onClose} title="Add margin">
+    <Sheet open={open} onClose={onClose} title={`Add margin · ${symbol}-PERP`}>
       <Input
         label="Amount"
         value={amount}
