@@ -61,7 +61,10 @@ program id) і ролі ключів.
 | ~~`SPONSOR_ALLOW_SESSION_TOPUP`~~ **видалено (week 5)** | гілка session-lamports top-up через `/sponsor` прибрана разом з env-змінною — devnet-tee відхиляє чужого `fee_payer` як платника не-ним-ініційованої ER-tx (`InvalidAccountForFee`), тож ця гілка була недосяжна для чесного клієнта й досяжна лише для атакера | — |
 | `SIWS_DOMAIN` **(week 6, обов'язковий)** | домен MWA identity app (`IDENTITY_DOMAIN`; зараз = хост relayer-а, тобто **`relayer-production-1ae7.up.railway.app`**). SIWS-повідомлення з іншим `domain` або з `uri` на іншому хості відхиляються. **Без цієї змінної `/auth/*`, `/sponsor` і `/nonce` не монтуються** (fail-closed, лог `sponsor: … SIWS_DOMAIN is not set`) — онбординг і депозит 0-SOL-гаманців зупиняються. Якщо app отримає власний домен (`EXPO_PUBLIC_IDENTITY_URI`), `SIWS_DOMAIN` змінюється разом із ним | — |
 | `MARKETS_REFRESH_MS` **(після деплою плану 4, необов'язкова)** | період оновлення реєстру ринків relayer-а; дефолт 60000, мін. 5000 | — |
-| `JANITOR_RETRY_COOLDOWN_MS` **(після деплою плану 4, необов'язкова)** | пауза на власника після невдалого `close_exited_user` janitor-а; дефолт 3600000, мін. 60000 | — |
+| `JANITOR_RETRY_COOLDOWN_MS` **(після деплою плану 4, необов'язкова)** | пауза на власника після `close_exited_user`, який програма відхилила on-chain; дефолт 3600000, мін. 60000 | — |
+| `JANITOR_MIN_FEE_PAYER_SOL` **(після деплою плану 4, необов'язкова)** | janitor пропускає весь прохід (і пише помилку), поки базовий баланс `fee_payer` нижчий; дефолт 0.002, мін. 0 (`0` — без порогу) | — |
+| `CRANK_BAD_PAIR_COOLDOWN_MS` **(після деплою плану 4, необов'язкова)** | скільки пара `[Positions, UserAccount]`, яку програма відхилила поодинці, лишається поза батчами; дефолт 60000, мін. 5000 | — |
+| `CRANK_WATCHDOG_MS` **(після деплою плану 4, необов'язкова)** | якщо за цей час не завершилась жодна ітерація crank-петлі — процес виходить з кодом 1, і Railway (`ON_FAILURE`) його перезапускає; дефолт 120000, мін. 30000 | — |
 | `AUTH_SESSION_TTL_HOURS` **(week 6)** | тривалість SIWS-сесії relayer-а; дефолт **168** (7 діб), невалідне/≤0 → дефолт. У `auth_sessions` зберігається лише `sha256(token)` | — |
 
 Обидва ключі закодовано локально через `bs58.encode(Uint8Array.from(JSON.parse(readFileSync(...))))`
@@ -124,33 +127,99 @@ MCP, або `railway variables set` через CLI) виставляються �
 досі на старому IDL до плану 3, тож новий relayer і старий APK несумісні за онбордингом і History.
 Порядок:
 
-1. Новий keypair програми (`keys/programs/`, gitignored), `declare_id!`, деплой, `bootstrapDevnet`
-   (Config, пул, SOL), потім `cd tests/er && npm run devnet:add-market -- BTC` (далі `ETH`, `HYPE`,
-   `ZEC`; лазер-фіди — `tests/er/lib/markets.ts`). **`--schedule` для кожного ринку** (SOL
-   включно, якщо розклад ще не заведено): ліквідація без relayer-а потребує живого `crank_tick`
-   на кожному ринку як джерела цінових семплів (#38, spec §2.9.2) — без запланованого кранка вона
-   залежить від relayer-а. Ринок з'являється в `/markets` і в crank-у лише після успішного
-   `init_market_permissions` (relayer перевіряє власника permission-PDA `MarketRisk`); недороблений
-   `add-market` просто перезапустити.
-2. Railway env (див. таблицю вище): `COMMIT_INTERVAL_TICKS=60` → **`COMMIT_INTERVAL_MS=60000`**;
+0. **Перед деплоєм на devnet — свіжий `bootstrap()` на mb-stack** (`cd tests/er && npm run q1` або
+   `npm run week1` у `scripts/` — обидва викликають `bootstrap()`). Порядок пулу в `bootstrap()`/`bootstrapDevnet()` виправлено фінальним ревʼю
+   (C1: `init_pool` → `init_pool_live` → faucet + `seed_pool` → `delegate_pool_live` →
+   `delegate_pool`; попередній порядок на чистому старті падав на `seed_pool` з Anchor 3007 і лишав
+   `PoolLive` делегованим з нулями). Виправлено читанням Rust-контекстів, **жодного разу не
+   виконано** — перший прогін має бути на mb-stack, не на devnet.
+1. Новий keypair програми (`keys/programs/`, gitignored), `declare_id!`, деплой. **Ротувати
+   `tests/er/.keys/devnet-mint.json`** (перейменувати/прибрати старий файл): `init_config` створює
+   мінт dUSDC через `init`, а наявний ключ — мінт старого деплою, тож `init_config` на ньому впаде.
+   Потім `bootstrapDevnet` (Config, пул, SOL). Якщо прогін зупинився посередині, його можна
+   перезапустити — кожен крок пропускається, якщо вже зроблений; стан, який жоден порядок не
+   завершить (`PoolLive` чи `Pool` делеговані до `seed_pool`), дає зрозумілу помилку до відправки
+   будь-чого.
+2. **Поповнити новий `FeeEscrow`** (`cd tests/er && DEXXER_NET=devnet npx tsx
+   ../../scripts/admin/fund-fee-payer.ts`): з нього платяться `commit_aggregate` і реєстрація задачі
+   `liquidation_check` у **кожному** `open_position`; порожній `FeeEscrow` зупиняє і коміти, і
+   відкриття позицій.
+3. Ринки: `cd tests/er && npm run devnet:add-market -- BTC --schedule` (далі `ETH`, `HYPE`, `ZEC`;
+   лазер-фіди — `tests/er/lib/markets.ts`). **`add-market` відхиляє `SOL`** — SOL створює
+   `bootstrapDevnet`, а запланований `crank_tick` для SOL заводить `scripts/admin/schedule-eternal.ts`
+   (`npm run admin:schedule-eternal --prefix scripts`). Розклад потрібен **кожному** ринку: ліквідація
+   без relayer-а потребує живого `crank_tick` на ринку як джерела цінових семплів (#38, spec §2.9.2).
+   Ринок з'являється в `/markets` лише після успішного `init_market_permissions` (relayer перевіряє
+   власника permission-PDA `MarketRisk`); недороблений `add-market` просто перезапустити. Crank
+   після деплою плану 4 тікає й ринок, якого ще нема в реєстрі, якщо на ньому є відкриті позиції
+   (див. «Поведінка relayer-а після деплою плану 4» нижче).
+4. Railway env (див. таблицю вище): `COMMIT_INTERVAL_TICKS=60` → **`COMMIT_INTERVAL_MS=60000`**;
    видалити `COMMIT_MAX_ACTIONS`, `QUARANTINE_CYCLES`; за потреби `MARKETS_REFRESH_MS`,
-   `JANITOR_RETRY_COOLDOWN_MS`; `SIWS_DOMAIN` і решта — без змін. `fee_payer` потребує поповнення:
+   `JANITOR_RETRY_COOLDOWN_MS`, `JANITOR_MIN_FEE_PAYER_SOL`, `CRANK_BAD_PAIR_COOLDOWN_MS`,
+   `CRANK_WATCHDOG_MS` (дефолти — у таблиці); `SIWS_DOMAIN` і решта — без змін. `fee_payer` потребує поповнення:
    він платить комісії комітів, `/sponsor`, nonce і ренту онбордингу (`Positions` ≈0.0231 SOL +
    `UserAccount` ≈0.0023 SOL на спонсорованого власника; LiteSVM-розрахунок, на devnet не виміряно),
-   плюс janitor-комісії.
-3. **До деплою relayer-а прогнати Postgres-тести** (`TEST_DATABASE_URL`, рецепт у
+   плюс janitor-комісії (janitor не стартує, поки `fee_payer` < `JANITOR_MIN_FEE_PAYER_SOL`).
+5. **Postgres живого сервісу належить старій програмі.** `pool_snapshots`, `roots` і рядки `meta`
+   (`lastTickAt`, `lastCommitAt`) — дані `G2ok…`: `/pool/latest` і `/root/latest` віддаватимуть старий
+   пул/root, доки новий relayer не зробить перший коміт. Вирішити на деплої: `TRUNCATE` цих таблиць
+   (і `DELETE` рядків `meta`) або нова БД. Новий relayer `lastTickAt` більше не відновлює і не пише
+   (`/healthz.ok` — лише про поточний процес), `lastCommitAt` відновлює — зі старої БД він показав би
+   час коміту старої програми.
+6. **До деплою relayer-а прогнати Postgres-тести** (`TEST_DATABASE_URL`, рецепт у
    `services/relayer/README.md`) — 7 тестів `indexerDb.test.ts` на гілці **не запускались** (немає
    Docker), міграція `008` на справжній БД не перевірена. На старті в лозі має бути
    `db: applying migration 008_ticks_market.sql`.
-4. Перевірка: `/healthz` → `markets` з SOL/BTC/ETH/HYPE/ZEC і ненульовим `lastTickAt`;
+7. Перевірка: `/healthz` → `markets` з SOL/BTC/ETH/HYPE/ZEC і ненульовим `lastTickAt`;
    `GET /markets` — п'ять записів (SOL першим); `GET /mark?market=BTC` → `stale:false`;
-   `/disclosures` і `/stats` → 404 (очікувано). `/healthz.ok` = свіжість тіку **SOL**.
-5. Невиміряне, що входить у план 4 (повний перелік — spec §2.9 «Відкрите для плану 4»): розмір і CU
+   `/disclosures` і `/stats` → 404 (очікувано). `/healthz.ok` = свіжість тіку **SOL** після вдалого
+   відбору кандидатів; новий процес відповідає 503, доки не зробить такий тік сам (раніше `lastTickAt`
+   відновлювався з Postgres). Railway чекає healthcheck лише під час деплою
+   (`healthcheckTimeout: 30` у `railway.json`) — перший тік SOL має встигнути за 30 с; не виміряно.
+8. Невиміряне, що входить у план 4 (повний перелік — spec §2.9 «Відкрите для плану 4»): розмір і CU
    реального `crank_tick` із 12 парами; читання `Positions` crank-токеном через
    `getProgramAccounts` (один виклик за тік повертає ≈4.4 KB на трейдера — оцінка за розміром
    акаунта, ≈440 KB на 100 трейдерів, ≈4.4 MB на 1000); читання власників permission-PDA реєстром;
    Postgres-тести і міграція `008`; перший гейт — що `posted_slot` реального Pyth Lazer змінюється на
    кожному принті.
+9. Відкриті пункти й гейти плану 4 (фінальне ревʼю плану 2, 01.10.2026):
+   - **Немає шляху скасувати запланований crank ринку, крім SOL:** `scripts/admin/cancel-crank.ts`
+     знає лише `task_id` SOL (`sha256(program id)[..8]`), а `add-market --schedule` реєструє задачу з
+     власним `task_id` ринку.
+   - **Кілька запланованих кранків з одним `taskContext = admin`** (SOL + кожен `add-market
+     --schedule`) — чи співіснують вони в планувальнику TEE, не виміряно.
+   - **`restartPolicyMaxRetries: 10`** (`railway.json`): watchdog і вихід з кодом 1 перезапускають
+     relayer, але цикл падінь (напр. TEE недоступний на старті) після 10 спроб лишає сервіс
+     зупиненим.
+   - **`/healthz` Railway викликає лише під час деплою** — пізніший 503 нічого не перезапускає;
+     зовнішній uptime-монітор на `/healthz` — у план 4.
+   - **Таблиця `ticks` без ретеншну** і тепер росте пропорційно кількості ринків.
+   - **Відбір кандидатів завантажує цілі акаунти `Positions`** щотіку (≈4.4 KB на трейдера, оцінка) —
+     `dataSlice` до слотів — подальша робота.
+
+### Поведінка relayer-а після деплою плану 4 (фінальне ревʼю, 01.10.2026; лише тести, не devnet)
+
+- **Коміт-цикл відокремлений від тіків:** root → `commit_aggregate()` → janitor стартує за
+  годинником і петля його не чекає; одночасно — не більше одного циклу; на `SIGTERM` петля дочікується
+  циклу, що вже йде (жорсткий таймаут `shutdown()` — 5 с, як і був).
+- **Перезапуск:** `process.exit(1)`, коли `startCrank` падає (збій старту чи петлі), і watchdog
+  `CRANK_WATCHDOG_MS`, коли ітерація петлі не завершилась вчасно; `blockhash`, що не оновлюється
+  5 с, — помилка зʼєднання, не вічний цикл.
+- **Набір ринків для тіків:** SOL завжди, реєстр, кожен ринок, який процес уже тікав (не зникає),
+  і кожен ринок із відкритими кандидатами — невідомий читається з публічного `Market` один раз.
+  Гейт приватності реєстру (`MarketRisk` уже приватний) лишився для `/markets` та індексера.
+- **Помилки:** один класифікатор (`src/errors.ts`): on-chain = транзакція приземлилась і програма її
+  відхилила; решта (401, таймаути, `fetch failed`, 429, 5xx) — помилка зʼєднання. Перша помилка
+  зʼєднання зупиняє ринок і решту петлі (наступні ринки цього циклу не тікають), один reconnect.
+  Чанк, відхилений on-chain, спершу перевіряється тіком без кандидатів: відхилений і він — винен ринок
+  (без поодиноких повторів і карантину); пройшов — кандидати повторюються поодинці, пара, відхилена
+  поодинці on-chain, іде в карантин на `CRANK_BAD_PAIR_COOLDOWN_MS`. Збій відбору кандидатів — кожен
+  ринок тікає без кандидатів, `lastTickAt` не рухається.
+- **Janitor:** перша помилка зʼєднання обриває прохід (без паузи для власника), прохід пропускається,
+  поки `fee_payer` нижче `JANITOR_MIN_FEE_PAYER_SOL`.
+- **Логи без ключів трейдерів:** рядок тіку — `tick n=… market=… mark=… mark_slot=… sig=… cu=…
+  tick_ms=… candidates=<кількість> liquidated=<кількість>` (без `slot=`; поле, яке не вдалося
+  прочитати, — `null`); рядки карантину й відбору (`crank n=…`) — `tag=<8 hex>` замість ключа.
 
 **Міграція 008 — перекриття деплоїв і відкат.** `008_ticks_market.sql` переносить PK `ticks` з `(ts)`
 на `(market, ts)` (рядки до неї — `'SOL'`) і прибирає індекс `ticks_ts_idx`. Старий образ після неї:
@@ -171,6 +240,8 @@ DELETE FROM _migrations WHERE name = '008_ticks_market.sql';    -- щоб пов
 COMMIT;
 -- 2) деплой старого образу
 ```
+
+Рецепт відкату не прогнано — ні на справжньому Postgres, ні на копії живої БД.
 
 ## Індексер публічних даних (Task 5, 22.09.2026)
 
@@ -314,7 +385,9 @@ SOL на payer-і, що дорівнюють ренті буфера** (для �
 
 **Верифікація деплою (усі три апгрейди):** `solana program dump <id> - | sha256sum` == sha256
 локального `target/deploy/dexxer_core.so`; `cmp target/idl/dexxer_core.json
-app/src/idl/dexxer_core.json` — байт-у-байт.
+app/src/idl/dexxer_core.json` — байт-у-байт. (Історичний запис тижня 5. Наступний деплой — нова
+програма плану 4 — звіряє `target/idl/dexxer_core.json` з канонічним `idl/dexxer_core.json`; копія
+апки `app/src/idl/` до плану 3 лишається старою.)
 
 ### `set_disclosure_delay` — операційна нотатка
 

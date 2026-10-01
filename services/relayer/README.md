@@ -9,25 +9,59 @@ permission member of (privacy rule, see repo `CLAUDE.md`).
 ## What it does
 
 - `src/crank.ts` — the 1s `crank_tick` loop, moved from
-  `scripts/crank-fallback/index.ts`. Per tick: one `getProgramAccounts` over
-  `Positions` (`src/candidates.ts`), then **one `crank_tick` tx per market,
-  serially** (chunks of `CRANK_TX_MAX_CANDIDATES = 12` pairs, each chunk and
-  each market in its own try/catch — one failing never stops the others; at
-  most one reconnect per tick; a market repeating the same error is recorded
-  at most once a minute). `lastTickAt` — and so `/healthz.ok` — moves only
-  when the **SOL** market ticked. SOL is always ticked even when the registry
-  is empty or has no SOL entry (`withSol`); a market that has open positions
-  but is not in the tick list is logged (`untickedMarkets`), not silently
-  skipped. If candidate discovery itself fails, no market is ticked in that
-  loop.
+  `scripts/crank-fallback/index.ts`. Per loop: one `getProgramAccounts` over
+  `Positions` (candidate discovery, `openCandidates`: `UserAccount` reads are
+  paged by 100 — the `getMultipleAccountsInfo` limit — and a trader without a
+  decodable `UserAccount` is skipped), then **`crank_tick` per market,
+  serially**, in chunks of `CRANK_TX_MAX_CANDIDATES = 12` pairs.
+  - **Which markets** (`tickSet`): SOL always (`withSol`), every market of the
+    registry, every market this process has ever ticked (sticky — a registry
+    that shrinks or fails never stops a market), and every market that has
+    open candidates this loop; a market nobody listed has its PUBLIC `Market`
+    account read once and is ticked from then on (a failed read is logged on
+    change and retried next loop). The registry's privacy gate (below)
+    protects what the relayer publishes, not liquidation.
+  - **One market's sends** (`src/candidates.ts` `tickCandidates`): a chunk
+    rejected ON CHAIN is followed by a zero-candidate probe. Probe rejected
+    too → the market is broken: nobody is blamed, the market's later chunks
+    are skipped. Probe lands → the chunk is retried one candidate per
+    transaction, and a pair rejected alone on chain is quarantined for
+    `CRANK_BAD_PAIR_COOLDOWN_MS` (default 60 000, min 5 000).
+  - **Errors** (`src/errors.ts`, one classifier for the crank, the candidates
+    and the janitor): on chain = the transaction landed and the program
+    rejected it; everything else (401, timeouts, `fetch failed`, 429, 5xx,
+    any other RPC error) is connection-class. The first connection-class
+    error stops the market AND the rest of the loop (the later markets are
+    not ticked that loop), one reconnect, then the next loop starts with SOL
+    again. A market repeating the same error (signature stripped) is recorded
+    at most once a minute.
+  - **Discovery fails** → every market is still ticked with no candidate
+    (`planTick`), so mark, price sample and the scheduler's
+    `liquidation_check` keep moving; that loop does not move `lastTickAt`.
+  - `lastTickAt` — and so `/healthz.ok` — moves only when the **SOL** market
+    ticked after a good discovery. It starts `null` in every process (not
+    restored from Postgres): a fresh process answers 503 until its first such
+    tick.
+  - **Logs carry no trader key**: one line per landed transaction, `tick n=…
+    market=… mark=… mark_slot=… sig=… cu=… tick_ms=… candidates=<count>
+    liquidated=<count>` (a field whose read failed is `null`; the reads run
+    after the tick and are not awaited by the loop). Quarantine and discovery
+    lines (`crank n=…`) name a trader by `tag=<8 hex>` = sha256(per-process
+    random salt ‖ key) — stable within one process, not reversible. Janitor
+    lines name exited owners, which are public on L1 by then.
+  - **Liveness**: the commit cycle runs detached (below); a watchdog exits the
+    process with code 1 when no loop iteration completed within
+    `CRANK_WATCHDOG_MS` (default 120 000, min 30 000), and `index.ts` exits
+    with code 1 when `startCrank` rejects. Railway's `ON_FAILURE` restart
+    policy (`restartPolicyMaxRetries: 10`) is what restarts it — the
+    healthcheck runs only at deploy time, a later 503 restarts nothing.
 - `src/candidates.ts` — turns raw `Positions` accounts into
   `crank_tick` candidate **pairs** `[Positions, UserAccount]`: one candidate
   per OPEN slot (a trader only enters the batch of a market they hold a slot
   on), a repeated `(Positions, market)` is dropped, an account of the wrong
   length or discriminator is skipped with a log (the program would abort the
-  whole batch on it — Anchor 3002 — so junk is filtered here), `UserAccount`
-  reads are paged by 100 (`getMultipleAccountsInfo` limit), a trader without a
-  decodable `UserAccount` is skipped. `CRANK_TX_MAX_CANDIDATES = 12` is the
+  whole batch on it — Anchor 3002 — so junk is filtered here); plus the
+  per-market send plan above. `CRANK_TX_MAX_CANDIDATES = 12` is the
   measured legacy-tx limit: a tick tx is `383 + 66·n` bytes (12 → 1175 B,
   13 → 1241 B > 1232).
 - `src/markets.ts` — the market registry: `getProgramAccounts` of the public
@@ -38,31 +72,39 @@ permission member of (privacy rule, see repo `CLAUDE.md`).
   read over the crank's TEE connection; the crank is a `MarketRisk`
   permission member). A market that is not yet private is logged once. If the
   owner read fails the whole refresh fails and the last good list stays.
-  Crank and indexer take their markets from it, so a market added with
-  `add-market` is picked up without a restart. `MarketRisk` data is never
-  read.
+  `/markets` and the indexer take their markets from it (the crank too, plus
+  the sticky set above), so a market added with `add-market` is picked up
+  without a restart. `MarketRisk` data is never read.
 - `src/commit.ts` — the fixed-interval cycle, run **by wall-clock time**
   (`COMMIT_INTERVAL_MS`, not a tick count, so it does not stretch with the
-  number of markets): `set_balances_root` (`runRootCycle`) then
-  `commit_aggregate()` (`runCommitCycle`) — no arguments, no actions, no
-  `remaining_accounts`; trades are not disclosed. Root, commit and janitor
-  run isolated (`runIsolated`): a failure of one neither skips the others nor
-  stops the ticks; `lastCommitAt` moves only when the commit step succeeded.
+  number of markets) and **detached from the tick loop**
+  (`createCycleRunner`: the loop starts it and does not wait; at most one
+  cycle in flight; on `SIGTERM` the in-flight cycle is awaited before the
+  loop's promise resolves): `set_balances_root` (`runRootCycle`; a failed
+  batch throws and is recorded) then `commit_aggregate()` (`runCommitCycle`)
+  — no arguments, no actions, no `remaining_accounts`; trades are not
+  disclosed. Root, commit and janitor run isolated (`runIsolated`): a failure
+  of one does not skip the others; `lastCommitAt` moves only when the commit
+  step succeeded. A 401 inside the cycle makes the loop reconnect.
 - `src/janitor.ts` — one base-layer pass per commit cycle: every owner whose
   `UserAccount` and `Positions` are both back under `dexxer_core` and
   `UserAccount.exited` is set -> `close_exited_user` (signed by `fee_payer`),
   rent to `UserAccount.rent_payer` as read from the account (risk #39), not to
   `fee_payer`. The scan is filtered server-side (`dataSize` + discriminator +
   the `exited` byte at offset 142, pinned by a test). Spend is bounded:
+  the pass is skipped while `fee_payer`'s base balance is below
+  `JANITOR_MIN_FEE_PAYER_SOL` (default 0.002); at most
   `JANITOR_MAX_ATTEMPTS_PER_CYCLE = 8` close attempts per cycle (successes
-  and failures — sends skip preflight, a failure still pays a fee) and a
-  per-owner cooldown `JANITOR_RETRY_COOLDOWN_MS` after a failed attempt
-  (per process; a restart retries each failing owner once). Idempotent; state
-  is re-derived from chain every cycle.
+  and failures — sends skip preflight, a failure still pays a fee); a
+  per-owner cooldown `JANITOR_RETRY_COOLDOWN_MS` after a close the program
+  rejected on chain (per process; a restart retries each failing owner
+  once); the first connection-class failure aborts the pass with no cooldown
+  for that owner. Idempotent; state is re-derived from chain every cycle.
 - `src/keys.ts` — `keypairFromEnv(name, fileFallback)`: bs58 secret key from
   an env var in production, `tests/er/.keys/<fileFallback>.json` (via
   `loadOrCreateKey`) for local dev.
-- `src/health.ts` — `GET /healthz`, Railway's healthcheck target.
+- `src/health.ts` — `GET /healthz`: Railway's deploy-time healthcheck and
+  the target for an external uptime monitor (none is configured yet).
 - `src/db.ts` — Postgres pool + startup SQL migrations
   (`migrations/*.sql`).
 - `src/indexer/` (Task 5) — public-data indexer: oracle price candles,
@@ -152,8 +194,9 @@ A Pool snapshot row: `{ slot, ts, capital_total, protocol_liquidity, locked_tota
 
 - `?market=` on `/mark` and `/prices` is a symbol: absent/empty → `SOL`
   (backward compatible), not `/^[A-Z0-9]{1,8}$/` → **400** `{ error }`, valid
-  but not in the registry → **404** `{ error }`. While the registry is still
-  empty only `SOL` is known.
+  but not in the registry → **404** `{ error }`. `SOL` is always known (the
+  same `withSol` view the crank ticks), also while the registry is empty or
+  lacks it.
 - `/ws?markets=` is normalised (upper-cased, entries failing the symbol
   regex dropped, an all-junk list falls back to SOL). No parameter = SOL
   `mark` frames only.
@@ -187,7 +230,9 @@ stay plain JSON **numbers** — nowhere near 2^53.
 `fee_payer` key co-signs a whitelisted, already owner-signed onboarding
 transaction so the app can batch `faucet_init`/`init_user`/`delegateSpl`/
 `delegate_user` (the L1 legs) into a `signTransactions([...])` prompt,
-with `fee_payer` fronting network fees and PDA/eSPL rent for those two legs.
+with `fee_payer` fronting network fees and PDA/eSPL rent for those L1 legs
+(three since 25.09 — `faucet+init_user`, `delegate_spl`, `delegate_user`; see
+"Durable nonces" below).
 
 The ER leg (`init_permissions` + `set_session` + the session top-up) is
 **not** sponsorable and its whitelist support was removed in week-5 Task 5:
@@ -309,7 +354,10 @@ enforced ComputeBudget `SetComputeUnitPrice` ceiling.
 | `CRANK_INTERVAL_MS` | no (default `1000`) | tick cadence |
 | `COMMIT_INTERVAL_MS` | no (default `300000`, min `10000`) | wall-clock gap between one root + `commit_aggregate()` + janitor cycle and the next (`src/commit.ts`); unparseable / below the minimum → default. Reported by `/healthz` as `commitIntervalMs`. Replaces `COMMIT_INTERVAL_TICKS` |
 | `MARKETS_REFRESH_MS` | no (default `60000`, min `5000`) | market-registry refresh period (`src/markets.ts`); unparseable / below the minimum → default |
-| `JANITOR_RETRY_COOLDOWN_MS` | no (default `3600000`, min `60000`) | per-owner cooldown after a failed `close_exited_user` attempt (`src/janitor.ts`); unparseable / below the minimum → default |
+| `JANITOR_RETRY_COOLDOWN_MS` | no (default `3600000`, min `60000`) | per-owner cooldown after a `close_exited_user` the program rejected on chain (`src/janitor.ts`); unparseable / below the minimum → default |
+| `JANITOR_MIN_FEE_PAYER_SOL` | no (default `0.002`, min `0`) | the janitor pass is skipped (and an error recorded) while `fee_payer`'s base balance is below this; `0` disables the floor |
+| `CRANK_BAD_PAIR_COOLDOWN_MS` | no (default `60000`, min `5000`) | how long a `[Positions, UserAccount]` pair rejected alone on chain stays out of the batches (`src/candidates.ts`) |
+| `CRANK_WATCHDOG_MS` | no (default `120000`, min `30000`) | no loop iteration completed within this → the process exits with code 1 (`src/crank.ts`) so Railway's `ON_FAILURE` policy restarts it |
 | `INDEXER_ENABLED` | no (default `false`) | Task 5: starts the public-data indexer (see above) — needs `DATABASE_URL`, disabled with a warning if it's unset |
 | `SPONSOR_ENABLED` | no (default `false`) | Task 6: starts `POST /sponsor` (see below) — needs `DATABASE_URL`, disabled with a warning if it's unset |
 | `SPONSOR_DAILY_SOL` | no (default `0.5`) | rolling 24h cap on sponsored lamports across all owners |
@@ -348,8 +396,10 @@ curl localhost:8080/markets
 ```
 
 Without `DATABASE_URL` set, `db.ts` logs a warning and runs without
-Postgres — the crank loop is unaffected; only `/healthz`'s `lastTickAt`/
-`lastCommitAt` persistence across restarts and its `db` field are skipped.
+Postgres — the crank loop is unaffected; only the `lastCommitAt`
+persistence across restarts and `/healthz`'s `db` field are skipped.
+(`lastTickAt` is neither persisted nor restored any more: `/healthz.ok`
+reflects the running process.)
 
 ## Tests
 
@@ -359,10 +409,13 @@ npm test        # node:test — keypairFromEnv b58 round-trip, health-payload st
                  # prices.ts::isStale (publish_time staleness predicate), sponsor.ts::checkWhitelist
                  # (every accept/reject shape) + the /sponsor router, janitor.ts (decision table
                  # with injected readers — no network, `exited` byte offset pinned against the IDL coder),
-                 # candidates.ts (pair building, junk filtering, tx-size limit), commit.ts, crank per-market
-                 # logic (crankMarkets.test.ts), markets.ts registry, positionsCodec, ixAccounts (account
-                 # builders vs the IDL), auth.ts (SIWS verification, challenge/siws/requireSession),
-                 # the /sponsor + /nonce session gate, indexer/query.ts (pure parsing)
+                 # candidates.ts (pair building, junk filtering, tx-size limit, probe/singles/quarantine),
+                 # commit.ts (cycle runner, root cycle throwing), crank per-market logic (crankMarkets.test.ts:
+                 # runMarkets short-circuit, tickSet, watchdog, fresh blockhash, tick line), errors.ts
+                 # (classifier with real error strings), logTag.ts, markets.ts registry, positionsCodec,
+                 # ixAccounts (trader AND relayer builders vs the IDL), poolBootstrap (tests/er bootstrap
+                 # order), auth.ts (SIWS verification, challenge/siws/requireSession), the /sponsor + /nonce
+                 # session gate, indexer/query.ts and knownSymbols (pure parsing)
                  # Needs DEXXER_IDL_DIR=$PWD/../../idl (the canonical IDL, as CI sets it).
 npx tsc --noEmit
 ```
