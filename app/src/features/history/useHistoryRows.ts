@@ -48,15 +48,24 @@ export function useHistoryRows(
     if (!owner || !ownerKey) return
     let cancelled = false
     chain.current = chain.current.then(async () => {
-      let merged: ArchivedRecord[]
+      let existing: ArchivedRecord[]
       try {
-        merged = mergeArchive(await loadArchive(owner), ring ?? [], Date.now())
+        existing = await loadArchive(owner)
       } catch (e) {
-        if (!cancelled) setArchiveError(`History archive not read: ${message(e)}`)
+        // Unreadable storage: show the ring alone and never save over what we could not read.
+        if (!cancelled) {
+          setState({ owner: ownerKey, archive: mergeArchive([], ring ?? [], Date.now()) })
+          setArchiveError(`History archive not read: ${message(e)}`)
+        }
         return
       }
+      const merged = mergeArchive(existing, ring ?? [], Date.now())
       // Show the merge even if saving fails: the ring records must not vanish from the screen.
       if (!cancelled) setState({ owner: ownerKey, archive: merged })
+      if (merged.length === existing.length) {
+        if (!cancelled) setArchiveError(null)
+        return
+      }
       try {
         await saveArchive(owner, merged)
         if (!cancelled) setArchiveError(null)

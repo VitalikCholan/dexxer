@@ -40,6 +40,17 @@ export function toArchived(r: HistoryRecord, seenAt: number): ArchivedRecord {
   }
 }
 
+/** Stored JSON -> records. Missing, corrupt or non-array values are an empty archive. */
+export function parseArchive(raw: string | null): ArchivedRecord[] {
+  if (raw === null) return []
+  try {
+    const parsed: unknown = JSON.parse(raw)
+    return Array.isArray(parsed) ? (parsed as ArchivedRecord[]) : []
+  } catch {
+    return []
+  }
+}
+
 /** Adds ring records not yet archived (by `historyKey`), keeps every existing one, newest `closedSlot` first. */
 export function mergeArchive(existing: ArchivedRecord[], ring: HistoryRecord[], now: number): ArchivedRecord[] {
   const seen = new Set(existing.map((r) => r.key))

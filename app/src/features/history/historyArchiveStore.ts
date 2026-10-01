@@ -5,19 +5,16 @@
 // merge loads in Node tests without the native module.
 import AsyncStorage from '@react-native-async-storage/async-storage'
 import type { PublicKey } from '@solana/web3.js'
-import type { ArchivedRecord } from './historyArchive'
+import { parseArchive, type ArchivedRecord } from './historyArchive'
 
 const keyOf = (owner: PublicKey) => `dexxer.history.${owner.toBase58()}`
 
-/** A missing or corrupt value is an empty archive. */
+/**
+ * Only a missing or corrupt VALUE is an empty archive. A `getItem` rejection
+ * propagates: a read failure must never be saved back as an empty archive.
+ */
 export async function loadArchive(owner: PublicKey): Promise<ArchivedRecord[]> {
-  try {
-    const raw = await AsyncStorage.getItem(keyOf(owner))
-    const parsed: unknown = raw ? JSON.parse(raw) : []
-    return Array.isArray(parsed) ? (parsed as ArchivedRecord[]) : []
-  } catch {
-    return []
-  }
+  return parseArchive(await AsyncStorage.getItem(keyOf(owner)))
 }
 
 export async function saveArchive(owner: PublicKey, rows: ArchivedRecord[]): Promise<void> {

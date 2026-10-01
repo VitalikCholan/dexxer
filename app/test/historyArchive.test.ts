@@ -1,7 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { Keypair } from '@solana/web3.js'
-import { mergeArchive, toArchived } from '../src/features/history/historyArchive'
+import { mergeArchive, parseArchive, toArchived } from '../src/features/history/historyArchive'
 import type { HistoryRecord } from '../src/lib/positions'
 
 const m = Keypair.generate().publicKey
@@ -37,4 +37,12 @@ test('toArchived serialises bigints as decimal strings and keeps the identity ke
 test('merging the same ring twice changes nothing', () => {
   const a1 = mergeArchive([], [rec(5n)], 1)
   assert.deepEqual(mergeArchive(a1, [rec(5n)], 99), a1)
+})
+
+test('parseArchive: null, corrupt JSON and non-array are empty; valid records come back', () => {
+  assert.deepEqual(parseArchive(null), [])
+  assert.deepEqual(parseArchive('{not json'), [])
+  assert.deepEqual(parseArchive('{"a":1}'), [])
+  const a = mergeArchive([], [rec(3n)], 5)
+  assert.deepEqual(parseArchive(JSON.stringify(a)), a)
 })
