@@ -54,3 +54,29 @@ test('displaySymbol: registry, else live Market symbol, else shortened key', () 
   assert.equal(displaySymbol({ ...row, market: mi('SOL', stray) }, null), 'SOL')
   void PublicKey
 })
+
+import { isCloseStale, shouldFireClose } from '../src/features/positions/positionRows'
+
+test('shouldFireClose: only the tapped slot, with its own live Market', () => {
+  const m = pdas.marketFor('BTC')
+  const row = { slot: slot(3, m), symbol: 'BTC', market: null }
+  const pending = { index: 3, market: m }
+  assert.equal(shouldFireClose(pending, row, live('BTC')), true)
+  assert.equal(shouldFireClose(null, row, live('BTC')), false)
+  assert.equal(shouldFireClose(pending, { ...row, slot: slot(4, m) }, live('BTC')), false, 'different index')
+  assert.equal(shouldFireClose(pending, { ...row, slot: slot(3, pdas.marketFor('ETH')) }, live('ETH')), false, 'slot reused for another market')
+  assert.equal(shouldFireClose(pending, row, null), false, 'market not delivered')
+  assert.equal(shouldFireClose(pending, row, live('ETH')), false, 'stale/mismatched market')
+  assert.equal(shouldFireClose(pending, null, live('BTC')), false)
+})
+
+test('isCloseStale: dropped when the row vanishes, changes, or the slot is reused', () => {
+  const m = pdas.marketFor('BTC')
+  const row = { slot: slot(3, m), symbol: 'BTC', market: null }
+  const pending = { index: 3, market: m }
+  assert.equal(isCloseStale(pending, row), false)
+  assert.equal(isCloseStale(pending, null), true)
+  assert.equal(isCloseStale(pending, { ...row, slot: slot(4, m) }), true)
+  assert.equal(isCloseStale(pending, { ...row, slot: slot(3, pdas.marketFor('ETH')) }), true)
+  assert.equal(isCloseStale(null, null), false)
+})

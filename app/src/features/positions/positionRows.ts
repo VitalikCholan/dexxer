@@ -44,3 +44,25 @@ export function displaySymbol(row: PositionRow, live: DecodedMarket | null): str
 export function controlTarget(row: PositionRow, live: DecodedMarket | null): { market: PublicKey; feed: PublicKey } | null {
   return marketMatches(row.slot.market, live) ? { market: row.slot.market, feed: live.feed } : null
 }
+
+/** A Close the user tapped: bound to the exact slot (index + market key), never a bare flag. */
+export interface PendingClose {
+  index: number
+  market: PublicKey
+}
+
+/** Fire only for the very slot that was tapped, once ITS live Market has delivered. */
+export function shouldFireClose(pending: PendingClose | null, row: PositionRow | null, live: DecodedMarket | null): boolean {
+  return (
+    pending !== null &&
+    row !== null &&
+    row.slot.index === pending.index &&
+    row.slot.market.equals(pending.market) &&
+    marketMatches(row.slot.market, live)
+  )
+}
+
+/** The pending close can never fire any more (active row changed, slot gone or reused) and must be dropped. */
+export function isCloseStale(pending: PendingClose | null, row: PositionRow | null): boolean {
+  return pending !== null && (row === null || row.slot.index !== pending.index || !row.slot.market.equals(pending.market))
+}

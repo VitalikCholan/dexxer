@@ -88,7 +88,7 @@ export function PositionsScreen() {
             note={r.market || !markets.isSuccess ? undefined : 'Market not in the registry yet'}
             onClose={() => {
               setActiveIndex(r.slot.index)
-              actions.requestClose()
+              actions.requestClose(r)
             }}
             onIncrease={() => choose('increase')}
             onDecrease={() => choose('decrease')}

@@ -20,7 +20,7 @@ import {
   usdAmount,
   type BaseTradeAccounts,
 } from '@/src/lib/trade'
-import { controlTarget, type PositionRow } from './positionRows'
+import { controlTarget, isCloseStale, shouldFireClose, type PendingClose, type PositionRow } from './positionRows'
 
 export function usePositionActions(
   base: BaseTradeAccounts | null,
@@ -30,7 +30,7 @@ export function usePositionActions(
   market: DecodedMarket | null,
 ) {
   const [busy, setBusy] = useState(false)
-  const [closeRequested, setCloseRequested] = useState(false)
+  const [pendingClose, setPendingClose] = useState<PendingClose | null>(null)
   const accounts = useMemo(() => {
     const target = row ? controlTarget(row, market) : null
     return base && target ? tradeAccountsFor(base, target) : null
@@ -54,13 +54,21 @@ export function usePositionActions(
   }, [])
 
   useEffect(() => {
-    if (!closeRequested || busy || !conn || !session || !accounts) return
-    // eslint-disable-next-line react-hooks/set-state-in-effect
-    setCloseRequested(false)
+    if (pendingClose === null) return
+    if (isCloseStale(pendingClose, row)) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      setPendingClose(null)
+      return
+    }
+    if (busy || !conn || !session || !accounts || !shouldFireClose(pendingClose, row, market)) return
+    setPendingClose(null)
     void run('Close', () => closePosition(conn, session, accounts))
-  }, [closeRequested, busy, conn, session, accounts, run])
+  }, [pendingClose, row, market, busy, conn, session, accounts, run])
 
-  const requestClose = useCallback(() => setCloseRequested(true), [])
+  const requestClose = useCallback(
+    (target: PositionRow) => setPendingClose({ index: target.slot.index, market: target.slot.market }),
+    [],
+  )
 
   const increase = useCallback(
     async (addSizeSol: number, addMarginUsd: number) => {
