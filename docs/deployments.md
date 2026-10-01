@@ -35,12 +35,13 @@ program id) і ролі ключів.
   запланованих `crank_tick` (`i64::MAX`, 1000 мс), `MARKS PASS`. Адреси — «Program / PDA» нижче.
 - **Relayer** — деплоймент `8b33d95d` (дерево `253e8f2`), перший тік SOL через 6.7 с після старту
   контейнера. Перевірено о 18:04 UTC: `/healthz` `ok:true`, `commitIntervalMs: 300000`,
-  `feePayerSol 0.47568864`, `crankSol 0.1`.
+  `feePayerSol 0.47568864`, `crankSol 0.1` (той самий `/healthz`; JSON-RPC `getBalance` о 18:04 UTC дав ті самі
+  475 688 640 / 100 000 000 лам.).
 - **APK** (dev client, Task 6, 01.10.2026): `app-debug.apk` 110 870 032 B, sha256
   `4178ed2223f56777a6766f8cdf60a558eb35d3cc7890a98840fd4c464137e531`, сертифікат підпису
   `FA:C6:17:45:DC:09:…:03:3B:9C` == дефолт DAL relayer-а (`ASSETLINKS_*` не задано), бандл містить лише
   новий program id. Debug-keystore, не release.
-- **Smoke** (fakewallet, owner `2TQerBRHvjxR3hGbSqGaSKZWBhbiB7mRfEWCeVeEFgWi`): кроки 1–7 PASS, 8–9
+- **Smoke** (fakewallet, owner `2TQerBRHvjxR3hGbSqGaSKZWBhbiB7mRfEWCeVeEFgWi`): кроки 1–7 PASS (1 — логи апки й L1; 2–7 — за повідомленням власника, з логів видно лише маршрути), 8–9
   (Exit з двома ринками, повторний онбординг після janitor-а) **не виконано** — власник відклав.
   Спонсорований онбординг: L1-леги 795 / 812 / 765 B, ER-лег 506 B. Дефекти апки #1 (`c0d39db`,
   символи ринків у Hermes) і #2 (`b276769`, плече понад `max_lev_bps` ринку) виправлено, повторного
