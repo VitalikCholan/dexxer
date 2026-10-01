@@ -53,8 +53,21 @@ export function symbolBytes(symbol: string): Buffer {
   b.write(symbol, 'ascii')
   return b
 }
+/**
+ * NUL-padded ASCII `[u8; 8]` → `'SOL'`. Decoded byte by byte on purpose: in
+ * Hermes `Buffer.subarray(...)` yields a plain `Uint8Array` whose `toString()`
+ * is `'83,79,76,0,…'`, so the Node-only `Buffer.toString('ascii')` form read
+ * every market symbol wrong on the device (plan 4 smoke, 01.10.2026) while
+ * every Node test passed.
+ */
 export function symbolString(bytes: Uint8Array): string {
-  return Buffer.from(bytes).toString('ascii').replace(/\0+$/, '')
+  let out = ''
+  for (let i = 0; i < bytes.length; i++) {
+    const b = bytes[i]
+    if (b === 0) break
+    out += String.fromCharCode(b)
+  }
+  return out
 }
 
 export const pdas = {

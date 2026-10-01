@@ -6,6 +6,7 @@ import assert from 'node:assert/strict'
 import { BN, BorshAccountsCoder } from '@coral-xyz/anchor'
 import { PublicKey } from '@solana/web3.js'
 import { DEXXER_CORE_IDL } from '../src/lib/anchor'
+import { symbolString } from '../src/lib/pdas'
 import { decodeUserAccount, readConfigDusdcMint, readConfigFeePayer, readConfigOracleProgram } from '../src/lib/codecs'
 
 const coder = new BorshAccountsCoder(DEXXER_CORE_IDL)
@@ -59,4 +60,15 @@ test('Config readers hit dusdc_mint, oracle_program and fee_payer (not magic_fee
   assert.equal(readConfigDusdcMint(buf).toBase58(), dusdc.toBase58())
   assert.equal(readConfigOracleProgram(buf).toBase58(), oracle.toBase58())
   assert.equal(readConfigFeePayer(buf).toBase58(), feePayer.toBase58())
+})
+
+// Hermes regression (plan 4 smoke, 01.10.2026): on the device `Buffer.subarray()`
+// returns a plain Uint8Array whose `toString()` is "83,79,76,…", so the symbol
+// must be decoded byte by byte. Feed a plain Uint8Array (not a Buffer) so the
+// test cannot pass through Node's Buffer.toString by accident.
+test('symbolString decodes a NUL-padded ASCII symbol from a plain Uint8Array', () => {
+  assert.equal(symbolString(new Uint8Array([83, 79, 76, 0, 0, 0, 0, 0])), 'SOL')
+  assert.equal(symbolString(new Uint8Array([72, 89, 80, 69, 0, 0, 0, 0])), 'HYPE')
+  assert.equal(symbolString(new Uint8Array([65, 66, 67, 68, 69, 70, 71, 72])), 'ABCDEFGH')
+  assert.equal(symbolString(new Uint8Array(8)), '')
 })

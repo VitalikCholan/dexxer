@@ -7,6 +7,7 @@
 // instead of `program.account.<name>.fetch()` is explained in the first
 // comment block below (an Anchor + Hermes decode bug, found on-device).
 import { Connection, PublicKey } from '@solana/web3.js'
+import { symbolString } from './pdas'
 export { SIDES, type SideName } from './positions'
 
 // --- manual account field reads (work around an Anchor + Hermes/RN decode bug) ---
@@ -139,10 +140,7 @@ export function decodeMarket(data: Buffer): DecodedMarket {
     mmrBps: data.readUInt32LE(MARKET_MMR_BPS_OFFSET),
     openFeeBps: data.readUInt16LE(MARKET_OPEN_FEE_BPS_OFFSET),
     closeFeeBps: data.readUInt16LE(MARKET_CLOSE_FEE_BPS_OFFSET),
-    symbol: data
-      .subarray(MARKET_SYMBOL_OFFSET, MARKET_SYMBOL_OFFSET + 8)
-      .toString('utf8')
-      .replace(/\0+$/, ''),
+    symbol: symbolString(data.subarray(MARKET_SYMBOL_OFFSET, MARKET_SYMBOL_OFFSET + 8)),
     feed: new PublicKey(data.subarray(MARKET_FEED_OFFSET, MARKET_FEED_OFFSET + 32)),
   }
 }
