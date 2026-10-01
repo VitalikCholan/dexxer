@@ -84,22 +84,75 @@ program id) і ролі ключів.
 і встановлені через Railway API — значення ніколи не потрапляли в git чи в
 цей файл.
 
-### Program / PDA (devnet, з `tests/er/lib/program.ts`; PDA — СТАРОЇ програми `G2ok…`, PDA нової — Task 3)
+### Program / PDA (devnet; нова програма позицій-слотів — бутстрап 01.10.2026, Task 3 плану 4)
+
+**Relayer на Railway досі на СТАРІЙ програмі `G2ok…`** (його PDA — у таблиці «стара» нижче) до Task 4
+плану 4; застосунок — так само. Нова програма нижче працює без relayer-а: живі лише заплановані
+`crank_tick` шести ринків у TEE.
 
 | | Адреса |
 | --- | --- |
 | `dexxer_core` program id | `Fyg2yJBoN97ScWxT37xBp2zaaiNncNqnGJ7PAbtnUfCY` (нова, позиції-слоти; задеплоєно 01.10.2026, слот `506295949`) |
-| `dexxer_core` program id (стара) | `G2okX5Bae4CxfK8vzso1Ecc96QUv7E3P4YvxaZnaYXoV` (PDA нижче — її; нові — Task 3) |
 | Delegation Program | `DELeGGvXpWV2fqJUhqcF5ZSYMS4JTLjteaAMARRSaeSh` |
+| admin | `8L4EyWLc6yGH4c3zrVWLCoJqRbgWGtUf9sYyqnMPkVtH` |
+| `fee_payer` | `3HgDNwQPnHRRK6Sy5MXTN18zEYpGMJZioiGV3dD3Chnt` |
+| `Config` PDA | `CePa74X7wECzAjczzBAveWPorwASzsjRZfw2pAJu5nUQ` |
+| `Config.scheduler_signer` (`crank_signer_pda(admin)`) | `BbLTvs9vqNBpcj6DmVeqDmFfpLz4cxBM9Cr4HGb5w7wk` |
+| Мінт dUSDC (новий, ключ `tests/er/.keys/devnet-mint.json`; старий ключ — `devnet-mint.G2ok.json`) | `UU1BFV3GT7nhjm66mRP7Ajk1aGM6bEZdmiqKdWvmHR6` |
+| `Pool` PDA (публічний знімок) | `3XNcaYyNsiybLGeWyyMhRsub8W1dkXCyHv2P573ZHrSp` |
+| Pool ATA | `7spY4hrEy8icokoTMbjcSfFVrCpXSH7poj61eZ3w22dj` |
+| `PoolLive` PDA (приватний `[crank, admin]`) | `AXq69CJrW2detj2DN2ohrx8oTgAZ8E2hEc5NRbvRfDAH` |
+| `BalancesRoot` PDA | `HYCSWnQ1bvLK8qAcN1JfsuLCGW2p1LuyD5CQB53YkZu2` |
+| `FeeEscrow` PDA (поповнено 0.2 SOL, у ER 200 701 040 лам.) | `BdfNhXM95ZPvS8ekwyfVa2wxobvBC5trpXPXWyZyw8vs` |
+| Base RPC | `https://rpc.magicblock.app/devnet` |
+| ER/TEE | `https://devnet-tee.magicblock.app` |
+
+Ринки (усі делеговані, `MarketRisk` permissioned `[crank, admin]`; фід — `feedUnder(ORACLE, lazerFeedId)`;
+`crank_tick` кожного — запланований, 1000 мс, `iterations = i64::MAX`, `taskContext = admin`):
+
+| Символ | `Market` | `MarketRisk` | Lazer feed id | Feed PDA | `task_id` кранка | `schedule_crank` sig |
+| --- | --- | --- | --- | --- | --- | --- |
+| SOL | `8MPGF5g8ptEKndEPDZmwm3TwHrS2Fe8Bjy8pUof3iM5Y` | `AniEciEbcdtU9xNUkSoGtXF8CruAandANmSndz5Ps7XQ` | 6 | `ENYwebBThHzmzwPLAQvCucUTsjyfBSZdD9ViXksS4jPu` | `6355626329445645097` (`sha256(program id)[0..8]` LE, `schedule-eternal.ts`) | `4ubUU8puk1TQ12EfFbttihGHi9XiSMX6w3w1m4TujZv1DBziXuUjZrrSsCkE2wZhBQGGWhsCYdojHoFLkJYybCW1` |
+| BTC | `Gob6e3Fx4s5fskBWHNoQ9k7Gbig2D4qVcudvJaKGyHbz` | `8kn4ta2CTBgic37yXKqsqj21s5MaEKuNJJ1fVXn1miz7` | 1 | `71wtTRDY8Gxgw56bXFt2oc6qeAbTxzStdNiC425Z51sr` | `9088409262532617907` (`marketTaskId`) | `2cYKSjapFpnkc7jSgVhy3agQRxJYCz845gDidqtysWRPsVXcfmkz1WBzm7YccKBfmEvyxbYBAeiLGyzVfgJzqpXu` |
+| ETH | `Eduu9iXm5aEWz91f7oN7TRoTgYLAhre2eBKZcSk3rLKr` | `6Vk174vTUJGYFMqoNAomNaUpeNQZCgiT8rQNpaWP4H9W` | 2 | `5vaYr1hpv8yrSpu8w3K95x22byYxUJCCNCSYJtqVWPvG` | `-5077243792603821260` | `aWR6QB3goBWSUdRNo4n1QDS7FVUFjwoUgCRN5LR2zoCxDiYDWLJdNyVFbgDgZweuy7cczo9q7ChCVAVNgCkVrgT` |
+| HYPE | `FNYNAf1L6sT9s2nZ1ReLsKxgejcg8uLsfEttRfbgsd1C` | `Eqv9sgBGVVJrocBYeHqRFdP158eknJzzyQRNndq69MTH` | 110 | `CxEkVoCUwSAprvAhdWRPH63JeioQVNDtyZYEMRXuLu6x` | `-4085983205633519634` | `pmJFJncdV1XqJwF1hLUhtPQGNwhqzjLRMaK2B6TDQVw512LWeBpVrnCjvRnHyGqoDVSZ18ACM5y9zdyanpQKxgR` |
+| ZEC | `C6yeUZziYxh7BQcZ6srorZSCHaQfwdr3i79uiNs42gii` | `5ipWJjNKBPq5kqrApjNHKT5GbdVfN3At28UjCSv1fex5` | 66 | `6XWQr2Y1XEpJrCdVbYGupnDeb3wkR4YXazVXdgn2Lwpg` | `-3261127409136503701` | `44WDyGgQ7jykkTv8oyQR3T6hEmDyWUstAzUzY23bq4Z3pwhWt38MUVejStyBFhQamHV6Bux8YMRP3ZJwbZeH4mB2` |
+
+Запланованих `crank_tick` — **п'ять** (SOL — `schedule-eternal.ts`, BTC/ETH/HYPE/ZEC — `add-market
+--schedule`); бриф Task 3 рахував шість («SOL eternal + 5 ринкових»), але не-SOL ринків чотири. Задачі
+`liquidation_check` (`liq_task_id(positions, market)`) реєструє кожен `open_position` — поки позицій нема,
+їх нема. Скасувати запланований `crank_tick` не-SOL ринку досі нічим (`cancel-crank.ts` знає лише SOL).
+Кілька запланованих `crank_tick` з одним `taskContext = admin` співіснують: `npm run devnet:marks`
+(`tests/er/devnet/15-marks.ts`; 01.10.2026, 14:11–14:12 UTC, 60 с, опитування раз на секунду) —
+`MARKS PASS`, тіки SOL 59 / BTC 58 / ETH 59 / HYPE 59 / ZEC 58, і `sample_seq` виріс на ту саму
+кількість (кожен тік прийняв новий принт) — джерело семплів для `liquidation_check` живе на кожному
+ринку (гейт #38).
+
+Бутстрап 01.10.2026 (`npm run devnet:bootstrap`, порядок пулу `init_pool → init_pool_live → seed_pool →
+delegate_pool_live → delegate_pool` пройшов з першого разу, без 3007): `init_config`
+`5h6iYWRf…`, `init_market` SOL `2GW4aw5x…`, `delegate_market` `MwxtsXmR…`, `init_pool` `5F4Tww7Z…`,
+`init_pool_live` `JeHjKYEY…`, `seed_pool` (10 000 dUSDC) `4FGxB3JB…`, `delegate_pool_live` `2cA98N7y…`,
+`delegate_pool` `ZVELyUCn…`, `init_fee_escrow` `3U3dB1Ds…`, `delegate_fee_escrow` `62rA8mTz…`,
+`init_balances_root` `GSzCheKd…`, `delegate_balances_root` `5y7KpkTo…`, `init_market_permissions`
+`5taHtfBH…`; `fund-fee-payer` `eCigiqHW…`. Повні сигнатури — звіт Task 3
+(`.superpowers/sdd/2026-10-01-week6-slots-deploy/task-3-report.md`, не в git).
+Баланс admin: 1.5006 → 1.4425 (бутстрап) → 1.2422 (FeeEscrow) → 1.1937 SOL (чотири ринки + SOL-кранк);
+`fee_payer` 0.5048 SOL — не витрачався.
+
+<details><summary>Стара програма <code>G2ok…</code> (на ній досі relayer і APK)</summary>
+
+| | Адреса |
+| --- | --- |
+| `dexxer_core` program id (стара) | `G2okX5Bae4CxfK8vzso1Ecc96QUv7E3P4YvxaZnaYXoV` |
 | `Config` PDA | `5pTVyygsH7AYujAPCrtfViVT8e9GM1aWVt5pAjMYLGZK` |
 | `Market` PDA (SOL) | `1347yiBYsvCwqjJf8TUB9D4KSPp7RVF2cwQxfxSj4udp` |
 | `MarketRisk` PDA | `GNyNkDkb4CpG4ftuimmXsoXVxdv9tmoQRusmhfZvgnr5` |
 | `Pool` PDA (dUSDC) | `S7S157Q7VGBSxfeUXscrdnobbMKC2gTFKXpQe5L31mj` |
 | `BalancesRoot` PDA | `8VsGYfSbfAi8NSPh6xFvMQfvYSiQL1HwPrvL4YdhNDVZ` |
 | `FeeEscrow` PDA | `85ncXT9nYSAjjne8zA2e32Ew77EPygfJnPF15aqsLhJH` |
-| Oracle feed PDA (SOL/USD, `feedUnder(ORACLE, "6")`) | `ENYwebBThHzmzwPLAQvCucUTsjyfBSZdD9ViXksS4jPu` |
-| Base RPC | `https://rpc.magicblock.app/devnet` |
-| ER/TEE | `https://devnet-tee.magicblock.app` |
+| Oracle feed PDA (SOL/USD) | `ENYwebBThHzmzwPLAQvCucUTsjyfBSZdD9ViXksS4jPu` |
+
+</details>
 
 ### Деплой (як відтворити)
 
@@ -134,7 +187,9 @@ MCP, або `railway variables set` через CLI) виставляються �
 
 ## Позиції-слоти — розкатка (план 4; код — гілка `positions-slots`, 01.10.2026)
 
-Нічого з цього на devnet не виконано і не виміряно. Нова програма (`Positions` на 16 слотів, без
+**01.10.2026 (Task 3 плану 4) виконано кроки 1–3 нижче** (програма, ротація мінта, `bootstrapDevnet`,
+`FeeEscrow`, чотири ринки з кранками + SOL-кранк; адреси — «Program / PDA» вище); кроки 4–9 (relayer,
+Postgres, APK) — ні, relayer досі на старій програмі. Решта нижче на devnet не виміряна. Нова програма (`Positions` на 16 слотів, без
 розкриття, #38/#39) — **чистий старт**: новий keypair програми, нова адреса, без міграції зі старого
 `G2ok…` (spec §2.9.5); relayer і адмін-TS на гілці вже написані проти нового IDL
 (канонічний — `idl/dexxer_core.json`, `DEXXER_IDL_DIR=/app/idl` у Dockerfile). Застосунок (`app/`)
@@ -506,6 +561,9 @@ week-межі: `00`–`04` — тиждень 2 (Task 5, приватний он
 **Стан на 01.10.2026 (гілка `positions-slots`):** скрипти `06` (commitment-reveal), `12`
 (close-orphan), `14` (close-reopen), `15` (exit-debt) видалено разом з розкриттям; `08-undelegate`
 переписано під запуск `01` (його run-файл), перевірка відомого трейдера в `07` залежить від того,
-що `07` іде до `08`; `add-market` додано. Жоден скрипт на цій гілці не запускався проти мережі —
+що `07` іде до `08`; `add-market` додано. План 4: `14-feed-prints.ts` (`devnet:feedprints`, гейт #1 —
+`posted_slot` на кожному принті) і `15-marks.ts` (`devnet:marks` — 60 с опитування `Market` усіх
+ринків каталогу: `mark_slot`/`last_print`/`sample_seq`, `MARKS PASS` при ≥ 30 тіках і зростанні
+`sample_seq` на кожному) — нові `14`/`15`, не ті, що видалено. Жоден скрипт на цій гілці не запускався проти мережі —
 `08-undelegate` і виявлення ліквідації в `05`/`13` потребують повторного погляду перед devnet
 (план 4). Хелпер `setDisclosureDelay` у `tests/er/lib/admin.ts` прибрано.
