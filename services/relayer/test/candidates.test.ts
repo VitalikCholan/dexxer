@@ -227,7 +227,7 @@ test("tickCandidates: a MARKET-LOCAL chunk failure (confirm timeout) -> no singl
   assert.equal(r.landed, 1, "the zero tick advances mark and price sample");
   assert.equal(q.size, 0);
   assert.equal(r.sharedError, false);
-  assert.equal(r.marketLocalError, true);
+  assert.equal(classifyError(r.errors[0]), "market-local");
 });
 
 test("tickCandidates: a lone bad candidate -> probe lands -> quarantined (not resent alone)", async () => {
@@ -308,7 +308,9 @@ test("tickCandidates: no candidates -> one zero-candidate tick; it failing leave
   const local = fakeSend(new Set(), () => TIMEOUT);
   const rl = await tickCandidates([], deps(local.send));
   assert.deepEqual(local.sent, [[]], "an empty tick failing market-locally is not resent");
-  assert.equal(rl.marketLocalError, true);
+  assert.equal(rl.landed, 0);
+  assert.equal(rl.sharedError, false);
+  assert.equal(classifyError(rl.errors[0]), "market-local");
   const onChain = fakeSend(new Set(), () => ON_CHAIN_3002);
   const r2 = await tickCandidates([], deps(onChain.send));
   assert.deepEqual(onChain.sent, [[]], "an empty tick failing on chain is not probed again");

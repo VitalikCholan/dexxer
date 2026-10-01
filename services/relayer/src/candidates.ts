@@ -145,8 +145,6 @@ export interface TickCandidatesResult {
   released: string[];
   /** A SHARED error stopped this market; the caller stops the loop and reconnects (I4, R1). */
   sharedError: boolean;
-  /** A MARKET-LOCAL error stopped this market's candidate sends; the other markets go on, no reconnect (R1). */
-  marketLocalError: boolean;
   /** The market itself failed (the probe was rejected, on chain or market-locally): nobody blamed, nobody quarantined (m1). */
   marketFailed: boolean;
 }
@@ -178,7 +176,7 @@ export interface TickCandidatesResult {
  */
 export async function tickCandidates(open: Candidate[], deps: TickCandidatesDeps): Promise<TickCandidatesResult> {
   const out: TickCandidatesResult = {
-    landed: 0, errors: [], quarantined: [], released: [], sharedError: false, marketLocalError: false, marketFailed: false,
+    landed: 0, errors: [], quarantined: [], released: [], sharedError: false, marketFailed: false,
   };
   const { kept, released } = applyQuarantine(open, deps.quarantine, deps.now);
   out.released = released;
@@ -192,7 +190,6 @@ export async function tickCandidates(open: Candidate[], deps: TickCandidatesDeps
       out.errors.push(e);
       const c = deps.classify(e);
       if (c === "shared") out.sharedError = true;
-      if (c === "market-local") out.marketLocalError = true;
       return c;
     }
   };

@@ -282,3 +282,39 @@ test("janitorDeps.bothUnderProgram: true only when UserAccount AND Positions exi
   infos = [prog, null];
   assert.equal(await deps.bothUnderProgram(owner), false, "Positions missing");
 });
+
+// --- fix round 3 (N2): a dead L1 path costs at most two confirm timeouts per cycle ---
+
+test("8 exited owners whose closes all time out -> exactly 2 closeExitedUser calls, then the pass stops", async () => {
+  const owners = Array.from({ length: 8 }, () => ({ owner: k(), rentPayer: k() }));
+  const { deps } = fakes(owners, new Set(owners.map((o) => o.owner.toBase58())));
+  let calls = 0;
+  deps.closeExitedUser = async () => {
+    calls += 1;
+    throw new Error("confirmSignature timeout waiting for 5abc");
+  };
+  const state = createJanitorState();
+  const r = await runJanitorCycle(deps, { state });
+  assert.equal(calls, 2);
+  assert.equal(r.aborted, true);
+  assert.equal(state.failedAt.size, 0, "no cooldown");
+  assert.match(r.errors.at(-1) ?? "", /2 consecutive/);
+});
+
+test("a success between two timeouts resets the consecutive-failure counter", async () => {
+  const owners = Array.from({ length: 5 }, () => ({ owner: k(), rentPayer: k() }));
+  const { deps, closed } = fakes(owners, new Set(owners.map((o) => o.owner.toBase58())));
+  // timeout, success, timeout, timeout -> stop (owner 5 never attempted)
+  const plan = ["timeout", "ok", "timeout", "timeout", "ok"];
+  let calls = 0;
+  deps.closeExitedUser = async (o) => {
+    const p = plan[calls++];
+    if (p === "timeout") throw new Error("confirmSignature timeout waiting for 5abc");
+    closed.push(o);
+    return "sig";
+  };
+  const r = await runJanitorCycle(deps, { state: createJanitorState() });
+  assert.equal(calls, 4);
+  assert.equal(closed.length, 1);
+  assert.equal(r.aborted, true);
+});

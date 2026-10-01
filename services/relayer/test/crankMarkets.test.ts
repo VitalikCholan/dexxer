@@ -1,10 +1,10 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
-  cycleStuck, formatTickLine, groupOpenByMarket, nextFreshBlockhash, planTick, rotateMarkets, runMarkets, shouldRecordError, tickSet, untickedMarkets,
-  watchdogExpired, withSol,
+  cycleDeadlineMs, cycleStuck, formatTickLine, groupOpenByMarket, nextFreshBlockhash, planTick, rotateMarkets, runMarkets, shouldRecordError, tickSet, untickedMarkets,
+  shouldReconnectAfterLoop, watchdogExpired, withSol,
 } from "../src/crank.js";
-import { isSharedError } from "../src/errors.js";
+import { classifyError, isSharedError } from "../src/errors.js";
 import type { MarketInfo } from "../src/markets.js";
 import { marketInfoFrom } from "../src/markets.js";
 import { pdas, symbolBytes } from "../../../tests/er/lib/program.js";
@@ -58,7 +58,7 @@ async function run(markets: MarketInfo[], failing: Record<string, string>, share
       return { sharedError: sharedAfterTick.includes(m.symbol) };
     },
     (m, e) => errors.push(`${m.symbol}:${String(e)}`),
-    isSharedError,
+    classifyError,
   );
   return { r, errors, called };
 }
@@ -256,4 +256,54 @@ test("cycleStuck: only a cycle in flight for longer than the limit (R2)", () => 
   assert.equal(cycleStuck(null, 10_000_000, 900_000), false, "no cycle in flight");
   assert.equal(cycleStuck(1_000, 1_000 + 900_000, 900_000), false, "exactly at the limit");
   assert.equal(cycleStuck(1_000, 1_000 + 900_001, 900_000), true);
+});
+
+// --- fix round 3 (N1): a connection dead in a non-shared shape still reconnects ---
+
+test("shouldReconnectAfterLoop: every market `confirmSignature timeout` and nothing landed -> reconnect", async () => {
+  const { r } = await run([mk("SOL"), mk("BTC")], { SOL: CONFIRM_TIMEOUT, BTC: CONFIRM_TIMEOUT });
+  assert.equal(r.needsReconnect, false, "not shared");
+  assert.equal(r.landedAny, false);
+  assert.equal(r.nonOnChainFailures, 2);
+  assert.equal(shouldReconnectAfterLoop(r, undefined, classifyError), true);
+});
+
+test("shouldReconnectAfterLoop: every market a JSON-RPC-body error (`{\"code\":503,…}`) -> reconnect", async () => {
+  const msg = 'failed to get recent blockhash: {"code":503,"message":"Node is unhealthy"}';
+  assert.equal(classifyError(new Error(msg)), "market-local", "the body code is not matched as a 5xx status — the reason for this rule");
+  const { r } = await run([mk("SOL"), mk("BTC")], { SOL: msg, BTC: msg });
+  assert.equal(shouldReconnectAfterLoop(r, undefined, classifyError), true);
+});
+
+test("shouldReconnectAfterLoop: discovery failed non-on-chain and nothing landed -> reconnect", () => {
+  const nothing = { needsReconnect: false, landedAny: false, nonOnChainFailures: 0 };
+  assert.equal(shouldReconnectAfterLoop(nothing, new Error("Invalid token"), classifyError), true);
+});
+
+test("shouldReconnectAfterLoop: one market landed while another timed out -> the connection works, no reconnect", async () => {
+  const { r } = await run([mk("SOL"), mk("BTC")], { BTC: CONFIRM_TIMEOUT });
+  assert.equal(r.landedAny, true);
+  assert.equal(shouldReconnectAfterLoop(r, new Error("Invalid token"), classifyError), false);
+});
+
+test("shouldReconnectAfterLoop: all failures on chain (program rejected) and nothing landed -> no reconnect", async () => {
+  const { r } = await run([mk("SOL"), mk("BTC")], { SOL: ON_CHAIN, BTC: ON_CHAIN });
+  assert.equal(r.landedAny, false);
+  assert.equal(r.nonOnChainFailures, 0);
+  assert.equal(shouldReconnectAfterLoop(r, undefined, classifyError), false);
+});
+
+test("shouldReconnectAfterLoop: nothing failed -> no reconnect; a shared error -> reconnect (as before)", async () => {
+  const ok = await run([mk("SOL"), mk("BTC")], {});
+  assert.equal(shouldReconnectAfterLoop(ok.r, undefined, classifyError), false);
+  const shared = await run([mk("SOL"), mk("BTC")], { SOL: "fetch failed" });
+  assert.equal(shouldReconnectAfterLoop(shared.r, undefined, classifyError), true);
+});
+
+// --- fix round 3 (N2): the cycle deadline has a floor ---
+
+test("cycleDeadlineMs: max(3 x COMMIT_INTERVAL_MS, 600 000)", () => {
+  assert.equal(cycleDeadlineMs(60_000), 600_000);
+  assert.equal(cycleDeadlineMs(300_000), 900_000);
+  assert.equal(cycleDeadlineMs(10_000), 600_000);
 });

@@ -22,7 +22,9 @@
 // pass without a cooldown for that owner (it is not their fault) and is
 // reported in `errors`; a close the program rejected ON CHAIN puts that owner
 // on the cooldown; anything else (e.g. a confirm timeout) counts as an
-// attempt, sets no cooldown, and the pass goes on; the pass is skipped altogether while
+// attempt and sets no cooldown — the pass goes on, but stops after
+// JANITOR_MAX_CONSECUTIVE_FAILURES (2) such close failures in a row, so a
+// dead L1 path costs at most two confirm timeouts per cycle (N2); the pass is skipped altogether while
 // the fee payer's base balance is below `JANITOR_MIN_FEE_PAYER_SOL` (default
 // 0.002 SOL), so it never drains the key that pays `/sponsor` and
 // `/nonce`.
@@ -41,6 +43,8 @@ import { closeExitedUserAccounts } from "../../../tests/er/lib/trader.js";
 
 /** Bounds what one cycle can spend in fees: counts close ATTEMPTS (success or failure), not successes. */
 export const JANITOR_MAX_ATTEMPTS_PER_CYCLE = 8;
+/** Non-on-chain close failures in a row that stop the pass (N2); a success or an on-chain rejection resets the count. */
+export const JANITOR_MAX_CONSECUTIVE_FAILURES = 2;
 /** An owner whose close failed is not attempted again for this long. */
 export const JANITOR_RETRY_COOLDOWN_MS = envNum("JANITOR_RETRY_COOLDOWN_MS", 3_600_000, 60_000);
 /** Below this fee-payer base balance the pass is skipped (I1). 0 disables the floor. */
@@ -124,9 +128,11 @@ export async function runJanitorCycle(deps: JanitorDeps, opts: JanitorOpts = {})
   }
   out.scanned = owners.length;
   let attempts = 0;
+  let consecutive = 0;
   for (const o of owners) {
     if (attempts >= maxAttempts) break;
     const key = o.owner.toBase58();
+    let attemptedClose = false; // a failing delegation READ is not a close failure
     try {
       const failed = state.failedAt.get(key);
       if (failed !== undefined && now() - failed < cooldownMs) {
@@ -138,7 +144,9 @@ export async function runJanitorCycle(deps: JanitorDeps, opts: JanitorOpts = {})
         continue;
       }
       attempts += 1;
+      attemptedClose = true;
       const sig = await deps.closeExitedUser(o);
+      consecutive = 0;
       state.failedAt.delete(key);
       out.closed.push(key);
       log(`janitor: closed ${key} rent_payer=${o.rentPayer.toBase58()} sig=${sig}`);
@@ -151,9 +159,20 @@ export async function runJanitorCycle(deps: JanitorDeps, opts: JanitorOpts = {})
         break;
       }
       // On chain: the program rejected this owner's close — cooldown. Anything
-      // else: counted as an attempt (above), no cooldown, next owner.
-      if (c === "on-chain") state.failedAt.set(key, now());
+      // else: counted as an attempt (above), no cooldown, next owner — unless
+      // it is the second close failure of that kind in a row (N2).
       out.errors.push(`janitor ${key}: ${errorMessage(e)}`);
+      if (c === "on-chain") {
+        state.failedAt.set(key, now());
+        consecutive = 0;
+      } else if (attemptedClose) {
+        consecutive += 1;
+        if (consecutive >= JANITOR_MAX_CONSECUTIVE_FAILURES) {
+          out.aborted = true;
+          out.errors.push(`janitor: pass stopped after ${consecutive} consecutive non-on-chain close failures`);
+          break;
+        }
+      }
     }
   }
   return out;

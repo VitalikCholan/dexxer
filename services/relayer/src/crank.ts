@@ -56,7 +56,9 @@
 // market is starved; MARKET-LOCAL — everything else, a confirm timeout
 // included — fails that market only (after one zero-candidate tick, so its
 // mark still moves if only the candidate transaction is the problem), the
-// other markets go on, no reconnect. Without a short-circuit the order is the
+// other markets go on. A loop in which NO transaction landed and something
+// failed off chain reconnects anyway (`shouldReconnectAfterLoop`, N1): a
+// silently dead token shows up market-locally on every market. Without a short-circuit the order is the
 // tick set's (SOL first).
 //
 // If candidate discovery itself fails, every market is still ticked with no
@@ -75,8 +77,9 @@
 // Liveness (final review I2): the loop never waits on the commit cycle; a
 // watchdog (`CRANK_WATCHDOG_MS`, default 120 000, min 30 000) exits the
 // process with code 1 when no loop iteration completed within that time, or
-// when one commit cycle has been in flight for more than 3 ×
-// `COMMIT_INTERVAL_MS` (`cycleStuck`, R2), and
+// when one commit cycle has been in flight for longer than
+// max(3 × `COMMIT_INTERVAL_MS`, 10 min) (`cycleStuck`/`cycleDeadlineMs`, R2/N2),
+// and
 // index.ts exits with code 1 when `startCrank` rejects — Railway's
 // ON_FAILURE restart policy is what restarts the relayer (its healthcheck runs
 // only at deploy time).
@@ -127,6 +130,7 @@ import type { Candidate } from "./candidates.js";
 import { COMMIT_INTERVAL_MS, commitDue, createCycleRunner, runCommitCycle, runIsolated, runRootCycle } from "./commit.js";
 import { envNum } from "./env.js";
 import { classifyError, errorMessage, isSharedError, looksLikeAuthError, normalizeErrorMessage, shouldReconnectOnDiscoveryError } from "./errors.js";
+import type { ErrorClass } from "./errors.js";
 import { crankTickAccounts } from "./ixAccounts.js";
 import { janitorDeps, runJanitorCycle } from "./janitor.js";
 import { PROCESS_SALT, tagOf } from "./logTag.js";
@@ -209,6 +213,10 @@ export interface RunMarketsResult {
   needsReconnect: boolean;
   /** Base58 of the market whose SHARED error stopped the loop, else null — the next loop starts after it (`rotateMarkets`). */
   stoppedAt: string | null;
+  /** At least one market landed a transaction — the connection works (N1). */
+  landedAny: boolean;
+  /** Markets that failed with a non-on-chain error (shared or market-local) (N1). */
+  nonOnChainFailures: number;
 }
 
 /** What one market's tick reports back: a market that landed something can still have hit a SHARED error afterwards. */
@@ -228,21 +236,26 @@ export async function runMarkets(
   markets: MarketInfo[],
   tickFn: (m: MarketInfo) => Promise<MarketTickOutcome>,
   onError: (m: MarketInfo, e: unknown) => void,
-  isShared: (e: unknown) => boolean,
+  classify: (e: unknown) => ErrorClass,
 ): Promise<RunMarketsResult> {
-  const out: RunMarketsResult = { ticked: [], failed: [], notTicked: [], solTicked: false, needsReconnect: false, stoppedAt: null };
+  const out: RunMarketsResult = {
+    ticked: [], failed: [], notTicked: [], solTicked: false, needsReconnect: false, stoppedAt: null, landedAny: false, nonOnChainFailures: 0,
+  };
   for (let i = 0; i < markets.length; i++) {
     const m = markets[i];
     let stop = false;
     try {
       const r = await tickFn(m);
       out.ticked.push(m.symbol);
+      out.landedAny = true;
       if (m.symbol === "SOL") out.solTicked = true;
       stop = Boolean(r && r.sharedError);
     } catch (e) {
       out.failed.push(m.symbol);
       onError(m, e);
-      stop = isShared(e);
+      const c = classify(e);
+      if (c !== "on-chain") out.nonOnChainFailures += 1;
+      stop = c === "shared";
     }
     if (stop) {
       out.needsReconnect = true;
@@ -314,7 +327,36 @@ export function rotateMarkets<T extends { market: { toBase58(): string } }>(mark
   return [...markets.slice(i + 1), ...markets.slice(0, i + 1)];
 }
 
-/** One commit cycle in flight for longer than `limitMs` (R2, 3 × `COMMIT_INTERVAL_MS`): wedged, restart. */
+/**
+ * Reconnect after this loop? (N1) Yes on a SHARED error (`needsReconnect`).
+ * Also when NO market landed a transaction AND something failed in a
+ * non-on-chain way (a market, or candidate discovery): a silently dead TEE
+ * token or an unhealthy node shows up as every send timing out or every call
+ * answering a JSON-RPC-body error — `market-local` by text, but together it
+ * is the connection. One landed transaction proves the connection works; a
+ * loop whose only failures are on-chain rejections proves it too.
+ */
+export function shouldReconnectAfterLoop(
+  r: { needsReconnect: boolean; landedAny: boolean; nonOnChainFailures: number },
+  discoveryError: unknown | undefined,
+  classify: (e: unknown) => ErrorClass,
+): boolean {
+  if (r.needsReconnect) return true;
+  if (r.landedAny) return false;
+  const discoveryNonOnChain = discoveryError !== undefined && classify(discoveryError) !== "on-chain";
+  return r.nonOnChainFailures > 0 || discoveryNonOnChain;
+}
+
+/**
+ * How long one commit cycle may be in flight (R2, N2): 3 × `COMMIT_INTERVAL_MS`,
+ * but never below 10 min — a janitor pass may legitimately wait out L1
+ * confirm timeouts on top of root + commit.
+ */
+export function cycleDeadlineMs(commitIntervalMs: number): number {
+  return Math.max(3 * commitIntervalMs, 600_000);
+}
+
+/** One commit cycle in flight for longer than `limitMs` (`cycleDeadlineMs`): wedged, restart. */
 export function cycleStuck(startedAt: number | null, now: number, limitMs: number): boolean {
   return startedAt !== null && now - startedAt > limitMs;
 }
@@ -366,8 +408,8 @@ export interface CrankOpts {
   exit?: (code: number) => void;
 }
 
-/** R2: a commit cycle in flight for longer than this exits the process too. */
-const CYCLE_DEADLINE_MS = 3 * COMMIT_INTERVAL_MS;
+/** R2/N2: a commit cycle in flight for longer than this exits the process too. */
+const CYCLE_DEADLINE_MS = cycleDeadlineMs(COMMIT_INTERVAL_MS);
 
 interface WatchdogHooks {
   loopDone: () => void;
@@ -398,7 +440,7 @@ export async function startCrank(cfg: RelayerConfig, state: RelayerState, regist
       }
       const started = hooks.cycleStartedAt();
       if (cycleStuck(started, now, CYCLE_DEADLINE_MS)) {
-        console.error(`crank: watchdog — commit cycle in flight for ${now - (started ?? now)} ms (> 3 × COMMIT_INTERVAL_MS = ${CYCLE_DEADLINE_MS}); exiting with code 1 for a restart`);
+        console.error(`crank: watchdog — commit cycle in flight for ${now - (started ?? now)} ms (> max(3 × COMMIT_INTERVAL_MS, 600000) = ${CYCLE_DEADLINE_MS}); exiting with code 1 for a restart`);
         exit(1);
       }
     },
@@ -697,6 +739,7 @@ async function runCrank(cfg: RelayerConfig, state: RelayerState, registry: Marke
     let needReconnect = cycleWantsReconnect;
     cycleWantsReconnect = false;
     let discovery: Discovery;
+    let discoveryError: unknown | undefined;
     try {
       discovery = { ok: true, candidates: await openCandidates(n) };
     } catch (e) {
@@ -705,6 +748,7 @@ async function runCrank(cfg: RelayerConfig, state: RelayerState, registry: Marke
       console.error(`crank n=${n}: candidate discovery failed — ticking every market without candidates`, errorMessage(e));
       pushError(state, e);
       needReconnect ||= shouldReconnectOnDiscoveryError(e); // R1.4: auth/network only
+      discoveryError = e;
       discovery = { ok: false };
     }
     const plan = planTick(discovery);
@@ -714,7 +758,7 @@ async function runCrank(cfg: RelayerConfig, state: RelayerState, registry: Marke
       // R1.3: after a SHARED short-circuit, start at the market after the one
       // that stopped the previous loop.
       const markets = rotateMarkets([...set.markets, ...(await resolveUnknown(set.unknown, n))], resumeAfter);
-      const r = await runMarkets(markets, (m) => tickMarket(m, poolLive, plan.byMarket.get(m.market.toBase58()) ?? [], n), onMarketError, isSharedError);
+      const r = await runMarkets(markets, (m) => tickMarket(m, poolLive, plan.byMarket.get(m.market.toBase58()) ?? [], n), onMarketError, classifyError);
       resumeAfter = r.stoppedAt;
       const now = Date.now();
       for (const sym of r.ticked) state.marketTicks[sym] = now;
@@ -726,7 +770,10 @@ async function runCrank(cfg: RelayerConfig, state: RelayerState, registry: Marke
       // checked against its print.
       if (r.solTicked && plan.countsForHealth) state.lastTickAt = now;
       if (r.notTicked.length > 0) console.warn(`crank n=${n}: shared error — not ticked this loop: ${r.notTicked.join(",")}; reconnecting, next loop starts after ${symbolOf(r.stoppedAt ?? "")}`);
-      needReconnect ||= r.needsReconnect;
+      // N1: also when nothing landed and something failed off chain.
+      const reconnectAfter = shouldReconnectAfterLoop(r, discoveryError, classifyError);
+      if (reconnectAfter && !r.needsReconnect) console.warn(`crank n=${n}: no crank_tick landed in this loop and something failed off chain — reconnecting`);
+      needReconnect ||= reconnectAfter;
     } catch (e) {
       // Not expected (`runMarkets` catches per market) — never stop the loop.
       console.error("tick failed", errorMessage(e));
