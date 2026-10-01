@@ -417,7 +417,7 @@ SOL на payer-і, що дорівнюють ренті буфера** (для �
 локального `target/deploy/dexxer_core.so`; `cmp target/idl/dexxer_core.json
 app/src/idl/dexxer_core.json` — байт-у-байт. (Історичний запис тижня 5. Наступний деплой — нова
 програма плану 4 — звіряє `target/idl/dexxer_core.json` з канонічним `idl/dexxer_core.json`; копія
-апки `app/src/idl/` до плану 3 лишається старою.)
+апки `app/src/idl/` до плану 3 лишається старою.) **[Застаріло з 01.10.2026: див. «Правила тижня 6: позиції-слоти, app»]**
 
 ### `set_disclosure_delay` — операційна нотатка
 

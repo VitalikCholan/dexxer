@@ -1,50 +1,42 @@
-# Welcome to your Expo app 👋
+# Dexxer — мобільний застосунок
 
-This is an [Expo](https://expo.dev) project created with [`create-expo-app`](https://www.npmjs.com/package/create-expo-app).
+Android-клієнт (Expo / React Native) приватного perpetual DEX Dexxer на Solana Seeker:
+підпис через Mobile Wallet Adapter, приватний стан — через MagicBlock PER (TEE), публічні
+дані — через relayer (`services/relayer`). Позиції — 16 слотів одного акаунта `Positions`
+(програма `dexxer_core`, spec `docs/superpowers/specs/2026-09-18-dexxer-mvp-design.md` §2.9).
 
-## Get started
-
-1. Install dependencies
-
-   ```bash
-   npm install
-   ```
-
-2. Start the app
-
-   ```bash
-   npx expo start
-   ```
-
-In the output, you'll find options to open the app in a
-
-- [development build](https://docs.expo.dev/develop/development-builds/introduction/)
-- [Android emulator](https://docs.expo.dev/workflow/android-studio-emulator/)
-- [iOS simulator](https://docs.expo.dev/workflow/ios-simulator/)
-- [Expo Go](https://expo.dev/go), a limited sandbox for trying out app development with Expo
-
-You can start developing by editing the files inside the **app** directory. This project uses [file-based routing](https://docs.expo.dev/router/introduction).
-
-## Get a fresh project
-
-When you're ready, run:
+## Запуск
 
 ```bash
-npm run reset-project
+. "$HOME/.nvm/nvm.sh" && nvm use   # Node з .nvmrc
+npm install
+npm run android                    # dev-client на емуляторі/пристрої
+npm run dev                        # лише Metro
 ```
 
-This command will move the starter code to the **app-example** directory and create a blank **app** directory where you can start developing.
+Емулятор, проксі, гаманці (fakewallet/Phantom) і пастки — `docs/emulator-runbook.md`.
 
-## Learn more
+## Перевірка
 
-To learn more about developing your project with Expo, look at the following resources:
+```bash
+npx tsc --noEmit && npm run lint:check && npm test && npm run format:check
+```
 
-- [Expo documentation](https://docs.expo.dev/): Learn fundamentals, or go into advanced topics with our [guides](https://docs.expo.dev/guides).
-- [Learn Expo tutorial](https://docs.expo.dev/tutorial/introduction/): Follow a step-by-step tutorial where you'll create a project that runs on Android, iOS, and the web.
+`npm test` — `node:test` через `tsx` (`test/*.test.ts`), без пристрою.
 
-## Join the community
+## IDL і декодери
 
-Join our community of developers creating universal apps.
+- IDL — лише канонічний `idl/dexxer_core.json` у корені репо, імпортується напряму
+  (`src/lib/anchor.ts`); Metro бачить його через `watchFolders` у `metro.config.js`.
+  Копії IDL в `app/` немає й не має бути.
+- Акаунти декодуються лише вручну за зміщеннями (`src/lib/codecs.ts`, `src/lib/positions.ts`):
+  Anchor-декодування на Hermes не працює, а zero-copy `Positions` Borsh-кодер не читає.
+  Зміщення `Positions` запінені Rust-тестом `offsets_match_the_off_chain_decoders`.
+- Білдери інструкцій звіряються з IDL поключно: `test/ixAccounts.test.ts`.
 
-- [Expo on GitHub](https://github.com/expo/expo): View our open source platform and contribute.
-- [Discord community](https://chat.expo.dev): Chat with Expo users and ask questions.
+## Конфігурація
+
+Адреси задаються змінними `EXPO_PUBLIC_*` (`src/lib/config.ts`): relayer —
+`EXPO_PUBLIC_RELAYER_URL`, далі `EXPO_PUBLIC_BASE_RPC`, `EXPO_PUBLIC_TEE_RPC`,
+`EXPO_PUBLIC_IDENTITY_URI` тощо. Metro підставляє їх лише за статичного читання
+`process.env.EXPO_PUBLIC_*`.
