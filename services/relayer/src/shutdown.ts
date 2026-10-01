@@ -9,7 +9,7 @@
 // without ever waiting for the crank loop itself to actually stop — a
 // Railway redeploy's SIGTERM could kill the process mid
 // `sendRawTransaction`/`confirmSignature` or mid `runRootCycle`/
-// `runDisclosureCycle`, contradicting the "finish its in-flight tick and
+// `runCommitCycle`, contradicting the "finish its in-flight tick and
 // stop" the header comment promised. `shutdown()` below fixes the ordering:
 // `requestStop()` → wait for `crankDone` to settle (the promise
 // `startCrank(cfg, state)` returns) → `closeServer()` → `exit(0)`. A

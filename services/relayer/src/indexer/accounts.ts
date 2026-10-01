@@ -36,7 +36,7 @@
 import { Connection, Keypair, PublicKey } from "@solana/web3.js";
 import type { AccountInfo } from "@solana/web3.js";
 import { ORACLE, baseConn } from "../../../../tests/er/lib/env.js";
-import { DEXXER_CORE_PROGRAM_ID, accountNs, decodeBalancesRoot, dexxerCoreProgram, pdas } from "../../../../tests/er/lib/program.js";
+import { accountNs, decodeBalancesRoot, dexxerCoreProgram, pdas } from "../../../../tests/er/lib/program.js";
 import { ORACLE_STALE_MS, decodeFeed, isStale, publishTimeMs } from "./prices.js";
 import { insertPoolSnapshot, insertRoot, insertTick } from "./store.js";
 import type { DbPool } from "../db.js";
