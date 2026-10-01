@@ -22,6 +22,7 @@
     "devnet:add-market": "DEXXER_NET=devnet tsx devnet/add-market.ts",
     "devnet:feedprints": "DEXXER_NET=devnet tsx devnet/14-feed-prints.ts",
     "devnet:marks": "DEXXER_NET=devnet tsx devnet/15-marks.ts",
+    "devnet:multimarket": "DEXXER_NET=devnet tsx devnet/16-multi-market.ts",
     "selftest:hashes": "tsx lib/hashes.selftest.ts"
   },
   "dependencies": {
