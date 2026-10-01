@@ -15,7 +15,7 @@ pub mod state;
 pub mod token;
 use instructions::*;
 use state::{MarketParams, Side};
-declare_id!("G2okX5Bae4CxfK8vzso1Ecc96QUv7E3P4YvxaZnaYXoV");
+declare_id!("Fyg2yJBoN97ScWxT37xBp2zaaiNncNqnGJ7PAbtnUfCY");
 
 #[ephemeral]
 #[program]

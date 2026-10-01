@@ -27,19 +27,20 @@ import {
   permissionPdaFromAccount,
 } from "@magicblock-labs/ephemeral-rollups-sdk";
 
-// Task 4 (week 4, services/relayer): overridable so the relayer's Docker
-// image — built from a fresh git checkout, where `target/idl/` (gitignored,
-// `anchor build` output) does not exist — can point this at an IDL committed
-// to git: the canonical `idl/dexxer_core.json` (kept byte-identical to
-// `target/idl/dexxer_core.json` by CI's `cmp` step; `app/src/idl/` is the
-// app's own copy and may lag until the app moves to the new program). The
-// relayer's Dockerfile and tests use `DEXXER_IDL_DIR=<repo>/idl`. Default is
-// unchanged for every existing caller (tests/er, scripts, app scripts run
-// from a full local checkout with `target/idl/` present).
-const IDL_DIR = process.env.DEXXER_IDL_DIR ?? resolve(dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "target", "idl");
+// Task 4 (week 4, services/relayer): overridable via `DEXXER_IDL_DIR` (the
+// relayer's Dockerfile, its tests and CI set it to `<repo>/idl`). Default
+// (plan 4 of the position slots, 01.10.2026): the canonical, git-committed
+// `idl/dexxer_core.json` at the repo root — the old default `target/idl/`
+// (gitignored `anchor build` output) went stale and no longer decodes
+// `Positions`. `app/src/idl/` is the app's own copy.
+const HERE = dirname(fileURLToPath(import.meta.url));
+const IDL_DIR = process.env.DEXXER_IDL_DIR ?? resolve(HERE, "..", "..", "..", "idl");
+// `mock_oracle.json` is never in the canonical `idl/` — without an override it
+// is still looked up in the local `target/idl/` build output.
+const MOCK_IDL_DIR = process.env.DEXXER_IDL_DIR ?? resolve(HERE, "..", "..", "..", "target", "idl");
 
-function loadIdl(name: string): Idl {
-  return JSON.parse(readFileSync(resolve(IDL_DIR, `${name}.json`), "utf8"));
+function loadIdl(name: string, dir: string = IDL_DIR): Idl {
+  return JSON.parse(readFileSync(resolve(dir, `${name}.json`), "utf8"));
 }
 
 /**
@@ -50,16 +51,16 @@ function loadIdl(name: string): Idl {
  * calls `mockOracleProgram()`/`pdas.feed()`. Tolerate its absence here
  * instead of crashing this module's import for every caller.
  */
-function loadIdlOptional(name: string): Idl | null {
+function loadIdlOptional(name: string, dir: string): Idl | null {
   try {
-    return loadIdl(name);
+    return loadIdl(name, dir);
   } catch {
     return null;
   }
 }
 
 export const DEXXER_CORE_IDL = loadIdl("dexxer_core");
-export const MOCK_ORACLE_IDL = loadIdlOptional("mock_oracle");
+export const MOCK_ORACLE_IDL = loadIdlOptional("mock_oracle", MOCK_IDL_DIR);
 export const DEXXER_CORE_PROGRAM_ID = new PublicKey((DEXXER_CORE_IDL as { address: string }).address);
 export const MOCK_ORACLE_PROGRAM_ID = MOCK_ORACLE_IDL ? new PublicKey((MOCK_ORACLE_IDL as { address: string }).address) : PublicKey.default;
 
@@ -85,7 +86,7 @@ export function dexxerCoreProgram(conn: Connection, wallet: Keypair): Program {
 }
 
 export function mockOracleProgram(conn: Connection, wallet: Keypair): Program {
-  if (!MOCK_ORACLE_IDL) throw new Error("mock_oracle.json not found in IDL_DIR (local/LiteSVM-dev only — see loadIdlOptional above)");
+  if (!MOCK_ORACLE_IDL) throw new Error("mock_oracle.json not found in MOCK_IDL_DIR (local/LiteSVM-dev only — see loadIdlOptional above)");
   return new Program(MOCK_ORACLE_IDL, anchorProvider(conn, wallet));
 }
 

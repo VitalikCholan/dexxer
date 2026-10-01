@@ -4,7 +4,20 @@
 файлі — лише публічні ідентифікатори (project/service id, домен, PDA,
 program id) і ролі ключів.
 
-> **Стан на 01.10.2026.** Усе нижче, що описує живий деплой (program id, адреси, виміри, env на
+> **Нова програма (план 4, 01.10.2026):** `dexxer_core` = `Fyg2yJBoN97ScWxT37xBp2zaaiNncNqnGJ7PAbtnUfCY` (новий keypair,
+> позиції-слоти, канонічний `idl/dexxer_core.json`). **Задеплоєно на devnet 01.10.2026**, слот
+> `506295949`, sig `4PQfpkUggp8P9EtZdUccAvaVCrcAphuwAwiV6cikcwjos7hgYRhWM537zZfduYGTLwAVApTv5p3tHU8ZGNsWRUWM`;
+> ProgramData `6AVVm2ZMrP2sRGDjXQRJJZEBpKMivuFiDHanp3xhok1Q` (5.62667404 SOL ренти), Data Length 1 107 440 B,
+> upgrade authority `4P1WD92zwtUB2jxYQJRvsQc4fLSDtergp6tvMyzMgGMM` (`spikes/keys/payer.json`); payer
+> 6.938610579 → 1.305608419 SOL (≈5.633 SOL разом із рентою). `solana program dump` у файл + `cmp` з
+> `target/deploy/dexxer_core.so` — ідентичні (sha256 `ebeed3b1…440692f`); `-` CLI сприймає як ім'я
+> файлу, не stdout (`dump <id> - | sha256sum` хешує порожній вивід) — порівнювати через файл.
+> PDA нової програми — після Task 3. Вічний кранк SOL старої програми скасовано 01.10.2026
+> (`cancel_crank`, `task_id -8632762600545312817`, sig
+> `55pfC2ESVzUj74TBX9YvkedErkFPG6tbFyKzSvyK21RtgoHguubmUVb9XJ7NiKFUZ4G9hoKXrvUgqi8xUYjCcQmi`);
+> задачі `liquidation_check` старих позицій скасувати нічим — тікатимуть, доки живе старий `FeeEscrow`.
+>
+> **Стан на 01.10.2026 (до деплою плану 4).** Усе нижче, що описує живий деплой (program id, адреси, виміри, env на
 > Railway), — це **стара** програма `G2ok…` і **старий** relayer (розкриття, `DisclosureQueue`,
 > `Position` на ринок). Гілка `positions-slots` (нова програма на слотах, relayer і адмін-TS на ній,
 > `services/relayer/README.md`) на devnet **не задеплоєна**: чистий старт з новим keypair програми —
@@ -71,11 +84,12 @@ program id) і ролі ключів.
 і встановлені через Railway API — значення ніколи не потрапляли в git чи в
 цей файл.
 
-### Program / PDA (devnet, з `tests/er/lib/program.ts`)
+### Program / PDA (devnet, з `tests/er/lib/program.ts`; PDA — СТАРОЇ програми `G2ok…`, PDA нової — Task 3)
 
 | | Адреса |
 | --- | --- |
-| `dexxer_core` program id | `G2okX5Bae4CxfK8vzso1Ecc96QUv7E3P4YvxaZnaYXoV` |
+| `dexxer_core` program id | `Fyg2yJBoN97ScWxT37xBp2zaaiNncNqnGJ7PAbtnUfCY` (нова, позиції-слоти; задеплоєно 01.10.2026, слот `506295949`) |
+| `dexxer_core` program id (стара) | `G2okX5Bae4CxfK8vzso1Ecc96QUv7E3P4YvxaZnaYXoV` (PDA нижче — її; нові — Task 3) |
 | Delegation Program | `DELeGGvXpWV2fqJUhqcF5ZSYMS4JTLjteaAMARRSaeSh` |
 | `Config` PDA | `5pTVyygsH7AYujAPCrtfViVT8e9GM1aWVt5pAjMYLGZK` |
 | `Market` PDA (SOL) | `1347yiBYsvCwqjJf8TUB9D4KSPp7RVF2cwQxfxSj4udp` |

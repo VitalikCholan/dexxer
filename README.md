@@ -140,7 +140,7 @@ npx solana-mobile@latest device install fakewallet
 
 | | |
 |---|---|
-| `dexxer_core` program id | `G2okX5Bae4CxfK8vzso1Ecc96QUv7E3P4YvxaZnaYXoV` |
+| `dexxer_core` program id | `Fyg2yJBoN97ScWxT37xBp2zaaiNncNqnGJ7PAbtnUfCY` (позиції-слоти, план 4; стара — `G2ok…`, див. `docs/deployments.md`) |
 | Base RPC | `https://rpc.magicblock.app/devnet` |
 | ER/TEE | `https://devnet-tee.magicblock.app` |
 | Relayer/індексер | `https://relayer-production-1ae7.up.railway.app` |
