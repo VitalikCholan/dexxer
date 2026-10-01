@@ -21,7 +21,9 @@
 // Position slots (spec §2.9): the pure `*Accounts` builders below are the one
 // place each instruction's account map is spelled out — helpers, devnet
 // scripts and the relayer all use them, and
-// services/relayer/test/ixAccounts.test.ts pins every key against the IDL. `setPrice` moves the mock oracle's feed on the ER
+// services/relayer/test/ixAccounts.test.ts pins every key against the IDL.
+//
+// `setPrice` moves the mock oracle's feed on the ER
 // (the feed is delegated too, so this must go through an ER connection,
 // signed by the feed's write authority — the admin key, per `admin.ts`'s
 // `init_feed`).

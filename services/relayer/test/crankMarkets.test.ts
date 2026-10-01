@@ -1,6 +1,9 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { groupOpenByMarket, planTick, runMarkets, shouldRecordError, untickedMarkets, withSol } from "../src/crank.js";
+import {
+  formatTickLine, groupOpenByMarket, nextFreshBlockhash, planTick, runMarkets, shouldRecordError, tickSet, untickedMarkets, watchdogExpired, withSol,
+} from "../src/crank.js";
+import { isConnectionClass } from "../src/errors.js";
 import type { MarketInfo } from "../src/markets.js";
 import { marketInfoFrom } from "../src/markets.js";
 import { pdas, symbolBytes } from "../../../tests/er/lib/program.js";
@@ -39,8 +42,9 @@ test("untickedMarkets names markets that have open positions but are not ticked"
   assert.deepEqual(untickedMarkets(new Map(), [btc]), []);
 });
 
-const isAuth = (e: unknown) => /401/.test(String(e));
-async function run(markets: MarketInfo[], failing: Record<string, string>) {
+// Final review I4/m6: the production classifier and real error strings.
+const ON_CHAIN = 'transaction 5abc failed: {"InstructionError":[1,{"Custom":3002}]}';
+async function run(markets: MarketInfo[], failing: Record<string, string>, connectionAfterTick: string[] = []) {
   const errors: string[] = [];
   const called: string[] = [];
   const r = await runMarkets(
@@ -48,30 +52,44 @@ async function run(markets: MarketInfo[], failing: Record<string, string>) {
     async (m) => {
       called.push(m.symbol);
       if (failing[m.symbol]) throw new Error(failing[m.symbol]);
+      return { connectionError: connectionAfterTick.includes(m.symbol) };
     },
     (m, e) => errors.push(`${m.symbol}:${String(e)}`),
-    isAuth,
+    isConnectionClass,
   );
   return { r, errors, called };
 }
 
-test("runMarkets: one market throwing does not stop the others (F6)", async () => {
-  const { r, errors, called } = await run([mk("SOL"), mk("BTC"), mk("ETH")], { BTC: "rpc blew up" });
+test("runMarkets: one market failing ON CHAIN does not stop the others (F6)", async () => {
+  const { r, errors, called } = await run([mk("SOL"), mk("BTC"), mk("ETH")], { BTC: ON_CHAIN });
   assert.deepEqual(called, ["SOL", "BTC", "ETH"]);
   assert.deepEqual(r.ticked, ["SOL", "ETH"]);
   assert.deepEqual(r.failed, ["BTC"]);
+  assert.deepEqual(r.notTicked, []);
   assert.equal(r.needsReconnect, false);
   assert.equal(errors.length, 1);
 });
 
-test("runMarkets: auth-looking errors -> needsReconnect once, however many markets failed (F6)", async () => {
-  const { r } = await run([mk("SOL"), mk("BTC"), mk("ETH")], { SOL: "401 unauthorized", BTC: "HTTP 401" });
-  assert.equal(r.needsReconnect, true);
-  assert.deepEqual(r.failed, ["SOL", "BTC"]);
+test("runMarkets: the first connection-class error stops the loop — later markets NOT ticked, needsReconnect (I4)", async () => {
+  for (const msg of ["401 Unauthorized", "confirmSignature timeout waiting for 5abc", "fetch failed", "429 Too Many Requests", "503 Service Unavailable"]) {
+    const { r, called } = await run([mk("SOL"), mk("BTC"), mk("ETH")], { SOL: msg, BTC: "HTTP 401" });
+    assert.deepEqual(called, ["SOL"], msg);
+    assert.deepEqual(r.failed, ["SOL"]);
+    assert.deepEqual(r.notTicked, ["BTC", "ETH"]);
+    assert.equal(r.needsReconnect, true);
+  }
 });
 
-test("runMarkets: solTicked false when SOL threw while BTC succeeded (F3/F6)", async () => {
-  const { r } = await run([mk("SOL"), mk("BTC")], { SOL: "stuck" });
+test("runMarkets: a market that ticked but then hit a connection error stops the loop too (I4)", async () => {
+  const { r, called } = await run([mk("SOL"), mk("BTC"), mk("ETH")], {}, ["BTC"]);
+  assert.deepEqual(called, ["SOL", "BTC"]);
+  assert.deepEqual(r.ticked, ["SOL", "BTC"], "BTC landed something before the error");
+  assert.deepEqual(r.notTicked, ["ETH"]);
+  assert.equal(r.needsReconnect, true);
+});
+
+test("runMarkets: solTicked false when SOL failed on chain while BTC succeeded (F3/F6)", async () => {
+  const { r } = await run([mk("SOL"), mk("BTC")], { SOL: ON_CHAIN });
   assert.equal(r.solTicked, false);
   assert.deepEqual(r.ticked, ["BTC"]);
 });
@@ -112,4 +130,70 @@ test("withSol works on symbol-only views too (health lists SOL while the registr
   const sol = () => ({ symbol: "SOL" });
   assert.deepEqual(withSol([] as { symbol: string }[], sol).map((m) => m.symbol), ["SOL"]);
   assert.deepEqual(withSol([{ symbol: "BTC" }], sol).map((m) => m.symbol), ["SOL", "BTC"]);
+});
+
+// --- final review I3: the crank's tick set is sticky and follows the open positions ---
+
+test("tickSet: SOL first, then the registry, then sticky markets the registry dropped; candidate markets nobody knows are returned as unknown", () => {
+  const sol = mk("SOL");
+  const btc = mk("BTC");
+  const eth = mk("ETH");
+  const doge = mk("DOGE");
+  const sticky = new Map([[eth.market.toBase58(), eth]]);
+  const stray = Keypair.generate().publicKey.toBase58();
+  const byMarket = new Map<string, unknown[]>([[btc.market.toBase58(), [1]], [eth.market.toBase58(), [1]], [doge.market.toBase58(), [1]], [stray, [1]]]);
+  const r = tickSet(sticky, [btc], () => sol, byMarket);
+  assert.deepEqual(r.markets.map((m) => m.symbol), ["SOL", "BTC", "ETH"], "ETH left the registry but stays (sticky)");
+  assert.deepEqual(r.unknown, [doge.market.toBase58(), stray].sort());
+});
+
+test("tickSet: the registry's entry wins over a sticky one for the same market; no market twice", () => {
+  const sol = mk("SOL");
+  const btcOld = mk("BTC");
+  const btcNew = mk("BTC");
+  const sticky = new Map([[btcOld.market.toBase58(), btcOld], [sol.market.toBase58(), sol]]);
+  const r = tickSet(sticky, [btcNew], () => sol, new Map());
+  assert.deepEqual(r.markets.map((m) => m.symbol), ["SOL", "BTC"]);
+  assert.equal(r.markets[1], btcNew);
+  assert.deepEqual(r.unknown, []);
+});
+
+test("tickSet: empty registry and empty sticky map -> SOL alone (withSol)", () => {
+  const sol = mk("SOL");
+  const r = tickSet(new Map(), [], () => sol, new Map([[sol.market.toBase58(), [1]]]));
+  assert.deepEqual(r.markets, [sol]);
+  assert.deepEqual(r.unknown, []);
+});
+
+test("watchdogExpired: only when no loop iteration completed within the limit (I2)", () => {
+  assert.equal(watchdogExpired(1_000, 1_000 + 120_000, 120_000), false, "exactly at the limit");
+  assert.equal(watchdogExpired(1_000, 1_000 + 120_001, 120_000), true);
+  assert.equal(watchdogExpired(1_000, 2_000, 120_000), false);
+});
+
+test("nextFreshBlockhash: returns the first blockhash different from the last one", async () => {
+  const seq = ["A", "A", "B"];
+  let t = 0;
+  const r = await nextFreshBlockhash(async () => ({ blockhash: seq.shift() ?? "Z", lastValidBlockHeight: 1 }), "A", {
+    limitMs: 5_000, pollMs: 200, now: () => t, sleep: async (ms) => { t += ms; },
+  });
+  assert.equal(r.blockhash, "B");
+});
+
+test("nextFreshBlockhash: gives up after the limit with a connection-class error (I2d)", async () => {
+  let t = 0;
+  let calls = 0;
+  const p = nextFreshBlockhash(async () => { calls += 1; return { blockhash: "A", lastValidBlockHeight: 1 }; }, "A", {
+    limitMs: 5_000, pollMs: 200, now: () => t, sleep: async (ms) => { t += ms; },
+  });
+  await assert.rejects(p, (e: Error) => /freshBlockhash timeout/.test(e.message) && isConnectionClass(e));
+  assert.ok(calls >= 25 && calls <= 27, `polled until the limit (${calls})`);
+});
+
+test("formatTickLine: counts, never keys; unreadable fields are null (I5)", () => {
+  const line = formatTickLine({ n: 7, market: "SOL", mark: "150000000", markSlot: "42", sig: "5sig", cu: 1234, tickMs: 80, candidates: 3, liquidated: 1 });
+  assert.equal(line, "tick n=7 market=SOL mark=150000000 mark_slot=42 sig=5sig cu=1234 tick_ms=80 candidates=3 liquidated=1");
+  const nulls = formatTickLine({ n: 8, market: "BTC", mark: null, markSlot: null, sig: "5sig", cu: null, tickMs: 90, candidates: 0, liquidated: null });
+  assert.equal(nulls, "tick n=8 market=BTC mark=null mark_slot=null sig=5sig cu=null tick_ms=90 candidates=0 liquidated=null");
+  assert.ok(!/\[/.test(line), "no key list");
 });

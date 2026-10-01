@@ -107,12 +107,17 @@ const state: RelayerState = { lastTickAt: null, lastCommitAt: null, tick: 0, err
 const pool = createPool(cfg.databaseUrl);
 await migrate(pool);
 if (pool) {
+  // Final review I2: only `lastCommitAt` is restored (informational). The
+  // health gate's `lastTickAt` always starts `null` in a new process, so
+  // `/healthz.ok` is false until THIS process ticked SOL after a good
+  // discovery — a restored value would report a dead process healthy for up
+  // to `STALE_MS`. For the same reason `lastTickAt` is no longer persisted
+  // (nothing reads it back); the `meta` row an older relayer wrote stays as
+  // it is.
   try {
-    const lastTickAt = await getMeta(pool, "lastTickAt");
     const lastCommitAt = await getMeta(pool, "lastCommitAt");
-    if (lastTickAt) state.lastTickAt = Number(lastTickAt);
     if (lastCommitAt) state.lastCommitAt = Number(lastCommitAt);
-    console.log("index: restored persisted state", { lastTickAt: state.lastTickAt, lastCommitAt: state.lastCommitAt });
+    console.log("index: restored persisted state", { lastCommitAt: state.lastCommitAt });
   } catch (e) {
     console.error("index: failed to load persisted state from db", String(e));
   }
@@ -120,10 +125,8 @@ if (pool) {
   // Postgres round-trip inside the 1s tick loop would eat into its
   // cadence), never awaited by the tick loop itself.
   setInterval(() => {
-    const writes: Promise<void>[] = [];
-    if (state.lastTickAt !== null) writes.push(setMeta(pool, "lastTickAt", String(state.lastTickAt)));
-    if (state.lastCommitAt !== null) writes.push(setMeta(pool, "lastCommitAt", String(state.lastCommitAt)));
-    void Promise.all(writes).catch((e) => console.error("index: persistState failed", String(e)));
+    if (state.lastCommitAt === null) return;
+    void setMeta(pool, "lastCommitAt", String(state.lastCommitAt)).catch((e) => console.error("index: persistState failed", String(e)));
   }, 5000).unref();
 }
 
@@ -307,17 +310,24 @@ if (!crankEnabled) {
 }
 // Kept as a reference (not just `.catch()`ed and discarded): `shutdown()`
 // below awaits this to know the loop has actually stopped. `.catch()` here
-// makes `crankDone` itself never reject — a crash still logs/records into
-// `state.errors` exactly as before, it just also resolves so shutdown never
-// hangs on a promise that rejected instead of resolving.
+// makes `crankDone` itself never reject, so shutdown never hangs on it.
+//
+// Final review I2: a `startCrank` that rejects — a boot failure (TEE auth,
+// `Config`/SOL `Market` read) or a crash of the loop — exits the process with
+// code 1. Railway's restart policy is ON_FAILURE (railway.json), and its
+// healthcheck runs only at deploy time, so a relayer that stayed up with a
+// dead crank would never be restarted. During a SIGTERM/SIGINT shutdown the
+// exit is left to `shutdown()`. (The loop's own watchdog — crank.ts
+// `CRANK_WATCHDOG_MS` — covers a loop that hangs instead of rejecting.)
+let shuttingDown = false;
 const crankDone: Promise<void> = crankEnabled
   ? startCrank(cfg, state, markets).catch((e) => {
-      console.error("relayer: crank loop crashed", e);
+      console.error("relayer: crank loop crashed — exiting with code 1 for a restart", e);
       state.errors.push(String(e instanceof Error ? e.message : e));
+      if (!shuttingDown) process.exit(1);
     })
   : Promise.resolve();
 
-let shuttingDown = false;
 function handleSignal(signal: string): void {
   if (shuttingDown) return;
   shuttingDown = true;

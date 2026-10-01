@@ -13,8 +13,10 @@ import {
   pairAccounts,
   pairKey,
   shouldRetrySingly,
+  splitPairKey,
   tickCandidates,
   type Candidate,
+  type TickCandidatesDeps,
 } from "../src/candidates.js";
 
 const k = () => Keypair.generate().publicKey;
@@ -80,7 +82,7 @@ test("chunkCandidates: at least one chunk, none above the limit, none lost, no p
   for (const c of chunks) assert.equal(new Set(c.map((x) => x.positions.toBase58())).size, c.length);
 });
 
-test("liquidatedIn reports a candidate whose slot on the market is gone", () => {
+test("liquidatedIn reports a candidate whose slot on the market is gone (the tick line logs only the count, I5)", () => {
   const market = k();
   const owner = k();
   const c: Candidate = { positions: k(), owner, market: market.toBase58() };
@@ -118,6 +120,9 @@ test("the same market twice in one account (or the same account listed twice) yi
 });
 
 // --- fix round 1 (F2): one bad pair must not starve the rest of its chunk ---
+// Final review m1/m2/m6: the production classifier and real error strings;
+// singles only after an ON-CHAIN chunk failure, and only once a
+// zero-candidate probe proved the market itself is fine.
 
 const cand = (): Candidate => ({ positions: k(), owner: k(), market: "m" });
 
@@ -140,108 +145,162 @@ test("pairKey is positions:market", () => {
   assert.equal(pairKey(a), `${a.positions.toBase58()}:m`);
 });
 
-test("shouldRetrySingly: only a multi-candidate chunk that failed for a reason other than auth/timeout", () => {
-  assert.equal(shouldRetrySingly(3, false), true);
-  assert.equal(shouldRetrySingly(3, true), false, "auth/timeout: every send would fail the same way");
-  assert.equal(shouldRetrySingly(1, false), false, "a single candidate already failed alone");
-  assert.equal(shouldRetrySingly(0, false), false);
+test("splitPairKey gives back the positions and the market of a quarantine key (m3)", () => {
+  const market = k().toBase58();
+  const a: Candidate = { positions: k(), owner: k(), market };
+  assert.deepEqual(splitPairKey(pairKey(a)), { positions: a.positions.toBase58(), market });
 });
 
-const isAuth = (e: unknown) => /401|timeout/.test(String(e));
+test("shouldRetrySingly: only a multi-candidate chunk that failed ON CHAIN (m2)", () => {
+  assert.equal(shouldRetrySingly(3, true), true);
+  assert.equal(shouldRetrySingly(3, false), false, "connection-class: every send would fail the same way, whoever is in it");
+  assert.equal(shouldRetrySingly(1, true), false, "a single candidate already failed alone");
+  assert.equal(shouldRetrySingly(0, true), false);
+});
+
+const SIG = "5VERv8NMvzbJMEkV8xnrLkEaWRtSz9CosKDYjCJjBRnbJLgp8uirBgmQpjKhoR4tjF3ZpRzrFmBV6UjKdiSZkQUW";
+const ON_CHAIN_3002 = `transaction ${SIG} failed: {"InstructionError":[1,{"Custom":3002}]}`;
+const TIMEOUT = `confirmSignature timeout waiting for ${SIG}`;
+const deps = (send: (chunk: Candidate[]) => Promise<void>, q = new Map<string, number>(), extra: Partial<TickCandidatesDeps> = {}): TickCandidatesDeps => ({
+  send, isOnChainFailure: looksLikeOnChainFailure, quarantine: q, now: 0, cooldownMs: 10, ...extra,
+});
 function fakeSend(bad: Set<Candidate>, fail?: (chunk: Candidate[]) => string | null) {
   const sent: Candidate[][] = [];
   const send = async (chunk: Candidate[]) => {
     sent.push(chunk);
     const custom = fail?.(chunk);
     if (custom) throw new Error(custom);
-    if (chunk.some((c) => bad.has(c))) throw new Error("custom program error 3002");
+    if (chunk.some((c) => bad.has(c))) throw new Error(ON_CHAIN_3002);
   };
   return { sent, send };
 }
 
-test("tickCandidates: a bad pair fails its chunk, the chunk is retried one by one, only the bad pair is quarantined", async () => {
+test("tickCandidates: a bad pair fails its chunk ON CHAIN -> zero-candidate probe lands -> singles, only the bad pair quarantined", async () => {
   const good1 = cand();
   const bad = cand();
   const good2 = cand();
   const q = new Map<string, number>();
   const { sent, send } = fakeSend(new Set([bad]));
-  const r = await tickCandidates([good1, bad, good2], { send, isAuthOrTimeout: isAuth, quarantine: q, now: 100, cooldownMs: 60_000 });
-  assert.deepEqual(sent, [[good1, bad, good2], [good1], [bad], [good2]]);
-  assert.equal(r.landed, 2);
+  const r = await tickCandidates([good1, bad, good2], deps(send, q, { now: 100, cooldownMs: 60_000 }));
+  assert.deepEqual(sent, [[good1, bad, good2], [], [good1], [bad], [good2]]);
+  assert.equal(r.landed, 3, "probe + two good singles");
   assert.equal(r.errors.length, 2);
   assert.deepEqual(r.quarantined, [pairKey(bad)]);
   assert.deepEqual([...q.entries()], [[pairKey(bad), 60_100]]);
+  assert.equal(r.connectionError, false);
+  assert.equal(r.marketFailed, false);
   // Next loop: the bad pair stays out, the others go together.
   const next = fakeSend(new Set([bad]));
-  const r2 = await tickCandidates([good1, bad, good2], { send: next.send, isAuthOrTimeout: isAuth, quarantine: q, now: 200, cooldownMs: 60_000 });
+  const r2 = await tickCandidates([good1, bad, good2], deps(next.send, q, { now: 200, cooldownMs: 60_000 }));
   assert.deepEqual(next.sent, [[good1, good2]]);
   assert.equal(r2.landed, 1);
 });
 
-test("tickCandidates: other chunks are still sent when one chunk fails", async () => {
+test("tickCandidates: other chunks are still sent when one chunk fails on chain", async () => {
   const bad = cand();
   const rest = Array.from({ length: 3 }, cand);
   const { sent, send } = fakeSend(new Set([bad]));
-  const r = await tickCandidates([bad, ...rest], { send, isAuthOrTimeout: isAuth, quarantine: new Map(), now: 0, cooldownMs: 1, size: 2 });
-  assert.deepEqual(sent, [[bad, rest[0]], [bad], [rest[0]], [rest[1], rest[2]]]);
-  assert.equal(r.landed, 2);
+  const r = await tickCandidates([bad, ...rest], deps(send, new Map(), { size: 2, cooldownMs: 1 }));
+  assert.deepEqual(sent, [[bad, rest[0]], [], [bad], [rest[0]], [rest[1], rest[2]]]);
+  assert.equal(r.landed, 3);
 });
 
-test("tickCandidates: auth/timeout is not retried singly and quarantines nobody", async () => {
+test("tickCandidates: a connection-class error (401) stops the market: no singles, no probe, nobody quarantined", async () => {
   const a = cand();
   const b = cand();
   const q = new Map<string, number>();
-  const { sent, send } = fakeSend(new Set(), () => "HTTP 401");
-  const r = await tickCandidates([a, b], { send, isAuthOrTimeout: isAuth, quarantine: q, now: 0, cooldownMs: 1 });
+  const { sent, send } = fakeSend(new Set(), () => "401 Unauthorized");
+  const r = await tickCandidates([a, b], deps(send, q));
   assert.deepEqual(sent, [[a, b]]);
   assert.equal(r.landed, 0);
   assert.equal(q.size, 0);
+  assert.equal(r.connectionError, true);
 });
 
-test("tickCandidates: a lone bad candidate is quarantined and a zero-candidate tick still advances the market", async () => {
+test("tickCandidates: a lone bad candidate -> probe lands -> quarantined (not resent alone)", async () => {
   const bad = cand();
   const q = new Map<string, number>();
   const { sent, send } = fakeSend(new Set([bad]));
-  const r = await tickCandidates([bad], { send, isAuthOrTimeout: isAuth, quarantine: q, now: 0, cooldownMs: 10 });
+  const r = await tickCandidates([bad], deps(send, q));
   assert.deepEqual(sent, [[bad], []]);
   assert.equal(r.landed, 1);
   assert.deepEqual(r.quarantined, [pairKey(bad)]);
 });
 
-test("tickCandidates: every candidate bad -> each quarantined, then one zero-candidate tick", async () => {
+test("tickCandidates: every candidate bad -> probe, then each quarantined; no second zero-candidate tick", async () => {
   const a = cand();
   const b = cand();
   const { sent, send } = fakeSend(new Set([a, b]));
-  const r = await tickCandidates([a, b], { send, isAuthOrTimeout: isAuth, quarantine: new Map(), now: 0, cooldownMs: 10 });
-  assert.deepEqual(sent, [[a, b], [a], [b], []]);
+  const r = await tickCandidates([a, b], deps(send));
+  assert.deepEqual(sent, [[a, b], [], [a], [b]]);
   assert.equal(r.landed, 1);
   assert.deepEqual(r.quarantined.sort(), [pairKey(a), pairKey(b)].sort());
 });
 
-test("tickCandidates: no candidates -> one zero-candidate tick; it failing leaves landed 0", async () => {
+test("tickCandidates: market-wide on-chain failure -> the probe fails on chain too: no singles, no quarantine, the market's later chunks skipped (m1)", async () => {
+  const cands = Array.from({ length: 4 }, cand);
+  const q = new Map<string, number>();
+  const { sent, send } = fakeSend(new Set(), () => ON_CHAIN_3002);
+  const r = await tickCandidates(cands, deps(send, q, { size: 2 }));
+  assert.deepEqual(sent, [[cands[0], cands[1]], []]);
+  assert.equal(r.landed, 0);
+  assert.equal(q.size, 0);
+  assert.equal(r.marketFailed, true);
+  assert.equal(r.connectionError, false);
+});
+
+test("tickCandidates: the probe failing for a connection-class reason stops the market as a connection error", async () => {
+  const a = cand();
+  const b = cand();
+  const { sent, send } = fakeSend(new Set([a]), (chunk) => (chunk.length === 0 ? TIMEOUT : null));
+  const r = await tickCandidates([a, b], deps(send));
+  assert.deepEqual(sent, [[a, b], []]);
+  assert.equal(r.connectionError, true);
+  assert.equal(r.quarantined.length, 0);
+});
+
+test("tickCandidates: a connection-class error among the singles stops them", async () => {
+  const a = cand();
+  const b = cand();
+  const c = cand();
+  let singles = 0;
+  const { sent, send } = fakeSend(new Set([a]), (chunk) => (chunk.length === 1 && ++singles === 2 ? "fetch failed" : null));
+  const r = await tickCandidates([a, b, c], deps(send));
+  assert.deepEqual(sent, [[a, b, c], [], [a], [b]], "c is not sent after b's connection error");
+  assert.equal(r.connectionError, true);
+  assert.deepEqual(r.quarantined, [pairKey(a)]);
+});
+
+test("tickCandidates: no candidates -> one zero-candidate tick; it failing leaves landed 0 and is not resent", async () => {
   const ok = fakeSend(new Set());
-  assert.equal((await tickCandidates([], { send: ok.send, isAuthOrTimeout: isAuth, quarantine: new Map(), now: 0, cooldownMs: 1 })).landed, 1);
+  assert.equal((await tickCandidates([], deps(ok.send))).landed, 1);
   assert.deepEqual(ok.sent, [[]]);
-  const down = fakeSend(new Set(), () => "rpc blew up");
-  const r = await tickCandidates([], { send: down.send, isAuthOrTimeout: isAuth, quarantine: new Map(), now: 0, cooldownMs: 1 });
+  const down = fakeSend(new Set(), () => "fetch failed");
+  const r = await tickCandidates([], deps(down.send));
   assert.equal(r.landed, 0);
   assert.deepEqual(down.sent, [[]], "the empty tick is not resent");
   assert.equal(r.errors.length, 1);
+  assert.equal(r.connectionError, true);
+  const onChain = fakeSend(new Set(), () => ON_CHAIN_3002);
+  const r2 = await tickCandidates([], deps(onChain.send));
+  assert.deepEqual(onChain.sent, [[]], "an empty tick failing on chain is not probed again");
+  assert.equal(r2.marketFailed, true);
 });
 
-test("looksLikeOnChainFailure: only a landed-and-rejected transaction", () => {
-  assert.equal(looksLikeOnChainFailure(new Error('transaction 5abc failed: {"InstructionError":[1,{"Custom":3002}]}')), true);
+test("looksLikeOnChainFailure (re-exported from errors.ts): only a landed-and-rejected transaction", () => {
+  assert.equal(looksLikeOnChainFailure(new Error(ON_CHAIN_3002)), true);
   assert.equal(looksLikeOnChainFailure(new Error("429 Too Many Requests")), false);
-  assert.equal(looksLikeOnChainFailure(new Error("confirmSignature timeout waiting for 5abc")), false);
+  assert.equal(looksLikeOnChainFailure(new Error(TIMEOUT)), false);
 });
 
-test("tickCandidates: an RPC error (not on chain) is retried singly but quarantines nobody", async () => {
+test("tickCandidates: an RPC error (429/5xx, not on chain) is connection-class — no singles, nobody quarantined (m2)", async () => {
   const a = cand();
   const b = cand();
   const q = new Map<string, number>();
   const { sent, send } = fakeSend(new Set(), (chunk) => (chunk.length > 0 ? "503 Service Unavailable" : null));
-  const r = await tickCandidates([a, b], { send, isAuthOrTimeout: isAuth, isOnChainFailure: looksLikeOnChainFailure, quarantine: q, now: 0, cooldownMs: 10 });
-  assert.deepEqual(sent, [[a, b], [a], [b], []], "singles tried, then the zero-candidate tick");
+  const r = await tickCandidates([a, b], deps(send, q));
+  assert.deepEqual(sent, [[a, b]], "no singles, no zero-candidate tick: the next send would fail the same way");
   assert.equal(q.size, 0);
-  assert.equal(r.landed, 1);
+  assert.equal(r.landed, 0);
+  assert.equal(r.connectionError, true);
 });

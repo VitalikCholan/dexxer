@@ -1,7 +1,9 @@
 // tests/er/lib/hashes.ts
 //
-// Pure keccak256 helpers mirroring the Rust canon (state/disclosure.rs
-// state/balances_root.rs `leaf`/`pad`). Deliberately free
+// Pure keccak256 helpers mirroring the Rust canon
+// (programs/dexxer_core/src/state/balances_root.rs `leaf`/`pad`; the
+// commitment hash and its state/disclosure.rs are gone with disclosure,
+// spec §2.9). Deliberately free
 // of any IDL/RPC dependency so `hashes.selftest.ts` (and CI's typescript job,
 // which has no `anchor build` output) can import them without loading
 // `target/idl/*.json` — that ENOENT was the first real CI run's failure.

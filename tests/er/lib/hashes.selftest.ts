@@ -1,11 +1,10 @@
 // tests/er/lib/hashes.selftest.ts
 //
 // Week 3 (Task 7) golden-vector self-test: asserts the TS keccak256 helpers
-// in `hashes.ts` (`leaf`, `pad`) produce byte-for-byte the
-// same hex as the Rust unit tests `commitment_hash_golden_vector`
-// (programs/dexxer_core/src/state/disclosure.rs) and
-// `leaf_and_pad_golden_vectors` (programs/dexxer_core/src/state/balances_root.rs)
-// for the exact same fixed inputs. No test runner is wired up in this
+// in `hashes.ts` (`leaf`, `pad`) produce byte-for-byte the same hex as the
+// Rust unit test `leaf_and_pad_golden_vectors`
+// (programs/dexxer_core/src/state/balances_root.rs) for the exact same fixed
+// inputs. (The commitment-hash vector left with disclosure, spec §2.9.) No test runner is wired up in this
 // package (see package.json) — this is a standalone script that throws (and
 // exits non-zero) on any mismatch. Run: `npm run selftest:hashes`.
 

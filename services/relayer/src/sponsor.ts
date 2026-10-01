@@ -56,11 +56,12 @@
 // already loads for every other relayer subsystem):
 //   faucet_init, init_user       — owner@0, payer@1 (payer must be fee_payer)
 //   delegate_user                — owner@0, payer@1 (week-5 Task 3 P1: the
-//                                   three delegation records got their own
-//                                   payer, split out of `owner`)
-// `init_position`/`init_dq`/`delegate_position`/`delegate_dq` don't exist as
-// standalone instructions — `init_user`/`delegate_user` cover all three
-// per-user PDAs in one call. `init_permissions`/`set_session` are the ER
+//                                   delegation records — two since spec
+//                                   §2.9 — got their own payer, split out
+//                                   of `owner`)
+// There is no per-market or per-queue instruction to whitelist: `init_user`/
+// `delegate_user` cover both per-user PDAs (`UserAccount`, `Positions` —
+// spec §2.9) in one call. `init_permissions`/`set_session` are the ER
 // leg and are deliberately absent (see the Task-5 note above).
 //
 // eSPL: the exact instruction shape `delegateSpl(owner, mint, amount,

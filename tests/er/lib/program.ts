@@ -29,9 +29,11 @@ import {
 
 // Task 4 (week 4, services/relayer): overridable so the relayer's Docker
 // image — built from a fresh git checkout, where `target/idl/` (gitignored,
-// `anchor build` output) does not exist — can point this at the one IDL
-// asset actually committed to git, `app/src/idl/dexxer_core.json` (kept in
-// sync with `target/idl/dexxer_core.json` by CI's `cmp` step). Default is
+// `anchor build` output) does not exist — can point this at an IDL committed
+// to git: the canonical `idl/dexxer_core.json` (kept byte-identical to
+// `target/idl/dexxer_core.json` by CI's `cmp` step; `app/src/idl/` is the
+// app's own copy and may lag until the app moves to the new program). The
+// relayer's Dockerfile and tests use `DEXXER_IDL_DIR=<repo>/idl`. Default is
 // unchanged for every existing caller (tests/er, scripts, app scripts run
 // from a full local checkout with `target/idl/` present).
 const IDL_DIR = process.env.DEXXER_IDL_DIR ?? resolve(dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "target", "idl");
@@ -170,11 +172,10 @@ export const permissionPda = permissionPdaFromAccount;
 export { DELEGATION_PROGRAM_ID, EPHEMERAL_SPL_TOKEN_PROGRAM_ID };
 
 // --- Week 3 (Task 7): keccak256 hash helpers, byte-for-byte matching
-// `leaf`/`pad` in programs/dexxer_core/src/state/{disclosure,balances_root}.rs
-// (Global Constraints §"Канонічні байти commitment-у"/"Лист root-у"). Golden
-// vectors for both live in `tests/er/lib/hashes.selftest.ts`
-// (`npm run selftest:hashes`), asserted against the Rust unit tests
-// `commitment_hash_golden_vector` / `leaf_and_pad_golden_vectors`.
+// `leaf`/`pad` in programs/dexxer_core/src/state/balances_root.rs (Global
+// Constraints §"Лист root-у"). Their golden vectors live in
+// `tests/er/lib/hashes.selftest.ts` (`npm run selftest:hashes`), asserted
+// against the Rust unit test `leaf_and_pad_golden_vectors`.
 
 // Hash canon lives in ./hashes.ts (IDL-free) — re-exported here for callers.
 export { leaf, pad, u64le } from "./hashes.js";

@@ -30,11 +30,24 @@ import { latestPoolSnapshot, latestRoot, latestTick, listPoolSnapshots, listTick
 import { parseMarketParam, parsePoolHistoryQuery } from "./query.js";
 import type { WsMessage } from "./accounts.js";
 import type { MarketInfo } from "../markets.js";
+import { withSol } from "../withSol.js";
 
 function clampLimit(raw: unknown, def: number, max: number): number {
   const n = Number(raw ?? def);
   if (!Number.isFinite(n) || n < 1) return def;
   return Math.min(Math.trunc(n), max);
+}
+
+/**
+ * Symbols `?market=` accepts: the registry's, plus SOL always — the same
+ * `withSol` view the crank ticks, so `?market=SOL` is never a 400 while the
+ * registry is empty or lacks SOL. The data behind it is whatever accounts.ts
+ * indexed for SOL: it subscribes SOL's feed when the registry is empty and
+ * never drops a subscription; with no SOL feed at all `/mark` answers
+ * `price: null, stale: true` — a valid answer, not an unknown market.
+ */
+export function knownSymbols(list: { symbol: string }[]): string[] {
+  return withSol(list.map((m) => ({ symbol: m.symbol })), () => ({ symbol: "SOL" })).map((m) => m.symbol);
 }
 
 export interface IndexerRouterOpts {
@@ -44,13 +57,7 @@ export interface IndexerRouterOpts {
 
 export function indexerRouter(pool: DbPool, opts: IndexerRouterOpts): Router {
   const router = express.Router();
-  // Before the registry's first successful read the list is empty; SOL stays
-  // queryable anyway — accounts.ts indexes SOL's feed without waiting for the
-  // registry, so its ticks are there to serve.
-  const known = (): string[] => {
-    const list = opts.markets();
-    return list.length === 0 ? ["SOL"] : list.map((m) => m.symbol);
-  };
+  const known = (): string[] => knownSymbols(opts.markets());
 
   // Public `Market` fields only — `marketRisk` is deliberately not served
   // (MarketRisk is private, risk #24; its address alone says nothing, but the

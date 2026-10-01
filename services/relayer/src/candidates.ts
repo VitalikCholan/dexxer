@@ -8,6 +8,7 @@
 import { AccountMeta, PublicKey } from "@solana/web3.js";
 import { decodePositions, slotFor } from "../../../tests/er/lib/positions.js";
 import { envNum } from "./env.js";
+import { looksLikeOnChainFailure } from "./errors.js";
 
 // Pairs: 2 keys per candidate. The largest count whose transaction (6 fixed
 // accounts + ComputeBudget) stays within 1232 B — pinned by
@@ -90,6 +91,12 @@ export function pairKey(c: Candidate): string {
   return `${c.positions.toBase58()}:${c.market}`;
 }
 
+/** The inverse of `pairKey` — a released key may belong to any market, so the log names the market from the key (m3). */
+export function splitPairKey(key: string): { positions: string; market: string } {
+  const i = key.indexOf(":");
+  return { positions: key.slice(0, i), market: key.slice(i + 1) };
+}
+
 /**
  * Drops candidates whose pair is quarantined until after `now`; pairs whose
  * time is up are removed from `quarantine` and returned in `released` (once).
@@ -107,29 +114,21 @@ export function applyQuarantine(open: Candidate[], quarantine: Map<string, numbe
 
 /**
  * Retry a failed chunk one candidate per transaction? Only if it had more than
- * one candidate (a single one already failed alone) and the error is not
- * auth/timeout (then every send fails the same way, whoever is in it).
+ * one candidate (a single one already failed alone) and it failed ON CHAIN
+ * (m2): any other failure is connection-class and says nothing about who is in
+ * the chunk — every send would fail the same way.
  */
-export function shouldRetrySingly(chunkSize: number, authOrTimeout: boolean): boolean {
-  return chunkSize > 1 && !authOrTimeout;
+export function shouldRetrySingly(chunkSize: number, onChainFailure: boolean): boolean {
+  return chunkSize > 1 && onChainFailure;
 }
 
-/**
- * The transaction landed and the program rejected it (`confirmSignature`'s
- * "transaction <sig> failed: <err>") — the only failure that can be the
- * pair's fault. An RPC error (429, 5xx, send rejected) says nothing about the
- * pair and must never quarantine it.
- */
-export function looksLikeOnChainFailure(e: unknown): boolean {
-  return /\btransaction \S+ failed:/.test(String(e instanceof Error ? e.message : e));
-}
+export { looksLikeOnChainFailure };
 
 export interface TickCandidatesDeps {
   /** One `crank_tick` over the chunk; resolves once it is confirmed, throws if it failed. */
   send: (chunk: Candidate[]) => Promise<void>;
-  isAuthOrTimeout: (e: unknown) => boolean;
-  /** Only such a failure of a lone candidate quarantines it. Default: every non-auth failure. */
-  isOnChainFailure?: (e: unknown) => boolean;
+  /** The production classifier (errors.ts): landed and rejected by the program. Everything else is connection-class. */
+  isOnChainFailure: (e: unknown) => boolean;
   /** pairKey → quarantined until (ms). Lives as long as the process; mutated here. */
   quarantine: Map<string, number>;
   now: number;
@@ -137,45 +136,55 @@ export interface TickCandidatesDeps {
   size?: number;
 }
 export interface TickCandidatesResult {
-  /** Transactions of this market that landed in this loop. */
+  /** Transactions of this market that landed in this loop (the probe included). */
   landed: number;
   errors: unknown[];
   /** Pairs put into quarantine in this loop. */
   quarantined: string[];
   /** Pairs whose quarantine ended in this loop. */
   released: string[];
+  /** A connection-class error stopped this market; the caller stops the loop and reconnects (I4). */
+  connectionError: boolean;
+  /** The market itself failed on chain (the zero-candidate probe was rejected too): nobody blamed, nobody quarantined (m1). */
+  marketFailed: boolean;
 }
 
 /**
- * Every `crank_tick` of one market for one loop. Chunks are sent in order,
- * each isolated. A chunk failing for a reason other than auth/timeout is
- * retried one candidate per transaction, so one bad pair cannot keep the rest
- * of its chunk from being checked — chunk membership follows the
- * `getProgramAccounts` order, so it would otherwise be the same chunk every
- * loop. A candidate whose transaction fails alone ON CHAIN is quarantined for
- * `cooldownMs` (an RPC error is not the pair's fault). If
- * nothing landed although there were candidates (and not for auth/timeout),
- * one zero-candidate tick is sent so the mark and the price sample still
- * advance — liquidation counts accepted prints, `liquidation_check` included.
+ * Every `crank_tick` of one market for one loop. Chunks are sent in order.
+ *
+ * - A connection-class failure (anything not on chain: auth, timeout, fetch
+ *   failed, 429, 5xx) stops the market at once — no singles, no probe, no
+ *   quarantine: whoever is in the next transaction, it would fail the same
+ *   way (m2, I4).
+ * - A chunk rejected ON CHAIN is followed by one zero-candidate probe for the
+ *   market (m1). Probe rejected on chain too → the market is broken (oracle
+ *   account, paused config…), not a pair: no singles, no quarantine, the
+ *   market's remaining chunks are skipped. Probe lands → it counts as the
+ *   market's tick (mark and price sample advance), and the chunk's
+ *   candidates are retried one per transaction, so one bad pair cannot keep
+ *   the rest of its chunk from being checked (chunk membership follows the
+ *   `getProgramAccounts` order — it would be the same chunk every loop). A
+ *   candidate rejected alone on chain is quarantined for `cooldownMs`.
+ *
+ * There is no separate fallback zero-candidate tick: with candidates, either
+ * something landed, or the probe was tried, or a connection error stopped
+ * the market; without candidates the only chunk IS a zero-candidate tick.
  */
 export async function tickCandidates(open: Candidate[], deps: TickCandidatesDeps): Promise<TickCandidatesResult> {
-  const out: TickCandidatesResult = { landed: 0, errors: [], quarantined: [], released: [] };
+  const out: TickCandidatesResult = { landed: 0, errors: [], quarantined: [], released: [], connectionError: false, marketFailed: false };
   const { kept, released } = applyQuarantine(open, deps.quarantine, deps.now);
   out.released = released;
-  let lastAuth = false;
-  let lastOnChain = false;
-  const onChain = deps.isOnChainFailure ?? (() => true);
-  const attempt = async (chunk: Candidate[]): Promise<boolean> => {
+  type Attempt = "landed" | "onchain" | "connection";
+  const attempt = async (chunk: Candidate[]): Promise<Attempt> => {
     try {
       await deps.send(chunk);
       out.landed += 1;
-      lastAuth = false;
-      return true;
+      return "landed";
     } catch (e) {
       out.errors.push(e);
-      lastAuth = deps.isAuthOrTimeout(e);
-      lastOnChain = !lastAuth && onChain(e);
-      return false;
+      if (deps.isOnChainFailure(e)) return "onchain";
+      out.connectionError = true;
+      return "connection";
     }
   };
   const quarantine = (c: Candidate): void => {
@@ -185,19 +194,29 @@ export async function tickCandidates(open: Candidate[], deps: TickCandidatesDeps
   };
 
   for (const chunk of chunkCandidates(kept, deps.size)) {
-    if (await attempt(chunk)) continue;
-    if (chunk.length === 1) {
-      if (lastOnChain) quarantine(chunk[0]);
+    const r = await attempt(chunk);
+    if (r === "landed") continue;
+    if (r === "connection") return out;
+    // Rejected on chain.
+    if (chunk.length === 0) {
+      out.marketFailed = true;
+      return out;
+    }
+    const probe = await attempt([]);
+    if (probe === "connection") return out;
+    if (probe === "onchain") {
+      out.marketFailed = true;
+      return out;
+    }
+    if (!shouldRetrySingly(chunk.length, true)) {
+      quarantine(chunk[0]); // it failed alone, and the market is fine
       continue;
     }
-    if (!shouldRetrySingly(chunk.length, lastAuth)) continue;
     for (const c of chunk) {
-      if (await attempt([c])) continue;
-      if (lastAuth) break; // the connection, not the pair — stop hammering
-      if (lastOnChain) quarantine(c);
+      const s = await attempt([c]);
+      if (s === "connection") return out;
+      if (s === "onchain") quarantine(c);
     }
   }
-
-  if (out.landed === 0 && kept.length > 0 && !lastAuth) await attempt([]);
   return out;
 }

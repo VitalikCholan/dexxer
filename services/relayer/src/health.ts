@@ -1,14 +1,20 @@
 // services/relayer/src/health.ts
 //
-// GET /healthz — liveness for Railway's healthcheck (`railway.json`'s
-// `healthcheckPath`) and for a human `curl`. 503 when the crank loop has
-// gone stale (no successful SOL tick in the last `STALE_MS` — `lastTickAt`
-// follows the SOL market only, the one the shipped APK trades; other
-// markets are informational in `markets`, final review F3) — an uncaught
-// throw inside `startCrank` is already impossible (every await in its loop
-// is wrapped, see crank.ts), so a stale `lastTickAt` is the actual signal
-// something is wedged (stuck TEE auth, RPC outage, etc.) that should make
-// Railway restart the container.
+// GET /healthz — Railway's deploy-time healthcheck (`railway.json`'s
+// `healthcheckPath`) and a human `curl` / an external uptime monitor. 503
+// when the crank loop has gone stale (no SOL tick after a good candidate
+// discovery in the last `STALE_MS` — `lastTickAt` follows the SOL market
+// only, the one the shipped APK trades; other markets are informational in
+// `markets`, final review F3). `lastTickAt` starts `null` in every process
+// (never restored from Postgres), so a fresh process answers 503 until its
+// first such tick.
+//
+// A 503 restarts NOTHING (final review I2): Railway calls the healthcheck
+// only while a deploy goes live. What restarts a dead or wedged crank is the
+// process exiting with code 1 under the ON_FAILURE restart policy —
+// index.ts when `startCrank` rejects, crank.ts's watchdog when no loop
+// iteration completed within `CRANK_WATCHDOG_MS`. Watching `/healthz` after
+// the deploy is a job for an external uptime monitor (an open item, plan 4).
 //
 // Task 7 (eternal scheduler backstop): when `CRANK_ENABLED=false` this
 // relayer's own crank loop never starts (`lastTickAt` stays `null`
@@ -36,8 +42,8 @@
 // health-check hits stay cheap, and probes `db` with a trivial query.
 //
 // `db` is informational only — a database hiccup does not flip the 5xx
-// status (only a stale tick does); Railway restarting the relayer container
-// would not fix a Postgres outage.
+// status (only a stale tick does); restarting the relayer would not fix a
+// Postgres outage anyway.
 
 import type { Connection, PublicKey } from "@solana/web3.js";
 import express from "express";
@@ -131,7 +137,7 @@ export interface HealthPayload {
   commitIntervalMs: number;
   indexer: IndexerSnapshot;
   sponsor: SponsorHealthSnapshot;
-  /** Plan 2 Task 9: informational per-market view. Deliberately NOT part of `ok` — a dead BTC feed is not fixed by a Railway restart and must not 503 the whole relayer (SOL is what `lastTickAt` gates). */
+  /** Plan 2 Task 9: informational per-market view. Deliberately NOT part of `ok` — a dead BTC feed is not fixed by a restart and must not 503 the whole relayer (SOL is what `lastTickAt` gates). */
   markets: MarketsHealth;
 }
 

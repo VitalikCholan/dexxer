@@ -6,14 +6,18 @@
 // commit of the coarse `Pool` snapshot and `BalancesRoot` to L1. Trades are
 // not disclosed any more, so the commit carries no actions and no remaining
 // accounts. `runIsolated` keeps the steps (and the janitor after them)
-// independent of each other and of the crank's ticks.
+// independent of each other; `createCycleRunner` runs the whole cycle
+// DETACHED from the tick loop (final review I1) — an L1 close or a commit
+// waiting out a confirm timeout must not stop every market's ticks.
 import { randomBytes } from "crypto";
 import type { Connection, Keypair, PublicKey } from "@solana/web3.js";
 import type { Program } from "@coral-xyz/anchor";
-import { MAGIC_CONTEXT_ID, MAGIC_PROGRAM_ID } from "@magicblock-labs/ephemeral-rollups-sdk";
 import { sendAndConfirmIx } from "../../../tests/er/lib/env.js";
 import { ROOT_BATCH, USER_DISC, accountNs, decodeBalancesRoot, pdas } from "../../../tests/er/lib/program.js";
 import { envNum } from "./env.js";
+import { errorMessage } from "./errors.js";
+import { commitAggregateAccounts, setBalancesRootAccounts } from "./ixAccounts.js";
+import { PROCESS_SALT, tagOf } from "./logTag.js";
 
 // Min 10 s: a NaN/0 would commit on every loop — commits are billed (spec §2.2) and must stay a fixed-interval batch.
 export const COMMIT_INTERVAL_MS = envNum("COMMIT_INTERVAL_MS", 300_000, 10_000);
@@ -50,7 +54,8 @@ export async function runRootCycle(ctx: CommitCtx): Promise<void> {
   const expectedUserAccountLen = ctx.prog.coder.accounts.size("userAccount"); // camelCased by `new Program(idl)` — see index.ts
   const currentUserAccs = userAccs.filter((u) => {
     const ok = u.account.data.length === expectedUserAccountLen;
-    if (!ok) console.log(`skipped legacy: ${u.pubkey.toBase58()} len=${u.account.data.length}`);
+    // A tag, not the key: the crank read this over its private TEE token (I5).
+    if (!ok) console.log(`skipped legacy UserAccount tag=${tagOf(PROCESS_SALT, u.pubkey)} len=${u.account.data.length}`);
     return ok;
   });
   const owners = currentUserAccs.map((u) => u.pubkey);
@@ -68,13 +73,15 @@ export async function runRootCycle(ctx: CommitCtx): Promise<void> {
     try {
       const ix = await ctx.prog.methods
         .setBalancesRoot(begin, finalize, paddingSeed)
-        .accounts({ crank: ctx.crank.publicKey, config: pdas.config(), balancesRoot: ctx.balancesRoot })
+        .accounts(setBalancesRootAccounts(ctx.crank.publicKey, ctx.balancesRoot))
         .remainingAccounts(batches[i].map((pk) => ({ pubkey: pk, isWritable: false, isSigner: false })))
         .instruction();
       await sendAndConfirmIx(ctx.conn, ctx.crank, ix);
     } catch (e) {
-      console.error(`set_balances_root batch ${i + 1}/${batches.length} failed:`, String(e));
-      return; // a partial cycle leaves a stale root_slot — safe to retry next cycle (begin=true resets it)
+      // Thrown, not swallowed (final review): `runIsolated` records it in
+      // `state.errors` and still runs the commit. A partial cycle leaves a
+      // stale root_slot — safe to retry next cycle (begin=true resets it).
+      throw new Error(`set_balances_root batch ${i + 1}/${batches.length} failed: ${errorMessage(e)}`);
     }
   }
 
@@ -92,11 +99,12 @@ export async function runCommitCycle(ctx: CommitCtx): Promise<string> {
   const config = await accountNs(ctx.feePayerProg).config.fetch(pdas.config());
   const ix = await ctx.feePayerProg.methods
     .commitAggregate()
-    .accounts({
-      config: pdas.config(), payer: ctx.feePayer.publicKey, pool: ctx.pool, poolLive: ctx.poolLive,
-      balancesRoot: ctx.balancesRoot, feeEscrow: ctx.feeEscrow, magicFeeVault: config.magicFeeVault,
-      magicContext: MAGIC_CONTEXT_ID, magicProgram: MAGIC_PROGRAM_ID,
-    })
+    .accounts(
+      commitAggregateAccounts({
+        payer: ctx.feePayer.publicKey, pool: ctx.pool, poolLive: ctx.poolLive,
+        balancesRoot: ctx.balancesRoot, feeEscrow: ctx.feeEscrow, magicFeeVault: config.magicFeeVault,
+      }),
+    )
     .instruction();
   return sendAndConfirmIx(ctx.feePayerConn, ctx.feePayer, ix);
 }
@@ -113,4 +121,41 @@ export async function runIsolated(steps: [name: string, run: () => Promise<void>
     }
   }
   return ok;
+}
+
+export interface CycleRunner {
+  /** Starts a cycle unless one is in flight; true if it started one. */
+  trigger(): boolean;
+  busy(): boolean;
+  /** Resolves when no cycle is in flight (at once if none is). Never rejects. */
+  idle(): Promise<void>;
+}
+
+/**
+ * The in-flight guard of the detached commit cycle (final review I1). The tick
+ * loop calls `trigger()` and does not await it; at most one cycle runs at a
+ * time; a cycle's rejection goes to `onError` (never an unhandled rejection)
+ * and clears the flag; `idle()` lets shutdown wait for the cycle in flight.
+ */
+export function createCycleRunner(run: () => Promise<void>, onError: (e: unknown) => void): CycleRunner {
+  let inFlight: Promise<void> | null = null;
+  return {
+    trigger() {
+      if (inFlight) return false;
+      let started: Promise<void>;
+      try {
+        started = run();
+      } catch (e) {
+        started = Promise.reject(e); // a `run` that throws synchronously is handled like a rejection
+      }
+      inFlight = started
+        .catch(onError)
+        .finally(() => {
+          inFlight = null;
+        });
+      return true;
+    },
+    busy: () => inFlight !== null,
+    idle: () => inFlight ?? Promise.resolve(),
+  };
 }

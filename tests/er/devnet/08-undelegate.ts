@@ -1,6 +1,6 @@
 // tests/er/devnet/08-undelegate.ts
 //
-// Task 8, script 3 of 3 (M-A on dexxer_core): full exit for the trader
+// Week 3 Task 8 (M-A on dexxer_core): full exit for the trader
 // created by `01-onboard-private.ts` — close its still-open SOL position,
 // withdraw all margin, then `undelegate_user` (owner-TEE) and poll base until
 // `UserAccount`/`Positions` are owned by `dexxer_core` itself (not the
@@ -13,8 +13,9 @@
 // itself, hence "M-A confirmed on dexxer_core" rather than a bare "PASS".
 //
 // Position slots (spec §2.9): no disclosure queue to drain any more. The gate
-// of `undelegate_user` is margin-only (`free_margin == 0 && locked_margin ==
-// 0`), which already implies every slot is closed. The market keys the trader
+// of `undelegate_user` is `Positions.open_count() == 0` (no open slot) AND
+// `free_margin == 0 && locked_margin == 0` — both checked by the program
+// (instructions/user.rs). The market keys the trader
 // traded (history ring) plus SOL go in as read-only remaining accounts (≤16)
 // so the program cancels each market's liquidation task. After the exit the
 // `Positions` body — slots and history, bytes [40, 40 + 3072) — must be zero.

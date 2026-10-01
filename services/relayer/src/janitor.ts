@@ -13,16 +13,27 @@
 // Spend is bounded two ways: at most JANITOR_MAX_ATTEMPTS_PER_CYCLE close
 // attempts per cycle (successes AND failures — `sendAndConfirmIx` skips
 // preflight, so a failing close still pays a fee), and a per-owner cooldown
-// after a failed attempt. The cooldown memory is per process: a restart
-// forgets it and retries each failing owner once.
+// after an attempt the program REJECTED (on chain). The cooldown memory is per
+// process: a restart forgets it and retries each failing owner once.
+//
+// Final review I1: the pass runs inside the detached commit cycle, and it is
+// cut short whenever the network is the problem — the first connection-class
+// failure (errors.ts: timeout, fetch failed, 429, 5xx, any non-on-chain
+// error) ABORTS the pass without a cooldown for that owner (it is not their
+// fault) and is reported in `errors`; the pass is skipped altogether while
+// the fee payer's base balance is below `JANITOR_MIN_FEE_PAYER_SOL` (default
+// 0.002 SOL), so it never drains the key that pays `/sponsor` and
+// `/nonce`.
 //
 // Reads here are base-layer reads of accounts that are back under the program
-// — public by then (exit scrubbed every private byte).
+// — public by then. `undelegate_user` zeroes margins, slots, history and the
+// session; `owner` and `rent_payer` remain by design (the close needs them).
 import bs58 from "bs58";
 import { Connection, Keypair, PublicKey } from "@solana/web3.js";
 import type { Program } from "@coral-xyz/anchor";
 import { USER_DISC, accountNs, pdas } from "../../../tests/er/lib/program.js";
 import { envNum } from "./env.js";
+import { errorMessage, isConnectionClass } from "./errors.js";
 import { sendAndConfirmIx } from "../../../tests/er/lib/env.js";
 import { closeExitedUserAccounts } from "../../../tests/er/lib/trader.js";
 
@@ -30,6 +41,8 @@ import { closeExitedUserAccounts } from "../../../tests/er/lib/trader.js";
 export const JANITOR_MAX_ATTEMPTS_PER_CYCLE = 8;
 /** An owner whose close failed is not attempted again for this long. */
 export const JANITOR_RETRY_COOLDOWN_MS = envNum("JANITOR_RETRY_COOLDOWN_MS", 3_600_000, 60_000);
+/** Below this fee-payer base balance the pass is skipped (I1). 0 disables the floor. */
+export const JANITOR_MIN_FEE_PAYER_SOL = envNum("JANITOR_MIN_FEE_PAYER_SOL", 0.002, 0);
 /**
  * Byte offset of `UserAccount.exited` (8 discriminator + 1 + 32 + 32 + 8 + 4 + 8
  * + 8 + 8 + 32 + 1); pinned against the IDL coder in test/janitor.test.ts.
@@ -49,6 +62,7 @@ export interface JanitorOpts {
   cooldownMs?: number;
   now?: () => number;
   state?: JanitorState;
+  minFeePayerLamports?: number;
 }
 
 export interface ExitedOwner {
@@ -60,6 +74,8 @@ export interface JanitorDeps {
   /** Both accounts exist and are owned by the program again (not by the Delegation Program). */
   bothUnderProgram: (owner: PublicKey) => Promise<boolean>;
   closeExitedUser: (o: ExitedOwner) => Promise<string>;
+  /** The fee payer's base-layer balance — the pass is skipped below the floor. */
+  feePayerLamports: () => Promise<number>;
   log?: (line: string) => void;
 }
 export interface JanitorResult {
@@ -70,6 +86,10 @@ export interface JanitorResult {
   /** Not attempted: failed recently, inside the cooldown. */
   cooledDown: number;
   errors: string[];
+  /** A connection-class failure ended the pass early (no cooldown set for it). */
+  aborted: boolean;
+  /** The fee payer was below the floor; nothing was scanned. */
+  lowBalance: boolean;
 }
 
 export async function runJanitorCycle(deps: JanitorDeps, opts: JanitorOpts = {}): Promise<JanitorResult> {
@@ -77,13 +97,27 @@ export async function runJanitorCycle(deps: JanitorDeps, opts: JanitorOpts = {})
   const cooldownMs = opts.cooldownMs ?? JANITOR_RETRY_COOLDOWN_MS;
   const now = opts.now ?? Date.now;
   const state = opts.state ?? moduleState;
-  const out: JanitorResult = { scanned: 0, closed: [], skipped: 0, cooledDown: 0, errors: [] };
+  const minLamports = opts.minFeePayerLamports ?? Math.round(JANITOR_MIN_FEE_PAYER_SOL * 1e9);
+  const out: JanitorResult = { scanned: 0, closed: [], skipped: 0, cooledDown: 0, errors: [], aborted: false, lowBalance: false };
   const log = deps.log ?? console.log;
+  try {
+    const lamports = await deps.feePayerLamports();
+    if (lamports < minLamports) {
+      out.lowBalance = true;
+      out.errors.push(`janitor: fee payer balance ${lamports / 1e9} SOL below JANITOR_MIN_FEE_PAYER_SOL (${minLamports / 1e9}) — pass skipped`);
+      return out;
+    }
+  } catch (e) {
+    out.aborted = true;
+    out.errors.push(`janitor: fee payer balance read failed, pass aborted: ${errorMessage(e)}`);
+    return out;
+  }
   let owners: ExitedOwner[];
   try {
     owners = await deps.listExitedOwners();
   } catch (e) {
-    out.errors.push(`janitor scan: ${String(e instanceof Error ? e.message : e)}`);
+    out.aborted = true;
+    out.errors.push(`janitor scan: ${errorMessage(e)}`);
     return out;
   }
   out.scanned = owners.length;
@@ -107,8 +141,14 @@ export async function runJanitorCycle(deps: JanitorDeps, opts: JanitorOpts = {})
       out.closed.push(key);
       log(`janitor: closed ${key} rent_payer=${o.rentPayer.toBase58()} sig=${sig}`);
     } catch (e) {
+      if (isConnectionClass(e)) {
+        // The network, not the owner: no cooldown, and no more sends into it.
+        out.aborted = true;
+        out.errors.push(`janitor: pass aborted at ${key}: ${errorMessage(e)}`);
+        break;
+      }
       state.failedAt.set(key, now());
-      out.errors.push(`janitor ${key}: ${String(e instanceof Error ? e.message : e)}`);
+      out.errors.push(`janitor ${key}: ${errorMessage(e)}`);
     }
   }
   return out;
@@ -117,6 +157,7 @@ export async function runJanitorCycle(deps: JanitorDeps, opts: JanitorOpts = {})
 export function janitorDeps(w: { baseConn: Connection; baseProg: Program; feePayer: Keypair }): JanitorDeps {
   const programId = w.baseProg.programId;
   return {
+    feePayerLamports: () => w.baseConn.getBalance(w.feePayer.publicKey, "confirmed"),
     async listExitedOwners() {
       const rows = await w.baseConn.getProgramAccounts(programId, {
         filters: [

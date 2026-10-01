@@ -1,21 +1,20 @@
 // tests/er/devnet/07-balances-root.ts
 //
-// Task 8, script 2 of 3 (M-E): `BalancesRoot` root-cycle + commit round trip
+// Week 3 Task 8 (M-E): `BalancesRoot` root-cycle + commit round trip
 // on real devnet, plus a 12x `commit_aggregate` cost measurement now that
 // every commit carries TWO accounts (`Pool` and `BalancesRoot` — week 3,
 // unlike week 2's single-`Pool` `03-commit-cycle.ts`).
 //
-// `runRootCycle` reuse: `scripts/crank-fallback/disclosure.ts`'s
-// `runRootCycle` does exactly this batching (fetch every `UserAccount` via
-// crank-token `getProgramAccounts`, `ROOT_BATCH`=16 per `set_balances_root`
-// call, `begin`/`finalize` on the first/last batch), but it is written
-// against `scripts/`' own project (imports `../../tests/er/lib/*.js`) and
-// its `DisclosureCtx` bundles both the crank AND fee-payer connections —
-// importing it here would make `tests/er`'s `tsc --noEmit` reach across a
-// sibling project's relative-import graph for no real benefit (the batching
-// loop itself is ~15 lines). Replicated inline below instead
+// `runRootCycle` reuse: services/relayer/src/commit.ts's `runRootCycle`
+// does exactly this batching (fetch every `UserAccount` via crank-token
+// `getProgramAccounts`, `ROOT_BATCH`=16 per `set_balances_root` call,
+// `begin`/`finalize` on the first/last batch), but it lives in the relayer's
+// own npm package and its `CommitCtx` bundles both the crank AND fee-payer
+// connections — importing it here would make `tests/er`'s `tsc --noEmit`
+// reach across a sibling package's relative-import graph for no real benefit
+// (the batching loop itself is ~15 lines). Replicated inline below instead
 // (`runRootCycleInline`), same logic, same account list, so the two stay
-// trivially comparable if `disclosure.ts` changes.
+// trivially comparable if `commit.ts` changes.
 //
 // `BalancesRoot` is `zero_copy` (controller ruling 5, week 3 task 5) —
 // Anchor's Borsh `BorshAccountsCoder` cannot decode its `repr(C)`/bytemuck

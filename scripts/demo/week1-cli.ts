@@ -46,15 +46,22 @@ process.on("exit", () => {
 
 interface TickRecord {
   n: number;
-  slot: number;
-  mark: string;
+  market: string;
+  /** `null` when the crank's best-effort read after the tick failed. */
+  mark: string | null;
   sig: string;
   cu: number | null;
   tickMs: number;
   candidates: number;
-  liquidated: string[];
+  /** How many candidates of the tick lost their slot — a count since the final review (I5); A's liquidation itself is detected from `readPositions`. */
+  liquidated: number | null;
 }
 
+/**
+ * One landed `crank_tick` = one `tick n=... sig=...` line on the crank's
+ * stdout (services/relayer/src/crank.ts `formatTickLine`). Other crank lines
+ * (`crank n=...`) carry no `sig` and are not ticks.
+ */
 function parseTickLine(line: string): TickRecord | null {
   if (!line.startsWith("tick ")) return null;
   const fields: Record<string, string> = {};
@@ -63,16 +70,17 @@ function parseTickLine(line: string): TickRecord | null {
     if (eq === -1) continue;
     fields[token.slice(0, eq)] = token.slice(eq + 1);
   }
-  if (fields.n === undefined) return null;
+  if (fields.n === undefined || fields.sig === undefined) return null;
+  const numOrNull = (v: string | undefined): number | null => (v === undefined || v === "null" ? null : Number(v));
   return {
     n: Number(fields.n),
-    slot: Number(fields.slot),
-    mark: fields.mark,
+    market: fields.market,
+    mark: fields.mark === undefined || fields.mark === "null" ? null : fields.mark,
     sig: fields.sig,
-    cu: fields.cu === "null" ? null : Number(fields.cu),
+    cu: numOrNull(fields.cu),
     tickMs: Number(fields.tick_ms),
     candidates: Number(fields.candidates),
-    liquidated: JSON.parse(fields.liquidated ?? "[]") as string[],
+    liquidated: numOrNull(fields.liquidated),
   };
 }
 

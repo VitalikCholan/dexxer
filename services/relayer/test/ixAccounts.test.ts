@@ -4,7 +4,9 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { Keypair, PublicKey } from "@solana/web3.js";
-import { DEXXER_CORE_IDL } from "../../../tests/er/lib/program.js";
+import { MAGIC_CONTEXT_ID, MAGIC_PROGRAM_ID } from "@magicblock-labs/ephemeral-rollups-sdk";
+import { DEXXER_CORE_IDL, pdas } from "../../../tests/er/lib/program.js";
+import { commitAggregateAccounts, crankTickAccounts, setBalancesRootAccounts } from "../src/ixAccounts.js";
 import {
   closeExitedUserAccounts, delegateUserAccounts, initUserAccounts, permissionAccounts, tradeAccounts, undelegateUserAccounts,
 } from "../../../tests/er/lib/trader.js";
@@ -52,4 +54,26 @@ test("undelegate_user / close_exited_user builders match the IDL", () => {
   const c = closeExitedUserAccounts(k(), k(), rentPayer);
   assert.deepEqual(keys(c), idlAccounts("close_exited_user"));
   assert.equal(c.rentPayer.toBase58(), rentPayer.toBase58());
+});
+
+// Final review I7: the relayer's own instructions, pinned the same way.
+test("crank_tick / commit_aggregate / set_balances_root builders (relayer) match the IDL", () => {
+  assert.deepEqual(keys(crankTickAccounts(k(), { market: k(), marketRisk: k(), feed: k() }, k())), idlAccounts("crank_tick"));
+  assert.deepEqual(keys(commitAggregateAccounts({ payer: k(), pool: k(), poolLive: k(), balancesRoot: k(), feeEscrow: k(), magicFeeVault: k() })), idlAccounts("commit_aggregate"));
+  assert.deepEqual(keys(setBalancesRootAccounts(k(), k())), idlAccounts("set_balances_root"));
+});
+
+test("relayer builders put each key where the program expects it", () => {
+  const crank = k();
+  const m = { market: k(), marketRisk: k(), feed: k() };
+  const poolLive = k();
+  const t = crankTickAccounts(crank, m, poolLive);
+  assert.deepEqual(
+    [t.crank, t.market, t.marketRisk, t.poolLive, t.feed].map((x) => x.toBase58()),
+    [crank, m.market, m.marketRisk, poolLive, m.feed].map((x) => x.toBase58()),
+  );
+  assert.equal(t.config.toBase58(), pdas.config().toBase58());
+  const c = commitAggregateAccounts({ payer: k(), pool: k(), poolLive: k(), balancesRoot: k(), feeEscrow: k(), magicFeeVault: k() });
+  assert.equal(c.magicContext.toBase58(), MAGIC_CONTEXT_ID.toBase58());
+  assert.equal(c.magicProgram.toBase58(), MAGIC_PROGRAM_ID.toBase58());
 });
