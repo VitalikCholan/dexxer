@@ -68,16 +68,17 @@ program id) і ролі ключів.
 | `RAILWAY_DOCKERFILE_PATH` | `services/relayer/Dockerfile` | — |
 | `ASSETLINKS_PACKAGE` | не задано (дефолт `com.dexxer.app`) | Digital Asset Links для MWA identity verification (24.09), `GET /.well-known/assetlinks.json` |
 | `ASSETLINKS_SHA256_FINGERPRINTS` | не задано (дефолт — сертифікат debug-keystore dev-client-а `FA:C6:17:45:…:3B:9C`) | для release-збірки виставити власний відбиток(и), через кому |
-| `COMMIT_INTERVAL_TICKS` **(week 5; після деплою плану 4 — замінюється)** | інтервал disclosure/orphan-циклу в тіках crank-петлі; дефолт 300, **живе значення `60`** (≈1 хв, обрано для демо M-H — reveal за один цикл при `disclosure_delay_slots=0`); замінює зашитий `DISCLOSURE_EVERY_TICKS` тижня 4. **Після деплою плану 4:** змінну прибрати, виставити **`COMMIT_INTERVAL_MS=60000`** (годинник, не тіки; дефолт 300000, мін. 10000) — старе `60` (тіків) у новому образі ігнорується, дефолт 5 хв | — |
-| `COMMIT_MAX_ACTIONS` **(week 5; після деплою плану 4 — видалити)** | бюджет дій на один бандл, який relayer **передає в програму** аргументом `commit_aggregate(max_actions)` (апгрейд #3) і яким же обмежує вибір черг; дефолт і **живе значення `4`**, clamp `[1, 8]` (8 — програмна СТЕЛЯ `MAX_ACTIONS_PER_COMMIT`, не кількість дій у бандлі); halve-and-retry на `0xA0000002` халвить і аргумент, і бюджет вибірки. Реальний бридж MagicBlock відхиляє 8 реальних дій за раз, 4 проходять (виміряно на живому беклозі, `week5-results.md` §Task 7). **До апгрейду #3** цей env обирав лише *які* черги йдуть у бандл — програма емітила до 8 дій на чергу незалежно від нього, через що одна повна черга ніколи не комітилася | — |
-| `QUARANTINE_CYCLES` **(week 5; після деплою плану 4 — видалити)** | скільки циклів ізолювати `DisclosureQueue`, що впала 2 рази поспіль на `0xA0000002`; дефолт **10** (не виставлявся окремо, лишено дефолтним) | — |
+| ~~`COMMIT_INTERVAL_TICKS`~~ **видалено з Railway 01.10.2026 (Task 4 плану 4)** | інтервал disclosure/orphan-циклу в тіках crank-петлі; дефолт 300, **живе значення `60`** (≈1 хв, обрано для демо M-H — reveal за один цикл при `disclosure_delay_slots=0`); замінює зашитий `DISCLOSURE_EVERY_TICKS` тижня 4. **Після деплою плану 4:** змінну прибрати, виставити **`COMMIT_INTERVAL_MS=60000`** (годинник, не тіки; дефолт 300000, мін. 10000) — старе `60` (тіків) у новому образі ігнорується, дефолт 5 хв | — |
+| ~~`COMMIT_MAX_ACTIONS`~~ **видалено з Railway 01.10.2026 (Task 4 плану 4)** | бюджет дій на один бандл, який relayer **передає в програму** аргументом `commit_aggregate(max_actions)` (апгрейд #3) і яким же обмежує вибір черг; дефолт і **живе значення `4`**, clamp `[1, 8]` (8 — програмна СТЕЛЯ `MAX_ACTIONS_PER_COMMIT`, не кількість дій у бандлі); halve-and-retry на `0xA0000002` халвить і аргумент, і бюджет вибірки. Реальний бридж MagicBlock відхиляє 8 реальних дій за раз, 4 проходять (виміряно на живому беклозі, `week5-results.md` §Task 7). **До апгрейду #3** цей env обирав лише *які* черги йдуть у бандл — програма емітила до 8 дій на чергу незалежно від нього, через що одна повна черга ніколи не комітилася | — |
+| ~~`QUARANTINE_CYCLES`~~ **(на Railway не був виставлений; новий образ не читає)** | скільки циклів ізолювати `DisclosureQueue`, що впала 2 рази поспіль на `0xA0000002`; дефолт **10** (не виставлявся окремо, лишено дефолтним) | — |
 | ~~`SPONSOR_ALLOW_SESSION_TOPUP`~~ **видалено (week 5)** | гілка session-lamports top-up через `/sponsor` прибрана разом з env-змінною — devnet-tee відхиляє чужого `fee_payer` як платника не-ним-ініційованої ER-tx (`InvalidAccountForFee`), тож ця гілка була недосяжна для чесного клієнта й досяжна лише для атакера | — |
-| `SIWS_DOMAIN` **(week 6, обов'язковий)** | домен MWA identity app (`IDENTITY_DOMAIN`; зараз = хост relayer-а, тобто **`relayer-production-1ae7.up.railway.app`**). SIWS-повідомлення з іншим `domain` або з `uri` на іншому хості відхиляються. **Без цієї змінної `/auth/*`, `/sponsor` і `/nonce` не монтуються** (fail-closed, лог `sponsor: … SIWS_DOMAIN is not set`) — онбординг і депозит 0-SOL-гаманців зупиняються. Якщо app отримає власний домен (`EXPO_PUBLIC_IDENTITY_URI`), `SIWS_DOMAIN` змінюється разом із ним | — |
+| `COMMIT_INTERVAL_MS` **(план 4; виставлено 01.10.2026 = `60000`)** | період коміт-циклу relayer-а (root → `commit_aggregate()` → janitor) за годинником; дефолт 300000, мін. 10000 | — |
+| `SIWS_DOMAIN` **(week 6, обов'язковий; виставлено на Railway 01.10.2026 = `relayer-production-1ae7.up.railway.app`)** | домен MWA identity app (`IDENTITY_DOMAIN`; зараз = хост relayer-а, тобто **`relayer-production-1ae7.up.railway.app`**). SIWS-повідомлення з іншим `domain` або з `uri` на іншому хості відхиляються. **Без цієї змінної `/auth/*`, `/sponsor` і `/nonce` не монтуються** (fail-closed, лог `sponsor: … SIWS_DOMAIN is not set`) — онбординг і депозит 0-SOL-гаманців зупиняються. Якщо app отримає власний домен (`EXPO_PUBLIC_IDENTITY_URI`), `SIWS_DOMAIN` змінюється разом із ним | — |
 | `MARKETS_REFRESH_MS` **(після деплою плану 4, необов'язкова)** | період оновлення реєстру ринків relayer-а; дефолт 60000, мін. 5000 | — |
 | `JANITOR_RETRY_COOLDOWN_MS` **(після деплою плану 4, необов'язкова)** | пауза на власника після `close_exited_user`, який програма відхилила on-chain; дефолт 3600000, мін. 60000 | — |
 | `JANITOR_MIN_FEE_PAYER_SOL` **(після деплою плану 4, необов'язкова)** | janitor пропускає весь прохід (і пише помилку), поки базовий баланс `fee_payer` нижчий; дефолт 0.002, мін. 0 (`0` — без порогу) | — |
 | `CRANK_BAD_PAIR_COOLDOWN_MS` **(після деплою плану 4, необов'язкова)** | скільки пара `[Positions, UserAccount]`, яку програма відхилила поодинці, лишається поза батчами; дефолт 60000, мін. 5000 | — |
-| `CRANK_WATCHDOG_MS` **(після деплою плану 4, необов'язкова)** | якщо за цей час не завершилась жодна ітерація crank-петлі — процес виходить з кодом 1, і Railway (`ON_FAILURE`) його перезапускає; дефолт 120000, мін. 30000. Так само — коли коміт-цикл триває довше max(3 × `COMMIT_INTERVAL_MS`, 600000) | — |
+| `CRANK_WATCHDOG_MS` **(після деплою плану 4, необов'язкова)** | якщо за цей час не завершилась жодна ітерація crank-петлі — процес виходить з кодом 1, і Railway (`ALWAYS`, `railway.json` з плану 4) його перезапускає; дефолт 120000, мін. 30000. Так само — коли коміт-цикл триває довше max(3 × `COMMIT_INTERVAL_MS`, 600000) | — |
 | `AUTH_SESSION_TTL_HOURS` **(week 6)** | тривалість SIWS-сесії relayer-а; дефолт **168** (7 діб), невалідне/≤0 → дефолт. У `auth_sessions` зберігається лише `sha256(token)` | — |
 
 Обидва ключі закодовано локально через `bs58.encode(Uint8Array.from(JSON.parse(readFileSync(...))))`
@@ -86,9 +87,15 @@ program id) і ролі ключів.
 
 ### Program / PDA (devnet; нова програма позицій-слотів — бутстрап 01.10.2026, Task 3 плану 4)
 
-**Relayer на Railway досі на СТАРІЙ програмі `G2ok…`** (його PDA — у таблиці «стара» нижче) до Task 4
-плану 4; застосунок — так само. Нова програма нижче працює без relayer-а: живі лише заплановані
-`crank_tick` шести ринків у TEE.
+**Relayer на Railway НЕ задеплоєно на нову програму (Task 4 плану 4 — BLOCKED, 01.10.2026 14:36 UTC):**
+`railway redeploy --service Postgres` (і `--from-source`) відповів `Your trial has expired. Please select
+a plan to continue using Railway.` — живих деплойментів немає ні в relayer-а (останній REMOVED 25.09),
+ні в Postgres (REMOVED з 22.09, том збережено); `/healthz` — 404 «Application not found». Env уже
+переведено на план 4 (`COMMIT_INTERVAL_MS=60000`, `SIWS_DOMAIN` виставлено; `COMMIT_INTERVAL_TICKS`,
+`COMMIT_MAX_ACTIONS` видалено), `TRUNCATE`/`DELETE` старих даних БД (крок 5 нижче) **не виконано**,
+`railway up` не запускався. Після вибору плану Railway — повторити Task 4 з кроку Postgres. Застосунок
+— так само на старій програмі. Нова програма нижче працює без relayer-а: живі лише заплановані
+`crank_tick` п'яти ринків у TEE.
 
 | | Адреса |
 | --- | --- |

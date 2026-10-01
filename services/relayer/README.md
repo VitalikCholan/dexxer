@@ -62,9 +62,11 @@ permission member of (privacy rule, see repo `CLAUDE.md`).
     restored from Postgres): a fresh process answers 503 until its first such
     tick.
   - **Logs carry no trader key**: one line per landed transaction, `tick n=…
-    market=… mark=… mark_slot=… sig=… cu=… tick_ms=… candidates=<count>
+    market=… mark=… mark_slot=… sig=… cu=… bytes=… tick_ms=… candidates=<count>
     liquidated=<count>` (a field whose read failed is `null`; the reads run
-    after the tick and are not awaited by the loop). Quarantine and discovery
+    after the tick and are not awaited by the loop; `bytes` is the serialized
+    length of the sent transaction, `tx.serialize().length`, against the
+    1232-byte limit). Quarantine and discovery
     lines (`crank n=…`) name a trader by `tag=<8 hex>` = sha256(per-process
     random salt ‖ key) — stable within one process, not reversible. Janitor
     lines name exited owners, which are public on L1 by then.
@@ -74,8 +76,9 @@ permission member of (privacy rule, see repo `CLAUDE.md`).
     cycle has been in flight for longer than max(3 × `COMMIT_INTERVAL_MS`,
     600 000 ms) (`cycleStuck`/`cycleDeadlineMs` — the floor leaves room for
     a janitor pass waiting out L1 confirm timeouts), and `index.ts` exits with code 1 when `startCrank`
-    rejects. Railway's `ON_FAILURE` restart policy
-    (`restartPolicyMaxRetries: 10`) is what restarts it — the healthcheck
+    rejects. Railway's `ALWAYS` restart policy (`railway.json`, plan 4 — the
+    exits are deliberate, so a capped `ON_FAILURE` retry count would end in a
+    permanently dead crank) is what restarts it — the healthcheck
     runs only at deploy time, a later 503 restarts nothing. Because
     `/healthz` is 503 until the new process's first SOL tick,
     `railway.json`'s `healthcheckTimeout` is 180 s (was 30 s) so a slow
@@ -387,7 +390,7 @@ enforced ComputeBudget `SetComputeUnitPrice` ceiling.
 | `JANITOR_RETRY_COOLDOWN_MS` | no (default `3600000`, min `60000`) | per-owner cooldown after a `close_exited_user` the program rejected on chain (`src/janitor.ts`); unparseable / below the minimum → default |
 | `JANITOR_MIN_FEE_PAYER_SOL` | no (default `0.002`, min `0`) | the janitor pass is skipped (and an error recorded) while `fee_payer`'s base balance is below this; `0` disables the floor |
 | `CRANK_BAD_PAIR_COOLDOWN_MS` | no (default `60000`, min `5000`) | how long a `[Positions, UserAccount]` pair rejected alone on chain stays out of the batches (`src/candidates.ts`) |
-| `CRANK_WATCHDOG_MS` | no (default `120000`, min `30000`) | no loop iteration completed within this → the process exits with code 1 (`src/crank.ts`) so Railway's `ON_FAILURE` policy restarts it. Not scaled to the loop size (many markets × chunks could legitimately take longer — a plan-4 check). A commit cycle in flight for longer than max(3 × `COMMIT_INTERVAL_MS`, 600 000) exits the same way. With `restartPolicyMaxRetries: 10`, a condition that repeats after every restart ends in a permanently stopped service — decide `ALWAYS`/more retries at the plan-4 deploy |
+| `CRANK_WATCHDOG_MS` | no (default `120000`, min `30000`) | no loop iteration completed within this → the process exits with code 1 (`src/crank.ts`) so Railway's `ALWAYS` policy restarts it. Not scaled to the loop size (many markets × chunks could legitimately take longer — a plan-4 check). A commit cycle in flight for longer than max(3 × `COMMIT_INTERVAL_MS`, 600 000) exits the same way. `railway.json` sets `restartPolicyType: ALWAYS` (plan 4), so a condition that repeats after every restart keeps restarting rather than stopping the service — watch the restart count |
 | `INDEXER_ENABLED` | no (default `false`) | Task 5: starts the public-data indexer (see above) — needs `DATABASE_URL`, disabled with a warning if it's unset |
 | `SPONSOR_ENABLED` | no (default `false`) | Task 6: starts `POST /sponsor` (see below) — needs `DATABASE_URL`, disabled with a warning if it's unset |
 | `SPONSOR_DAILY_SOL` | no (default `0.5`) | rolling 24h cap on sponsored lamports across all owners |
