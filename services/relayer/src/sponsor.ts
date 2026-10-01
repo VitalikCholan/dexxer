@@ -52,7 +52,7 @@
 // --- Whitelist -------------------------------------------------------
 //
 // dexxer_core, matched by the 8-byte Anchor discriminator baked into
-// `app/src/idl/dexxer_core.json` (same IDL `tests/er/lib/program.ts`
+// `idl/dexxer_core.json` (canonical IDL, loaded via `DEXXER_IDL_DIR`; same IDL `tests/er/lib/program.ts`
 // already loads for every other relayer subsystem):
 //   faucet_init, init_user       — owner@0, payer@1 (payer must be fee_payer)
 //   delegate_user                — owner@0, payer@1 (week-5 Task 3 P1: the
