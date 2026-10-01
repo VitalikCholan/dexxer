@@ -43,7 +43,14 @@ permission member of (privacy rule, see repo `CLAUDE.md`).
       building its instruction: no singles, one zero-candidate tick for that
       market (its mark and price sample still advance if only the candidate
       transaction is the problem), then that market is done for the loop;
-      the other markets go on, no reconnect.
+      the other markets go on, no reconnect for that alone. But a loop in
+      which NO market landed a transaction and something failed off chain
+      (a market or candidate discovery) reconnects (`shouldReconnectAfterLoop`):
+      a silently dead TEE token or an unhealthy node shows up market-locally
+      on every market. One landed transaction, or only on-chain rejections,
+      proves the connection works. A market-local chunk failure skips that
+      market's later chunks for the loop; the scheduler's
+      `liquidation_check` still covers those positions.
     A market repeating the same error (signature stripped) is recorded at
     most once a minute.
   - **Discovery fails** → every market is still ticked with no candidate
@@ -64,8 +71,9 @@ permission member of (privacy rule, see repo `CLAUDE.md`).
   - **Liveness**: the commit cycle runs detached (below); a watchdog exits the
     process with code 1 when no loop iteration completed within
     `CRANK_WATCHDOG_MS` (default 120 000, min 30 000) or when one commit
-    cycle has been in flight for more than 3 × `COMMIT_INTERVAL_MS`
-    (`cycleStuck`), and `index.ts` exits with code 1 when `startCrank`
+    cycle has been in flight for longer than max(3 × `COMMIT_INTERVAL_MS`,
+    600 000 ms) (`cycleStuck`/`cycleDeadlineMs` — the floor leaves room for
+    a janitor pass waiting out L1 confirm timeouts), and `index.ts` exits with code 1 when `startCrank`
     rejects. Railway's `ON_FAILURE` restart policy
     (`restartPolicyMaxRetries: 10`) is what restarts it — the healthcheck
     runs only at deploy time, a later 503 restarts nothing. Because
@@ -116,8 +124,12 @@ permission member of (privacy rule, see repo `CLAUDE.md`).
   per-owner cooldown `JANITOR_RETRY_COOLDOWN_MS` after a close the program
   rejected on chain (per process; a restart retries each failing owner
   once); the first *shared* failure aborts the pass with no cooldown for
-  that owner; any other failure counts as an attempt, sets no cooldown, and
-  the pass goes on. Idempotent; state is re-derived from chain every cycle.
+  that owner; any other failure counts as an attempt and sets no cooldown,
+  and the pass goes on — but two such close failures in a row
+  (`JANITOR_MAX_CONSECUTIVE_FAILURES`) stop the pass, so a dead L1 path
+  costs at most two confirmation waits per cycle. One confirmation wait
+  (`confirmSignature`) is at LEAST 10 s — 100 polls × (100 ms + RTT) — plus
+  up to 5 s for a fresh blockhash on the crank's sends. Idempotent; state is re-derived from chain every cycle.
 - `src/keys.ts` — `keypairFromEnv(name, fileFallback)`: bs58 secret key from
   an env var in production, `tests/er/.keys/<fileFallback>.json` (via
   `loadOrCreateKey`) for local dev.
@@ -375,7 +387,7 @@ enforced ComputeBudget `SetComputeUnitPrice` ceiling.
 | `JANITOR_RETRY_COOLDOWN_MS` | no (default `3600000`, min `60000`) | per-owner cooldown after a `close_exited_user` the program rejected on chain (`src/janitor.ts`); unparseable / below the minimum → default |
 | `JANITOR_MIN_FEE_PAYER_SOL` | no (default `0.002`, min `0`) | the janitor pass is skipped (and an error recorded) while `fee_payer`'s base balance is below this; `0` disables the floor |
 | `CRANK_BAD_PAIR_COOLDOWN_MS` | no (default `60000`, min `5000`) | how long a `[Positions, UserAccount]` pair rejected alone on chain stays out of the batches (`src/candidates.ts`) |
-| `CRANK_WATCHDOG_MS` | no (default `120000`, min `30000`) | no loop iteration completed within this → the process exits with code 1 (`src/crank.ts`) so Railway's `ON_FAILURE` policy restarts it. Not scaled to the loop size (many markets × chunks could legitimately take longer — a plan-4 check). A commit cycle in flight for more than 3 × `COMMIT_INTERVAL_MS` exits the same way |
+| `CRANK_WATCHDOG_MS` | no (default `120000`, min `30000`) | no loop iteration completed within this → the process exits with code 1 (`src/crank.ts`) so Railway's `ON_FAILURE` policy restarts it. Not scaled to the loop size (many markets × chunks could legitimately take longer — a plan-4 check). A commit cycle in flight for longer than max(3 × `COMMIT_INTERVAL_MS`, 600 000) exits the same way. With `restartPolicyMaxRetries: 10`, a condition that repeats after every restart ends in a permanently stopped service — decide `ALWAYS`/more retries at the plan-4 deploy |
 | `INDEXER_ENABLED` | no (default `false`) | Task 5: starts the public-data indexer (see above) — needs `DATABASE_URL`, disabled with a warning if it's unset |
 | `SPONSOR_ENABLED` | no (default `false`) | Task 6: starts `POST /sponsor` (see below) — needs `DATABASE_URL`, disabled with a warning if it's unset |
 | `SPONSOR_DAILY_SOL` | no (default `0.5`) | rolling 24h cap on sponsored lamports across all owners |
