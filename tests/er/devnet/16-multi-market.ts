@@ -9,7 +9,9 @@
 //   decrease_position SOL by half (history record reason 2) -> forced
 //   liquidation of BTC ONLY (`set_params` on the BTC `Market`, restored in
 //   `finally`; the SOL slot must stay open, `liq_ticks` of both logged every
-//   2 s) -> close_position SOL -> withdraw(all) -> undelegate_user with
+//   2 s; the restore re-reads, resends while the params still differ — at most
+//   5 times — and always verifies on-chain; a failed restore prints
+//   `16-MULTI-MARKET FAIL (restore)` and exits 1) -> close_position SOL -> withdraw(all) -> undelegate_user with
 //   remaining_accounts [SOL, BTC] -> both accounts back under the program on
 //   base, `UserAccount.exited` -> (optional) wait for the relayer's janitor
 //   (`close_exited_user`), rent back to `UserAccount.rent_payer`.
@@ -27,6 +29,11 @@
 // Reachable -> with `RELAYER_TOGGLE=1` it flips `CRANK_ENABLED=false` via
 // `railway variables` (as 13 does) and back to `true` in `finally`; without
 // it the script only logs that a live relayer crank may be the liquidator.
+//
+// `--cu-reader crank|admin`: re-read every ER signature with that TEE token
+// after the run — devnet-tee blanks the meta (CU 0, no logs) for a reader that
+// is not a member of the permissioned accounts the tx wrote (trades write
+// `PoolLive`/`MarketRisk`, members [crank, admin]).
 //
 // Janitor tail: on by default; `--no-janitor` or `JANITOR_WAIT=0` skips it.
 // Waits up to 2 × COMMIT_INTERVAL_MS (env, default 300000) + 60 s.
@@ -52,7 +59,7 @@ type Connection = import("@solana/web3.js").Connection;
 type Keypair = import("@solana/web3.js").Keypair;
 type PublicKey = import("@solana/web3.js").PublicKey;
 type TransactionInstruction = import("@solana/web3.js").TransactionInstruction;
-const { getOrCreateAssociatedTokenAccount, getAssociatedTokenAddressSync, TOKEN_PROGRAM_ID } = await import("@solana/spl-token");
+const { createAssociatedTokenAccountIdempotentInstruction, getAssociatedTokenAddressSync, TOKEN_PROGRAM_ID } = await import("@solana/spl-token");
 const { delegateSpl, MAGIC_CONTEXT_ID, MAGIC_PROGRAM_ID } = await import("@magicblock-labs/ephemeral-rollups-sdk");
 const envMod = await import("../lib/env.js");
 const { ER_VALIDATOR, NET, baseConn, erConn, loadOrCreateKey, sleep, teeConn, waitDelegated } = envMod;
@@ -84,6 +91,17 @@ const RAILWAY_SERVICE = process.env.RAILWAY_SERVICE ?? "relayer";
 const RELAYER_TOGGLE = process.env.RELAYER_TOGGLE === "1";
 const JANITOR = !(process.argv.includes("--no-janitor") || process.env.JANITOR_WAIT === "0");
 const COMMIT_INTERVAL_MS = Number(process.env.COMMIT_INTERVAL_MS ?? 300_000);
+const RESTORE_ATTEMPTS = 5;
+// `--cu-reader crank|admin`: after the run, re-read every ER signature with that key's TEE token.
+// devnet-tee blanks `getTransaction` meta (CU 0, no logs) for a reader that is not a member of the
+// permissioned accounts the tx wrote; trades write `PoolLive`/`MarketRisk` ([crank, admin]).
+const CU_READER = (() => {
+  const i = process.argv.indexOf("--cu-reader");
+  if (i < 0) return null;
+  const who = process.argv[i + 1];
+  if (who !== "crank" && who !== "admin") throw new Error("--cu-reader takes crank or admin");
+  return who;
+})();
 const USER_EXITED_OFFSET = 142; // UserAccount byte `exited` (janitor's memcmp, services/relayer/src/janitor.ts)
 const USER_ACCOUNT_SIZE = 207;
 const SAMPLE_SEQ_OFFSET = 103 + 24; // Market: mark | mark_slot | last_print | sample_seq (15-marks.ts)
@@ -167,10 +185,11 @@ async function healthz(): Promise<Record<string, unknown> | null> {
   const t = setTimeout(() => ac.abort(), 5_000);
   try {
     const r = await fetch(`${RELAYER_URL}/healthz`, { signal: ac.signal });
-    // A non-2xx (Railway's edge answers 404 "Application not found" for a removed service) is no relayer.
+    // Railway's edge answers 404 "Application not found" for a removed service — no relayer.
     // A relayer's own 503 (no tick yet) is reachable — it has a JSON body with `crankEnabled`.
     const body = (await r.json().catch(() => ({}))) as Record<string, unknown>;
-    if (!r.ok && !("crankEnabled" in body)) {
+    // Only a relayer's own body (2xx or 503) carries `crankEnabled`; anything else is not our relayer.
+    if (typeof body !== "object" || body === null || !("crankEnabled" in body)) {
       console.log(`relayer /healthz HTTP ${r.status}: ${JSON.stringify(body)}`);
       return null;
     }
@@ -252,7 +271,8 @@ async function main() {
   // --- L1 onboarding legs ---
   const coreBase = dexxerCoreProgram(baseConn, owner);
   const ownerAta = getAssociatedTokenAddressSync(boot.mint, owner.publicKey);
-  await getOrCreateAssociatedTokenAccount(baseConn, owner, boot.mint, owner.publicKey);
+  // Through `send` (retries a dropped tx) — getOrCreateAssociatedTokenAccount's read-after-create raced RPC lag once.
+  await send("create ATA (idempotent)", baseConn, "L1", owner, [createAssociatedTokenAccountIdempotentInstruction(owner.publicKey, ownerAta, owner.publicKey, boot.mint)]);
   await send("faucet_init", baseConn, "L1", owner, [await coreBase.methods
     .faucetInit(new BN(DEPOSIT.toString()))
     .accounts({ owner: owner.publicKey, payer: owner.publicKey, config, faucet: pdas.faucet(owner.publicKey), dusdcMint: boot.mint, mintAuth: pdas.mintAuth(), ownerAta, systemProgram: SystemProgram.programId, tokenProgram: TOKEN_PROGRAM_ID })
@@ -343,10 +363,46 @@ async function main() {
   let liqSeconds: number | null = null;
   const trail: { t: number; btc: number | null; sol: number | null; btcSampleSeq: string | null }[] = [];
   let restoredOk = false;
+  const readBtcParams = async (): Promise<Record<string, unknown> | null> => {
+    try {
+      return extractParams(await accountNs(coreAdminEr).market.fetch(BTC.market));
+    } catch (e) {
+      console.log("  read BTC params failed:", (e as Error).message);
+      return null;
+    }
+  };
+  /** Re-read, resend only while the params still differ, bounded; the verdict is always an on-chain read. */
+  const restoreBtcParams = async (): Promise<boolean> => {
+    for (let a = 1; a <= RESTORE_ATTEMPTS; a++) {
+      const current = await readBtcParams();
+      if (current && paramsEqual(origParams, current)) {
+        console.log("BTC params on-chain:", showParams(current), "match original: true");
+        return true;
+      }
+      try {
+        await send(`set_params BTC (restore #${a})`, adminConn, "ER", admin, [await coreAdminEr.methods
+          .setParams(origParams).accounts({ admin: admin.publicKey, config, market: BTC.market }).instruction()]);
+      } catch (e) {
+        console.log(`  restore attempt ${a}/${RESTORE_ATTEMPTS} failed:`, (e as Error).message);
+        await sleep(2_000);
+      }
+    }
+    for (let i = 0; i < 5; i++) {
+      const current = await readBtcParams();
+      if (current) {
+        const ok = paramsEqual(origParams, current);
+        console.log("BTC params on-chain after restore attempts:", showParams(current), "match original:", ok);
+        return ok;
+      }
+      await sleep(2_000);
+    }
+    console.error("could not read BTC params to verify the restore");
+    return false;
+  };
   try {
     if (health && RELAYER_TOGGLE) {
+      relayerToggled = true; // before the call: a half-applied toggle must still be reverted
       railwaySetCrankEnabled("false");
-      relayerToggled = true;
       await waitCrankEnabled(false);
     } else if (health) {
       console.log("relayer reachable but RELAYER_TOGGLE!=1 — not toggling; a live relayer crank on this program may be the liquidator");
@@ -375,18 +431,27 @@ async function main() {
     if (!liquidated) console.error(`FAIL: BTC not liquidated within ${(LIQ_POLL_TRIES * LIQ_POLL_DELAY_MS) / 1000}s`);
   } finally {
     console.log("=== restoring BTC params (mandatory) ===");
-    await send("set_params BTC (restore)", adminConn, "ER", admin, [await coreAdminEr.methods
-      .setParams(origParams).accounts({ admin: admin.publicKey, config, market: BTC.market }).instruction()]);
-    const after = extractParams(await accountNs(coreAdminEr).market.fetch(BTC.market));
-    restoredOk = paramsEqual(origParams, after);
-    console.log("BTC params after restore:", showParams(after), "match original:", restoredOk);
-    if (!restoredOk) {
-      console.error("FAIL: BTC params NOT restored — manual intervention needed on the shared devnet market");
-      process.exitCode = 1;
+    let restoreError: unknown = null;
+    try {
+      restoredOk = await restoreBtcParams();
+    } catch (e) {
+      restoreError = e;
+    } finally {
+      if (relayerToggled) {
+        try {
+          railwaySetCrankEnabled("true");
+          await waitCrankEnabled(true);
+        } catch (e) {
+          console.error("FAIL: could not re-enable the relayer crank — set CRANK_ENABLED=true by hand:", e);
+          process.exitCode = 1;
+        }
+      }
     }
-    if (relayerToggled) {
-      railwaySetCrankEnabled("true");
-      await waitCrankEnabled(true);
+    if (restoreError) console.error("restore raised:", restoreError);
+    if (!restoredOk) {
+      console.error("FAIL: BTC params NOT restored — manual intervention needed on the shared devnet market (npm run devnet:setparams -- --market BTC ...)");
+      console.error("16-MULTI-MARKET FAIL (restore)");
+      process.exit(1);
     }
   }
   assert(liquidated, "BTC liquidated");
@@ -452,11 +517,26 @@ async function main() {
     assert(closed, "janitor closed both accounts within the window");
   }
 
+  if (CU_READER) {
+    const readerConn = await teeConn(loadOrCreateKey(CU_READER === "crank" ? "devnet-crank" : "devnet-admin"));
+    for (const r of rows) {
+      if (r.net !== "ER") continue;
+      const cu = await cuOf(readerConn, r.sig);
+      if (cu !== null && cu !== r.cu) console.log(`cu re-read (${CU_READER} token) ${r.ix}: ${r.cu} -> ${cu}`);
+      if (cu !== null) r.cu = Math.max(cu, r.cu ?? 0);
+    }
+  }
   const balAfter = await balance();
   console.log("balances after:", json(balAfter));
-  console.log("\n| ix | cu | bytes | sig |\n|---|---|---|---|");
+  console.log(`\n${CU_READER ? `(ER cu = max of sender's and ${CU_READER}-token read)` : "(ER cu as the sender's TEE token sees it; --cu-reader crank for trades)"}`);
+  console.log("| ix | cu | bytes | sig |\n|---|---|---|---|");
   for (const r of rows) console.log(`| ${r.ix} (${r.net}) | ${r.cu ?? "n/a"} | ${r.bytes < 0 ? "n/a (late landing)" : r.bytes} | ${r.sig} |`);
   console.log("\nliq_ticks trail:", json(trail));
+  assert(restoredOk, "BTC params restored and verified on-chain");
+  if (process.exitCode) {
+    console.error("16-MULTI-MARKET FAIL (relayer crank not re-enabled)");
+    process.exit(1);
+  }
   console.log(
     "\n16-MULTI-MARKET PASS",
     json({ owner: owner.publicKey.toBase58(), positions: positions.toBase58(), liquidatedBy: health && !RELAYER_TOGGLE ? "unknown (relayer reachable, not toggled)" : "scheduler (liquidation_check)", liqSeconds, restoredOk, exited, janitor, balBefore, balAfter }),
