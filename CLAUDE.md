@@ -39,6 +39,7 @@
 - docs/superpowers/plans/2026-10-01-week6-slots-app.md — план 3 з 4 позицій-слотів: app (виконано 01.10.2026; spec §2.9 «Реалізовано (app)»); план 4 — виконано 01.10.2026, рядки нижче
 - docs/superpowers/plans/2026-10-01-week6-slots-deploy.md — план 4 з 4 позицій-слотів: чистий деплой на devnet, relayer, APK, виміри (виконано 01.10.2026, крім smoke-кроків 8–9; гейти користувача — SOL, секрети Railway, деплой, smoke)
 - docs/superpowers/plans/week6-results.md — виміряні результати плану 4 позицій-слотів (Tasks 1–7, M-слоти-A…F, CU/bytes в ER, ліквідація 8.5–10.2 с без relayer-а / 2.9 с relayer-ом, коміт 200 000 лам., рента на devnet, smoke 1–7, вартість devnet, уроки процесу)
+- docs/superpowers/plans/2026-10-01-week6-chart-timeframes.md — план C.5, частина 2: 16 таймфреймів, свічки `1m/1h/1d` у Postgres, ретеншн тіків, бекфіл Pyth Pro, whitespace для `1s`, атрибуція TradingView (дизайн — spec §2.10; Tasks 1–6 relayer, 7–10 app, 11 документи, 12 devnet — гейти власника: ключ Pyth Pro, `railway up`, APK)
 
 ## Правила
 - Anchor 1.0.2, Solana 3.1.9, Rust 1.89, `ephemeral-rollups-sdk` 0.16.2 (`anchor`, `access-control`), TS SDK 0.17, `@solana/web3.js` v1 (не kit)
