@@ -63,7 +63,7 @@ if ((process.env.DEXXER_NET ?? "local") === "devnet") {
 }
 
 const { keypairFromEnv } = await import("./keys.js");
-const { startCrank, requestStop } = await import("./crank.js");
+const { startCrank, requestStop, withSol } = await import("./crank.js");
 const { COMMIT_INTERVAL_MS } = await import("./commit.js");
 const { NET, BASE, ER, ER_WS, teeConn } = await import("../../../tests/er/lib/env.js");
 const { accountNs, dexxerCoreProgram, pdas } = await import("../../../tests/er/lib/program.js");
@@ -286,8 +286,15 @@ app.use(
     }),
     getSponsorSnapshot: getSponsorHealthSnapshot,
     commitIntervalMs: COMMIT_INTERVAL_MS,
+    // The same view the crank ticks (`withSol`): SOL is listed even while the
+    // registry is empty or lacks it.
     getMarketsHealth: () =>
-      buildMarketsHealth(markets.list().map((m) => m.symbol), state.marketTicks, indexerStats.feeds, Date.now()),
+      buildMarketsHealth(
+        withSol(markets.list().map((m) => ({ symbol: m.symbol })), () => ({ symbol: "SOL" })).map((m) => m.symbol),
+        state.marketTicks,
+        indexerStats.feeds,
+        Date.now(),
+      ),
   }),
 );
 

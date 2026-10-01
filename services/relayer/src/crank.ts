@@ -33,8 +33,16 @@
 // with no candidate — liquidation hysteresis counts the oracle prints a
 // `crank_tick` accepts, so a market that is not ticked is not liquidated at
 // all. Each market runs in its own try/catch (`runMarkets`), and each chunk
-// of a market in its own too: one failing market or chunk must not stop the
-// others. One log line per chunk: `tick n=... market=... slot=... mark=...
+// of a market in its own too (candidates.ts `tickCandidates`): a chunk that
+// fails is retried one candidate per transaction, a pair whose transaction
+// fails alone on chain is quarantined for `CRANK_BAD_PAIR_COOLDOWN_MS`, and a
+// market whose candidate transactions all failed still gets one
+// zero-candidate tick. If candidate
+// discovery itself fails, every market is still ticked with no candidate
+// (`planTick`) — the mark, the price sample and with them the scheduler's
+// `liquidation_check` keep moving — but SOL's `lastTickAt` (`/healthz.ok`)
+// does not advance, so the outage stays visible. One log line per landed
+// transaction: `tick n=... market=... slot=... mark=...
 // mark_slot=... sig=... cu=... tick_ms=... candidates=... liquidated=[...]`.
 //
 // Three mb-stack/devnet-tee quirks fixed here, none reproducible on LiteSVM
@@ -72,7 +80,7 @@ import type { Net } from "../../../tests/er/lib/env.js";
 import { POSITIONS_DISC, accountNs, dexxerCoreProgram, pdas } from "../../../tests/er/lib/program.js";
 import { marketInfoFrom } from "./markets.js";
 import type { MarketInfo, MarketRegistry } from "./markets.js";
-import { candidatesFrom, chunkCandidates, liquidatedIn, pairAccounts } from "./candidates.js";
+import { CRANK_BAD_PAIR_COOLDOWN_MS, candidatesFrom, liquidatedIn, looksLikeOnChainFailure, pairAccounts, tickCandidates } from "./candidates.js";
 import type { Candidate } from "./candidates.js";
 import { COMMIT_INTERVAL_MS, commitDue, runCommitCycle, runIsolated, runRootCycle } from "./commit.js";
 import { janitorDeps, runJanitorCycle } from "./janitor.js";
@@ -177,8 +185,23 @@ export function groupOpenByMarket<T extends { market: string }>(rows: T[]): Map<
   return out;
 }
 
+export type Discovery = { ok: true; candidates: Candidate[] } | { ok: false };
+
+/**
+ * What one loop ticks. Discovery failed → every market is still ticked, with
+ * NO candidate (never last loop's): `liq_due` counts a price sample only when
+ * it checks a position, so a sample nobody was checked against costs nothing,
+ * while not ticking would freeze every market's mark/EMA and `sample_seq` —
+ * and with them the scheduler's `liquidation_check`, which only reads the
+ * market. Such a loop does not count for health (`lastTickAt`), so a
+ * discovery outage stays visible on `/healthz`.
+ */
+export function planTick(d: Discovery): { byMarket: Map<string, Candidate[]>; countsForHealth: boolean } {
+  return d.ok ? { byMarket: groupOpenByMarket(d.candidates), countsForHealth: true } : { byMarket: new Map(), countsForHealth: false };
+}
+
 /** SOL is ticked whatever the registry says: an empty list (first read not done yet) or a list that lost SOL must never stop the market the shipped APK trades — nor its liquidations. */
-export function withSol(list: MarketInfo[], sol: () => MarketInfo): MarketInfo[] {
+export function withSol<T extends { symbol: string }>(list: T[], sol: () => T): T[] {
   return list.some((m) => m.symbol === "SOL") ? list : [sol(), ...list];
 }
 
@@ -258,7 +281,7 @@ export async function startCrank(cfg: RelayerConfig, state: RelayerState, regist
     return found.filter((c) => ok.has(c.owner.toBase58()));
   }
 
-  /** One `crank_tick` over one chunk of a market's candidates. */
+  /** One `crank_tick` over one chunk of a market's candidates. Throws only if the transaction did not land; the reads after it are best effort. */
   async function tickChunk(m: MarketInfo, poolLive: PublicKeyT, chunk: Candidate[], n: number, slot: number): Promise<void> {
     const ix = await prog.methods
       .crankTick()
@@ -283,37 +306,52 @@ export async function startCrank(cfg: RelayerConfig, state: RelayerState, regist
     await confirmSignature(conn, sig);
     const tickMs = Date.now() - sendT0;
 
-    const tx = await conn.getTransaction(sig, { commitment: "confirmed", maxSupportedTransactionVersion: 0 });
-    const cu = tx?.meta?.computeUnitsConsumed ?? null;
-    // A slot of this market that was open before the tick and is gone after
-    // it was closed by this tick: a liquidation.
-    const after = chunk.length > 0 ? await conn.getMultipleAccountsInfo(chunk.map((c) => c.positions), "confirmed") : [];
-    const liquidated = liquidatedIn(chunk, after.map((a) => a?.data ?? null));
-
-    const market = await accountNs(prog).market.fetch(m.market);
-    console.log(
-      `tick n=${n} market=${m.symbol} slot=${slot} mark=${market.mark.toString()} mark_slot=${market.markSlot.toString()} sig=${sig} cu=${cu} tick_ms=${tickMs} candidates=${chunk.length} liquidated=${JSON.stringify(liquidated)}`,
-    );
+    // The tick landed. What follows only feeds the log line: a failed read
+    // must not make a landed tick look failed (and be resent singly).
+    try {
+      const tx = await conn.getTransaction(sig, { commitment: "confirmed", maxSupportedTransactionVersion: 0 });
+      const cu = tx?.meta?.computeUnitsConsumed ?? null;
+      // A slot of this market that was open before the tick and is gone after
+      // it was closed by this tick: a liquidation.
+      const after = chunk.length > 0 ? await conn.getMultipleAccountsInfo(chunk.map((c) => c.positions), "confirmed") : [];
+      const liquidated = liquidatedIn(chunk, after.map((a) => a?.data ?? null));
+      const market = await accountNs(prog).market.fetch(m.market);
+      console.log(
+        `tick n=${n} market=${m.symbol} slot=${slot} mark=${market.mark.toString()} mark_slot=${market.markSlot.toString()} sig=${sig} cu=${cu} tick_ms=${tickMs} candidates=${chunk.length} liquidated=${JSON.stringify(liquidated)}`,
+      );
+    } catch (e) {
+      console.error(`tick n=${n} market=${m.symbol} sig=${sig} landed; reading its result failed: ${String(e instanceof Error ? e.message : e)}`);
+    }
   }
 
+  // Pairs that failed `crank_tick` alone: pairKey → excluded until (ms).
+  // Process lifetime, shared by all markets (the key carries the market).
+  const badPairs = new Map<string, number>();
+  // A market that ticked does not throw, so `runMarkets` cannot see an
+  // auth/timeout among its later sends — collected here for the reconnect.
+  let authErrorThisLoop = false;
+
   /**
-   * Every chunk of the market, each isolated: a chunk that fails (a send that
-   * is rejected, a read after it) must not keep the later chunks' candidates
-   * out of this tick. The market counts as ticked only if every chunk went
-   * through — otherwise the first error is rethrown for `runMarkets`.
+   * One market for one loop (`tickCandidates`). The market counts as ticked
+   * if at least one of its transactions landed — one bad pair must not hold
+   * SOL's `lastTickAt` hostage. If none landed, the first error is rethrown
+   * for `runMarkets`; errors of a market that did tick are still recorded.
    */
   async function tickMarket(m: MarketInfo, poolLive: PublicKeyT, open: Candidate[], n: number): Promise<void> {
     const slot = await conn.getSlot("confirmed");
-    const chunks = chunkCandidates(open);
-    const errors: unknown[] = [];
-    await runIsolated(
-      chunks.map((chunk, i): [string, () => Promise<void>] => [`chunk${i}`, () => tickChunk(m, poolLive, chunk, n, slot)]),
-      (name, e) => {
-        if (chunks.length > 1) console.error(`tick n=${n} market=${m.symbol} ${name}/${chunks.length} failed`, String(e instanceof Error ? e.message : e));
-        errors.push(e);
-      },
-    );
-    if (errors.length > 0) throw errors[0];
+    const r = await tickCandidates(open, {
+      send: (chunk) => tickChunk(m, poolLive, chunk, n, slot),
+      isAuthOrTimeout: looksLikeAuthOrTimeout,
+      isOnChainFailure: looksLikeOnChainFailure,
+      quarantine: badPairs,
+      now: Date.now(),
+      cooldownMs: CRANK_BAD_PAIR_COOLDOWN_MS,
+    });
+    for (const key of r.released) console.log(`tick n=${n} market=${m.symbol}: pair ${key} back in the batches after its cooldown`);
+    for (const key of r.quarantined) console.warn(`tick n=${n} market=${m.symbol}: pair ${key} failed crank_tick alone — excluded for ${CRANK_BAD_PAIR_COOLDOWN_MS} ms`);
+    if (r.landed === 0) throw r.errors[0] ?? new Error(`market ${m.symbol}: no crank_tick landed`);
+    if (r.errors.some(looksLikeAuthOrTimeout)) authErrorThisLoop = true;
+    for (const e of r.errors) onMarketError(m, e);
   }
 
   const config = await accountNs(prog).config.fetch(pdas.config());
@@ -360,17 +398,33 @@ export async function startCrank(cfg: RelayerConfig, state: RelayerState, regist
     // At most ONE reconnect per tick, however many markets hit a 401/timeout —
     // they all share the same `conn`, so one fresh token fixes all of them.
     let needReconnect = false;
+    let discovery: Discovery;
     try {
-      const byMarket = groupOpenByMarket(await openCandidates(n));
+      discovery = { ok: true, candidates: await openCandidates(n) };
+    } catch (e) {
+      // Discovery failed: the markets are still ticked below, with no
+      // candidate (`planTick`); this loop does not count for `lastTickAt`.
+      console.error(`tick n=${n}: candidate discovery failed — ticking every market without candidates`, String(e));
+      pushError(state, e);
+      needReconnect = looksLikeAuthOrTimeout(e);
+      discovery = { ok: false };
+    }
+    const plan = planTick(discovery);
+    authErrorThisLoop = false;
+    const byMarket = plan.byMarket;
+    try {
       const markets = withSol(registry.list(), solFallback);
       // A position on a market the list does not have yet (added with
       // `add-market` less than MARKETS_REFRESH_MS ago, or the registry has
       // not read the ER yet) is NOT ticked, so it cannot be liquidated by
-      // this loop until the registry catches up — make that visible.
-      const unticked = untickedMarkets(byMarket, markets).join(",");
-      if (unticked !== lastUnticked) {
-        if (unticked) console.warn(`tick n=${n}: open positions on markets not in the tick list (not cranked): ${unticked}`);
-        lastUnticked = unticked;
+      // this loop until the registry catches up — make that visible. Only
+      // known after a good discovery.
+      if (plan.countsForHealth) {
+        const unticked = untickedMarkets(byMarket, markets).join(",");
+        if (unticked !== lastUnticked) {
+          if (unticked) console.warn(`tick n=${n}: open positions on markets not in the tick list (not cranked): ${unticked}`);
+          lastUnticked = unticked;
+        }
       }
       const r = await runMarkets(markets, (m) => tickMarket(m, poolLive, byMarket.get(m.market.toBase58()) ?? [], n), onMarketError, looksLikeAuthOrTimeout);
       const now = Date.now();
@@ -380,15 +434,15 @@ export async function startCrank(cfg: RelayerConfig, state: RelayerState, regist
       // SOL alone — a healthy BTC tick must not hide a stuck SOL, the only
       // market the shipped APK trades. Other markets are informational in
       // `/healthz.markets`.
-      if (r.solTicked) state.lastTickAt = now;
-      needReconnect = r.needsReconnect;
+      // A loop whose discovery failed does not count: SOL was ticked, but
+      // nobody was checked against its print.
+      if (r.solTicked && plan.countsForHealth) state.lastTickAt = now;
+      needReconnect ||= r.needsReconnect || authErrorThisLoop;
     } catch (e) {
-      // Candidate discovery itself failed — no market is ticked this loop:
-      // a tick without the candidates would advance the price sample with
-      // nobody checked against it.
+      // Not expected (`runMarkets` catches per market) — never stop the loop.
       console.error("tick failed", String(e));
       pushError(state, e);
-      needReconnect = looksLikeAuthOrTimeout(e);
+      needReconnect ||= looksLikeAuthOrTimeout(e);
     }
     if (needReconnect) {
       try {

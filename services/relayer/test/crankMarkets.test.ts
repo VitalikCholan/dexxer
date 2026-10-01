@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { groupOpenByMarket, runMarkets, shouldRecordError, untickedMarkets, withSol } from "../src/crank.js";
+import { groupOpenByMarket, planTick, runMarkets, shouldRecordError, untickedMarkets, withSol } from "../src/crank.js";
 import type { MarketInfo } from "../src/markets.js";
 import { marketInfoFrom } from "../src/markets.js";
 import { pdas, symbolBytes } from "../../../tests/er/lib/program.js";
@@ -89,4 +89,27 @@ test("shouldRecordError: new message or window elapsed records, a repeat within 
   assert.equal(shouldRecordError({ msg: "boom", at: 1_000 }, "boom", 30_000, 60_000), false, "same message inside the window");
   assert.equal(shouldRecordError({ msg: "boom", at: 1_000 }, "other", 30_000, 60_000), true, "different message");
   assert.equal(shouldRecordError({ msg: "boom", at: 1_000 }, "boom", 61_000, 60_000), true, "window elapsed");
+});
+
+// --- fix round 1 (F1): discovery failing must not freeze the markets ---
+
+test("planTick: discovery ok -> candidates grouped by market, the loop counts for health", () => {
+  const owner = Keypair.generate().publicKey;
+  const c = (market: string) => ({ positions: Keypair.generate().publicKey, owner, market });
+  const p = planTick({ ok: true, candidates: [c("a"), c("b"), c("a")] });
+  assert.equal(p.countsForHealth, true);
+  assert.deepEqual([...p.byMarket.keys()].sort(), ["a", "b"]);
+  assert.equal(p.byMarket.get("a")?.length, 2);
+});
+
+test("planTick: discovery failed -> every market ticks with no candidate, the loop does not count for health", () => {
+  const p = planTick({ ok: false });
+  assert.equal(p.countsForHealth, false);
+  assert.equal(p.byMarket.size, 0);
+});
+
+test("withSol works on symbol-only views too (health lists SOL while the registry is empty)", () => {
+  const sol = () => ({ symbol: "SOL" });
+  assert.deepEqual(withSol([] as { symbol: string }[], sol).map((m) => m.symbol), ["SOL"]);
+  assert.deepEqual(withSol([{ symbol: "BTC" }], sol).map((m) => m.symbol), ["SOL", "BTC"]);
 });
