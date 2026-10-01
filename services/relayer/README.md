@@ -27,17 +27,29 @@ permission member of (privacy rule, see repo `CLAUDE.md`).
     are skipped. Probe lands → the chunk is retried one candidate per
     transaction, and a pair rejected alone on chain is quarantined for
     `CRANK_BAD_PAIR_COOLDOWN_MS` (default 60 000, min 5 000).
-  - **Errors** (`src/errors.ts`, one classifier for the crank, the candidates
-    and the janitor): on chain = the transaction landed and the program
-    rejected it; everything else (401, timeouts, `fetch failed`, 429, 5xx,
-    any other RPC error) is connection-class. The first connection-class
-    error stops the market AND the rest of the loop (the later markets are
-    not ticked that loop), one reconnect, then the next loop starts with SOL
-    again. A market repeating the same error (signature stripped) is recorded
-    at most once a minute.
+  - **Errors** (`src/errors.ts` `classifyError`, one classifier for the
+    crank, the candidates and the janitor), three classes:
+    - *on-chain* — the transaction landed and the program rejected it
+      (probe / singles / quarantine above);
+    - *shared* — plausibly every market: 401/unauthorized, network (`fetch
+      failed`, `ECONN*`, `ETIMEDOUT`, socket hang up), 429 / rate limit, 5xx,
+      `freshBlockhash timeout`. The first one stops the market AND the rest
+      of the loop, one reconnect, and the next loop starts at the market
+      AFTER the one that stopped it (`rotateMarkets`, wrapping) — no market
+      is starved. Without a short-circuit the order is SOL first, then the
+      tick set;
+    - *market-local* — everything else, including `confirmSignature timeout`
+      (one market's dropped transaction) and a client-side throw while
+      building its instruction: no singles, one zero-candidate tick for that
+      market (its mark and price sample still advance if only the candidate
+      transaction is the problem), then that market is done for the loop;
+      the other markets go on, no reconnect.
+    A market repeating the same error (signature stripped) is recorded at
+    most once a minute.
   - **Discovery fails** → every market is still ticked with no candidate
     (`planTick`), so mark, price sample and the scheduler's
-    `liquidation_check` keep moving; that loop does not move `lastTickAt`.
+    `liquidation_check` keep moving; that loop does not move `lastTickAt`. It
+    reconnects only for an auth or network error.
   - `lastTickAt` — and so `/healthz.ok` — moves only when the **SOL** market
     ticked after a good discovery. It starts `null` in every process (not
     restored from Postgres): a fresh process answers 503 until its first such
@@ -51,10 +63,15 @@ permission member of (privacy rule, see repo `CLAUDE.md`).
     lines name exited owners, which are public on L1 by then.
   - **Liveness**: the commit cycle runs detached (below); a watchdog exits the
     process with code 1 when no loop iteration completed within
-    `CRANK_WATCHDOG_MS` (default 120 000, min 30 000), and `index.ts` exits
-    with code 1 when `startCrank` rejects. Railway's `ON_FAILURE` restart
-    policy (`restartPolicyMaxRetries: 10`) is what restarts it — the
-    healthcheck runs only at deploy time, a later 503 restarts nothing.
+    `CRANK_WATCHDOG_MS` (default 120 000, min 30 000) or when one commit
+    cycle has been in flight for more than 3 × `COMMIT_INTERVAL_MS`
+    (`cycleStuck`), and `index.ts` exits with code 1 when `startCrank`
+    rejects. Railway's `ON_FAILURE` restart policy
+    (`restartPolicyMaxRetries: 10`) is what restarts it — the healthcheck
+    runs only at deploy time, a later 503 restarts nothing. Because
+    `/healthz` is 503 until the new process's first SOL tick,
+    `railway.json`'s `healthcheckTimeout` is 180 s (was 30 s) so a slow
+    first loop does not fail a healthy deploy.
 - `src/candidates.ts` — turns raw `Positions` accounts into
   `crank_tick` candidate **pairs** `[Positions, UserAccount]`: one candidate
   per OPEN slot (a trader only enters the batch of a market they hold a slot
@@ -98,8 +115,9 @@ permission member of (privacy rule, see repo `CLAUDE.md`).
   and failures — sends skip preflight, a failure still pays a fee); a
   per-owner cooldown `JANITOR_RETRY_COOLDOWN_MS` after a close the program
   rejected on chain (per process; a restart retries each failing owner
-  once); the first connection-class failure aborts the pass with no cooldown
-  for that owner. Idempotent; state is re-derived from chain every cycle.
+  once); the first *shared* failure aborts the pass with no cooldown for
+  that owner; any other failure counts as an attempt, sets no cooldown, and
+  the pass goes on. Idempotent; state is re-derived from chain every cycle.
 - `src/keys.ts` — `keypairFromEnv(name, fileFallback)`: bs58 secret key from
   an env var in production, `tests/er/.keys/<fileFallback>.json` (via
   `loadOrCreateKey`) for local dev.
@@ -357,7 +375,7 @@ enforced ComputeBudget `SetComputeUnitPrice` ceiling.
 | `JANITOR_RETRY_COOLDOWN_MS` | no (default `3600000`, min `60000`) | per-owner cooldown after a `close_exited_user` the program rejected on chain (`src/janitor.ts`); unparseable / below the minimum → default |
 | `JANITOR_MIN_FEE_PAYER_SOL` | no (default `0.002`, min `0`) | the janitor pass is skipped (and an error recorded) while `fee_payer`'s base balance is below this; `0` disables the floor |
 | `CRANK_BAD_PAIR_COOLDOWN_MS` | no (default `60000`, min `5000`) | how long a `[Positions, UserAccount]` pair rejected alone on chain stays out of the batches (`src/candidates.ts`) |
-| `CRANK_WATCHDOG_MS` | no (default `120000`, min `30000`) | no loop iteration completed within this → the process exits with code 1 (`src/crank.ts`) so Railway's `ON_FAILURE` policy restarts it |
+| `CRANK_WATCHDOG_MS` | no (default `120000`, min `30000`) | no loop iteration completed within this → the process exits with code 1 (`src/crank.ts`) so Railway's `ON_FAILURE` policy restarts it. Not scaled to the loop size (many markets × chunks could legitimately take longer — a plan-4 check). A commit cycle in flight for more than 3 × `COMMIT_INTERVAL_MS` exits the same way |
 | `INDEXER_ENABLED` | no (default `false`) | Task 5: starts the public-data indexer (see above) — needs `DATABASE_URL`, disabled with a warning if it's unset |
 | `SPONSOR_ENABLED` | no (default `false`) | Task 6: starts `POST /sponsor` (see below) — needs `DATABASE_URL`, disabled with a warning if it's unset |
 | `SPONSOR_DAILY_SOL` | no (default `0.5`) | rolling 24h cap on sponsored lamports across all owners |
