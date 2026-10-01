@@ -120,15 +120,28 @@ if (__DEV__) {
 
 /**
  * MAX button: margin = everything available, then the smallest integer
- * leverage (1..10, `LeverageSlider`'s step) whose derived margin does not
+ * leverage (1..`maxLev`, the market's cap, `LeverageSlider`'s step) whose derived margin does not
  * exceed it. Ceil (not "nearest") so `deriveTicket`'s pool-favouring
  * round-up lands at-or-under `available`, not over it. Pure bigint — the
  * component used to do this through `Number(...)`.
  */
-export function impliedLeverage(ntl: bigint, available: bigint): number {
+export function impliedLeverage(ntl: bigint, available: bigint, maxLev = 10): number {
+  const cap = BigInt(Math.max(1, Math.floor(maxLev)))
   if (available <= 0n) return 1
   const q = (ntl + available - 1n) / available
-  return Number(q < 1n ? 1n : q > 10n ? 10n : q)
+  return Number(q < 1n ? 1n : q > cap ? cap : q)
+}
+
+/**
+ * The slider's range is the MARKET's, not a constant: HYPE/ZEC allow 5×
+ * while SOL/BTC/ETH allow 10× (`max_lev_bps`/`imr_bps`). A leverage picked
+ * on one market is clamped when the user switches to a tighter one — the
+ * program would otherwise reject the open with `InsufficientMargin` (6010),
+ * which is exactly what the plan-4 smoke hit on HYPE at 7×.
+ */
+export function clampLeverage(value: number, maxLev: number): number {
+  const cap = Math.max(1, Math.floor(maxLev))
+  return Math.min(cap, Math.max(1, Math.round(value)))
 }
 
 // --- Close tab and Add margin (C.4) ---

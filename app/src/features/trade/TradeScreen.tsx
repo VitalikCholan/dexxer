@@ -120,6 +120,7 @@ export function TradeScreen() {
         openFeeBps: BigInt(market.openFeeBps),
         closeFeeBps: BigInt(market.closeFeeBps),
         minSize: market.minSize,
+        maxLeverage: maxLeverage(market.maxLevBps, market.imrBps),
       }
     : null
 

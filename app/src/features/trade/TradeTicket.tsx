@@ -27,7 +27,7 @@ import { Button } from '@/src/ui/Button'
 import { CloseTab } from './CloseTab'
 import * as math from '@/src/lib/math'
 import { formatUsd2 } from '@/src/lib/status'
-import { deriveTicket, impliedLeverage, safeLiq } from './ticketMath'
+import { clampLeverage, deriveTicket, impliedLeverage, safeLiq } from './ticketMath'
 import { type SideName } from '@/src/lib/codecs'
 import { type PositionSlot } from '@/src/lib/positions'
 import { solSize, usdAmount } from '@/src/lib/trade'
@@ -38,6 +38,8 @@ export interface MarketParams {
   openFeeBps: bigint
   closeFeeBps: bigint
   minSize: bigint
+  /** Integer leverage cap of THIS market (`maxLeverage(max_lev_bps, imr_bps)`): the slider's and MAX's upper bound. */
+  maxLeverage: number
 }
 
 export interface TradeTicketProps {
@@ -143,6 +145,12 @@ function OpenForm({
   // `deriveTicket` (always 2dp, `'0.00'` while not ready) is the sole
   // source of the synced text, so there's nothing stale left to concatenate
   // into a malformed value.
+  // The market's leverage cap (10 until the live `Market` has loaded). A
+  // leverage carried over from a 10× market is clamped the moment a 5×
+  // market's params arrive — same render-time adjust pattern as below.
+  const maxLev = market?.maxLeverage ?? 10
+  if (leverage > maxLev) setLeverage(clampLeverage(leverage, maxLev))
+
   const [prevSizeSol, setPrevSizeSol] = useState(sizeSol)
   const [prevLeverage, setPrevLeverage] = useState(leverage)
   if (sizeSol !== prevSizeSol || leverage !== prevLeverage) {
@@ -162,7 +170,7 @@ function OpenForm({
 
   const availableUsd = freeMarginUsd !== null ? formatUsd2(freeMarginUsd) : '—'
 
-  // MAX: margin = available, then pick the smallest integer leverage (1..10,
+  // MAX: margin = available, then pick the smallest integer leverage (1..maxLev,
   // `LeverageSlider`'s step) whose derived margin doesn't exceed it —
   // `Math.ceil` (not "nearest") so `deriveTicket`'s pool-favoring round-up
   // lands at-or-under `available`, not over it. Syncs `prevLeverage` in the
@@ -172,7 +180,7 @@ function OpenForm({
     if (freeMarginUsd === null) return
     setMarginUsd(formatUsd2(freeMarginUsd))
     if (ntl !== null && freeMarginUsd > 0n) {
-      const implied = impliedLeverage(ntl, freeMarginUsd)
+      const implied = impliedLeverage(ntl, freeMarginUsd, maxLev)
       setLeverage(implied)
       setPrevLeverage(implied)
     }
@@ -228,7 +236,7 @@ function OpenForm({
         <Text style={[caption, { color: colors.short }]}>Insufficient margin — lower size or leverage, or deposit</Text>
       ) : null}
       {openBlocked ? <Text style={[caption, { color: colors.short }]}>{openBlocked}</Text> : null}
-      <LeverageSlider value={leverage} onChange={setLeverage} />
+      <LeverageSlider value={leverage} onChange={setLeverage} max={maxLev} />
       <View style={{ gap: space.xs }}>
         <Row label="Entry ≈" value={markUsd !== null ? `$${formatUsd2(markUsd)}` : '—'} />
         <Row label="Liq. price" value={liq !== null ? `$${formatUsd2(liq)}` : '—'} />

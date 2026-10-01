@@ -8,6 +8,7 @@ import {
   closePreview,
   deriveTicket,
   impliedLeverage,
+  clampLeverage,
   liqAfterAddMargin,
   safeLiq,
 } from '../src/features/trade/ticketMath'
@@ -68,4 +69,20 @@ test('liqAfterAddMargin moves a Long liq down, and has none at or below 1x', () 
   const after = liqAfterAddMargin('Long', MARK, size, 150_000_000n, 150_000_000n, 500n)!
   assert.ok(after < 142_500_000n)
   assert.equal(liqAfterAddMargin('Long', MARK, size, 150_000_000n, 1_400_000_000n, 500n), null)
+})
+
+// Plan-4 smoke (01.10.2026): HYPE/ZEC allow 5×, the slider offered 7–10× and the
+// program answered InsufficientMargin (6010). MAX and the slider must respect the
+// market's cap.
+test('impliedLeverage clamps to the market cap when one is given', () => {
+  assert.equal(impliedLeverage(5_000_000_000n, 100_000_000n, 5), 5)
+  assert.equal(impliedLeverage(300_000_000n, 100_000_000n, 5), 3)
+  assert.equal(impliedLeverage(5_000_000_000n, 100_000_000n, 10), 10)
+})
+test('clampLeverage keeps a picked leverage inside [1, maxLev]', () => {
+  assert.equal(clampLeverage(7, 5), 5)
+  assert.equal(clampLeverage(3, 5), 3)
+  assert.equal(clampLeverage(0, 5), 1)
+  assert.equal(clampLeverage(10, 10), 10)
+  assert.equal(clampLeverage(4.6, 10), 5)
 })
