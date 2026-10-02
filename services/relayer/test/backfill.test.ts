@@ -6,10 +6,11 @@ import assert from "node:assert/strict";
 import type { DbPool } from "../src/db.js";
 import {
   HYPERLIQUID_INFO_URL, HlError, TIER_CHUNK_MS, TIER_INTERVAL, backfillEnvFromProcess, backfillWindows, candleSnapshotBody,
-  candleSnapshotWeight, chunkRanges, nextBackfillDelay, paceDelayMs, HL_BASE_WEIGHT, parseCandleSnapshot, parseUniverse, runBackfill, startBackfill, toScaled, type BackfillEnv,
+  HL_RATE_LIMIT_BACKOFF_MS, candleSnapshotWeight, chunkRanges, nextBackfillDelay, paceDelayMs, HL_BASE_WEIGHT, parseCandleSnapshot, parseUniverse, runBackfill, startBackfill, toScaled, type BackfillEnv,
 } from "../src/indexer/backfill.js";
 
 const D = 86_400_000;
+const NOSLEEP = async (): Promise<void> => undefined; // pacing always applies — tests must not really wait
 const NOW = Date.UTC(2026, 9, 2, 12); // 2026-10-02 12:00 UTC
 const ENV: BackfillEnv = { enabled: true, intervalMs: D, retryMs: 120_000, m1Days: 4, h1Days: 90, d1FromMs: Date.UTC(2023, 0, 1), requestGapMs: 0 };
 const UNIVERSE = { universe: [{ name: "BTC", szDecimals: 5 }, { name: "SOL", szDecimals: 2 }, { name: "HYPE", szDecimals: 2 }] };
@@ -138,13 +139,13 @@ test("runBackfill: meta once, then each tier per market with the right coin/inte
   const inserts: unknown[][] = [];
   const t0 = Date.UTC(2026, 9, 1);
   const res = await runBackfill({
-    pool: fakePool(inserts), env: { ...ENV, m1Days: 1, h1Days: 1 }, now: () => NOW, log: () => undefined,
+    sleep: NOSLEEP, pool: fakePool(inserts), env: { ...ENV, m1Days: 1, h1Days: 1 }, now: () => NOW, log: () => undefined,
     markets: () => [{ symbol: "SOL" }, { symbol: "ZEC" }],
     fetch: fakeFetch(calls, (r) =>
       // the 1d window spans several 400-day chunks; the row sits in the one containing t0 (and, being inclusive, maybe two)
       r.interval === "1d" && r.startTime <= t0 && t0 <= r.endTime ? [hlRow(t0, t0 + D - 1)] : []),
   });
-  assert.deepEqual(res.skipped, ["ZEC: not in Hyperliquid universe"]);
+  assert.deepEqual(res.skipped, ["ZEC: not in Hyperliquid universe (or delisted)"]);
   assert.deepEqual(res.errors, []);
   assert.equal(calls.filter((c) => c.body.type === "meta").length, 1);
   assert.equal(calls[0].body.type, "meta");
@@ -174,7 +175,7 @@ test("runBackfill: a candle repeated at a chunk boundary (inclusive endTime) is 
   const inserts: unknown[][] = [];
   const edge = Date.UTC(2023, 0, 1) + 400 * D; // chunk 1 endTime == chunk 2 startTime
   const res = await runBackfill({
-    pool: fakePool(inserts), env: { ...ENV, m1Days: 0, h1Days: 0 }, now: () => NOW, log: () => undefined, markets: () => [{ symbol: "SOL" }],
+    sleep: NOSLEEP, pool: fakePool(inserts), env: { ...ENV, m1Days: 0, h1Days: 0 }, now: () => NOW, log: () => undefined, markets: () => [{ symbol: "SOL" }],
     fetch: fakeFetch([], (r) => (r.startTime <= edge && edge <= r.endTime ? [hlRow(edge, edge + D - 1)] : [])),
   });
   assert.equal(res.rows, 1);
@@ -185,7 +186,7 @@ test("runBackfill: a 500 on one tier is an isolated error; the other tiers and m
   const inserts: unknown[][] = [];
   const t0 = Date.UTC(2026, 9, 1);
   const res = await runBackfill({
-    pool: fakePool(inserts), env: { ...ENV, m1Days: 1, h1Days: 1, d1FromMs: t0 }, now: () => NOW, log: () => undefined,
+    sleep: NOSLEEP, pool: fakePool(inserts), env: { ...ENV, m1Days: 1, h1Days: 1, d1FromMs: t0 }, now: () => NOW, log: () => undefined,
     markets: () => [{ symbol: "SOL" }, { symbol: "BTC" }],
     fetch: fakeFetch([], (r) => (r.interval === "1h" && r.coin === "SOL" ? new Response("null", { status: 500 }) : [hlRow(t0, t0 + D - 1)].filter(() => r.interval === "1d"))),
   });
@@ -197,7 +198,7 @@ test("runBackfill: a 500 on one tier is an isolated error; the other tiers and m
 test("runBackfill: rows count chunks inserted before a later chunk fails", async () => {
   const t0 = Date.UTC(2023, 0, 1);
   const res = await runBackfill({
-    pool: fakePool([]), env: { ...ENV, m1Days: 0, h1Days: 0 }, now: () => NOW, log: () => undefined, markets: () => [{ symbol: "SOL" }],
+    sleep: NOSLEEP, pool: fakePool([]), env: { ...ENV, m1Days: 0, h1Days: 0 }, now: () => NOW, log: () => undefined, markets: () => [{ symbol: "SOL" }],
     fetch: fakeFetch([], (r) => (r.startTime === t0 ? [hlRow(t0, t0 + D - 1)] : new Response("", { status: 503 }))),
   });
   assert.equal(res.rows, 1);
@@ -208,7 +209,7 @@ test("runBackfill: rows count chunks inserted before a later chunk fails", async
 test("runBackfill: meta failure → exactly one error and no candle requests; disabled → no fetch", async () => {
   const calls: Call[] = [];
   const down = await runBackfill({
-    pool: fakePool([]), env: ENV, log: () => undefined, markets: () => [{ symbol: "SOL" }],
+    sleep: NOSLEEP, pool: fakePool([]), env: ENV, log: () => undefined, markets: () => [{ symbol: "SOL" }],
     fetch: fakeFetch(calls, () => [], () => new Response("", { status: 503 })),
   });
   assert.equal(calls.length, 1);
@@ -216,7 +217,7 @@ test("runBackfill: meta failure → exactly one error and no candle requests; di
   assert.match(down.errors[0], /^meta: /);
   let fetched = 0;
   const off = await runBackfill({
-    pool: fakePool([]), env: { ...ENV, enabled: false }, markets: () => [{ symbol: "SOL" }],
+    sleep: NOSLEEP, pool: fakePool([]), env: { ...ENV, enabled: false }, markets: () => [{ symbol: "SOL" }],
     fetch: (async () => { fetched++; return new Response(""); }) as typeof fetch,
   });
   assert.equal(fetched, 0);
@@ -227,9 +228,10 @@ test("candleSnapshotWeight: 20 + 1 per 60 candles returned", () => {
   for (const [n, w] of [[0, 20], [1, 21], [60, 21], [61, 22], [2880, 68], [2161, 57], [401, 27]]) assert.equal(candleSnapshotWeight(n), w, `n=${n}`);
 });
 
-test("paceDelayMs: 50 ms per weight unit, never below the configured gap", () => {
-  assert.equal(paceDelayMs(68, 500), 3400);
-  assert.equal(paceDelayMs(20, 500), 1000);
+test("paceDelayMs: 55 ms per weight unit, never below the configured gap", () => {
+  assert.equal(paceDelayMs(68, 500), 3740);
+  assert.equal(paceDelayMs(20, 500), 1100);
+  assert.equal(paceDelayMs(20, 0), 1100); // a zero floor does not disable pacing
   assert.equal(paceDelayMs(1, 500), 500);
 });
 
@@ -238,9 +240,8 @@ test("runBackfill: sleeps paceDelayMs(weight) after meta and after each candleSn
   const t0 = Date.UTC(2026, 9, 1);
   const gap = 500;
   const res = await runBackfill({
-    pool: fakePool([]), env: { ...ENV, m1Days: 0, h1Days: 0, d1FromMs: t0, requestGapMs: gap }, now: () => NOW, log: () => undefined,
+    sleep: async (ms) => { delays.push(ms); }, pool: fakePool([]), env: { ...ENV, m1Days: 0, h1Days: 0, d1FromMs: t0, requestGapMs: gap }, now: () => NOW, log: () => undefined,
     markets: () => [{ symbol: "SOL" }],
-    sleep: async (ms) => { delays.push(ms); },
     fetch: fakeFetch([], () => Array.from({ length: 130 }, (_, i) => hlRow(t0 + i * D, t0 + (i + 1) * D - 1))),
   });
   assert.deepEqual(res.errors, []);
@@ -249,10 +250,30 @@ test("runBackfill: sleeps paceDelayMs(weight) after meta and after each candleSn
   assert.equal(res.weightSpent, HL_BASE_WEIGHT + w);
 });
 
+test("runBackfill: a 429 backs off for HL_RATE_LIMIT_BACKOFF_MS, a 500 is paced at the base weight; both count as base weight", async () => {
+  const run = async (status: number) => {
+    const delays: number[] = [];
+    const res = await runBackfill({
+      sleep: async (ms) => { delays.push(ms); }, pool: fakePool([]), env: { ...ENV, m1Days: 1, h1Days: 0, d1FromMs: NOW, requestGapMs: 500 }, now: () => NOW, log: () => undefined,
+      markets: () => [{ symbol: "SOL" }], fetch: fakeFetch([], () => new Response("", { status })),
+    });
+    return { delays, res };
+  };
+  const a = await run(429);
+  assert.deepEqual(a.delays, [paceDelayMs(HL_BASE_WEIGHT, 500), HL_RATE_LIMIT_BACKOFF_MS]);
+  assert.equal(a.res.weightSpent, 2 * HL_BASE_WEIGHT);
+  const b = await run(500);
+  assert.deepEqual(b.delays, [paceDelayMs(HL_BASE_WEIGHT, 500), paceDelayMs(HL_BASE_WEIGHT, 500)]);
+});
+
+test("parseUniverse: a delisted entry is treated as absent", () => {
+  assert.deepEqual([...parseUniverse({ universe: [{ name: "SOL" }, { name: "OLD", isDelisted: true }, { name: "BTC", isDelisted: false }] })].sort(), ["BTC", "SOL"]);
+});
+
 test("runBackfill: a 429 on one tier is an isolated error; the other tiers still run", async () => {
   const t0 = Date.UTC(2026, 9, 1);
   const res = await runBackfill({
-    pool: fakePool([]), env: { ...ENV, m1Days: 1, h1Days: 1, d1FromMs: t0 }, now: () => NOW, log: () => undefined,
+    sleep: NOSLEEP, pool: fakePool([]), env: { ...ENV, m1Days: 1, h1Days: 1, d1FromMs: t0 }, now: () => NOW, log: () => undefined,
     markets: () => [{ symbol: "SOL" }],
     fetch: fakeFetch([], (r) => (r.interval === "1m" ? new Response("", { status: 429 }) : r.interval === "1d" ? [hlRow(t0, t0 + D - 1)] : [])),
   });
@@ -291,7 +312,7 @@ test("nextBackfillDelay: interval after a clean run, retry after errors / no mar
 test("startBackfill: runs once immediately, then on the interval; snapshot tracks runs and names the source; stop() clears the timer", async () => {
   const t = fakeTimers();
   const b = startBackfill({
-    pool: fakePool([]), logError: () => undefined, env: ENV, now: () => NOW, log: () => undefined, markets: () => [{ symbol: "SOL" }], fetch: fakeFetch([], () => []),
+    sleep: NOSLEEP, pool: fakePool([]), logError: () => undefined, env: ENV, now: () => NOW, log: () => undefined, markets: () => [{ symbol: "SOL" }], fetch: fakeFetch([], () => []),
   }, t.timers);
   await new Promise((r) => setImmediate(r));
   assert.deepEqual(b.snapshot(), { enabled: true, lastRunAt: NOW, lastOkAt: NOW, lastError: null, rows: 0, source: "hyperliquid" });
@@ -304,7 +325,7 @@ test("startBackfill: a run with an error retries after BACKFILL_RETRY_MS, then b
   const t = fakeTimers();
   const status = { code: 429 };
   const b = startBackfill({
-    pool: fakePool([]), logError: () => undefined, env: ENV, now: () => NOW, log: () => undefined, markets: () => [{ symbol: "SOL" }],
+    sleep: NOSLEEP, pool: fakePool([]), logError: () => undefined, env: ENV, now: () => NOW, log: () => undefined, markets: () => [{ symbol: "SOL" }],
     fetch: fakeFetch([], () => (status.code !== 200 ? new Response("", { status: status.code }) : [])),
   }, t.timers);
   await new Promise((r) => setImmediate(r));
@@ -321,7 +342,7 @@ test("startBackfill: a run that saw no markets (registry not read yet) retries a
   const t = fakeTimers();
   let list: { symbol: string }[] = [];
   const b = startBackfill({
-    pool: fakePool([]), logError: () => undefined, env: ENV, now: () => NOW, log: () => undefined, markets: () => list, fetch: fakeFetch([], () => []),
+    sleep: NOSLEEP, pool: fakePool([]), logError: () => undefined, env: ENV, now: () => NOW, log: () => undefined, markets: () => list, fetch: fakeFetch([], () => []),
   }, t.timers);
   await new Promise((r) => setImmediate(r));
   assert.equal(b.snapshot().lastError, null);
@@ -336,7 +357,7 @@ test("startBackfill: disabled → no fetch, no timer, snapshot enabled=false", a
   const t = fakeTimers();
   let fetched = 0;
   const b = startBackfill({
-    pool: fakePool([]), logError: () => undefined, log: () => undefined, env: { ...ENV, enabled: false }, markets: () => [{ symbol: "SOL" }],
+    sleep: NOSLEEP, pool: fakePool([]), logError: () => undefined, log: () => undefined, env: { ...ENV, enabled: false }, markets: () => [{ symbol: "SOL" }],
     fetch: (async () => { fetched++; return new Response(""); }) as typeof fetch,
   }, t.timers);
   await new Promise((r) => setImmediate(r));
