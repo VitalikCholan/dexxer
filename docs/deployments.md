@@ -48,12 +48,13 @@ program id) і ролі ключів.
   символи ринків у Hermes) і #2 (`b276769`, плече понад `max_lev_bps` ринку) виправлено, повторного
   smoke на свіжому APK не було. Деталі — `docs/emulator-runbook.md` §6.
 - **Env relayer-а (кінцевий):** `COMMIT_INTERVAL_MS=300000` (на час вимірів було 60000; повернуто,
-  бо коміт коштує 200 000 лам. з `FeeEscrow` і за 60 с `FeeEscrow` спорожнів би за ≈16 год),
+  бо коміт коштує 200 000 лам. з `FeeEscrow` і за 60 с `FeeEscrow` спорожнив би за ≈16 год),
   `SIWS_DOMAIN=relayer-production-1ae7.up.railway.app`, `CRANK_ENABLED=true`, `INDEXER_ENABLED=true`,
   `SPONSOR_ENABLED=true`, `DEXXER_NET=devnet`, `PORT=8080`, ключі й `DATABASE_URL` — як раніше.
   `COMMIT_INTERVAL_TICKS`/`COMMIT_MAX_ACTIONS` видалено, `QUARANTINE_CYCLES` не був виставлений.
   Решта env плану 4 (`MARKETS_REFRESH_MS`, `JANITOR_*`, `CRANK_BAD_PAIR_COOLDOWN_MS`,
-  `CRANK_WATCHDOG_MS`) не виставлена — діють дефолти.
+  `CRANK_WATCHDOG_MS`) не виставлена — діють дефолти. **План C.5:** `TICKS_RETENTION_MS`,
+  `PYTH_PRO_API_KEY`, параметри бекфілу — див. таблицю Railway env вище.
 - **`FeeEscrow`** `BdfNhXM9…w8vs`: 191 301 040 лам. в ER (18:04 UTC; поповнено 0.2 SOL на бутстрапі).
   При 200 000 лам. за коміт — ≈956 комітів, **≈3.3 доби** при `COMMIT_INTERVAL_MS=300000`. Поповнення —
   `scripts/admin/fund-fee-payer.ts`; порожній `FeeEscrow` зупиняє і коміти, і `open_position`.
@@ -122,6 +123,9 @@ program id) і ролі ключів.
 | `CRANK_BAD_PAIR_COOLDOWN_MS` **(після деплою плану 4, необов'язкова)** | скільки пара `[Positions, UserAccount]`, яку програма відхилила поодинці, лишається поза батчами; дефолт 60000, мін. 5000 | — |
 | `CRANK_WATCHDOG_MS` **(після деплою плану 4, необов'язкова)** | якщо за цей час не завершилась жодна ітерація crank-петлі — процес виходить з кодом 1, і Railway його перезапускає (політика: **`ALWAYS`, healthcheck 180 с** — виставлено напряму в налаштуваннях сервісу 01.10.2026, діє з деплойменту `5a070a7c`; до того `ON_FAILURE` × 10 / 30 с; `services/relayer/railway.json` Railway не читає — config-as-code застарів, див. «Стан на кінець плану 4»); дефолт 120000, мін. 30000. Так само — коли коміт-цикл триває довше max(3 × `COMMIT_INTERVAL_MS`, 600000) | — |
 | `AUTH_SESSION_TTL_HOURS` **(week 6)** | тривалість SIWS-сесії relayer-а; дефолт **168** (7 діб), невалідне/≤0 → дефолт. У `auth_sessions` зберігається лише `sha256(token)` | — |
+| `TICKS_RETENTION_MS` **(графік C.5, після деплою цього плану; необов'язкова)** | ретеншн сирих `ticks`: старші рядки видаляються кожні `COMMIT_INTERVAL_MS`; дефолт 604800000 (7 діб), мін. 3600000. Свічки `1m/1h/1d` (міграція 009) тримають історію | — |
+| `PYTH_PRO_API_KEY` **(графік C.5; СЕКРЕТ)** | ключ Pyth Pro History API — вмикає бекфіл свічок (той самий Lazer-фід, що оракул). Без ключа бекфіл вимкнено, свічки накопичуються з тіків. Trial-ключ — Pyth Terminal | власник |
+| `BACKFILL_INTERVAL_MS`, `BACKFILL_1M_DAYS`, `BACKFILL_1H_DAYS`, `BACKFILL_1D_FROM`, `BACKFILL_REQUEST_GAP_MS` **(необов'язкові)** | параметри бекфілу; дефолти 86400000 / 7 / 90 / `2025-04-01` / 500 | — |
 
 Обидва ключі закодовано локально через `bs58.encode(Uint8Array.from(JSON.parse(readFileSync(...))))`
 і встановлені через Railway API — значення ніколи не потрапляли в git чи в
@@ -352,7 +356,7 @@ Postgres, APK) — ні, relayer досі на старій програмі. Р
      `ALWAYS` застосовано напряму в налаштуваннях сервісу, діє з `5a070a7c`.]**
    - **`/healthz` Railway викликає лише під час деплою** — пізніший 503 нічого не перезапускає;
      зовнішній uptime-монітор на `/healthz` — у план 4.
-   - **Таблиця `ticks` без ретеншну** і тепер росте пропорційно кількості ринків.
+   - ~~**Таблиця `ticks` без ретеншну**~~ **(закрито планом C.5 — `TICKS_RETENTION_MS`, після деплою)** — і тепер росте пропорційно кількості ринків, але старі рядки видаляються за графіком.
    - **Відбір кандидатів завантажує цілі акаунти `Positions`** щотіку (≈4.4 KB на трейдера, оцінка) —
      `dataSlice` до слотів — подальша робота.
    - **`CRANK_WATCHDOG_MS` не масштабується з розміром петлі:** багато ринків × чанків можуть законно

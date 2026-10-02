@@ -199,7 +199,7 @@ All endpoints return JSON. Base URL: the relayer's own domain.
 | Method & path | Query params | Returns |
 | --- | --- | --- |
 | `GET /markets` | — | `[{ symbol, market, feed, params: { maxLevBps, imrBps, mmrBps, openFeeBps, closeFeeBps, liqFeeBps, oiCap, maxPosition, minSize, maxStalenessSecs, pausedOpen } }]` — public `Market` fields only (no `MarketRisk`), `market`/`feed` base58, u64s as strings, SOL first then alphabetical; `[]` until the registry's first successful read (treat as "SOL only") |
-| `GET /prices` | `market` (symbol, default `SOL`), `tf` (`1m`\|`5m`\|`15m`, default `1m`), `limit` (default 300, max 1000) | `{ market, tf, candles: [{ t, o, h, l, c }] }` — `t` unix ms, `o/h/l/c` are plain numbers (USD price, 1e6 scale) |
+| `GET /prices?tf=<tf>&limit=<n>&market=<SYM>` | — | `{ market, tf, candles: [{ t, o, h, l, c }] }` (o/h/l/c 1e6-scaled numbers, `t` bucket start ms). `tf` is one of `1s 1m 5m 15m 30m 1h 2h 4h 6h 8h 12h 24h 2D 5D 1W 1M` (400 otherwise, the error lists them); `limit` default 300, max 1000. `1s` is aggregated from raw ticks (gaps where the oracle printed nothing); every other tf is merged at read time from the stored tier (`1m` → 1m…30m, `1h` → 1h…12h, `1d` → 24h…1M). `1W` buckets start Monday 00:00 UTC, `1M` on the 1st; `2D`/`5D` are fixed widths from the epoch. |
 | `GET /mark` | `market` (symbol, default `SOL`) | `{ market, price, slot, ts, publishTime, stale }` — `price` is a **string** (see Numbers below), or all-`null`/`stale:true` if no tick has landed yet. `publishTime` is the ORACLE's own `publish_time` in epoch ms; `stale = now - publishTime > ORACLE_STALE_MS` (30s) — see "Oracle staleness" below |
 | `GET /pool/history` | `limit` (default 100, max 1000), `cursor` (a slot) | array of Pool snapshot rows, oldest→newest within the page; `cursor` returns the page strictly older than that slot |
 | `GET /pool/latest` | — | one Pool snapshot row, or `null` |
@@ -240,6 +240,14 @@ looks perfectly live by arrival time. `publish_time` is stored per tick
 - `/prices` (candle history) is unaffected — it doesn't claim to be "now".
 
 A Pool snapshot row: `{ slot, ts, capital_total, protocol_liquidity, locked_total, fees_accrued, insurance, bad_debt_total }`.
+
+### Candles, retention, backfill (spec §2.10, 01.10.2026)
+
+Every oracle tick is one SQL round-trip (`store.ts` `insertTick`): the raw row into `ticks` and an upsert into the three stored candle tiers `candles(market, tf ∈ {1m,1h,1d}, t)` — `o` kept, `h`/`l` stretched, `c` = this price, `source = 'oracle'`. Migration `009_candles.sql` created the table and rolled every tick already stored into it once.
+
+Raw ticks are kept `TICKS_RETENTION_MS` (default 7 days) — `indexer/retention.ts` deletes older ones every `COMMIT_INTERVAL_MS`. They serve only `/mark` and `tf=1s`; candles hold the history.
+
+History before this relayer existed (and gaps while it was down) comes from the **Pyth Pro History API** (`indexer/backfill.ts`) — the same Pyth Lazer feeds the MagicBlock Pricing Oracle republishes, so it is the same price source, not an exchange. Enabled only when `PYTH_PRO_API_KEY` is set (free trial key from Pyth Terminal); without it candles simply accrue from ticks. The market → Pyth symbol mapping goes by Lazer feed id (`tests/er/lib/markets.ts` `MARKET_CATALOG[symbol].lazerFeedId` == keyless `GET /v1/symbols[].pyth_lazer_id`), never by name; a market missing from the catalog is skipped with a log line. Windows: resolution `1` for `BACKFILL_1M_DAYS`, `60` for `BACKFILL_1H_DAYS`, `D` from `BACKFILL_1D_FROM`; channel `fixed_rate@200ms`. Rows are written with `source = 'pyth_pro'` and `ON CONFLICT DO NOTHING` — an oracle candle always wins. Runs at start and every `BACKFILL_INTERVAL_MS`; a 401 disables it until restart. `/healthz.backfill` = `{ enabled, lastRunAt, lastOkAt, lastError, rows }`. The key is sent as a header only and never logged.
 
 ### Markets
 
@@ -417,6 +425,12 @@ enforced ComputeBudget `SetComputeUnitPrice` ceiling.
 | `SPONSOR_MAX_CU_PRICE_MICROLAMPORTS` | no (default `500000`) | fix (Phantom smoke 24.09): ceiling on a wallet-prepended ComputeBudget `SetComputeUnitPrice` this endpoint will co-sign. At the 1.4M CU transaction max the default caps the sponsor-paid priority fee at 700 000 lamports ≈ 0.0007 SOL/tx. `SetComputeUnitLimit` has no such cap — it cannot cost `fee_payer` more than the tx's own CU budget. Reported by `/healthz`'s `sponsor.maxCuPriceMicroLamports` |
 | `ASSETLINKS_PACKAGE` | no (default `com.dexxer.app`) | Android package name published in `GET /.well-known/assetlinks.json` (MWA identity verification, 24.09) |
 | `ASSETLINKS_SHA256_FINGERPRINTS` | no (default: Android debug keystore cert of the dev-client) | comma-separated SHA-256 signing-cert fingerprints for that statement; a release build MUST set its own (`keytool -list -v -keystore <ks> -alias <alias>` → `SHA256:`). Boot fails on a malformed value |
+| `TICKS_RETENTION_MS` | no (default `604800000` = 7 d, min `3600000`) | raw `ticks` older than this are deleted every `COMMIT_INTERVAL_MS` (candles keep the history) |
+| `PYTH_PRO_API_KEY` | no | Pyth Pro History API bearer key — enables the candle backfill (`indexer/backfill.ts`). Unset = backfill off. Never log or commit it |
+| `BACKFILL_INTERVAL_MS` | no (default `86400000`, min `600000`) | how often the backfill re-runs |
+| `BACKFILL_1M_DAYS` / `BACKFILL_1H_DAYS` | no (default `7` / `90`) | how far back the `1m` / `1h` tiers are backfilled |
+| `BACKFILL_1D_FROM` | no (default `2025-04-01`) | ISO date the `1d` tier is backfilled from (Pyth Pro history starts April 2025) |
+| `BACKFILL_REQUEST_GAP_MS` | no (default `500`) | pause between Pyth Pro requests |
 
 Never commit key values. Encode a local keyfile for Railway with:
 
@@ -467,6 +481,7 @@ npm test        # node:test — keypairFromEnv b58 round-trip, health-payload st
                  # ixAccounts (trader AND relayer builders vs the IDL), poolBootstrap (tests/er bootstrap
                  # order), auth.ts (SIWS verification, challenge/siws/requireSession), the /sponsor + /nonce
                  # session gate, indexer/query.ts and knownSymbols (pure parsing)
+                 # **274 tests** = 261 passed + 13 Postgres skipped (run with `TEST_DATABASE_URL` they cover migration 009/candles too)
                  # Needs DEXXER_IDL_DIR=$PWD/../../idl (the canonical IDL, as CI sets it).
 npx tsc --noEmit
 ```
@@ -476,8 +491,8 @@ Run on the Node version in the repo's `.nvmrc` (24.18, as CI does): on 24.10
 (CJS named-export detection) — environment, not code.
 
 `test/indexerDb.test.ts` runs the indexer's SQL (pool-history pagination, per-market
-ticks) against a **real Postgres** and is skipped unless `TEST_DATABASE_URL`
-is set — CI has no Postgres, so there those 7 tests show as skipped. Locally:
+ticks, and candle migration 009) against a **real Postgres** and is skipped unless `TEST_DATABASE_URL`
+is set — CI has no Postgres, so there those 13 tests show as skipped. Locally:
 
 ```sh
 docker run -d --rm --name idx-pg -e POSTGRES_PASSWORD=pw -p 127.0.0.1:55432:5432 postgres:16-alpine
