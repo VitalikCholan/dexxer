@@ -4,7 +4,7 @@
 // scripts/gen-lwc.ts, no network) plus a small bridge. React Native sends
 // JSON messages through `window.__dexxer(msg)` (`injectJavaScript`):
 //
-//   { type: 'render', series, ema, lines, scale, resetView }  full redraw
+//   { type: 'render', series, ema, lines, scale, resetView }  full redraw (empty series = clear)
 //   { type: 'tick', point, emaPoint }                          last bar only
 //   { type: 'zoom', dir: 1 | -1 | 0 }                          in / out / reset
 //
@@ -137,6 +137,14 @@ const BRIDGE = String.raw`
   function real(p) { return p.value != null || p.close != null || p.high != null; }
   function setData(s) {
     kind = s.kind;
+    // An empty series (a market or timeframe with nothing to draw yet) clears
+    // the chart, so the previous one never stays on screen under it; the
+    // columns base and the baseline below need at least one real point.
+    if (!s.data.length) {
+      series.forEach(function (x) { x.setData([]); });
+      bars = [];
+      return;
+    }
     if (s.kind === 'hlc') {
       series[0].setData(s.data.map(function (p) { return real(p) ? { time: p.time, value: p.high } : { time: p.time }; }));
       series[1].setData(s.data.map(function (p) { return real(p) ? { time: p.time, value: p.low } : { time: p.time }; }));
@@ -145,8 +153,10 @@ const BRIDGE = String.raw`
       // Columns rise from just under the lowest close, not from 0 — from 0
       // the price scale spans 0…max and every column looks the same height.
       var vals = s.data.filter(real).map(function (p) { return p.value; });
-      var lo = Math.min.apply(null, vals), hi = Math.max.apply(null, vals);
-      main.applyOptions({ base: lo - (hi - lo) * 0.1 });
+      if (vals.length) {
+        var lo = Math.min.apply(null, vals), hi = Math.max.apply(null, vals);
+        main.applyOptions({ base: lo - (hi - lo) * 0.1 });
+      }
       var prevVal = null;
       main.setData(s.data.map(function (p) {
         if (!real(p)) return { time: p.time };

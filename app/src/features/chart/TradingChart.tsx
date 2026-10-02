@@ -1,8 +1,8 @@
 // app/src/features/chart/TradingChart.tsx
 //
 // C.5: the TradingView-style chart — lightweight-charts in a WebView
-// (`chartHtml.ts`), fed from the indexer's candles with the live mark folded
-// into the last bar (`chartData.ts`). Pan and pinch-zoom, crosshair with an
+// (`chartHtml.ts`), fed from the indexer's candles with the mark stream folded
+// into the newest buckets (`chartData.ts`). Pan and pinch-zoom, crosshair with an
 // OHLC row, High/Low of the visible range and the mark's last-price line are
 // the library's (driven from the page), plus −/+/↺ zoom buttons for one-hand
 // use; the toolbar here picks the
@@ -23,6 +23,7 @@ import {
   ema,
   fillWhitespace,
   foldMarks,
+  liveUpdateKind,
   seriesFor,
   type ChartType,
   type Tf,
@@ -125,15 +126,15 @@ export function TradingChart({ symbol, tf, onTfChange, position }: TradingChartP
     web.current?.injectJavaScript(`window.__dexxer && window.__dexxer(${JSON.stringify(msg)}); true;`)
   }
 
-  // Full redraw when the shape of what is drawn changes: new candles from
-  // the indexer, a different type, timeframe, scale, EMA or lines. The
-  // view refits only on a timeframe or type change, so a pinch-zoom
-  // survives the 30 s candle refresh.
-  const lastView = useRef('')
-  const key = `${tf}|${prefs.type}`
-  const candleStamp = candles.dataUpdatedAt
-  useEffect(() => {
-    if (!ready || series.data.length === 0) return
+  // What the page currently draws: `symbol|tf` of the last `render` with
+  // data, null before the first one, after a page reload and after an empty
+  // render. A tick is sent only onto the series it belongs to.
+  const renderedFor = useRef<string | null>(null)
+  // `symbol|tf` the page was last cleared for, so an empty series is sent once, not on every refetch.
+  const clearedFor = useRef<string | null>(null)
+  const drawKey = `${symbol}|${tf}`
+
+  function sendRender(resetView: boolean) {
     send({
       type: 'render',
       chartType: prefs.type,
@@ -141,21 +142,57 @@ export function TradingChart({ symbol, tf, onTfChange, position }: TradingChartP
       ema: emaPoints,
       lines,
       scale: prefs.log ? 'log' : 'auto',
-      resetView: lastView.current !== key,
+      resetView,
     })
+  }
+
+  // Full redraw when the shape of what is drawn changes: new candles from
+  // the indexer, a different market, type, timeframe, scale, EMA or lines.
+  // The view refits only on a market, timeframe or type change, so a
+  // pinch-zoom survives the 30 s candle refresh.
+  const lastView = useRef('')
+  const key = `${symbol}|${tf}|${prefs.type}`
+  const candleStamp = candles.dataUpdatedAt
+  useEffect(() => {
+    if (!ready) return
+    if (series.data.length === 0) {
+      // Nothing for this market/tf yet (loading, or the indexer has no
+      // candles and no mark arrived): never leave another market's or
+      // timeframe's chart on screen under it. A chart this market/tf already
+      // drew (a fresh `1s` built from marks alone) stays until data comes.
+      if (renderedFor.current !== drawKey && clearedFor.current !== drawKey) {
+        sendRender(true)
+        clearedFor.current = drawKey
+        renderedFor.current = null
+        lastView.current = ''
+      }
+      return
+    }
+    sendRender(lastView.current !== key)
     lastView.current = key
+    renderedFor.current = drawKey
+    clearedFor.current = null
     // `series` / `emaPoints` also change on every mark; those go through the tick effect below.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ready, candleStamp, key, prefs.log, prefs.ema, lines])
 
-  // Mark ticks: only the last bar (and EMA point) moves.
+  // Mark ticks: only the last bar (and EMA point) moves — when the page
+  // holds this market/tf. A mark that beats the first candle render of a new
+  // market/tf draws the whole series instead (`liveUpdateKind`).
   useEffect(() => {
-    if (!ready || series.data.length === 0) return
-    send({
-      type: 'tick',
-      point: series.data[series.data.length - 1],
-      emaPoint: emaPoints ? emaPoints[emaPoints.length - 1] : null,
-    })
+    if (!ready) return
+    const kind = liveUpdateKind(renderedFor.current, drawKey, series.data.length > 0)
+    if (kind === 'tick') {
+      send({
+        type: 'tick',
+        point: series.data[series.data.length - 1],
+        emaPoint: emaPoints ? emaPoints[emaPoints.length - 1] : null,
+      })
+    } else if (kind === 'render') {
+      sendRender(true)
+      renderedFor.current = drawKey
+      clearedFor.current = null
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tail])
 
@@ -168,6 +205,8 @@ export function TradingChart({ symbol, tf, onTfChange, position }: TradingChartP
       }
       if (msg.type === 'ready') {
         lastView.current = ''
+        renderedFor.current = null
+        clearedFor.current = null
         setReady(true)
       }
     } catch {

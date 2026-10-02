@@ -1,8 +1,9 @@
 // app/src/features/chart/chartData.ts
 //
 // Pure data side of the TradingView-style chart (C.5): the 12 chart types
-// as renderings of the same OHLC candles, Heikin Ashi, EMA, and folding the
-// live mark into the last candle. Everything the WebView draws is computed
+// as renderings of the same OHLC candles, Heikin Ashi, EMA, folding the
+// mark stream into the newest buckets, and when a mark may go to the page as
+// a tick. Everything the WebView draws is computed
 // here, so it runs under `npm test`; the 16 timeframes and their bucket
 // arithmetic come from `timeframes.ts`; `chartHtml.ts` only maps a `kind` onto
 // a lightweight-charts series.
@@ -117,9 +118,30 @@ export interface KeyedTail {
   marks: readonly MarkPoint[]
 }
 
-/** The tail valid for `key`: a tail collected under another market or fetch is empty, in the same render. */
+const EMPTY: readonly MarkPoint[] = []
+
+/**
+ * The tail valid for `key`: a tail collected under another market or fetch is
+ * empty, in the same render — one shared empty array, so memos and effects
+ * keyed on the tail do not re-fire for it.
+ */
 export function tailForKey(state: KeyedTail, key: string): readonly MarkPoint[] {
-  return state.key === key ? state.marks : []
+  return state.key === key ? state.marks : EMPTY
+}
+
+/** How a live mark reaches the WebView page. */
+export type LiveUpdate = 'tick' | 'render' | 'none'
+
+/**
+ * A `tick` only moves the last bar of the series already on the page, so it
+ * is sent only when the page holds this `symbol|tf` (`renderedFor`, null
+ * before the first render). Otherwise — a market or timeframe switch whose
+ * first mark beats the candle fetch — the page needs a full `render`, or the
+ * new market's price would be drawn onto the old series. Nothing to draw → `none`.
+ */
+export function liveUpdateKind(renderedFor: string | null, current: string, hasData: boolean): LiveUpdate {
+  if (!hasData) return 'none'
+  return renderedFor === current ? 'tick' : 'render'
 }
 
 /**

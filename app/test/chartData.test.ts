@@ -12,6 +12,7 @@ import {
   heikinAshi,
   isChartType,
   isWhitespace,
+  liveUpdateKind,
   seriesFor,
   tailForKey,
 } from '../src/features/chart/chartData'
@@ -113,6 +114,22 @@ test('tailForKey: switching market empties the tail at once and a BTC mark start
   assert.deepEqual(tailForKey(sol, 'SOL|2'), [])
   const btc = appendMark(tailForKey(sol, 'BTC|1'), { ts: 2, price: 70n, market: 'BTC' }, 'BTC')
   assert.deepEqual(btc, [{ ts: 2, price: 70 }])
+})
+
+test('tailForKey: a tail of another key is one shared empty array, so dependents do not re-fire', () => {
+  const sol = { key: 'SOL|1', marks: [{ ts: 1, price: 5 }] }
+  assert.equal(tailForKey(sol, 'BTC|1'), tailForKey(sol, 'SOL|2'))
+})
+
+test('liveUpdateKind: tick only onto the page that already holds this symbol|tf', () => {
+  assert.equal(liveUpdateKind('SOL|1m', 'SOL|1m', true), 'tick')
+  // A BTC mark arriving before BTC's first render must not land on SOL's series.
+  assert.equal(liveUpdateKind('SOL|1m', 'BTC|1m', true), 'render')
+  assert.equal(liveUpdateKind('SOL|1m', 'SOL|1h', true), 'render')
+  // First mount / after a page reload / after an empty render.
+  assert.equal(liveUpdateKind(null, 'SOL|1m', true), 'render')
+  assert.equal(liveUpdateKind('SOL|1m', 'SOL|1m', false), 'none')
+  assert.equal(liveUpdateKind(null, 'BTC|1m', false), 'none')
 })
 
 test('seriesFor: dollars, UTC seconds, and the family per type', () => {
