@@ -5,7 +5,7 @@
 // fixed width from the epoch — `2D`/`5D` included), the stored tier each
 // tf is derived from, and merging lower-tier candles into a tf.
 //
-// A byte-for-byte twin lives in app/src/features/chart/timeframes.ts; both
+// A logic twin (formatting differs) lives in app/src/features/chart/timeframes.ts; both
 // are pinned by tests/fixtures/timeframes.golden.json. Change one → change
 // the other and the fixture.
 export const TIMEFRAMES = ["1s", "1m", "5m", "15m", "30m", "1h", "2h", "4h", "6h", "8h", "12h", "24h", "2D", "5D", "1W", "1M"] as const;

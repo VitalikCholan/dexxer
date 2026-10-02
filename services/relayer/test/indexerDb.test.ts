@@ -217,7 +217,7 @@ dbTest("insertTick upserts the 1m/1h/1d candle: o kept, h/l stretched, c latest,
   assert.equal(rows[0].source, "oracle");
 });
 
-dbTest("insertTick: a late tick in an older bucket touches only that bucket's h/l/c", async () => {
+dbTest("insertTick: a late tick in an older 1m bucket touches only that 1m bucket's h/l/c (its 1h/1d bucket is shared, so their h/l/c move too — see insertTick JSDoc)", async () => {
   const t0 = Date.UTC(2026, 9, 1, 12, 0, 5);
   await insertTick(pool, { market: "SOL", ts: t0, price: 100n, slot: 1, publishTime: t0 });
   await insertTick(pool, { market: "SOL", ts: t0 + 60_000, price: 110n, slot: 2, publishTime: t0 + 60_000 });

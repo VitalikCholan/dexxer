@@ -206,7 +206,14 @@ if (cfg.indexerEnabled && !pool) {
     console.log(`retention: ticks older than ${TICKS_RETENTION_MS} ms deleted every ${COMMIT_INTERVAL_MS} ms`);
     const { startBackfill, backfillEnvFromProcess } = await import("./indexer/backfill.js");
     const { MARKET_CATALOG } = await import("../../../tests/er/lib/markets.js");
-    backfill = startBackfill({ pool, env: backfillEnvFromProcess(), markets: () => markets.list(), catalog: MARKET_CATALOG, fetch: globalThis.fetch.bind(globalThis) });
+    // SOL even while the registry is empty (boot-time refresh failed) — the same `withSol` view the crank ticks.
+    backfill = startBackfill({
+      pool,
+      env: backfillEnvFromProcess(),
+      markets: () => withSol(markets.list().map((m) => ({ symbol: m.symbol })), () => ({ symbol: "SOL" })),
+      catalog: MARKET_CATALOG,
+      fetch: globalThis.fetch.bind(globalThis),
+    });
   } catch (e) {
     // Fix round 1 (code review): the indexer is a best-effort add-on — a
     // failure starting its subscriptions (bad IDL path, RPC unreachable at

@@ -12,7 +12,8 @@
 // from relayer downtime get patched. Enabled only by PYTH_PRO_API_KEY; the
 // key is sent as a header only and never logged. A 401 disables the job
 // until restart; anything else is logged per market×tier and retried on the
-// next run. Public data in, public data out — the indexer's privacy rule holds.
+// next run — after BACKFILL_RETRY_MS (not the full interval) when a run had
+// errors or saw no markets. Public data in, public data out — the indexer's privacy rule holds.
 import type { DbPool } from "../db.js";
 import { envNum } from "../env.js";
 import { insertBackfillCandles, type CandleRow } from "./store.js";
@@ -34,6 +35,9 @@ export interface BackfillEnv {
   d1FromMs: number;
   requestGapMs: number;
 }
+
+/** Delay before the next run after one that had errors or saw no markets (a 429, a 5xx, a registry not read yet at boot). */
+export const BACKFILL_RETRY_MS = envNum("BACKFILL_RETRY_MS", 600_000, 60_000);
 
 export function backfillEnvFromProcess(): BackfillEnv {
   const key = process.env.PYTH_PRO_API_KEY?.trim() || null;
@@ -124,6 +128,8 @@ export interface BackfillResult {
   perMarket: Record<string, number>;
   skipped: string[];
   errors: string[];
+  /** Markets `deps.markets()` returned (0 also when the symbols request failed first). */
+  markets: number;
   /** 401 from Pyth Pro — the key is wrong or expired; the caller stops scheduling. */
   authFailed: boolean;
 }
@@ -132,7 +138,7 @@ export async function runBackfill(deps: BackfillDeps): Promise<BackfillResult> {
   const now = deps.now?.() ?? Date.now();
   const log = deps.log ?? console.log;
   const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
-  const result: BackfillResult = { rows: 0, perMarket: {}, skipped: [], errors: [], authFailed: false };
+  const result: BackfillResult = { rows: 0, perMarket: {}, skipped: [], errors: [], markets: 0, authFailed: false };
   if (!deps.env.apiKey) {
     result.skipped.push("disabled: PYTH_PRO_API_KEY not set");
     return result;
@@ -146,7 +152,9 @@ export async function runBackfill(deps: BackfillDeps): Promise<BackfillResult> {
     result.errors.push(`symbols: ${e instanceof Error ? e.message : String(e)}`);
     return result;
   }
-  for (const m of deps.markets()) {
+  const markets = deps.markets();
+  result.markets = markets.length;
+  for (const m of markets) {
     const entry = deps.catalog[m.symbol];
     if (!entry) {
       result.skipped.push(`${m.symbol}: not in MARKET_CATALOG`);
@@ -196,20 +204,41 @@ export interface BackfillSnapshot {
   rows: number;
 }
 
-/** Runs once now and then every `env.intervalMs`; a 401 disables further runs until restart. */
+/**
+ * When the next run starts after one that ended with `r`: `null` = never (a
+ * 401 — the key is rejected until restart); `retryMs` after a run with errors
+ * or no markets (a bad first run must not wait a whole interval); otherwise
+ * `intervalMs`. A run that threw is `r === null`.
+ */
+export function nextBackfillDelay(r: BackfillResult | null, intervalMs: number, retryMs: number): number | null {
+  if (r?.authFailed) return null;
+  if (r === null || r.errors.length > 0 || r.markets === 0) return retryMs;
+  return intervalMs;
+}
+
+/** Runs once now, then after `env.intervalMs` (or `BACKFILL_RETRY_MS` after a bad run, `nextBackfillDelay`); a 401 disables further runs until restart. */
 export function startBackfill(
   deps: BackfillDeps,
-  timers: { setInterval?: typeof setInterval; clearInterval?: typeof clearInterval } = {},
+  timers: { setTimeout?: typeof setTimeout; clearTimeout?: typeof clearTimeout } = {},
+  retryMs = BACKFILL_RETRY_MS,
 ): { snapshot: () => BackfillSnapshot; stop: () => void } {
-  const si = timers.setInterval ?? setInterval;
-  const ci = timers.clearInterval ?? clearInterval;
+  const st = timers.setTimeout ?? setTimeout;
+  const ct = timers.clearTimeout ?? clearTimeout;
   const snap: BackfillSnapshot = { enabled: deps.env.apiKey !== null, lastRunAt: null, lastOkAt: null, lastError: null, rows: 0 };
-  let timer: ReturnType<typeof setInterval> | null = null;
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  let stopped = false;
+  const scheduleNext = (delay: number | null): void => {
+    if (stopped || delay === null) return;
+    timer = st(() => { timer = null; void run(); }, delay);
+    (timer as { unref?: () => void }).unref?.();
+  };
   const run = async (): Promise<void> => {
     const at = deps.now?.() ?? Date.now();
     snap.lastRunAt = at;
+    let result: BackfillResult | null = null;
     try {
       const r = await runBackfill(deps);
+      result = r;
       snap.rows = r.rows;
       for (const s of r.skipped) (deps.log ?? console.log)(`backfill: skipped ${s}`);
       if (r.errors.length === 0) {
@@ -219,22 +248,25 @@ export function startBackfill(
         snap.lastError = r.errors.join("; ");
         for (const e of r.errors) console.error(`backfill: ${e}`);
       }
-      if (r.authFailed) {
-        snap.enabled = false;
-        if (timer) ci(timer);
-        timer = null;
-      }
+      if (r.markets === 0 && r.errors.length === 0) (deps.log ?? console.log)("backfill: no markets yet — retrying soon");
+      if (r.authFailed) snap.enabled = false;
     } catch (e) {
       snap.lastError = e instanceof Error ? e.message : String(e);
       console.error("backfill: run failed", snap.lastError);
     }
+    scheduleNext(nextBackfillDelay(result, deps.env.intervalMs, retryMs));
   };
   if (snap.enabled) {
     void run();
-    timer = si(() => { void run(); }, deps.env.intervalMs);
-    (timer as { unref?: () => void }).unref?.();
   } else {
     console.log("backfill: PYTH_PRO_API_KEY not set — candle history accrues from oracle ticks only");
   }
-  return { snapshot: () => ({ ...snap }), stop: () => { if (timer) ci(timer); timer = null; } };
+  return {
+    snapshot: () => ({ ...snap }),
+    stop: () => {
+      stopped = true;
+      if (timer) ct(timer);
+      timer = null;
+    },
+  };
 }

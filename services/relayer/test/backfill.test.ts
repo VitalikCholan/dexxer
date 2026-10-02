@@ -6,8 +6,8 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import type { DbPool } from "../src/db.js";
 import {
-  PYTH_PRO_BASE, PYTH_PRO_CHANNEL, TIER_CHUNK_MS, TIER_RESOLUTION, backfillEnvFromProcess, backfillWindows, chunkRanges,
-  parseUdfHistory, resolveProSymbol, runBackfill, startBackfill, toScaled, UdfError, type BackfillEnv,
+  BACKFILL_RETRY_MS, PYTH_PRO_BASE, PYTH_PRO_CHANNEL, TIER_CHUNK_MS, TIER_RESOLUTION, backfillEnvFromProcess, backfillWindows, chunkRanges,
+  nextBackfillDelay, parseUdfHistory, resolveProSymbol, runBackfill, startBackfill, toScaled, UdfError, type BackfillEnv,
 } from "../src/indexer/backfill.js";
 
 const D = 86_400_000;
@@ -155,30 +155,91 @@ test("runBackfill: no key → skipped, no fetch; symbols endpoint down → one e
   assert.match(down.errors[0], /^symbols: /);
 });
 
+/** Fake `setTimeout`/`clearTimeout`: records each scheduled run and its delay; `fire()` runs the pending one. */
+function fakeTimers() {
+  const pending: { fn: () => void; delay: number }[] = [];
+  let cleared = 0;
+  return {
+    pending,
+    cleared: () => cleared,
+    timers: {
+      setTimeout: ((fn: () => void, delay: number) => { pending.push({ fn, delay }); return { unref: () => undefined } as unknown as NodeJS.Timeout; }) as unknown as typeof setTimeout,
+      clearTimeout: (() => { cleared++; }) as unknown as typeof clearTimeout,
+    },
+    async fire() {
+      pending.shift()!.fn();
+      await new Promise((r) => setImmediate(r));
+    },
+  };
+}
+const RETRY = 120_000;
+
+test("BACKFILL_RETRY_MS: 10 min by default, at least 1 min", () => {
+  assert.equal(BACKFILL_RETRY_MS, 600_000);
+});
+
+test("nextBackfillDelay: interval after a clean run, retry after errors / no markets / a throw, never after a 401", () => {
+  const ok = { rows: 0, perMarket: {}, skipped: [], errors: [], markets: 1, authFailed: false };
+  assert.equal(nextBackfillDelay(ok, D, RETRY), D);
+  assert.equal(nextBackfillDelay({ ...ok, errors: ["SOL 1m: HTTP 429"] }, D, RETRY), RETRY);
+  assert.equal(nextBackfillDelay({ ...ok, markets: 0 }, D, RETRY), RETRY);
+  assert.equal(nextBackfillDelay(null, D, RETRY), RETRY);
+  assert.equal(nextBackfillDelay({ ...ok, errors: ["x"], authFailed: true }, D, RETRY), null);
+});
+
 test("startBackfill: runs once immediately, then on the interval; snapshot tracks runs; auth failure stops scheduling", async () => {
   let runs = 0;
-  let intervalFn: (() => void) | null = null;
-  let cleared = false;
-  const timers = {
-    setInterval: ((fn: () => void) => { intervalFn = fn; return { unref: () => undefined } as unknown as NodeJS.Timeout; }) as unknown as typeof setInterval,
-    clearInterval: (() => { cleared = true; }) as unknown as typeof clearInterval,
-  };
+  const t = fakeTimers();
   const status = { code: 200 };
   const deps = {
     pool: fakePool([]), env: ENV, now: () => NOW + runs, log: () => undefined, markets: () => [{ symbol: "SOL" }], catalog: CATALOG,
     fetch: fakeFetch([], () => { runs++; return status.code === 200 ? { s: "no_data" } : new Response("", { status: status.code }); }),
   };
-  const b = startBackfill(deps, timers);
+  const b = startBackfill(deps, t.timers, RETRY);
   await new Promise((r) => setImmediate(r));
   assert.equal(b.snapshot().enabled, true);
   assert.equal(b.snapshot().lastRunAt, NOW);
   assert.equal(b.snapshot().lastOkAt, NOW);
   assert.equal(b.snapshot().lastError, null);
+  assert.deepEqual(t.pending.map((p) => p.delay), [ENV.intervalMs]); // clean run → full interval
   status.code = 401;
-  (intervalFn as unknown as () => void)();
-  await new Promise((r) => setImmediate(r));
+  await t.fire();
   assert.equal(b.snapshot().enabled, false);
   assert.match(b.snapshot().lastError ?? "", /401/);
-  assert.ok(cleared);
+  assert.equal(t.pending.length, 0); // nothing scheduled after a 401
+  b.stop();
+});
+
+test("startBackfill: a run with an error retries after BACKFILL_RETRY_MS, then back to the interval once clean", async () => {
+  const t = fakeTimers();
+  const status = { code: 429 };
+  const b = startBackfill({
+    pool: fakePool([]), env: ENV, now: () => NOW, log: () => undefined, markets: () => [{ symbol: "SOL" }], catalog: CATALOG,
+    fetch: fakeFetch([], (u) => (u.pathname.endsWith("/history") && status.code !== 200 ? new Response("", { status: status.code }) : { s: "no_data" })),
+  }, t.timers, RETRY);
+  await new Promise((r) => setImmediate(r));
+  assert.match(b.snapshot().lastError ?? "", /429/);
+  assert.deepEqual(t.pending.map((p) => p.delay), [RETRY]);
+  status.code = 200;
+  await t.fire();
+  assert.equal(b.snapshot().lastError, null);
+  assert.deepEqual(t.pending.map((p) => p.delay), [ENV.intervalMs]);
+  b.stop();
+  assert.equal(t.cleared(), 1);
+});
+
+test("startBackfill: a run that saw no markets (registry not read yet) retries after BACKFILL_RETRY_MS", async () => {
+  const t = fakeTimers();
+  let list: { symbol: string }[] = [];
+  const b = startBackfill({
+    pool: fakePool([]), env: ENV, now: () => NOW, log: () => undefined, markets: () => list, catalog: CATALOG,
+    fetch: fakeFetch([], () => ({ s: "no_data" })),
+  }, t.timers, RETRY);
+  await new Promise((r) => setImmediate(r));
+  assert.equal(b.snapshot().lastError, null);
+  assert.deepEqual(t.pending.map((p) => p.delay), [RETRY]);
+  list = [{ symbol: "SOL" }];
+  await t.fire();
+  assert.deepEqual(t.pending.map((p) => p.delay), [ENV.intervalMs]);
   b.stop();
 });

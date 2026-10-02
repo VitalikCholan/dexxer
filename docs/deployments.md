@@ -125,7 +125,7 @@ program id) і ролі ключів.
 | `AUTH_SESSION_TTL_HOURS` **(week 6)** | тривалість SIWS-сесії relayer-а; дефолт **168** (7 діб), невалідне/≤0 → дефолт. У `auth_sessions` зберігається лише `sha256(token)` | — |
 | `TICKS_RETENTION_MS` **(графік C.5, після деплою цього плану; необов'язкова)** | ретеншн сирих `ticks`: старші рядки видаляються кожні `COMMIT_INTERVAL_MS`; дефолт 604800000 (7 діб), мін. 3600000. Свічки `1m/1h/1d` (міграція 009) тримають історію | — |
 | `PYTH_PRO_API_KEY` **(графік C.5; СЕКРЕТ)** | ключ Pyth Pro History API — вмикає бекфіл свічок (той самий Lazer-фід, що оракул). Без ключа бекфіл вимкнено, свічки накопичуються з тіків. Trial-ключ — Pyth Terminal | власник |
-| `BACKFILL_INTERVAL_MS`, `BACKFILL_1M_DAYS`, `BACKFILL_1H_DAYS`, `BACKFILL_1D_FROM`, `BACKFILL_REQUEST_GAP_MS` **(необов'язкові)** | параметри бекфілу; дефолти 86400000 / 7 / 90 / `2025-04-01` / 500 | — |
+| `BACKFILL_INTERVAL_MS`, `BACKFILL_RETRY_MS`, `BACKFILL_1M_DAYS`, `BACKFILL_1H_DAYS`, `BACKFILL_1D_FROM`, `BACKFILL_REQUEST_GAP_MS` **(необов'язкові)** | параметри бекфілу; дефолти 86400000 / 600000 / 7 / 90 / `2025-04-01` / 500; `BACKFILL_RETRY_MS` (мін. 60000) — пауза до наступного прогону після прогону з помилкою чи без ринків | — |
 
 Обидва ключі закодовано локально через `bs58.encode(Uint8Array.from(JSON.parse(readFileSync(...))))`
 і встановлені через Railway API — значення ніколи не потрапляли в git чи в

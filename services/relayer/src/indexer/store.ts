@@ -41,7 +41,6 @@ export interface RootRow {
   leavesHex: string[];
 }
 
-/** `market` is the registry symbol (`MarketInfo.symbol`, e.g. "SOL") — ticks are keyed `(market, ts)` since migration 008. */
 export interface CandleRow {
   /** Bucket start, unix ms. */
   t: number;
@@ -60,7 +59,11 @@ export function tickBucketParams(ts: number): [number, number, number] {
  * `market` is the registry symbol (`MarketInfo.symbol`, e.g. "SOL") — ticks are keyed `(market, ts)` since migration 008.
  * Spec §2.10.2: one round-trip writes the tick AND upserts its 1m/1h/1d
  * candle (o kept, h = GREATEST, l = LEAST, c = this price, source flips to
- * 'oracle'). Ticks arrive in `ts` order per market, so `c` is the latest.
+ * 'oracle'). `c` is the latest only under an ASSUMPTION: ticks of one market
+ * land in `ts` order. `accounts.ts` fires this unawaited (`void insertTick`),
+ * so two in-flight inserts can commit out of order and a late tick then
+ * overwrites the 1m/1h/1d `c` with an older price (h/l stay correct). The
+ * real fix — a `last_ts` guard on the candle row — is deferred.
  */
 export async function insertTick(pool: DbPool, row: TickRow & { market: string }): Promise<void> {
   const [m1, h1, d1] = tickBucketParams(row.ts);
