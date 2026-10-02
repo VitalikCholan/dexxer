@@ -23,6 +23,7 @@
 | 13 | Хмарні реальні пристрої (Android Device Streaming, BrowserStack App Live) | чужі моделі телефонів без закупівлі | — | ні | 📄, гаманець — під питанням |
 | 14 | Емулятор у браузері (Appetize.io) | показати в браузері, без установки | — | ні | 📄, MWA-гаманця нема |
 | 15 | Solana dApp Store | справжня дистрибуція на Seeker | — | ні | 📄, не для MVP |
+| 16 | Публічний URL APK (GitHub Release) | сабмішени на хакатони, судді без Metro | — | ні | ⬜ потрібен release-keystore |
 
 Для демо на екрані Mac-а (не установка, а показ): **scrcpy** дзеркалить і керує реальним телефоном по USB
 або Wi-Fi без застосунку на телефоні (`brew install scrcpy`), на відміну від AVD — зі справжнім гаманцем.
@@ -186,6 +187,45 @@ App Live**: APK/AAB на реальному пристрої в браузері
 (skill `solana-mobile-publishing`). Тестувати можна на звичайному Android/емуляторі, Seeker не обов'язковий.
 Для MVP не планується, але це єдиний «справжній» шлях на Seeker без sideload.
 
+## 16. Публічний URL APK для сабмішенів на хакатони
+
+Форми хакатонів просять «Android APK URL» — пряме посилання, за яким суддя качає й ставить апку **без Metro,
+без adb і без вашої участі**. Тому це завжди §8 (автономна release/preview-збірка), ніколи dev-client:
+`app-debug.apk` (110 MB) без Metro не стартує.
+
+Що треба зробити один раз (власник — ключ і деплой relayer-а; агент може підготувати все інше):
+
+1. **Release-keystore.** `keytool -genkeypair -v -keystore keys/android/dexxer-release.keystore -alias dexxer
+   -keyalg RSA -keysize 2048 -validity 10000`; тримати лише під `keys/` (gitignored, як program keypairs) і в
+   менеджері паролів. Відбиток: `keytool -list -v -keystore … | grep SHA256`. Втрата ключа = інший package
+   для Phantom/DAL і неможливість оновити вже встановлені копії.
+2. **Відбиток у relayer.** Додати SHA-256 до `ASSETLINKS_SHA256_FINGERPRINTS` (через кому до відбитка
+   debug-keystore) і передеплоїти (`railway up --service relayer --ci`); перевірити
+   `GET /.well-known/assetlinks.json` — інакше Phantom відмовить у верифікації identity.
+3. **Збірка.** Або локально: `signingConfigs.release` у `app/android/app/build.gradle` з паролями з env (не в git),
+   `cd app/android && ./gradlew assembleRelease` → `app/android/app/build/outputs/apk/release/app-release.apk`;
+   або EAS: профіль `preview` з `"android": {"buildType": "apk"}` і власними credentials (`eas credentials`),
+   `eas build -p android --profile preview`. `EXPO_PUBLIC_*` (relayer, identity URI) вшиваються при збірці —
+   виставити на живий relayer **до** збірки.
+4. **Хостинг з постійним URL.** Репо `VitalikCholan/dexxer` публічний, тож найпростіше — **GitHub Release**:
+   `gh release create v0.6.0 app-release.apk#dexxer-v0.6.0.apk --title "Dexxer v0.6.0 (devnet)" --notes "…"`.
+   URL для форми: `https://github.com/VitalikCholan/dexxer/releases/download/v0.6.0/dexxer-v0.6.0.apk`;
+   стабільний «завжди остання» —
+   `https://github.com/VitalikCholan/dexxer/releases/latest/download/dexxer.apk` (тоді файл у кожному релізі
+   називати однаково `dexxer.apk`). Ліміт — 2 GB на файл, посилання не спливають. Запасні варіанти: сторінка
+   EAS internal distribution (§9; доступ без логіну має бути увімкнений, строк зберігання артефактів на
+   безкоштовному тарифі обмежений — перевірити перед дедлайном), Cloudflare R2/S3 з публічним об'єктом. Relayer
+   на Railway для 100-MB файлу не використовувати.
+5. **Перевірити як суддя.** Чистий AVD (`emu create … --start --tune`), **без** Metro і проксі, з fakewallet
+   або Phantom: `curl -L -o dexxer.apk <URL> && adb install dexxer.apk`, онбординг → депозит з faucet → угода →
+   графік. Те саме на реальному телефоні з Phantom. Переконатись, що `adb logcat` не показує звернень до
+   `localhost:8081`.
+6. **У сабмішен** поруч із URL: що це devnet, що dUSDC дається faucet-ом в апці, потрібен MWA-гаманець
+   (Phantom у Testnet Mode, Solflare або Seeker), мінімальна версія Android (з `app.json`/`build.gradle`),
+   SHA-256 файлу (`shasum -a 256 dexxer.apk`) і номер релізу. Зручно додати QR на URL для стенда.
+
+Повторні сабмішени: новий тег → новий реліз → той самий `latest`-URL. Ключ, відбиток і env не змінюються.
+
 ## Що обрати
 
 - **Швидко перевірити зміну:** §1 (AVD + fakewallet) — усе автоматизовано, агент може сам.
@@ -194,6 +234,7 @@ App Live**: APK/AAB на реальному пристрої в браузері
 - **Seeker:** §3 по USB, потім §4 — єдине місце, де видно Seeker-специфіку.
 - **Роздати 5–20 тестувальникам:** §9 EAS internal (QR), далі §10 OTA для правок UI.
 - **Показати на великому екрані зі справжнім гаманцем:** scrcpy з реального телефона.
+- **«Android APK URL» для хакатону:** §16 — release-APK у GitHub Release публічного репо, `latest`-посилання.
 
 ## Джерела (02.10.2026)
 
