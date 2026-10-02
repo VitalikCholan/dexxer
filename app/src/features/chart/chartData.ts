@@ -73,13 +73,28 @@ export interface MarkPoint {
 /** Upper bound on marks kept between two `/prices` fetches (1 s cadence → ~33 min). */
 export const MARK_TAIL_MAX = 2000
 
-/** Append the latest mark to the tail: nothing for a null/absent mark or an exact repeat of the last one; oldest dropped past `max`. */
+/** A tail tagged with the `symbol|fetchStamp` key it was collected under. */
+export interface KeyedTail {
+  key: string
+  marks: readonly MarkPoint[]
+}
+
+/** The tail valid for `key`: a tail collected under another market or fetch is empty, in the same render. */
+export function tailForKey(state: KeyedTail, key: string): readonly MarkPoint[] {
+  return state.key === key ? state.marks : []
+}
+
+/**
+ * Append the latest mark to the tail: nothing for a null/absent mark, a mark of
+ * another market than `symbol`, or an exact repeat of the last one; oldest dropped past `max`.
+ */
 export function appendMark(
   tail: readonly MarkPoint[],
-  mark: { ts: number | null; price: bigint | null } | undefined,
+  mark: { ts: number | null; price: bigint | null; market: string } | undefined,
+  symbol: string,
   max = MARK_TAIL_MAX,
 ): readonly MarkPoint[] {
-  if (!mark || mark.ts === null || mark.price === null) return tail
+  if (!mark || mark.market !== symbol || mark.ts === null || mark.price === null) return tail
   const price = Number(mark.price)
   const last = tail[tail.length - 1]
   if (last && last.ts === mark.ts && last.price === price) return tail

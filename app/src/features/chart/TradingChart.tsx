@@ -84,7 +84,7 @@ export function TradingChart({ symbol, tf, onTfChange, position }: TradingChartP
   const html = useMemo(() => chartHtml(chartColors), [chartColors])
 
   const mark = useMark(symbol)
-  const tail = useMarkTail(mark.data, candles.dataUpdatedAt)
+  const tail = useMarkTail(mark.data, candles.dataUpdatedAt, symbol)
   const merged = useMemo(() => foldMarks(candles.data ?? [], tail, tf), [candles.data, tail, tf])
   const series = useMemo(() => seriesFor(prefs.type, merged), [prefs.type, merged])
   const emaPoints = useMemo(

@@ -10,6 +10,7 @@ import {
   heikinAshi,
   isChartType,
   seriesFor,
+  tailForKey,
 } from '../src/features/chart/chartData'
 
 const M = 60_000
@@ -79,14 +80,15 @@ test('foldMarks: 1W folds marks of the same week into one bucket starting Monday
 })
 
 test('appendMark: dedups the same tick, drops null marks, caps the tail', () => {
-  const t0 = appendMark([], { ts: 1, price: 5n })
+  const t0 = appendMark([], { ts: 1, price: 5n, market: 'SOL' }, 'SOL')
   assert.deepEqual(t0, [{ ts: 1, price: 5 }])
-  assert.equal(appendMark(t0, { ts: 1, price: 5n }), t0) // same reference, nothing appended
-  assert.deepEqual(appendMark(t0, { ts: null, price: 6n }), t0)
-  assert.deepEqual(appendMark(t0, undefined), t0)
+  assert.equal(appendMark(t0, { ts: 1, price: 5n, market: 'SOL' }, 'SOL'), t0) // same reference, nothing appended
+  assert.deepEqual(appendMark(t0, { ts: null, price: 6n, market: 'SOL' }, 'SOL'), t0)
+  assert.deepEqual(appendMark(t0, undefined, 'SOL'), t0)
   const long = appendMark(
     Array.from({ length: 3 }, (_, i) => ({ ts: i, price: i })),
-    { ts: 9, price: 9n },
+    { ts: 9, price: 9n, market: 'SOL' },
+    'SOL',
     3,
   )
   assert.deepEqual(
@@ -94,6 +96,20 @@ test('appendMark: dedups the same tick, drops null marks, caps the tail', () => 
     [1, 2, 9],
   )
   assert.equal(MARK_TAIL_MAX, 2000)
+})
+
+test('appendMark: a mark of another market is ignored', () => {
+  const t0 = appendMark([], { ts: 1, price: 5n, market: 'SOL' }, 'SOL')
+  assert.equal(appendMark(t0, { ts: 2, price: 9n, market: 'BTC' }, 'SOL'), t0)
+})
+
+test('tailForKey: switching market empties the tail at once and a BTC mark starts a new one', () => {
+  const sol = { key: 'SOL|1', marks: appendMark([], { ts: 1, price: 5n, market: 'SOL' }, 'SOL') }
+  assert.deepEqual(tailForKey(sol, 'SOL|1'), [{ ts: 1, price: 5 }])
+  assert.deepEqual(tailForKey(sol, 'BTC|1'), [])
+  assert.deepEqual(tailForKey(sol, 'SOL|2'), [])
+  const btc = appendMark(tailForKey(sol, 'BTC|1'), { ts: 2, price: 70n, market: 'BTC' }, 'BTC')
+  assert.deepEqual(btc, [{ ts: 2, price: 70 }])
 })
 
 test('seriesFor: dollars, UTC seconds, and the family per type', () => {
