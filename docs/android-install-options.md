@@ -16,6 +16,16 @@
 | 6 | EAS Build `development` | збірка в хмарі, без Android SDK | — | так | 📄 |
 | 7 | APK напряму (sideload) | демо на чужому телефоні | — | ні/LAN | ✅ debug-APK, release — ні |
 | 8 | EAS Build `preview` / release-APK | автономне демо на живому relayer-і | — | ні | 📄 |
+| 9 | EAS internal distribution (сторінка/QR) + Expo Orbit | роздати тестувальникам, ставити в один клік | — | залежить | 📄 |
+| 10 | EAS Update (OTA JS) | оновлювати вже встановлені збірки без переустановки | — | ні | 📄 |
+| 11 | Firebase App Distribution | до 500 тестувальників, без Play | — | ні | 📄 |
+| 12 | Google Play internal testing | до 100 тестувальників через Play Store | — | ні | 📄, потребує Play Console |
+| 13 | Хмарні реальні пристрої (Android Device Streaming, BrowserStack App Live) | чужі моделі телефонів без закупівлі | — | ні | 📄, гаманець — під питанням |
+| 14 | Емулятор у браузері (Appetize.io) | показати в браузері, без установки | — | ні | 📄, MWA-гаманця нема |
+| 15 | Solana dApp Store | справжня дистрибуція на Seeker | — | ні | 📄, не для MVP |
+
+Для демо на екрані Mac-а (не установка, а показ): **scrcpy** дзеркалить і керує реальним телефоном по USB
+або Wi-Fi без застосунку на телефоні (`brew install scrcpy`), на відміну від AVD — зі справжнім гаманцем.
 
 Усі варіанти ходять у живий devnet-деплой (програма `Fyg2…UfCY`, relayer на Railway — `docs/deployments.md`),
 збирати бекенд не треба.
@@ -128,9 +138,75 @@ eas build --platform android --profile development
 
 Публікація в Solana dApp Store — окрема тема (skill `solana-mobile-publishing`), для MVP не планується.
 
+## 9. EAS internal distribution + Expo Orbit 📄
+
+`"distribution": "internal"` у профілі `eas.json` → EAS віддає APK і сторінку встановлення з QR/посиланням;
+тестувальнику не потрібен ні Play, ні акаунт Expo (доступ за посиланням можна закрити в Project Settings —
+тоді лише колаборатори проєкту). **Expo Orbit** (menu-bar апка для macOS) ставить збірку з EAS на під'єднаний
+телефон або емулятор одним кліком «Open with Expo Orbit» з дашборда і вміє запускати EAS Update у сумісну збірку.
+Android-артефакт має бути `.apk`, не `.aab` (дефолт для Play) — інакше на пристрій не поставиться.
+
+## 10. EAS Update (OTA) 📄
+
+Оновлює лише JS/стилі/ассети у вже встановлених збірках: `eas update --branch preview --message "…"`. Збірка
+підписана на **канал** (вшивається при збірці), публікація йде в **гілку** — зв'язок канал↔гілка змінюється
+будь-коли. Не змінює нативний код, модулі, `AndroidManifest`, тому зміни MWA/патчів `app/patches/` потребують
+нової збірки. Для нас зручно: роздати один `preview`-APK (§8) і далі штовхати зміни графіка/UI без переустановки.
+
+## 11. Firebase App Distribution 📄
+
+Безкоштовно, без Play: до 500 тестувальників на проєкт, 200 на роздачу; підписаний APK завантажується в консоль
+Firebase, тестувальники ставлять «App Tester» і отримують збірки з повідомленнями. Альтернатива §9, якщо команда
+вже сидить у Firebase; інакше EAS internal простіший (без зайвого застосунку в тестувальника).
+
+## 12. Google Play internal testing 📄
+
+До 100 тестувальників, збірка з'являється за хвилини без повного ревʼю, оновлення приходять через Play Store.
+Потребує акаунта Play Console і запису апки в Play — для нас це означає завести лістинг раніше, ніж плануємо.
+Підпис Play (App Signing) — інший ключ, ніж для dApp Store, і його відбиток теж має бути в assetlinks relayer-а.
+
+## 13. Хмарні реальні пристрої 📄
+
+**Android Device Streaming** (Android Studio Jellyfish+, Firebase): реальні Pixel/Samsung/Xiaomi у дата-центрах
+Google, adb через SSL — працюють усі adb-команди, тож теоретично можна поставити й fakewallet. **BrowserStack
+App Live**: APK/AAB на реальному пристрої в браузері. Обидва корисні перевірити чужі моделі/версії Android,
+але гаманець на такому пристрої — окремий квест (fakewallet через adb — так; Phantom з логіном — ні), і Seeker
+там немає.
+
+## 14. Емулятор у браузері (Appetize.io) 📄
+
+Завантажити APK і запускати в браузері, з логами й мережею; має інтеграцію з Expo. Для нас — лише показ UI без
+гаманця: MWA-гаманця на такому емуляторі немає, Connect не спрацює. Підійде для демо графіка/ринків із публічних
+даних relayer-а, не для торгівлі.
+
+## 15. Solana dApp Store 📄
+
+Передвстановлений на кожному Seeker, без комісій платформи. Потрібен **release-APK, підписаний окремим ключем**
+(не тим, що для Play), debug-збірки не приймаються; публікація через CLI `dapp-store` з NFT видавця/апки
+(skill `solana-mobile-publishing`). Тестувати можна на звичайному Android/емуляторі, Seeker не обов'язковий.
+Для MVP не планується, але це єдиний «справжній» шлях на Seeker без sideload.
+
 ## Що обрати
 
 - **Швидко перевірити зміну:** §1 (AVD + fakewallet) — усе автоматизовано, агент може сам.
 - **Перевірити гаманцеві сценарії (nonce, DAL, промпт ~35 с):** §2 або §3 з Phantom.
 - **Показати комусь на його телефоні:** §7 + §5 `--tunnel` (сьогодні) або §8 (після заведення keystore).
 - **Seeker:** §3 по USB, потім §4 — єдине місце, де видно Seeker-специфіку.
+- **Роздати 5–20 тестувальникам:** §9 EAS internal (QR), далі §10 OTA для правок UI.
+- **Показати на великому екрані зі справжнім гаманцем:** scrcpy з реального телефона.
+
+## Джерела (02.10.2026)
+
+- Expo: [Android development build](https://docs.expo.dev/tutorial/eas/android-development-build/),
+  [Build APKs](https://docs.expo.dev/build-reference/apk/), [Expo Orbit](https://github.com/expo/orbit),
+  [EAS Updates з Orbit](https://expo.dev/blog/launching-eas-updates-with-orbit),
+  [Internal distribution](https://expo-expo.mintlify.app/deployment/internal-distribution),
+  [Share previews](https://docs.expo.dev/tutorial/eas/team-development/)
+- Google: [Firebase App Distribution](https://firebase.google.com/docs/app-distribution),
+  [Android Device Streaming](https://developer.android.com/studio/run/android-device-streaming),
+  [Firebase vs Internal Test Track](https://glovorytech.medium.com/firebase-app-distribution-vs-internal-test-track-7f91680467bb)
+- Solana Mobile: [dApp Store](https://docs.solanamobile.com/solana-mobile-stack/dapp-store),
+  [Publishing checklist](https://docs.solanamobile.com/dapp-publishing/prepare),
+  [Helius: Publishing Solana Mobile Apps](https://www.helius.dev/blog/publishing-solana-mobile-apps)
+- Інше: [scrcpy](https://scrcpy.dev/), [Appetize uploading apps](https://docs.appetize.io/platform/app-management/uploading-apps),
+  [BrowserStack App Live](https://www.browserstack.com/docs/app-live/get-started)
