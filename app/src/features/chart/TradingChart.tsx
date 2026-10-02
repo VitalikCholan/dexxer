@@ -24,7 +24,10 @@ import {
   fillWhitespace,
   foldMarks,
   liveUpdateKind,
+  scrollTargetFor,
+  secondsVisibleFor,
   seriesFor,
+  type Rect1D,
   type ChartType,
   type Tf,
 } from './chartData'
@@ -76,14 +79,20 @@ export function TradingChart({ symbol, tf, onTfChange, position }: TradingChartP
   const [ready, setReady] = useState(false)
   const web = useRef<WebView>(null)
   const tfScroll = useRef<ScrollView>(null)
-  const tfX = useRef<Partial<Record<Tf, number>>>({})
-  const scrollToTf = (x: number, animated: boolean) =>
-    tfScroll.current?.scrollTo({ x: Math.max(0, x - space.xl), animated })
+  const tfRect = useRef<Partial<Record<Tf, Rect1D>>>({})
+  const scrollX = useRef(0)
+  const viewportW = useRef(0)
+  // Scroll only when the selected pill is not fully visible, and by the minimum.
+  const scrollToTf = (t: Tf, animated: boolean) => {
+    const pill = tfRect.current[t]
+    if (!pill || viewportW.current === 0) return
+    const x = scrollTargetFor(pill, { x: scrollX.current, width: viewportW.current }, space.sm)
+    if (x !== null) tfScroll.current?.scrollTo({ x, animated })
+  }
   useEffect(() => {
-    const x = tfX.current[tf]
-    if (x !== undefined) scrollToTf(x, true)
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- scrollToTf only closes over space.xl
-  }, [tf, space.xl])
+    scrollToTf(tf, true)
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- scrollToTf only closes over space.sm
+  }, [tf, space.sm])
 
   const chartColors: ChartColors = useMemo(
     () => ({
@@ -143,6 +152,7 @@ export function TradingChart({ symbol, tf, onTfChange, position }: TradingChartP
       lines,
       scale: prefs.log ? 'log' : 'auto',
       resetView,
+      secondsVisible: secondsVisibleFor(tf),
     })
   }
 
@@ -229,13 +239,22 @@ export function TradingChart({ symbol, tf, onTfChange, position }: TradingChartP
         horizontal
         showsHorizontalScrollIndicator={false}
         contentContainerStyle={{ gap: space.xs }}
+        scrollEventThrottle={16}
+        onScroll={(e) => {
+          scrollX.current = e.nativeEvent.contentOffset.x
+        }}
+        onLayout={(e) => {
+          viewportW.current = e.nativeEvent.layout.width
+          scrollToTf(tf, false)
+        }}
       >
         {TIMEFRAMES.map((t) => (
           <View
             key={t}
             onLayout={(e) => {
-              tfX.current[t] = e.nativeEvent.layout.x
-              if (t === tf) scrollToTf(e.nativeEvent.layout.x, false)
+              const { x, width } = e.nativeEvent.layout
+              tfRect.current[t] = { x, width }
+              if (t === tf) scrollToTf(t, false)
             }}
           >
             <Pill label={t} active={t === tf} onPress={() => onTfChange(t)} />

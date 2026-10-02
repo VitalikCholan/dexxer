@@ -237,3 +237,24 @@ export function seriesFor(type: ChartType, candles: readonly Candle[]): SeriesDa
       return { kind: 'value', data: pts.map((p) => ({ time: p.time, value: p.close })) }
   }
 }
+
+export interface Rect1D {
+  x: number
+  width: number
+}
+
+/**
+ * Horizontal offset that brings `pill` fully into `viewport` (x = current scroll
+ * offset, width = visible width) with `pad` px of breathing room; `null` when it
+ * is already fully visible — nothing to scroll.
+ */
+export function scrollTargetFor(pill: Rect1D, viewport: Rect1D, pad: number): number | null {
+  if (pill.x < viewport.x + pad) return Math.max(0, pill.x - pad)
+  if (pill.x + pill.width > viewport.x + viewport.width - pad) return pill.x + pill.width - viewport.width + pad
+  return null
+}
+
+/** Whether the time axis shows seconds: only the 1s timeframe has several bars per minute. */
+export function secondsVisibleFor(tf: Tf): boolean {
+  return tf === '1s'
+}

@@ -4,7 +4,7 @@
 // scripts/gen-lwc.ts, no network) plus a small bridge. React Native sends
 // JSON messages through `window.__dexxer(msg)` (`injectJavaScript`):
 //
-//   { type: 'render', series, ema, lines, scale, resetView }  full redraw (empty series = clear)
+//   { type: 'render', series, ema, lines, scale, resetView, secondsVisible }  full redraw (empty series = clear)
 //   { type: 'tick', point, emaPoint }                          last bar only
 //   { type: 'zoom', dir: 1 | -1 | 0 }                          in / out / reset
 //
@@ -38,6 +38,10 @@ const BRIDGE = String.raw`
   var L = LightweightCharts;
   var el = document.getElementById('chart');
   var ohlcEl = document.getElementById('ohlc');
+  var secondsVisible = false;  // set by each render message (1s timeframe)
+  function timeOpts() {
+    return secondsVisible ? { hour: '2-digit', minute: '2-digit', second: '2-digit' } : { hour: '2-digit', minute: '2-digit' };
+  }
   var chart = L.createChart(el, {
     autoSize: true,
     // Apache-2.0 NOTICE of lightweight-charts: the TradingView attribution must stay visible. The link opens in the system browser (TradingChart's onShouldStartLoadWithRequest).
@@ -52,14 +56,14 @@ const BRIDGE = String.raw`
     localization: {
       timeFormatter: function (t) {
         var d = new Date(t * 1000);
-        return d.toLocaleDateString([], { month: 'short', day: 'numeric' }) + ' ' + d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+        return d.toLocaleDateString([], { month: 'short', day: 'numeric' }) + ' ' + d.toLocaleTimeString([], timeOpts());
       },
     },
   });
   chart.timeScale().applyOptions({
     tickMarkFormatter: function (t, kind) {
       var d = new Date(t * 1000);
-      return kind < 3 ? d.toLocaleDateString([], { month: 'short', day: 'numeric' }) : d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+      return kind < 3 ? d.toLocaleDateString([], { month: 'short', day: 'numeric' }) : d.toLocaleTimeString([], timeOpts());
     },
   });
 
@@ -248,6 +252,8 @@ const BRIDGE = String.raw`
   function post(m) { window.ReactNativeWebView.postMessage(JSON.stringify(m)); }
   function handle(msg) {
     if (msg.type === 'render') {
+      secondsVisible = !!msg.secondsVisible;
+      chart.timeScale().applyOptions({ secondsVisible: secondsVisible });
       if (msg.chartType !== chartType || !main) { clear(); chartType = msg.chartType; build(chartType); }
       setData(msg.series);
       setEma(msg.ema);
