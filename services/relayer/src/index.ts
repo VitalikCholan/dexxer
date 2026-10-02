@@ -190,6 +190,7 @@ const indexerStats: IndexerStats = { ticks: 0, lastTickTs: null, lastPublishTime
 let wsHub: ReturnType<typeof attachWs> | null = null;
 let stopIndexer: (() => void) | null = null;
 let stopRetention: (() => void) | null = null;
+let backfill: { snapshot: () => import("./indexer/backfill.js").BackfillSnapshot; stop: () => void } | null = null;
 if (cfg.indexerEnabled && !pool) {
   console.warn("indexer: INDEXER_ENABLED=true but no DATABASE_URL — indexer disabled (needs Postgres)");
 } else if (cfg.indexerEnabled && pool) {
@@ -203,6 +204,9 @@ if (cfg.indexerEnabled && !pool) {
     const { startRetention, TICKS_RETENTION_MS } = await import("./indexer/retention.js");
     stopRetention = startRetention(pool, { intervalMs: COMMIT_INTERVAL_MS });
     console.log(`retention: ticks older than ${TICKS_RETENTION_MS} ms deleted every ${COMMIT_INTERVAL_MS} ms`);
+    const { startBackfill, backfillEnvFromProcess } = await import("./indexer/backfill.js");
+    const { MARKET_CATALOG } = await import("../../../tests/er/lib/markets.js");
+    backfill = startBackfill({ pool, env: backfillEnvFromProcess(), markets: () => markets.list(), catalog: MARKET_CATALOG, fetch: globalThis.fetch.bind(globalThis) });
   } catch (e) {
     // Fix round 1 (code review): the indexer is a best-effort add-on — a
     // failure starting its subscriptions (bad IDL path, RPC unreachable at
@@ -277,6 +281,7 @@ console.log(`marketWatch: watching ${marketPda.toBase58()} on ${cfg.erRpc} (unau
 
 app.use(
   healthRouter({
+    getBackfillSnapshot: () => backfill?.snapshot() ?? { enabled: false, lastRunAt: null, lastOkAt: null, lastError: null, rows: 0 },
     state,
     baseConn,
     crankPubkey: cfg.crank.publicKey,
@@ -337,6 +342,7 @@ function handleSignal(signal: string): void {
   shuttingDown = true;
   stopIndexer?.();
   stopRetention?.();
+  backfill?.stop();
   wsHub?.close();
   stopMarketWatch();
   markets.stop();

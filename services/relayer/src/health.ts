@@ -50,6 +50,7 @@ import express from "express";
 import type { Router } from "express";
 import type { DbPool } from "./db.js";
 import type { RelayerState } from "./crank.js";
+import type { BackfillSnapshot } from "./indexer/backfill.js";
 import { ORACLE_STALE_MS, isStale } from "./indexer/prices.js";
 
 export const STALE_MS = 60_000;
@@ -139,6 +140,7 @@ export interface HealthPayload {
   sponsor: SponsorHealthSnapshot;
   /** Plan 2 Task 9: informational per-market view. Deliberately NOT part of `ok` — a dead BTC feed is not fixed by a restart and must not 503 the whole relayer (SOL is what `lastTickAt` gates). */
   markets: MarketsHealth;
+  backfill: BackfillSnapshot | null;
 }
 
 /**
@@ -159,6 +161,7 @@ export function buildHealthPayload(
   schedulerActive: boolean | null = null,
   commitIntervalMs = 300_000,
   markets: MarketsHealth = {},
+  backfill: BackfillSnapshot | null = null,
 ): HealthPayload {
   const stale = crankEnabled && (state.lastTickAt === null || now - state.lastTickAt > STALE_MS);
   return {
@@ -175,10 +178,12 @@ export function buildHealthPayload(
     indexer: indexer ?? EMPTY_INDEXER_SNAPSHOT,
     sponsor: sponsor ?? EMPTY_SPONSOR_SNAPSHOT,
     markets,
+    backfill,
   };
 }
 
 export interface HealthDeps {
+  getBackfillSnapshot?: () => BackfillSnapshot;
   state: RelayerState;
   baseConn: Connection;
   crankPubkey: PublicKey;
@@ -248,6 +253,7 @@ export function healthRouter(deps: HealthDeps): Router {
       deps.getSchedulerActive?.() ?? null,
       deps.commitIntervalMs,
       deps.getMarketsHealth?.() ?? {},
+      deps.getBackfillSnapshot?.() ?? null,
     );
     res.status(payload.ok ? 200 : 503).json(payload);
   });
