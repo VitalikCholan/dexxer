@@ -8,30 +8,28 @@
 // use; the toolbar here picks the
 // timeframe, the chart type (starred types get a quick-access chip, the rest
 // are in a sheet), auto/log scale, EMA(20) and entry / liq lines of the open
-// position. Only 1m / 5m / 15m: longer timeframes need the relayer.
+// position. All 16 timeframes; live marks fold in via `useMarkTail`.
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Linking, Pressable, ScrollView, Text, View } from 'react-native'
 import { WebView, type WebViewMessageEvent } from 'react-native-webview'
 import { useTheme } from '@/src/theme'
 import { useTextStyle } from '@/src/ui/styles'
 import { Sheet } from '@/src/ui/Sheet'
-import { useCandles } from '@/src/lib/indexer'
+import { useCandles, useMark } from '@/src/lib/indexer'
 import { type PositionSlot } from '@/src/lib/positions'
-import { CHART_TYPES, ema, seriesFor, withLiveMark, type ChartType, type Tf } from './chartData'
+import { CHART_TYPES, TIMEFRAMES, ema, foldMarks, seriesFor, type ChartType, type Tf } from './chartData'
 import { chartHtml, type ChartColors } from './chartHtml'
 import { useChartPrefs } from './useChartPrefs'
+import { useMarkTail } from './useMarkTail'
 
 const HEIGHT = 300
 const EMA_PERIOD = 20
-const TIMEFRAMES: Tf[] = ['1m', '5m', '15m']
 
 export interface TradingChartProps {
   /** Market symbol whose candles are drawn. */
   symbol: string
   tf: Tf
   onTfChange: (tf: Tf) => void
-  /** Live mark, raw 1e6. */
-  markUsd: bigint | null
   /** The same market's slot — entry / liq lines; null when there is none. */
   position: PositionSlot | null
 }
@@ -58,7 +56,7 @@ function Pill({ label, active, onPress }: { label: string; active?: boolean; onP
   )
 }
 
-export function TradingChart({ symbol, tf, onTfChange, markUsd, position }: TradingChartProps) {
+export function TradingChart({ symbol, tf, onTfChange, position }: TradingChartProps) {
   const { colors, space } = useTheme()
   const caption = useTextStyle('caption')
   const body = useTextStyle('body')
@@ -85,9 +83,9 @@ export function TradingChart({ symbol, tf, onTfChange, markUsd, position }: Trad
   )
   const html = useMemo(() => chartHtml(chartColors), [chartColors])
 
-  // eslint-disable-next-line react-hooks/purity -- the live bucket only needs the approximate wall clock at render
-  const now = Date.now()
-  const merged = useMemo(() => withLiveMark(candles.data ?? [], markUsd, tf, now), [candles.data, markUsd, tf, now])
+  const mark = useMark(symbol)
+  const tail = useMarkTail(mark.data, candles.dataUpdatedAt)
+  const merged = useMemo(() => foldMarks(candles.data ?? [], tail, tf), [candles.data, tail, tf])
   const series = useMemo(() => seriesFor(prefs.type, merged), [prefs.type, merged])
   const emaPoints = useMemo(
     () => (prefs.ema ? ema(seriesFor('candles', merged).data as { time: number; close: number }[], EMA_PERIOD) : null),
@@ -137,7 +135,7 @@ export function TradingChart({ symbol, tf, onTfChange, markUsd, position }: Trad
       emaPoint: emaPoints ? emaPoints[emaPoints.length - 1] : null,
     })
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [markUsd])
+  }, [tail])
 
   function onMessage(e: WebViewMessageEvent) {
     try {

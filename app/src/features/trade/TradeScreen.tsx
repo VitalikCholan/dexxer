@@ -184,7 +184,6 @@ export function TradeScreen() {
           symbol={symbol}
           tf={tf}
           onTfChange={setTf}
-          markUsd={markUsd}
           position={position}
           market={market}
           poolCapital={pool.data?.length ? pool.data[pool.data.length - 1].capitalTotal : null}

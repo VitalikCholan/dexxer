@@ -1,7 +1,16 @@
 // test/chartData.test.ts — the chart's pure data (`src/features/chart/chartData.ts`).
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { CHART_TYPES, ema, heikinAshi, isChartType, seriesFor, withLiveMark } from '../src/features/chart/chartData'
+import {
+  CHART_TYPES,
+  MARK_TAIL_MAX,
+  appendMark,
+  ema,
+  foldMarks,
+  heikinAshi,
+  isChartType,
+  seriesFor,
+} from '../src/features/chart/chartData'
 
 const M = 60_000
 const c = (t: number, o: number, h: number, l: number, cl: number) => ({ t, o, h, l, c: cl })
@@ -13,24 +22,78 @@ test('12 distinct chart types', () => {
   assert.ok(!isChartType('volume'))
 })
 
-test('withLiveMark: same bucket updates close and stretches high/low', () => {
+test('foldMarks: marks in the last bucket update close and stretch high/low', () => {
   const candles = [c(10 * M, 100e6, 101e6, 99e6, 100e6)]
-  assert.deepEqual(withLiveMark(candles, 103_000_000n, '1m', 10 * M + 30_000), [c(10 * M, 100e6, 103e6, 99e6, 103e6)])
-  assert.deepEqual(withLiveMark(candles, 98_000_000n, '1m', 10 * M + 30_000), [c(10 * M, 100e6, 101e6, 98e6, 98e6)])
+  assert.deepEqual(foldMarks(candles, [{ ts: 10 * M + 30_000, price: 103e6 }], '1m'), [
+    c(10 * M, 100e6, 103e6, 99e6, 103e6),
+  ])
+  assert.deepEqual(foldMarks(candles, [{ ts: 10 * M + 30_000, price: 98e6 }], '1m'), [
+    c(10 * M, 100e6, 101e6, 98e6, 98e6),
+  ])
 })
 
-test('withLiveMark: a later bucket opens a new candle at the last close', () => {
+test('foldMarks: a later bucket opens a new candle at the last close; several marks fold in order', () => {
   const candles = [c(10 * M, 100e6, 101e6, 99e6, 100e6)]
-  const out = withLiveMark(candles, 102_000_000n, '1m', 12 * M + 5)
-  assert.equal(out.length, 2)
-  assert.deepEqual(out[1], c(12 * M, 100e6, 102e6, 100e6, 102e6))
+  const out = foldMarks(
+    candles,
+    [
+      { ts: 12 * M + 5, price: 102e6 },
+      { ts: 12 * M + 9_000, price: 97e6 },
+      { ts: 13 * M, price: 99e6 },
+    ],
+    '1m',
+  )
+  assert.equal(out.length, 3)
+  assert.deepEqual(out[1], c(12 * M, 100e6, 102e6, 97e6, 97e6))
+  assert.deepEqual(out[2], c(13 * M, 97e6, 99e6, 97e6, 99e6))
 })
 
-test('withLiveMark: no mark, no candles, or a stale clock leave the candles alone', () => {
+test('foldMarks: a mark older than the newest candle is ignored (the fetch already covers it); no candles → candles from marks', () => {
   const candles = [c(10 * M, 1, 1, 1, 1)]
-  assert.deepEqual(withLiveMark(candles, null, '1m', 20 * M), candles)
-  assert.deepEqual(withLiveMark([], 5n, '1m', 20 * M), [])
-  assert.deepEqual(withLiveMark(candles, 5n, '1m', 9 * M), candles)
+  assert.deepEqual(foldMarks(candles, [{ ts: 9 * M, price: 5 }], '1m'), candles)
+  assert.deepEqual(foldMarks(candles, [], '1m'), candles)
+  assert.deepEqual(
+    foldMarks(
+      [],
+      [
+        { ts: 1_500, price: 7 },
+        { ts: 2_500, price: 8 },
+      ],
+      '1s',
+    ),
+    [c(1_000, 7, 7, 7, 7), c(2_000, 7, 8, 7, 8)],
+  )
+})
+
+test('foldMarks: 1W folds marks of the same week into one bucket starting Monday', () => {
+  const monday = Date.UTC(2026, 9, 5)
+  const out = foldMarks(
+    [],
+    [
+      { ts: monday + 86_400_000, price: 10 },
+      { ts: monday + 3 * 86_400_000, price: 12 },
+    ],
+    '1W',
+  )
+  assert.deepEqual(out, [c(monday, 10, 12, 10, 12)])
+})
+
+test('appendMark: dedups the same tick, drops null marks, caps the tail', () => {
+  const t0 = appendMark([], { ts: 1, price: 5n })
+  assert.deepEqual(t0, [{ ts: 1, price: 5 }])
+  assert.equal(appendMark(t0, { ts: 1, price: 5n }), t0) // same reference, nothing appended
+  assert.deepEqual(appendMark(t0, { ts: null, price: 6n }), t0)
+  assert.deepEqual(appendMark(t0, undefined), t0)
+  const long = appendMark(
+    Array.from({ length: 3 }, (_, i) => ({ ts: i, price: i })),
+    { ts: 9, price: 9n },
+    3,
+  )
+  assert.deepEqual(
+    long.map((m) => m.ts),
+    [1, 2, 9],
+  )
+  assert.equal(MARK_TAIL_MAX, 2000)
 })
 
 test('seriesFor: dollars, UTC seconds, and the family per type', () => {

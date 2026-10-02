@@ -64,21 +64,49 @@ export interface HlcPoint {
 export type SeriesData =
   { kind: 'ohlc'; data: OhlcPoint[] } | { kind: 'value'; data: ValuePoint[] } | { kind: 'hlc'; data: HlcPoint[] }
 
+/** One live mark from the indexer (`useMark`/WS), price raw 1e6 as a number. */
+export interface MarkPoint {
+  ts: number
+  price: number
+}
+
+/** Upper bound on marks kept between two `/prices` fetches (1 s cadence → ~33 min). */
+export const MARK_TAIL_MAX = 2000
+
+/** Append the latest mark to the tail: nothing for a null/absent mark or an exact repeat of the last one; oldest dropped past `max`. */
+export function appendMark(
+  tail: readonly MarkPoint[],
+  mark: { ts: number | null; price: bigint | null } | undefined,
+  max = MARK_TAIL_MAX,
+): readonly MarkPoint[] {
+  if (!mark || mark.ts === null || mark.price === null) return tail
+  const price = Number(mark.price)
+  const last = tail[tail.length - 1]
+  if (last && last.ts === mark.ts && last.price === price) return tail
+  return [...tail, { ts: mark.ts, price }].slice(-max)
+}
+
 /**
- * Fold the live mark (raw 1e6) into the candles: same bucket -> it becomes
- * the close and stretches high/low; a later bucket -> a new flat candle.
- * The indexer's candles refresh every 30 s, the mark every second.
+ * Fold live marks into the candles (spec §2.10.5): a mark in the newest
+ * bucket becomes its close and stretches high/low; a mark in a later bucket
+ * opens a new candle at the previous close; a mark older than the newest
+ * candle is ignored — the fetch that produced the candles already saw it.
+ * With no candles the marks alone build the series (a fresh `1s` chart).
  */
-export function withLiveMark(candles: readonly Candle[], mark: bigint | null, tf: Tf, nowMs: number): Candle[] {
-  if (mark === null || candles.length === 0) return [...candles]
-  const p = Number(mark)
-  const bucket = bucketStart(tf, nowMs)
-  const last = candles[candles.length - 1]
-  if (bucket < last.t) return [...candles]
-  if (bucket === last.t) {
-    return [...candles.slice(0, -1), { ...last, c: p, h: Math.max(last.h, p), l: Math.min(last.l, p) }]
+export function foldMarks(candles: readonly Candle[], marks: readonly MarkPoint[], tf: Tf): Candle[] {
+  const out = [...candles]
+  for (const m of marks) {
+    const t = bucketStart(tf, m.ts)
+    const last = out[out.length - 1]
+    if (last && t < last.t) continue
+    if (last && t === last.t) {
+      out[out.length - 1] = { ...last, c: m.price, h: Math.max(last.h, m.price), l: Math.min(last.l, m.price) }
+      continue
+    }
+    const open = last ? last.c : m.price
+    out.push({ t, o: open, h: Math.max(open, m.price), l: Math.min(open, m.price), c: m.price })
   }
-  return [...candles, { t: bucket, o: last.c, h: Math.max(last.c, p), l: Math.min(last.c, p), c: p }]
+  return out
 }
 
 function ohlc(candles: readonly Candle[]): OhlcPoint[] {
