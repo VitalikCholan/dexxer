@@ -62,7 +62,7 @@
   ```
   Tasks 2–5 and the app copy (Task 7) rely on exactly these names.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 `services/relayer/test/timeframes.test.ts`:
 
@@ -148,12 +148,12 @@ test("mergeCandles: 1d rows across a month boundary land in two 1M buckets", () 
 });
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `cd services/relayer && DEXXER_IDL_DIR=$PWD/../../idl node --import tsx --test test/timeframes.test.ts`
 Expected: FAIL — `Cannot find module '../src/indexer/timeframes.js'`.
 
-- [ ] **Step 3: Write the implementation**
+- [x] **Step 3: Write the implementation**
 
 `services/relayer/src/indexer/timeframes.ts`:
 
@@ -268,12 +268,12 @@ export function mergeCandles<P extends bigint | number>(lower: readonly CandleLi
 }
 ```
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run: `cd services/relayer && DEXXER_IDL_DIR=$PWD/../../idl node --import tsx --test test/timeframes.test.ts`
 Expected: PASS, 7 tests. Then the full suite: `DEXXER_IDL_DIR=$PWD/../../idl npm test` → 251 (244 + 7).
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add tests/fixtures/timeframes.golden.json services/relayer/src/indexer/timeframes.ts services/relayer/test/timeframes.test.ts
@@ -301,7 +301,7 @@ git commit -m "feat(relayer): timeframes module — 16 tfs, calendar buckets, ti
   export async function deleteTicksBefore(pool, cutoffTs: number): Promise<number>;
   ```
 
-- [ ] **Step 1: Write the failing pure test**
+- [x] **Step 1: Write the failing pure test**
 
 `services/relayer/test/candleSql.test.ts`:
 
@@ -319,12 +319,12 @@ test("tickBucketParams: 1m / 1h / 1d bucket starts of a tick's ts", () => {
 });
 ```
 
-- [ ] **Step 2: Run it to verify it fails**
+- [x] **Step 2: Run it to verify it fails**
 
 Run: `cd services/relayer && DEXXER_IDL_DIR=$PWD/../../idl node --import tsx --test test/candleSql.test.ts`
 Expected: FAIL — `tickBucketParams` is not exported.
 
-- [ ] **Step 3: Write the migration**
+- [x] **Step 3: Write the migration**
 
 `services/relayer/migrations/009_candles.sql`:
 
@@ -370,7 +370,7 @@ GROUP BY k.market, w.tf, (k.ts / w.ms) * w.ms
 ON CONFLICT DO NOTHING;
 ```
 
-- [ ] **Step 4: Write the store changes**
+- [x] **Step 4: Write the store changes**
 
 In `services/relayer/src/indexer/store.ts`, add the import and replace `insertTick`; append the new functions:
 
@@ -443,7 +443,7 @@ export async function deleteTicksBefore(pool: DbPool, cutoffTs: number): Promise
 
 Update the header comment of `store.ts` (first paragraph): "four indexer tables" → "the indexer tables (migrations `001_indexer.sql`, `009_candles.sql`)".
 
-- [ ] **Step 5: Add the Postgres tests (skipped locally)**
+- [x] **Step 5: Add the Postgres tests (skipped locally)**
 
 Append to `services/relayer/test/indexerDb.test.ts` (extend the imports with `deleteTicksBefore, insertBackfillCandles, listCandles` from `../src/indexer/store.js`; extend `beforeEach`'s `TRUNCATE` to `TRUNCATE pool_snapshots, ticks, candles`):
 
@@ -531,12 +531,12 @@ dbTest("migration 009 rolls existing ticks up into 1m/1h/1d (applied on a table 
 
 Add `import { readFileSync } from "node:fs";` to that test file. (The `INSERT INTO ticks` without `publish_time`/candles exercises the roll-up on rows that bypassed `insertTick`, exactly the state of the live table.)
 
-- [ ] **Step 6: Run the tests**
+- [x] **Step 6: Run the tests**
 
 Run: `cd services/relayer && DEXXER_IDL_DIR=$PWD/../../idl npm test`
 Expected: pure test PASS; the six new `dbTest`s report `skipped` (no `TEST_DATABASE_URL`); total 258 (245 passed + 13 skipped). If Docker is available: `docker run -d --rm -e POSTGRES_PASSWORD=pw -p 127.0.0.1:55432:5432 postgres:16-alpine` and `TEST_DATABASE_URL=postgres://postgres:pw@127.0.0.1:55432/postgres DEXXER_IDL_DIR=$PWD/../../idl npm test` → all pass. Record which of the two actually ran in the commit body.
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add services/relayer/migrations/009_candles.sql services/relayer/src/indexer/store.ts services/relayer/test/candleSql.test.ts services/relayer/test/indexerDb.test.ts
@@ -565,7 +565,7 @@ git commit -m "feat(relayer): candles table (1m/1h/1d) — migration 009 with ti
   export function candlesForTf(rows: readonly CandleRow[], tf: Tf, limit: number): Candle[];
   ```
 
-- [ ] **Step 1: Update the existing candle tests and add the new ones**
+- [x] **Step 1: Update the existing candle tests and add the new ones**
 
 In `services/relayer/test/candles.test.ts`: replace every `newSeries(60_000)` with `newSeries("1m")`, delete the `tfMsOf` test, change the import line to
 `import { aggregateCandles, candlesForTf, newSeries, planPrices, pushTick, seriesCandles } from "../src/indexer/candles.js";`
@@ -604,7 +604,7 @@ test("candlesForTf: a sparse table returns what exists (1M with three 1d rows �
 });
 ```
 
-- [ ] **Step 2: Write the route test**
+- [x] **Step 2: Write the route test**
 
 `services/relayer/test/pricesRoute.test.ts`:
 
@@ -665,12 +665,12 @@ test("GET /prices: unknown tf → 400 listing every accepted tf; default tf is 1
 });
 ```
 
-- [ ] **Step 3: Run both test files to verify they fail**
+- [x] **Step 3: Run both test files to verify they fail**
 
 Run: `cd services/relayer && DEXXER_IDL_DIR=$PWD/../../idl node --import tsx --test test/candles.test.ts test/pricesRoute.test.ts`
 Expected: FAIL — `planPrices`/`candlesForTf` not exported; `tf=1W` → 400.
 
-- [ ] **Step 4: Rewrite `candles.ts`**
+- [x] **Step 4: Rewrite `candles.ts`**
 
 Replace the file with:
 
@@ -754,7 +754,7 @@ export function candlesForTf(rows: readonly CandleRow[], tf: Tf, limit: number):
 }
 ```
 
-- [ ] **Step 5: Update the `/prices` handler in `http.ts`**
+- [x] **Step 5: Update the `/prices` handler in `http.ts`**
 
 Replace the import `import { aggregateCandles, tfMsOf } from "./candles.js";` with
 `import { aggregateCandles, candlesForTf, planPrices, type Candle } from "./candles.js";`,
@@ -777,12 +777,12 @@ add `import { TIMEFRAMES, isTf } from "./timeframes.js";`, add `listCandles` to 
 
 Update the file's header comment: `/prices` now serves 16 tfs; `1s` from ticks, the rest from `candles`.
 
-- [ ] **Step 6: Run the suite**
+- [x] **Step 6: Run the suite**
 
 Run: `cd services/relayer && DEXXER_IDL_DIR=$PWD/../../idl npm test`
 Expected: PASS, 263 (250 + 13 skipped). `npx tsc --noEmit -p services/relayer` clean (run from the repo root).
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add services/relayer/src/indexer/candles.ts services/relayer/src/indexer/http.ts services/relayer/test/candles.test.ts services/relayer/test/pricesRoute.test.ts
@@ -808,7 +808,7 @@ git commit -m "feat(relayer): /prices serves all 16 timeframes — 1s from ticks
   ```
   Note (spec deviation, recorded here): §2.10.2 says "in the commit cycle"; `crank.ts`'s cycle has no `DbPool` (its `pool` is the `Pool` PDA), so retention runs on its own timer in `index.ts` with the same period `COMMIT_INTERVAL_MS`. Same cadence, no plumbing of Postgres into the crank.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 `services/relayer/test/retention.test.ts`:
 
@@ -853,12 +853,12 @@ test("startRetention: deletes ticks older than the cutoff on every interval; a D
 });
 ```
 
-- [ ] **Step 2: Run to verify it fails**
+- [x] **Step 2: Run to verify it fails**
 
 Run: `cd services/relayer && DEXXER_IDL_DIR=$PWD/../../idl node --import tsx --test test/retention.test.ts`
 Expected: FAIL — module not found.
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 `services/relayer/src/indexer/retention.ts`:
 
@@ -909,7 +909,7 @@ export function startRetention(pool: DbPool, opts: RetentionOpts): () => void {
 }
 ```
 
-- [ ] **Step 4: Wire into `index.ts`**
+- [x] **Step 4: Wire into `index.ts`**
 
 Inside the `else if (cfg.indexerEnabled && pool)` block, after `console.log("indexer: started …")`:
 
@@ -921,12 +921,12 @@ Inside the `else if (cfg.indexerEnabled && pool)` block, after `console.log("ind
 
 Declare `let stopRetention: (() => void) | null = null;` next to `stopIndexer`, and call `stopRetention?.();` in `handleSignal` right after `stopIndexer?.();`.
 
-- [ ] **Step 5: Run the suite and type-check**
+- [x] **Step 5: Run the suite and type-check**
 
 Run: `cd services/relayer && DEXXER_IDL_DIR=$PWD/../../idl npm test && cd ../.. && npx tsc --noEmit -p services/relayer`
 Expected: PASS, 265 (252 + 13 skipped); tsc clean.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add services/relayer/src/indexer/retention.ts services/relayer/src/index.ts services/relayer/test/retention.test.ts
@@ -969,7 +969,7 @@ git commit -m "feat(relayer): raw tick retention (TICKS_RETENTION_MS, default 7 
   ```
   `health.ts`: `HealthPayload.backfill: BackfillSnapshot | null`, `buildHealthPayload(..., markets, backfill: BackfillSnapshot | null = null)`, `HealthDeps.getBackfillSnapshot?: () => BackfillSnapshot`.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 `services/relayer/test/backfill.test.ts`:
 
@@ -1171,12 +1171,12 @@ test("buildHealthPayload: backfill snapshot is null by default and passed throug
 });
 ```
 
-- [ ] **Step 2: Run to verify failure**
+- [x] **Step 2: Run to verify failure**
 
 Run: `cd services/relayer && DEXXER_IDL_DIR=$PWD/../../idl node --import tsx --test test/backfill.test.ts test/health.test.ts`
 Expected: FAIL — module not found / `backfill` undefined.
 
-- [ ] **Step 3: Implement `backfill.ts`**
+- [x] **Step 3: Implement `backfill.ts`**
 
 ```ts
 // services/relayer/src/indexer/backfill.ts
@@ -1421,7 +1421,7 @@ export function startBackfill(
 }
 ```
 
-- [ ] **Step 4: `health.ts` and `index.ts`**
+- [x] **Step 4: `health.ts` and `index.ts`**
 
 `health.ts`: `import type { BackfillSnapshot } from "./indexer/backfill.js";` add `backfill: BackfillSnapshot | null;` to `HealthPayload` (after `markets`), a trailing parameter `backfill: BackfillSnapshot | null = null` to `buildHealthPayload` (returned as `backfill`), `getBackfillSnapshot?: () => BackfillSnapshot;` to `HealthDeps`, and pass `deps.getBackfillSnapshot?.() ?? null` as the last argument in `healthRouter`.
 
@@ -1435,12 +1435,12 @@ export function startBackfill(
 
 Declare `let backfill: { snapshot: () => import("./indexer/backfill.js").BackfillSnapshot; stop: () => void } | null = null;` next to `stopIndexer`; add `getBackfillSnapshot: () => backfill?.snapshot() ?? { enabled: false, lastRunAt: null, lastOkAt: null, lastError: null, rows: 0 },` to `healthRouter({...})`; call `backfill?.stop();` in `handleSignal`.
 
-- [ ] **Step 5: Run the suite and type-check**
+- [x] **Step 5: Run the suite and type-check**
 
 Run: `cd services/relayer && DEXXER_IDL_DIR=$PWD/../../idl npm test && cd ../.. && npx tsc --noEmit -p services/relayer`
 Expected: PASS, 274 (261 + 13 skipped); tsc clean.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add services/relayer/src/indexer/backfill.ts services/relayer/src/health.ts services/relayer/src/index.ts services/relayer/test/backfill.test.ts services/relayer/test/health.test.ts
@@ -1455,7 +1455,7 @@ git commit -m "feat(relayer): Pyth Pro history backfill for 1m/1h/1d candles —
 - Modify: `services/relayer/README.md` (`### REST API` — `/prices`; `## Env vars` — new rows; new `### Candles, retention, backfill` under `## Indexer (Task 5)`; `## Tests` — counts)
 - Modify: `docs/deployments.md` (env table under `## Railway — services/relayer`: new rows; «Відкрите» — `ticks` retention closed)
 
-- [ ] **Step 1: README — `/prices`**
+- [x] **Step 1: README — `/prices`**
 
 In `### REST API`, replace the `/prices` line with:
 
@@ -1463,7 +1463,7 @@ In `### REST API`, replace the `/prices` line with:
 - `GET /prices?tf=<tf>&limit=<n>&market=<SYM>` — candles `{ market, tf, candles: [{ t, o, h, l, c }] }` (o/h/l/c 1e6-scaled numbers, `t` bucket start ms). `tf` is one of `1s 1m 5m 15m 30m 1h 2h 4h 6h 8h 12h 24h 2D 5D 1W 1M` (400 otherwise, the error lists them); `limit` default 300, max 1000. `1s` is aggregated from raw ticks (gaps where the oracle printed nothing); every other tf is merged at read time from the stored tier (`1m` → 1m…30m, `1h` → 1h…12h, `1d` → 24h…1M). `1W` buckets start Monday 00:00 UTC, `1M` on the 1st; `2D`/`5D` are fixed widths from the epoch.
 ```
 
-- [ ] **Step 2: README — new subsection**
+- [x] **Step 2: README — new subsection**
 
 After `### Oracle staleness …`, add:
 
@@ -1477,7 +1477,7 @@ Raw ticks are kept `TICKS_RETENTION_MS` (default 7 days) — `indexer/retention.
 History before this relayer existed (and gaps while it was down) comes from the **Pyth Pro History API** (`indexer/backfill.ts`) — the same Pyth Lazer feeds the MagicBlock Pricing Oracle republishes, so it is the same price source, not an exchange. Enabled only when `PYTH_PRO_API_KEY` is set (free trial key from Pyth Terminal); without it candles simply accrue from ticks. The market → Pyth symbol mapping goes by Lazer feed id (`tests/er/lib/markets.ts` `MARKET_CATALOG[symbol].lazerFeedId` == keyless `GET /v1/symbols[].pyth_lazer_id`), never by name; a market missing from the catalog is skipped with a log line. Windows: resolution `1` for `BACKFILL_1M_DAYS`, `60` for `BACKFILL_1H_DAYS`, `D` from `BACKFILL_1D_FROM`; channel `fixed_rate@200ms`. Rows are written with `source = 'pyth_pro'` and `ON CONFLICT DO NOTHING` — an oracle candle always wins. Runs at start and every `BACKFILL_INTERVAL_MS`; a 401 disables it until restart. `/healthz.backfill` = `{ enabled, lastRunAt, lastOkAt, lastError, rows }`. The key is sent as a header only and never logged.
 ```
 
-- [ ] **Step 3: README — env rows**
+- [x] **Step 3: README — env rows**
 
 Append to the `## Env vars` table:
 
@@ -1492,7 +1492,7 @@ Append to the `## Env vars` table:
 
 Update `## Tests` counts to the Task 5 numbers (274 = 261 + 13 Postgres skipped) and mention `TEST_DATABASE_URL` now also covers migration 009/candles.
 
-- [ ] **Step 4: `docs/deployments.md`**
+- [x] **Step 4: `docs/deployments.md`**
 
 In the Railway env table (section `## Railway — services/relayer`, the table that lists `COMMIT_INTERVAL_MS`), add rows (Ukrainian, same column shape as neighbours):
 
@@ -1504,7 +1504,7 @@ In the Railway env table (section `## Railway — services/relayer`, the table t
 
 In «Відкрите» of «Стан на кінець плану 4», change `ретеншн ticks` to `~~ретеншн ticks~~ (закрито планом C.5 — \`TICKS_RETENTION_MS\`, після деплою)`.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add services/relayer/README.md docs/deployments.md
@@ -1527,7 +1527,7 @@ git commit -m "docs(relayer): /prices timeframes, candle tiers, tick retention a
   `TIMEFRAMES, Tf, TIERS, StoredTier, Tier, TIER_TF, isTf, bucketStart, prevBucket, nthPrevBucket, tierOf, CandleLike, mergeCandles` from `app/src/features/chart/timeframes.ts`.
   `chartData.ts` re-exports `type Tf` and `TIMEFRAMES`. `useCandles(symbol: string, tf: Tf = '1m', limit = 300)`.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 `app/test/timeframes.test.ts` (CJS under tsx — `__dirname`, not `import.meta`):
 
@@ -1580,12 +1580,12 @@ test('mergeCandles on numbers: o first, h max, l min, c last, grouped by the tar
 })
 ```
 
-- [ ] **Step 2: Run to verify it fails**
+- [x] **Step 2: Run to verify it fails**
 
 Run: `cd app && npm test -- test/timeframes.test.ts` (or `node --import tsx --import ./test/setup.ts --test test/timeframes.test.ts`)
 Expected: FAIL — module not found.
 
-- [ ] **Step 3: Create the copy**
+- [x] **Step 3: Create the copy**
 
 `app/src/features/chart/timeframes.ts` — the body of Task 1's file verbatim (same constants, functions, comments), with this header instead:
 
@@ -1601,7 +1601,7 @@ Expected: FAIL — module not found.
 
 (No imports in this file. Prettier: single quotes, no semicolons — run `npm run format` on it.)
 
-- [ ] **Step 4: `chartData.ts` and `indexer.ts`**
+- [x] **Step 4: `chartData.ts` and `indexer.ts`**
 
 In `chartData.ts`: delete the `TF_MS`/`Tf` lines; add
 ```ts
@@ -1613,12 +1613,12 @@ and in `withLiveMark` replace `const bucket = Math.floor(nowMs / TF_MS[tf]) * TF
 
 In `indexer.ts`: `import type { Tf } from '@/src/features/chart/timeframes'` and `export function useCandles(symbol: string, tf: Tf = '1m', limit = 300)`. Update the doc comment: 16 tfs.
 
-- [ ] **Step 5: Gate**
+- [x] **Step 5: Gate**
 
 Run: `cd app && npx tsc --noEmit && npm run lint:check && npm test && npm run format:check`
 Expected: all clean; tests 144 (140 + 4). `ChartSection`/`TradeScreen` compile unchanged (`Tf` re-exported).
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add app/src/features/chart/timeframes.ts app/test/timeframes.test.ts app/src/features/chart/chartData.ts app/src/lib/indexer.ts
@@ -1648,7 +1648,7 @@ git commit -m "feat(app): timeframes module (twin of the relayer's, golden-pinne
   export function useMarkTail(mark: Mark | undefined, resetStamp: number): readonly MarkPoint[]
   ```
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 In `app/test/chartData.test.ts` replace the three `withLiveMark` tests with:
 
@@ -1694,12 +1694,12 @@ test('appendMark: dedups the same tick, drops null marks, caps the tail', () => 
 
 Update that file's import line to `import { CHART_TYPES, MARK_TAIL_MAX, appendMark, ema, foldMarks, heikinAshi, isChartType, seriesFor } from '../src/features/chart/chartData'`.
 
-- [ ] **Step 2: Run to verify failure**
+- [x] **Step 2: Run to verify failure**
 
 Run: `cd app && node --import tsx --import ./test/setup.ts --test test/chartData.test.ts`
 Expected: FAIL — `foldMarks`/`appendMark` not exported.
 
-- [ ] **Step 3: Implement in `chartData.ts`**
+- [x] **Step 3: Implement in `chartData.ts`**
 
 Replace `withLiveMark` with:
 
@@ -1787,7 +1787,7 @@ export function useMarkTail(mark: Mark | undefined, resetStamp: number): readonl
 
 (If `expo lint` still flags the rule, keep the disable comments on the exact `setTail` lines — the pattern already exists in `indexer.ts`.)
 
-- [ ] **Step 4: `TradingChart.tsx`, `ChartSection.tsx`, `TradeScreen.tsx`**
+- [x] **Step 4: `TradingChart.tsx`, `ChartSection.tsx`, `TradeScreen.tsx`**
 
 `TradingChart.tsx`:
 - imports: `import { useCandles, useMark } from '@/src/lib/indexer'`; `import { CHART_TYPES, TIMEFRAMES, ema, foldMarks, seriesFor, type ChartType, type Tf } from './chartData'`; `import { useMarkTail } from './useMarkTail'`.
@@ -1804,12 +1804,12 @@ export function useMarkTail(mark: Mark | undefined, resetStamp: number): readonl
 `ChartSection.tsx`: remove the `markUsd` prop from `ChartSectionProps`, the destructuring and the `<TradingChart … markUsd={markUsd} …>` attribute.
 `TradeScreen.tsx:185` area: remove `markUsd={markUsd}` from `<ChartSection …>` (keep `markUsd` for the header/ticket).
 
-- [ ] **Step 5: Gate**
+- [x] **Step 5: Gate**
 
 Run: `cd app && npx tsc --noEmit && npm run lint:check && npm test && npm run format:check`
 Expected: clean; tests 146 (144 − 3 + 5).
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add app/src/features/chart/chartData.ts app/src/features/chart/useMarkTail.ts app/src/features/chart/TradingChart.tsx app/src/features/trade/ChartSection.tsx app/src/features/trade/TradeScreen.tsx app/test/chartData.test.ts
@@ -1836,7 +1836,7 @@ git commit -m "feat(app): fold the WS mark stream into candles (foldMarks + useM
   ```
   `SeriesData` becomes `{ kind: 'ohlc'; data: (OhlcPoint | Whitespace)[] } | { kind: 'value'; data: (ValuePoint | Whitespace)[] } | { kind: 'hlc'; data: (HlcPoint | Whitespace)[] }`.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 Append to `app/test/chartData.test.ts`:
 
@@ -1863,12 +1863,12 @@ test('fillWhitespace: non-1 steps and ohlc points', () => {
 
 Add `WHITESPACE_MAX_GAP, fillWhitespace, isWhitespace` to the test's import.
 
-- [ ] **Step 2: Run to verify failure**
+- [x] **Step 2: Run to verify failure**
 
 Run: `cd app && node --import tsx --import ./test/setup.ts --test test/chartData.test.ts`
 Expected: FAIL — not exported.
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 `chartData.ts` — add:
 
@@ -1956,12 +1956,12 @@ The tick effect sends `series.data[series.data.length - 1]` — the last item is
 
 `updatePoint` is unchanged (always a real point). `setEma(points)` passes whitespace through as is (`LineSeries.setData` accepts it). Update the file's header comment: series data may carry whitespace items (`1s`).
 
-- [ ] **Step 4: Gate**
+- [x] **Step 4: Gate**
 
 Run: `cd app && npx tsc --noEmit && npm run lint:check && npm test && npm run format:check`
 Expected: clean; tests 148.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add app/src/features/chart/chartData.ts app/src/features/chart/chartHtml.ts app/src/features/chart/TradingChart.tsx app/test/chartData.test.ts
@@ -1981,7 +1981,7 @@ git commit -m "feat(app): whitespace for empty 1s buckets — uniform time axis 
 - Consumes: `TIMEFRAMES`, `Tf` (Task 7).
 - Produces: `useCandles` refetches every 15 s for `1s`, 30 s otherwise (`candlesRefetchMs(tf)` exported for the test).
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Create `app/test/candlesRefetch.test.ts` (`indexerWs.test.ts` already imports `../src/lib/indexer` under the same setup, so React/react-query load fine):
 
@@ -1998,7 +1998,7 @@ test('candlesRefetchMs: 15 s for 1s, 30 s otherwise', () => {
 })
 ```
 
-- [ ] **Step 2: Run to verify failure, then implement**
+- [x] **Step 2: Run to verify failure, then implement**
 
 `indexer.ts`:
 
@@ -2043,12 +2043,12 @@ useEffect(() => {
 
 (`space.xl` = 24 exists in `app/src/theme/tokens.ts`: `xs 4, sm 8, md 12, lg 16, xl 24, xxl 32`.)
 
-- [ ] **Step 3: Gate**
+- [x] **Step 3: Gate**
 
 Run: `cd app && npx tsc --noEmit && npm run lint:check && npm test && npm run format:check`
 Expected: clean; tests 149. Then `npx expo export --platform android` once to make sure the bundle builds (no device needed).
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add app/src/features/chart/TradingChart.tsx app/src/features/chart/chartHtml.ts app/src/lib/indexer.ts app/test/candlesRefetch.test.ts
