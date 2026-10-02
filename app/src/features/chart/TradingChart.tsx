@@ -76,9 +76,12 @@ export function TradingChart({ symbol, tf, onTfChange, position }: TradingChartP
   const web = useRef<WebView>(null)
   const tfScroll = useRef<ScrollView>(null)
   const tfX = useRef<Partial<Record<Tf, number>>>({})
+  const scrollToTf = (x: number, animated: boolean) =>
+    tfScroll.current?.scrollTo({ x: Math.max(0, x - space.xl), animated })
   useEffect(() => {
     const x = tfX.current[tf]
-    if (x !== undefined) tfScroll.current?.scrollTo({ x: Math.max(0, x - space.xl), animated: true })
+    if (x !== undefined) scrollToTf(x, true)
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- scrollToTf only closes over space.xl
   }, [tf, space.xl])
 
   const chartColors: ChartColors = useMemo(
@@ -193,6 +196,7 @@ export function TradingChart({ symbol, tf, onTfChange, position }: TradingChartP
             key={t}
             onLayout={(e) => {
               tfX.current[t] = e.nativeEvent.layout.x
+              if (t === tf) scrollToTf(e.nativeEvent.layout.x, false)
             }}
           >
             <Pill label={t} active={t === tf} onPress={() => onTfChange(t)} />
