@@ -1,7 +1,7 @@
 // services/relayer/src/indexer/store.ts
 //
-// Postgres read/write helpers for the four indexer tables (migration
-// `001_indexer.sql`). Every writer is a plain upsert (`ON CONFLICT`) so a
+// Postgres read/write helpers for the indexer tables (migrations
+// `001_indexer.sql`, `009_candles.sql`). Every writer is a plain upsert (`ON CONFLICT`) so a
 // resubscribe/reconnect in `accounts.ts` re-processing the same account
 // state never crashes on a duplicate primary key.
 //
@@ -13,6 +13,7 @@
 
 import type { DbPool } from "../db.js";
 import type { PoolHistoryQuery } from "./query.js";
+import { TIER_TF, bucketStart, type StoredTier } from "./timeframes.js";
 
 export interface TickRow {
   ts: number;
@@ -41,11 +42,67 @@ export interface RootRow {
 }
 
 /** `market` is the registry symbol (`MarketInfo.symbol`, e.g. "SOL") — ticks are keyed `(market, ts)` since migration 008. */
+export interface CandleRow {
+  /** Bucket start, unix ms. */
+  t: number;
+  o: bigint;
+  h: bigint;
+  l: bigint;
+  c: bigint;
+}
+
+/** 1m / 1h / 1d bucket starts of a tick — the `$6..$8` of `insertTick`'s SQL. Pure (test/candleSql.test.ts). */
+export function tickBucketParams(ts: number): [number, number, number] {
+  return [bucketStart(TIER_TF["1m"], ts), bucketStart(TIER_TF["1h"], ts), bucketStart(TIER_TF["1d"], ts)];
+}
+
+/**
+ * `market` is the registry symbol (`MarketInfo.symbol`, e.g. "SOL") — ticks are keyed `(market, ts)` since migration 008.
+ * Spec §2.10.2: one round-trip writes the tick AND upserts its 1m/1h/1d
+ * candle (o kept, h = GREATEST, l = LEAST, c = this price, source flips to
+ * 'oracle'). Ticks arrive in `ts` order per market, so `c` is the latest.
+ */
 export async function insertTick(pool: DbPool, row: TickRow & { market: string }): Promise<void> {
+  const [m1, h1, d1] = tickBucketParams(row.ts);
   await pool.query(
-    "INSERT INTO ticks (market, ts, price, slot, publish_time) VALUES ($1, $2, $3, $4, $5) ON CONFLICT (market, ts) DO UPDATE SET price = EXCLUDED.price, slot = EXCLUDED.slot, publish_time = EXCLUDED.publish_time",
-    [row.market, row.ts, row.price.toString(), row.slot, row.publishTime],
+    `WITH tick AS (
+       INSERT INTO ticks (market, ts, price, slot, publish_time) VALUES ($1, $2, $3, $4, $5)
+       ON CONFLICT (market, ts) DO UPDATE SET price = EXCLUDED.price, slot = EXCLUDED.slot, publish_time = EXCLUDED.publish_time
+     )
+     INSERT INTO candles (market, tf, t, o, h, l, c, source) VALUES
+       ($1, '1m', $6, $3, $3, $3, $3, 'oracle'),
+       ($1, '1h', $7, $3, $3, $3, $3, 'oracle'),
+       ($1, '1d', $8, $3, $3, $3, $3, 'oracle')
+     ON CONFLICT (market, tf, t) DO UPDATE SET
+       h = GREATEST(candles.h, EXCLUDED.h), l = LEAST(candles.l, EXCLUDED.l), c = EXCLUDED.c, source = 'oracle'`,
+    [row.market, row.ts, row.price.toString(), row.slot, row.publishTime, m1, h1, d1],
   );
+}
+
+export async function listCandles(pool: DbPool, market: string, tier: StoredTier, sinceT: number): Promise<CandleRow[]> {
+  const { rows } = await pool.query<{ t: string; o: string; h: string; l: string; c: string }>(
+    "SELECT t, o, h, l, c FROM candles WHERE market = $1 AND tf = $2 AND t >= $3 ORDER BY t ASC",
+    [market, tier, sinceT],
+  );
+  return rows.map((r) => ({ t: Number(r.t), o: BigInt(r.o), h: BigInt(r.h), l: BigInt(r.l), c: BigInt(r.c) }));
+}
+
+/** Backfill rows (source 'pyth_pro'): never overwrite — an oracle candle, or an earlier backfill, wins. Returns how many were inserted. */
+export async function insertBackfillCandles(pool: DbPool, market: string, tier: StoredTier, rows: CandleRow[]): Promise<number> {
+  if (rows.length === 0) return 0;
+  const { rowCount } = await pool.query(
+    `INSERT INTO candles (market, tf, t, o, h, l, c, source)
+     SELECT $1, $2, unnest($3::bigint[]), unnest($4::bigint[]), unnest($5::bigint[]), unnest($6::bigint[]), unnest($7::bigint[]), 'pyth_pro'
+     ON CONFLICT (market, tf, t) DO NOTHING`,
+    [market, tier, rows.map((r) => r.t), rows.map((r) => r.o.toString()), rows.map((r) => r.h.toString()), rows.map((r) => r.l.toString()), rows.map((r) => r.c.toString())],
+  );
+  return rowCount ?? 0;
+}
+
+/** Retention (spec §2.10.2): raw ticks older than `cutoffTs` go; candles keep the history. Returns rows deleted. */
+export async function deleteTicksBefore(pool: DbPool, cutoffTs: number): Promise<number> {
+  const { rowCount } = await pool.query("DELETE FROM ticks WHERE ts < $1", [cutoffTs]);
+  return rowCount ?? 0;
 }
 
 export async function listTicks(pool: DbPool, market: string, sinceTs: number): Promise<{ ts: number; price: bigint }[]> {
