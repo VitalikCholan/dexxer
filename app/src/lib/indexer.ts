@@ -95,13 +95,19 @@ export function useMark(symbol: string): UseQueryResult<Mark> {
   })
 }
 
+/** `/prices` refetch cadence: the mark tail keeps the chart live in between, so `1s` only needs a fresh baseline a bit more often. */
+export function candlesRefetchMs(tf: Tf): number {
+  return tf === '1s' ? 15_000 : 30_000
+}
+
 /** Candle history of one market for one of the 16 timeframes (`GET /prices?tf=&limit=&market=`) — no bigint fields, o/h/l/c are already plain numbers (relayer's own convention, see `indexer/http.ts`). */
 export function useCandles(symbol: string, tf: Tf = '1m', limit = 300): UseQueryResult<Candle[]> {
   useIndexerWs()
   return useQuery({
     queryKey: QK.candles(symbol, tf),
     queryFn: () => getJson(`/prices?tf=${tf}&limit=${limit}&market=${encodeURIComponent(symbol)}`, parseCandles),
-    staleTime: 30_000,
+    staleTime: candlesRefetchMs(tf),
+    refetchInterval: candlesRefetchMs(tf),
   })
 }
 

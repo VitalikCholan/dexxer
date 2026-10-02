@@ -74,6 +74,12 @@ export function TradingChart({ symbol, tf, onTfChange, position }: TradingChartP
   const [picker, setPicker] = useState(false)
   const [ready, setReady] = useState(false)
   const web = useRef<WebView>(null)
+  const tfScroll = useRef<ScrollView>(null)
+  const tfX = useRef<Partial<Record<Tf, number>>>({})
+  useEffect(() => {
+    const x = tfX.current[tf]
+    if (x !== undefined) tfScroll.current?.scrollTo({ x: Math.max(0, x - space.xl), animated: true })
+  }, [tf, space.xl])
 
   const chartColors: ChartColors = useMemo(
     () => ({
@@ -176,9 +182,21 @@ export function TradingChart({ symbol, tf, onTfChange, position }: TradingChartP
 
   return (
     <View style={{ gap: space.sm }}>
-      <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: space.xs }}>
+      <ScrollView
+        ref={tfScroll}
+        horizontal
+        showsHorizontalScrollIndicator={false}
+        contentContainerStyle={{ gap: space.xs }}
+      >
         {TIMEFRAMES.map((t) => (
-          <Pill key={t} label={t} active={t === tf} onPress={() => onTfChange(t)} />
+          <View
+            key={t}
+            onLayout={(e) => {
+              tfX.current[t] = e.nativeEvent.layout.x
+            }}
+          >
+            <Pill label={t} active={t === tf} onPress={() => onTfChange(t)} />
+          </View>
         ))}
         <View style={{ width: space.sm }} />
         {/* First, so it never scrolls out of reach behind the starred types. */}

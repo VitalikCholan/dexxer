@@ -40,7 +40,8 @@ const BRIDGE = String.raw`
   var ohlcEl = document.getElementById('ohlc');
   var chart = L.createChart(el, {
     autoSize: true,
-    layout: { background: { type: 'solid', color: C.bg }, textColor: C.textDim, fontFamily: 'monospace', fontSize: 11, attributionLogo: false },
+    // Apache-2.0 NOTICE of lightweight-charts: the TradingView attribution must stay visible. The link opens in the system browser (TradingChart's onShouldStartLoadWithRequest).
+    layout: { background: { type: 'solid', color: C.bg }, textColor: C.textDim, fontFamily: 'monospace', fontSize: 11, attributionLogo: true },
     grid: { vertLines: { color: C.grid }, horzLines: { color: C.grid } },
     rightPriceScale: { borderColor: C.border },
     timeScale: { borderColor: C.border, timeVisible: true, secondsVisible: false, rightOffset: 4, barSpacing: 6, minBarSpacing: 0.5 },
