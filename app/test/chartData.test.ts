@@ -195,3 +195,17 @@ test('fillWhitespace: non-1 steps and ohlc points', () => {
   )
   assert.deepEqual(out[1], { time: 60 })
 })
+
+test('fillWhitespace: a gap of exactly maxGap steps is filled, one more is not', () => {
+  const at = (gap: number) =>
+    fillWhitespace(
+      [
+        { time: 0, value: 1 },
+        { time: gap, value: 2 },
+      ],
+      1,
+      1000,
+    )
+  assert.equal(at(1000).length, 1001) // 2 real + 999 inserted
+  assert.equal(at(1001).length, 2)
+})

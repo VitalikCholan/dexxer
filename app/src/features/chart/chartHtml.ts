@@ -194,12 +194,13 @@ const BRIDGE = String.raw`
   function refreshHighLow() {
     hlLines.forEach(function (l) { main.removePriceLine(l); });
     hlLines = [];
-    var r = chart.timeScale().getVisibleLogicalRange();
+    // By time, not index: logical indices count whitespace slots, bars does not.
+    var r = chart.timeScale().getVisibleRange();
     if (!r || !bars.length) return;
-    var from = Math.max(0, Math.floor(r.from)), to = Math.min(bars.length - 1, Math.ceil(r.to));
     var hi = -Infinity, lo = Infinity;
-    for (var i = from; i <= to; i++) {
+    for (var i = 0; i < bars.length; i++) {
       var b = bars[i];
+      if (b.time < r.from || b.time > r.to) continue;
       var h = b.high != null ? b.high : b.value, l = b.low != null ? b.low : b.value;
       if (h > hi) hi = h;
       if (l < lo) lo = l;
