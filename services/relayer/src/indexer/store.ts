@@ -1,7 +1,7 @@
 // services/relayer/src/indexer/store.ts
 //
 // Postgres read/write helpers for the indexer tables (migrations
-// `001_indexer.sql`, `009_candles.sql`). Every writer is a plain upsert (`ON CONFLICT`) so a
+// `001_indexer.sql`, `009_candles.sql`, `010_candles_source_hyperliquid.sql`). Every writer is a plain upsert (`ON CONFLICT`) so a
 // resubscribe/reconnect in `accounts.ts` re-processing the same account
 // state never crashes on a duplicate primary key.
 //
@@ -90,12 +90,12 @@ export async function listCandles(pool: DbPool, market: string, tier: StoredTier
   return rows.map((r) => ({ t: Number(r.t), o: BigInt(r.o), h: BigInt(r.h), l: BigInt(r.l), c: BigInt(r.c) }));
 }
 
-/** Backfill rows (source 'pyth_pro'): never overwrite — an oracle candle, or an earlier backfill, wins. Returns how many were inserted. */
+/** Backfill rows (source 'hyperliquid'): never overwrite — an oracle candle, or an earlier backfill, wins. Returns how many were inserted. */
 export async function insertBackfillCandles(pool: DbPool, market: string, tier: StoredTier, rows: CandleRow[]): Promise<number> {
   if (rows.length === 0) return 0;
   const { rowCount } = await pool.query(
     `INSERT INTO candles (market, tf, t, o, h, l, c, source)
-     SELECT $1, $2, unnest($3::bigint[]), unnest($4::bigint[]), unnest($5::bigint[]), unnest($6::bigint[]), unnest($7::bigint[]), 'pyth_pro'
+     SELECT $1, $2, unnest($3::bigint[]), unnest($4::bigint[]), unnest($5::bigint[]), unnest($6::bigint[]), unnest($7::bigint[]), 'hyperliquid'
      ON CONFLICT (market, tf, t) DO NOTHING`,
     [market, tier, rows.map((r) => r.t), rows.map((r) => r.o.toString()), rows.map((r) => r.h.toString()), rows.map((r) => r.l.toString()), rows.map((r) => r.c.toString())],
   );

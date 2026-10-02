@@ -205,13 +205,11 @@ if (cfg.indexerEnabled && !pool) {
     stopRetention = startRetention(pool, { intervalMs: COMMIT_INTERVAL_MS });
     console.log(`retention: ticks older than ${TICKS_RETENTION_MS} ms deleted every ${COMMIT_INTERVAL_MS} ms`);
     const { startBackfill, backfillEnvFromProcess } = await import("./indexer/backfill.js");
-    const { MARKET_CATALOG } = await import("../../../tests/er/lib/markets.js");
     // SOL even while the registry is empty (boot-time refresh failed) — the same `withSol` view the crank ticks.
     backfill = startBackfill({
       pool,
       env: backfillEnvFromProcess(),
       markets: () => withSol(markets.list().map((m) => ({ symbol: m.symbol })), () => ({ symbol: "SOL" })),
-      catalog: MARKET_CATALOG,
       fetch: globalThis.fetch.bind(globalThis),
     });
   } catch (e) {
@@ -288,7 +286,7 @@ console.log(`marketWatch: watching ${marketPda.toBase58()} on ${cfg.erRpc} (unau
 
 app.use(
   healthRouter({
-    getBackfillSnapshot: () => backfill?.snapshot() ?? { enabled: false, lastRunAt: null, lastOkAt: null, lastError: null, rows: 0 },
+    getBackfillSnapshot: () => backfill?.snapshot() ?? { enabled: false, lastRunAt: null, lastOkAt: null, lastError: null, rows: 0, source: "hyperliquid" as const },
     state,
     baseConn,
     crankPubkey: cfg.crank.publicKey,

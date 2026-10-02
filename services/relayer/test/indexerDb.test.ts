@@ -228,7 +228,7 @@ dbTest("insertTick: a late tick in an older 1m bucket touches only that 1m bucke
   assert.deepEqual(m1[1], { t: Date.UTC(2026, 9, 1, 12, 1), o: 110n, h: 110n, l: 110n, c: 110n });
 });
 
-dbTest("insertBackfillCandles never overwrites; a later oracle tick flips a pyth_pro bucket to oracle", async () => {
+dbTest("insertBackfillCandles never overwrites; a later oracle tick flips a hyperliquid bucket to oracle", async () => {
   const t = Date.UTC(2026, 9, 1, 12, 0);
   const n1 = await insertBackfillCandles(pool, "BTC", "1m", [{ t, o: 1n, h: 2n, l: 1n, c: 2n }, { t: t + 60_000, o: 2n, h: 3n, l: 2n, c: 3n }]);
   assert.equal(n1, 2);
@@ -240,8 +240,19 @@ dbTest("insertBackfillCandles never overwrites; a later oracle tick flips a pyth
   assert.deepEqual(after[0], { t, o: 1n, h: 5n, l: 1n, c: 5n });
   const { rows } = await pool.query<{ source: string }>("SELECT source FROM candles WHERE market = 'BTC' AND tf = '1m' AND t = $1", [t]);
   assert.equal(rows[0].source, "oracle");
+  const bf = await pool.query<{ source: string }>("SELECT source FROM candles WHERE market = 'BTC' AND tf = '1m' AND t = $1", [t + 60_000]);
+  assert.equal(bf.rows[0].source, "hyperliquid");
   // the oracle candle also blocks a later backfill of the same bucket
   assert.equal(await insertBackfillCandles(pool, "BTC", "1m", [{ t, o: 7n, h: 7n, l: 7n, c: 7n }]), 0);
+});
+
+dbTest("migration 010: candles.source accepts 'hyperliquid', still 'pyth_pro', rejects others", async () => {
+  const t = Date.UTC(2026, 9, 1, 13, 0);
+  const ins = (source: string, market: string) =>
+    pool.query("INSERT INTO candles (market, tf, t, o, h, l, c, source) VALUES ($1, '1m', $2, 1, 1, 1, 1, $3)", [market, t, source]);
+  await ins("hyperliquid", "M10A");
+  await ins("pyth_pro", "M10B"); // legacy value stays readable
+  await assert.rejects(ins("binance", "M10C"), /candles_source_check/);
 });
 
 dbTest("listCandles filters by market, tier and sinceT", async () => {

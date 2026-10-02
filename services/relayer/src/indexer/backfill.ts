@@ -1,65 +1,60 @@
 // services/relayer/src/indexer/backfill.ts
 //
-// Spec §2.10.3: history for the stored candle tiers from the Pyth Pro
-// History API (TradingView UDF: GET /v1/{channel}/history?symbol=&resolution=
-// &from=&to=, bearer key). Pyth Pro IS the Lazer feed our oracle republishes
-// (MagicBlock's Pricing Oracle keeps no history), so the market → symbol
-// resolution goes by Lazer feed id (`MARKET_CATALOG[symbol].lazerFeedId` ==
-// `/v1/symbols[].pyth_lazer_id`, keyless), never by name.
+// Spec §2.10.3: history for the stored candle tiers from the Hyperliquid
+// public info API (`POST https://api.hyperliquid.xyz/info`, JSON, no key).
+// Why Hyperliquid: keyless and permanent, perp prices, all five of our
+// markets, and `1d` history since 2023 (SOL/ZEC; HYPE from its launch). The
+// other free sources were measured on 01–02.10.2026 and are keyed or gone
+// (Pyth Pro: trial key only; Pyth Benchmarks/Hermes: 401/404); Binance was
+// rejected (`HYPEUSDT` spot listed only on 24.09.2026).
 //
-// Rows are written with source 'pyth_pro' and ON CONFLICT DO NOTHING
+// Limits: `1m` reaches back only ≈ 4 days, ≤ 5000 candles per response (our
+// chunks stay below it: 1m 2 d, 1h 90 d, 1d 400 d), `endTime` is INCLUSIVE
+// (chunk boundaries repeat one candle — deduped per run, and harmless anyway
+// under ON CONFLICT DO NOTHING), and the in-progress candle is returned too —
+// dropped here, the live bucket belongs to the oracle. The coin is the market
+// symbol, verified against `meta.universe` (a symbol outside it is skipped,
+// never guessed). Rate limit 1200 weight/min per IP → BACKFILL_REQUEST_GAP_MS.
+//
+// Rows are written with source 'hyperliquid' and ON CONFLICT DO NOTHING
 // (store.ts `insertBackfillCandles`): an oracle candle always wins, and gaps
-// from relayer downtime get patched. Enabled only by PYTH_PRO_API_KEY; the
-// key is sent as a header only and never logged. A 401 disables the job
-// until restart; anything else is logged per market×tier and retried on the
-// next run — after BACKFILL_RETRY_MS (not the full interval) when a run had
-// errors or saw no markets. Public data in, public data out — the indexer's privacy rule holds.
+// from relayer downtime get patched. Anything that fails is logged per
+// market×tier and retried on the next run — after BACKFILL_RETRY_MS (not the
+// full interval) when a run had errors or saw no markets. Public data in,
+// public data out — the indexer's privacy rule holds.
 import type { DbPool } from "../db.js";
 import { envNum } from "../env.js";
 import { insertBackfillCandles, type CandleRow } from "./store.js";
 import { TIER_TF, bucketStart, type StoredTier } from "./timeframes.js";
 
-export const PYTH_PRO_BASE = "https://pyth.dourolabs.app/v1";
-/** ≥ `min_channel` of every market we list (HYPE: real_time, ZEC: fixed_rate@200ms). */
-export const PYTH_PRO_CHANNEL = "fixed_rate@200ms";
-export const TIER_RESOLUTION: Record<StoredTier, string> = { "1m": "1", "1h": "60", "1d": "D" };
+export const HYPERLIQUID_INFO_URL = "https://api.hyperliquid.xyz/info";
+export const TIER_INTERVAL: Record<StoredTier, "1m" | "1h" | "1d"> = { "1m": "1m", "1h": "1h", "1d": "1d" };
 const D = 86_400_000;
-/** Per-request time span: ~2 880 / ~2 160 / ≤ 400 rows. */
+/** Per-request time span: ~2 880 / ~2 160 / ≤ 400 candles (the API caps a response at 5000). */
 export const TIER_CHUNK_MS: Record<StoredTier, number> = { "1m": 2 * D, "1h": 90 * D, "1d": 400 * D };
 
 export interface BackfillEnv {
-  apiKey: string | null;
+  enabled: boolean;
   intervalMs: number;
+  /** Delay before the next run after one that had errors or saw no markets (a 429, a 5xx, a registry not read yet at boot). */
+  retryMs: number;
   m1Days: number;
   h1Days: number;
   d1FromMs: number;
   requestGapMs: number;
 }
 
-/** Delay before the next run after one that had errors or saw no markets (a 429, a 5xx, a registry not read yet at boot). */
-export const BACKFILL_RETRY_MS = envNum("BACKFILL_RETRY_MS", 600_000, 60_000);
-
 export function backfillEnvFromProcess(): BackfillEnv {
-  const key = process.env.PYTH_PRO_API_KEY?.trim() || null;
   const from = Date.parse(process.env.BACKFILL_1D_FROM ?? "");
   return {
-    apiKey: key,
+    enabled: (process.env.BACKFILL_ENABLED ?? "true") !== "false",
     intervalMs: envNum("BACKFILL_INTERVAL_MS", 86_400_000, 600_000),
-    m1Days: envNum("BACKFILL_1M_DAYS", 7, 0),
+    retryMs: envNum("BACKFILL_RETRY_MS", 600_000, 60_000),
+    m1Days: envNum("BACKFILL_1M_DAYS", 4, 0), // Hyperliquid keeps ≈ 4 days of 1m
     h1Days: envNum("BACKFILL_1H_DAYS", 90, 0),
-    d1FromMs: Number.isFinite(from) ? from : Date.UTC(2025, 3, 1), // Pyth Pro history starts April 2025
+    d1FromMs: Number.isFinite(from) ? from : Date.UTC(2023, 0, 1), // Hyperliquid's 1d history starts in 2023 (SOL); a later-listed coin just returns from its launch
     requestGapMs: envNum("BACKFILL_REQUEST_GAP_MS", 500, 0),
   };
-}
-
-export function resolveProSymbol(symbols: unknown, lazerFeedId: string): string | null {
-  if (!Array.isArray(symbols)) return null;
-  for (const s of symbols) {
-    if (!s || typeof s !== "object") continue;
-    const o = s as { pyth_lazer_id?: unknown; symbol?: unknown };
-    if (String(o.pyth_lazer_id) === lazerFeedId && typeof o.symbol === "string") return o.symbol;
-  }
-  return null;
 }
 
 export interface BackfillWindow { tier: StoredTier; fromMs: number; toMs: number }
@@ -83,40 +78,68 @@ export function toScaled(x: number): bigint {
   return BigInt(Math.round(x * 1e6));
 }
 
-export class UdfError extends Error {}
-export class AuthError extends Error {}
+export class HlError extends Error {}
 
-/** TradingView UDF history body → tier rows. Rows whose `t` is not a bucket start of the tier are dropped (counted), the rest is 1e6-scaled. */
-export function parseUdfHistory(body: unknown, tier: StoredTier): { rows: CandleRow[]; misaligned: number } {
-  if (!body || typeof body !== "object") throw new UdfError("history: body is not an object");
-  const o = body as Record<string, unknown>;
-  if (o.s === "no_data") return { rows: [], misaligned: 0 };
-  if (o.s !== "ok") throw new UdfError(`history: status ${String(o.s)}${typeof o.errmsg === "string" ? ` (${o.errmsg})` : ""}`);
-  const cols = [o.t, o.o, o.h, o.l, o.c];
-  if (!cols.every(Array.isArray)) throw new UdfError("history: t/o/h/l/c must be arrays");
-  const [t, op, hi, lo, cl] = cols as unknown[][];
-  const n = t.length;
-  if (![op, hi, lo, cl].every((a) => a.length === n)) throw new UdfError("history: t/o/h/l/c lengths differ");
+/** `meta` body → the set of coin names (`universe[].name`). */
+export function parseUniverse(body: unknown): Set<string> {
+  const u = body && typeof body === "object" ? (body as { universe?: unknown }).universe : undefined;
+  if (!Array.isArray(u)) throw new HlError("meta: universe is not an array");
+  const names = new Set<string>();
+  for (const e of u) {
+    const n = e && typeof e === "object" ? (e as { name?: unknown }).name : undefined;
+    if (typeof n !== "string") throw new HlError("meta: universe entry without a name");
+    names.add(n);
+  }
+  return names;
+}
+
+/** JSON body of a `candleSnapshot` request (`endTime` is inclusive). */
+export function candleSnapshotBody(coin: string, tier: StoredTier, fromMs: number, toMs: number): string {
+  return JSON.stringify({ type: "candleSnapshot", req: { coin, interval: TIER_INTERVAL[tier], startTime: fromMs, endTime: toMs } });
+}
+
+const decimal = (v: unknown): number | null => {
+  if (typeof v !== "string" || v.trim() === "") return null;
+  const x = Number(v);
+  return Number.isFinite(x) ? x : null;
+};
+
+/**
+ * `candleSnapshot` body → completed, aligned rows. A row whose bucket has not
+ * ended (`T >= now`, the in-progress candle) or whose `t` is not a bucket start
+ * of the tier is dropped and counted; the rest is 1e6-scaled. A body that is
+ * not an array, or a row without numeric `t`/`T` and decimal-string o/h/l/c, is
+ * an `HlError`.
+ */
+export function parseCandleSnapshot(body: unknown, tier: StoredTier, now: number): { rows: CandleRow[]; misaligned: number; incomplete: number } {
+  if (!Array.isArray(body)) throw new HlError("candleSnapshot: body is not an array");
   const rows: CandleRow[] = [];
   let misaligned = 0;
-  for (let i = 0; i < n; i++) {
-    const vals = [t[i], op[i], hi[i], lo[i], cl[i]];
-    if (!vals.every((v) => typeof v === "number" && Number.isFinite(v))) throw new UdfError(`history: row ${i} is not numeric`);
-    const tMs = (t[i] as number) * 1000;
-    if (bucketStart(TIER_TF[tier], tMs) !== tMs) {
-      misaligned += 1;
-      continue;
+  let incomplete = 0;
+  body.forEach((r, i) => {
+    const o = r && typeof r === "object" ? (r as Record<string, unknown>) : null;
+    const px = o ? [decimal(o.o), decimal(o.h), decimal(o.l), decimal(o.c)] : [];
+    if (!o || typeof o.t !== "number" || !Number.isFinite(o.t) || typeof o.T !== "number" || !Number.isFinite(o.T) || px.length !== 4 || px.some((x) => x === null)) {
+      throw new HlError(`candleSnapshot: row ${i} is malformed`);
     }
-    rows.push({ t: tMs, o: toScaled(op[i] as number), h: toScaled(hi[i] as number), l: toScaled(lo[i] as number), c: toScaled(cl[i] as number) });
-  }
-  return { rows, misaligned };
+    if (o.T >= now) {
+      incomplete += 1;
+      return;
+    }
+    if (bucketStart(TIER_TF[tier], o.t) !== o.t) {
+      misaligned += 1;
+      return;
+    }
+    const [op, hi, lo, cl] = px as number[];
+    rows.push({ t: o.t, o: toScaled(op), h: toScaled(hi), l: toScaled(lo), c: toScaled(cl) });
+  });
+  return { rows, misaligned, incomplete };
 }
 
 export interface BackfillDeps {
   pool: DbPool;
   env: BackfillEnv;
   markets: () => { symbol: string }[];
-  catalog: Record<string, { lazerFeedId: string }>;
   fetch: typeof fetch;
   now?: () => number;
   sleep?: (ms: number) => Promise<void>;
@@ -128,67 +151,59 @@ export interface BackfillResult {
   perMarket: Record<string, number>;
   skipped: string[];
   errors: string[];
-  /** Markets `deps.markets()` returned (0 also when the symbols request failed first). */
+  /** Markets `deps.markets()` returned (0 also when the `meta` request failed first). */
   markets: number;
-  /** 401 from Pyth Pro — the key is wrong or expired; the caller stops scheduling. */
-  authFailed: boolean;
 }
+
+const postInfo = (deps: BackfillDeps, body: string) =>
+  deps.fetch(HYPERLIQUID_INFO_URL, { method: "POST", headers: { "Content-Type": "application/json" }, body });
 
 export async function runBackfill(deps: BackfillDeps): Promise<BackfillResult> {
   const now = deps.now?.() ?? Date.now();
   const log = deps.log ?? console.log;
   const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
-  const result: BackfillResult = { rows: 0, perMarket: {}, skipped: [], errors: [], markets: 0, authFailed: false };
-  if (!deps.env.apiKey) {
-    result.skipped.push("disabled: PYTH_PRO_API_KEY not set");
+  const result: BackfillResult = { rows: 0, perMarket: {}, skipped: [], errors: [], markets: 0 };
+  if (!deps.env.enabled) {
+    result.skipped.push("disabled: BACKFILL_ENABLED=false");
     return result;
   }
-  let symbols: unknown;
+  let universe: Set<string>;
   try {
-    const r = await deps.fetch(`${PYTH_PRO_BASE}/symbols?asset_type=crypto`);
+    const r = await postInfo(deps, JSON.stringify({ type: "meta" }));
     if (!r.ok) throw new Error(`HTTP ${r.status}`);
-    symbols = await r.json();
+    universe = parseUniverse(await r.json());
   } catch (e) {
-    result.errors.push(`symbols: ${e instanceof Error ? e.message : String(e)}`);
+    result.errors.push(`meta: ${e instanceof Error ? e.message : String(e)}`);
     return result;
   }
   const markets = deps.markets();
   result.markets = markets.length;
   for (const m of markets) {
-    const entry = deps.catalog[m.symbol];
-    if (!entry) {
-      result.skipped.push(`${m.symbol}: not in MARKET_CATALOG`);
-      continue;
-    }
-    const pro = resolveProSymbol(symbols, entry.lazerFeedId);
-    if (!pro) {
-      result.skipped.push(`${m.symbol}: no Pyth Pro symbol with pyth_lazer_id ${entry.lazerFeedId}`);
+    if (!universe.has(m.symbol)) {
+      result.skipped.push(`${m.symbol}: not in Hyperliquid universe`);
       continue;
     }
     for (const w of backfillWindows(now, deps.env)) {
+      let inserted = 0;
+      const seen = new Set<number>();
       try {
-        let inserted = 0;
         for (const ch of chunkRanges(w.fromMs, w.toMs, TIER_CHUNK_MS[w.tier])) {
-          const url =
-            `${PYTH_PRO_BASE}/${PYTH_PRO_CHANNEL}/history?symbol=${encodeURIComponent(pro)}` +
-            `&resolution=${TIER_RESOLUTION[w.tier]}&from=${Math.floor(ch.fromMs / 1000)}&to=${Math.floor(ch.toMs / 1000)}`;
-          const r = await deps.fetch(url, { headers: { Authorization: `Bearer ${deps.env.apiKey}` } });
-          if (r.status === 401) throw new AuthError("HTTP 401 — PYTH_PRO_API_KEY rejected");
+          const r = await postInfo(deps, candleSnapshotBody(m.symbol, w.tier, ch.fromMs, ch.toMs));
           if (!r.ok) throw new Error(`HTTP ${r.status}`);
-          const parsed = parseUdfHistory(await r.json(), w.tier);
+          const parsed = parseCandleSnapshot(await r.json(), w.tier, now);
           if (parsed.misaligned > 0) log(`backfill: ${m.symbol} ${w.tier} dropped ${parsed.misaligned} misaligned rows`);
-          inserted += await insertBackfillCandles(deps.pool, m.symbol, w.tier, parsed.rows);
+          if (parsed.incomplete > 0) log(`backfill: ${m.symbol} ${w.tier} dropped ${parsed.incomplete} incomplete rows`);
+          const fresh = parsed.rows.filter((row) => !seen.has(row.t));
+          for (const row of fresh) seen.add(row.t);
+          const n = await insertBackfillCandles(deps.pool, m.symbol, w.tier, fresh);
+          inserted += n;
+          result.rows += n;
+          result.perMarket[m.symbol] = (result.perMarket[m.symbol] ?? 0) + n;
           if (deps.env.requestGapMs > 0) await sleep(deps.env.requestGapMs);
         }
-        result.rows += inserted;
-        result.perMarket[m.symbol] = (result.perMarket[m.symbol] ?? 0) + inserted;
         log(`backfill: ${m.symbol} ${w.tier} inserted=${inserted}`);
       } catch (e) {
         result.errors.push(`${m.symbol} ${w.tier}: ${e instanceof Error ? e.message : String(e)}`);
-        if (e instanceof AuthError) {
-          result.authFailed = true;
-          return result;
-        }
       }
     }
   }
@@ -202,33 +217,31 @@ export interface BackfillSnapshot {
   lastError: string | null;
   /** Rows inserted by the last run. */
   rows: number;
+  source: "hyperliquid";
 }
 
 /**
- * When the next run starts after one that ended with `r`: `null` = never (a
- * 401 — the key is rejected until restart); `retryMs` after a run with errors
- * or no markets (a bad first run must not wait a whole interval); otherwise
- * `intervalMs`. A run that threw is `r === null`.
+ * When the next run starts after one that ended with `r`: `env.retryMs` after a
+ * run with errors or no markets (a bad first run must not wait a whole
+ * interval); otherwise `env.intervalMs`. A run that threw is `r === null`.
  */
-export function nextBackfillDelay(r: BackfillResult | null, intervalMs: number, retryMs: number): number | null {
-  if (r?.authFailed) return null;
-  if (r === null || r.errors.length > 0 || r.markets === 0) return retryMs;
-  return intervalMs;
+export function nextBackfillDelay(r: BackfillResult | null, env: Pick<BackfillEnv, "intervalMs" | "retryMs">): number {
+  if (r === null || r.errors.length > 0 || r.markets === 0) return env.retryMs;
+  return env.intervalMs;
 }
 
-/** Runs once now, then after `env.intervalMs` (or `BACKFILL_RETRY_MS` after a bad run, `nextBackfillDelay`); a 401 disables further runs until restart. */
+/** Runs once now, then after `env.intervalMs` (or `env.retryMs` after a bad run, `nextBackfillDelay`). */
 export function startBackfill(
   deps: BackfillDeps,
   timers: { setTimeout?: typeof setTimeout; clearTimeout?: typeof clearTimeout } = {},
-  retryMs = BACKFILL_RETRY_MS,
 ): { snapshot: () => BackfillSnapshot; stop: () => void } {
   const st = timers.setTimeout ?? setTimeout;
   const ct = timers.clearTimeout ?? clearTimeout;
-  const snap: BackfillSnapshot = { enabled: deps.env.apiKey !== null, lastRunAt: null, lastOkAt: null, lastError: null, rows: 0 };
+  const snap: BackfillSnapshot = { enabled: deps.env.enabled, lastRunAt: null, lastOkAt: null, lastError: null, rows: 0, source: "hyperliquid" };
   let timer: ReturnType<typeof setTimeout> | null = null;
   let stopped = false;
-  const scheduleNext = (delay: number | null): void => {
-    if (stopped || delay === null) return;
+  const scheduleNext = (delay: number): void => {
+    if (stopped) return;
     timer = st(() => { timer = null; void run(); }, delay);
     (timer as { unref?: () => void }).unref?.();
   };
@@ -249,17 +262,16 @@ export function startBackfill(
         for (const e of r.errors) console.error(`backfill: ${e}`);
       }
       if (r.markets === 0 && r.errors.length === 0) (deps.log ?? console.log)("backfill: no markets yet — retrying soon");
-      if (r.authFailed) snap.enabled = false;
     } catch (e) {
       snap.lastError = e instanceof Error ? e.message : String(e);
       console.error("backfill: run failed", snap.lastError);
     }
-    scheduleNext(nextBackfillDelay(result, deps.env.intervalMs, retryMs));
+    scheduleNext(nextBackfillDelay(result, deps.env));
   };
   if (snap.enabled) {
     void run();
   } else {
-    console.log("backfill: PYTH_PRO_API_KEY not set — candle history accrues from oracle ticks only");
+    console.log("backfill: BACKFILL_ENABLED=false — candle history accrues from oracle ticks only");
   }
   return {
     snapshot: () => ({ ...snap }),
