@@ -15,7 +15,11 @@
 // under ON CONFLICT DO NOTHING), and the in-progress candle is returned too —
 // dropped here, the live bucket belongs to the oracle. The coin is the market
 // symbol, verified against `meta.universe` (a symbol outside it is skipped,
-// never guessed). Rate limit 1200 weight/min per IP → BACKFILL_REQUEST_GAP_MS.
+// never guessed). Rate limit (documented): 1200 weight/min per IP; `candleSnapshot`
+// weighs 20 + 1 per 60 candles returned, `meta` 20. After every response the run
+// pauses weight × 50 ms (= 60 000 / 1200), never less than BACKFILL_REQUEST_GAP_MS
+// (a floor; 0 switches pacing off, tests only), so the rolling spend stays under
+// the limit. A full first run is ≈ 35 requests ≈ 2–3 min; daily runs after that.
 //
 // Rows are written with source 'hyperliquid' and ON CONFLICT DO NOTHING
 // (store.ts `insertBackfillCandles`): an oracle candle always wins, and gaps
@@ -77,6 +81,18 @@ export function chunkRanges(fromMs: number, toMs: number, chunkMs: number): { fr
 
 export function toScaled(x: number): bigint {
   return BigInt(Math.round(x * 1e6));
+}
+
+/** Documented weight of a `meta` / any other info request. */
+export const HL_BASE_WEIGHT = 20;
+export const HL_WEIGHT_PER_MINUTE = 1200;
+/** Documented weight of a `candleSnapshot` response: 20 + 1 per 60 candles returned. */
+export function candleSnapshotWeight(candlesReturned: number): number {
+  return HL_BASE_WEIGHT + Math.ceil(candlesReturned / 60);
+}
+/** Pause after a response so the rolling spend stays ≤ HL_WEIGHT_PER_MINUTE: 50 ms per weight unit, never below `minGapMs`. */
+export function paceDelayMs(weight: number, minGapMs: number): number {
+  return Math.max(minGapMs, weight * (60_000 / HL_WEIGHT_PER_MINUTE));
 }
 
 export class HlError extends Error {}
@@ -160,6 +176,8 @@ export interface BackfillResult {
   errors: string[];
   /** Markets `deps.markets()` returned (0 also when the `meta` request failed first). */
   markets: number;
+  /** Documented rate-limit weight of the requests made (meta + candleSnapshots that returned a body). */
+  weightSpent: number;
 }
 
 const postInfo = (deps: BackfillDeps, body: string) =>
@@ -169,7 +187,7 @@ export async function runBackfill(deps: BackfillDeps): Promise<BackfillResult> {
   const now = deps.now?.() ?? Date.now();
   const log = deps.log ?? console.log;
   const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
-  const result: BackfillResult = { rows: 0, perMarket: {}, skipped: [], errors: [], markets: 0 };
+  const result: BackfillResult = { rows: 0, perMarket: {}, skipped: [], errors: [], markets: 0, weightSpent: 0 };
   if (!deps.env.enabled) {
     result.skipped.push("disabled: BACKFILL_ENABLED=false");
     return result;
@@ -179,6 +197,8 @@ export async function runBackfill(deps: BackfillDeps): Promise<BackfillResult> {
     const r = await postInfo(deps, JSON.stringify({ type: "meta" }));
     if (!r.ok) throw new Error(`HTTP ${r.status}`);
     universe = parseUniverse(await r.json());
+    result.weightSpent += HL_BASE_WEIGHT;
+    if (deps.env.requestGapMs > 0) await sleep(paceDelayMs(HL_BASE_WEIGHT, deps.env.requestGapMs));
   } catch (e) {
     result.errors.push(`meta: ${e instanceof Error ? e.message : String(e)}`);
     return result;
@@ -197,7 +217,10 @@ export async function runBackfill(deps: BackfillDeps): Promise<BackfillResult> {
         for (const ch of chunkRanges(w.fromMs, w.toMs, TIER_CHUNK_MS[w.tier])) {
           const r = await postInfo(deps, candleSnapshotBody(m.symbol, w.tier, ch.fromMs, ch.toMs));
           if (!r.ok) throw new Error(`HTTP ${r.status}`);
-          const parsed = parseCandleSnapshot(await r.json(), w.tier, now, m.symbol);
+          const body: unknown = await r.json();
+          const weight = candleSnapshotWeight(Array.isArray(body) ? body.length : 0); // raw length: the server counted dropped rows too
+          result.weightSpent += weight;
+          const parsed = parseCandleSnapshot(body, w.tier, now, m.symbol);
           if (parsed.misaligned > 0) log(`backfill: ${m.symbol} ${w.tier} dropped ${parsed.misaligned} misaligned rows`);
           if (parsed.incomplete > 0) log(`backfill: ${m.symbol} ${w.tier} dropped ${parsed.incomplete} incomplete rows`);
           const fresh = parsed.rows.filter((row) => !seen.has(row.t));
@@ -206,7 +229,7 @@ export async function runBackfill(deps: BackfillDeps): Promise<BackfillResult> {
           inserted += n;
           result.rows += n;
           result.perMarket[m.symbol] = (result.perMarket[m.symbol] ?? 0) + n;
-          if (deps.env.requestGapMs > 0) await sleep(deps.env.requestGapMs);
+          if (deps.env.requestGapMs > 0) await sleep(paceDelayMs(weight, deps.env.requestGapMs));
         }
         log(`backfill: ${m.symbol} ${w.tier} inserted=${inserted}`);
       } catch (e) {
@@ -262,6 +285,7 @@ export function startBackfill(
       const r = await runBackfill(deps);
       result = r;
       snap.rows = r.rows;
+      logOut(`backfill: run done rows=${r.rows} weight=${r.weightSpent} markets=${r.markets} errors=${r.errors.length}`);
       for (const s of r.skipped) logOut(`backfill: skipped ${s}`);
       if (r.errors.length === 0) {
         snap.lastOkAt = at;

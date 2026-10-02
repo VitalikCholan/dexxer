@@ -6,7 +6,7 @@ import assert from "node:assert/strict";
 import type { DbPool } from "../src/db.js";
 import {
   HYPERLIQUID_INFO_URL, HlError, TIER_CHUNK_MS, TIER_INTERVAL, backfillEnvFromProcess, backfillWindows, candleSnapshotBody,
-  chunkRanges, nextBackfillDelay, parseCandleSnapshot, parseUniverse, runBackfill, startBackfill, toScaled, type BackfillEnv,
+  candleSnapshotWeight, chunkRanges, nextBackfillDelay, paceDelayMs, HL_BASE_WEIGHT, parseCandleSnapshot, parseUniverse, runBackfill, startBackfill, toScaled, type BackfillEnv,
 } from "../src/indexer/backfill.js";
 
 const D = 86_400_000;
@@ -223,6 +223,44 @@ test("runBackfill: meta failure → exactly one error and no candle requests; di
   assert.deepEqual(off.skipped, ["disabled: BACKFILL_ENABLED=false"]);
 });
 
+test("candleSnapshotWeight: 20 + 1 per 60 candles returned", () => {
+  for (const [n, w] of [[0, 20], [1, 21], [60, 21], [61, 22], [2880, 68], [2161, 57], [401, 27]]) assert.equal(candleSnapshotWeight(n), w, `n=${n}`);
+});
+
+test("paceDelayMs: 50 ms per weight unit, never below the configured gap", () => {
+  assert.equal(paceDelayMs(68, 500), 3400);
+  assert.equal(paceDelayMs(20, 500), 1000);
+  assert.equal(paceDelayMs(1, 500), 500);
+});
+
+test("runBackfill: sleeps paceDelayMs(weight) after meta and after each candleSnapshot; weightSpent sums the weights", async () => {
+  const delays: number[] = [];
+  const t0 = Date.UTC(2026, 9, 1);
+  const gap = 500;
+  const res = await runBackfill({
+    pool: fakePool([]), env: { ...ENV, m1Days: 0, h1Days: 0, d1FromMs: t0, requestGapMs: gap }, now: () => NOW, log: () => undefined,
+    markets: () => [{ symbol: "SOL" }],
+    sleep: async (ms) => { delays.push(ms); },
+    fetch: fakeFetch([], () => Array.from({ length: 130 }, (_, i) => hlRow(t0 + i * D, t0 + (i + 1) * D - 1))),
+  });
+  assert.deepEqual(res.errors, []);
+  const w = candleSnapshotWeight(130); // 23 — the RAW length counts, even for rows later dropped
+  assert.deepEqual(delays, [paceDelayMs(HL_BASE_WEIGHT, gap), paceDelayMs(w, gap)]);
+  assert.equal(res.weightSpent, HL_BASE_WEIGHT + w);
+});
+
+test("runBackfill: a 429 on one tier is an isolated error; the other tiers still run", async () => {
+  const t0 = Date.UTC(2026, 9, 1);
+  const res = await runBackfill({
+    pool: fakePool([]), env: { ...ENV, m1Days: 1, h1Days: 1, d1FromMs: t0 }, now: () => NOW, log: () => undefined,
+    markets: () => [{ symbol: "SOL" }],
+    fetch: fakeFetch([], (r) => (r.interval === "1m" ? new Response("", { status: 429 }) : r.interval === "1d" ? [hlRow(t0, t0 + D - 1)] : [])),
+  });
+  assert.equal(res.errors.length, 1);
+  assert.match(res.errors[0], /^SOL 1m: HTTP 429/);
+  assert.deepEqual(res.perMarket, { SOL: 1 });
+});
+
 /** Fake `setTimeout`/`clearTimeout`: records each scheduled run and its delay; `fire()` runs the pending one. */
 function fakeTimers() {
   const pending: { fn: () => void; delay: number }[] = [];
@@ -243,7 +281,7 @@ function fakeTimers() {
 const RETRY = 120_000;
 
 test("nextBackfillDelay: interval after a clean run, retry after errors / no markets / a throw", () => {
-  const ok = { rows: 0, perMarket: {}, skipped: [], errors: [], markets: 1 };
+  const ok = { rows: 0, perMarket: {}, skipped: [], errors: [], markets: 1, weightSpent: 0 };
   assert.equal(nextBackfillDelay(ok, ENV), ENV.intervalMs);
   assert.equal(nextBackfillDelay({ ...ok, errors: ["SOL 1m: HTTP 429"] }, ENV), RETRY);
   assert.equal(nextBackfillDelay({ ...ok, markets: 0 }, ENV), RETRY);
