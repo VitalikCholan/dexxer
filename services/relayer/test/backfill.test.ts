@@ -63,26 +63,47 @@ test("parseCandleSnapshot: string o/h/l/c → 1e6; misaligned and in-progress ro
     hlRow(t0 + D + 60_000, t0 + D + 3_600_000), // completed, but not a day start
     hlRow(t0 + 2 * D, t0 + 3 * D - 1), // still open at `now` (10-03 12:00)
   ];
-  const { rows, misaligned, incomplete } = parseCandleSnapshot(body, "1d", t0 + 2 * D + 12 * 3_600_000);
+  const { rows, misaligned, incomplete } = parseCandleSnapshot(body, "1d", t0 + 2 * D + 12 * 3_600_000, "SOL");
   assert.equal(misaligned, 1);
   assert.equal(incomplete, 1);
   assert.deepEqual(rows, [
     { t: t0, o: 1_500_000n, h: 2_000_000n, l: 1_000_000n, c: 1_750_000n },
     { t: t0 + D, o: 2_000_000n, h: 3_000_000n, l: 1_500_000n, c: 2_500_000n },
   ]);
-  assert.deepEqual(parseCandleSnapshot([], "1m", NOW), { rows: [], misaligned: 0, incomplete: 0 });
+  assert.deepEqual(parseCandleSnapshot([], "1m", NOW, "SOL"), { rows: [], misaligned: 0, incomplete: 0 });
   assert.equal(toScaled(123456.789012), 123_456_789_012n);
 });
 
 test("parseCandleSnapshot: null / non-array / non-numeric fields → HlError", () => {
   const t0 = Date.UTC(2026, 9, 1);
-  assert.throws(() => parseCandleSnapshot(null, "1d", NOW), HlError);
-  assert.throws(() => parseCandleSnapshot({ a: 1 }, "1d", NOW), HlError);
-  assert.throws(() => parseCandleSnapshot([null], "1d", NOW), HlError);
-  assert.throws(() => parseCandleSnapshot([hlRow(t0, t0 + D - 1, "abc")], "1d", NOW), HlError);
-  assert.throws(() => parseCandleSnapshot([{ ...hlRow(t0, t0 + D - 1), h: 2 }], "1d", NOW), HlError); // number, not string
-  assert.throws(() => parseCandleSnapshot([{ ...hlRow(t0, t0 + D - 1), t: "x" }], "1d", NOW), HlError);
-  assert.throws(() => parseCandleSnapshot([{ ...hlRow(t0, t0 + D - 1), T: undefined }], "1d", NOW), HlError);
+  assert.throws(() => parseCandleSnapshot(null, "1d", NOW, "SOL"), HlError);
+  assert.throws(() => parseCandleSnapshot({ a: 1 }, "1d", NOW, "SOL"), HlError);
+  assert.throws(() => parseCandleSnapshot([null], "1d", NOW, "SOL"), HlError);
+  assert.throws(() => parseCandleSnapshot([hlRow(t0, t0 + D - 1, "abc")], "1d", NOW, "SOL"), HlError);
+  assert.throws(() => parseCandleSnapshot([{ ...hlRow(t0, t0 + D - 1), h: 2 }], "1d", NOW, "SOL"), HlError); // number, not string
+  assert.throws(() => parseCandleSnapshot([{ ...hlRow(t0, t0 + D - 1), t: "x" }], "1d", NOW, "SOL"), HlError);
+  assert.throws(() => parseCandleSnapshot([{ ...hlRow(t0, t0 + D - 1), T: undefined }], "1d", NOW, "SOL"), HlError);
+});
+
+test("parseCandleSnapshot: bad price strings and inconsistent OHLC reject the whole chunk", () => {
+  const t0 = Date.UTC(2026, 9, 1);
+  const bad = (o: string, h: string, l: string, c: string) => assert.throws(() => parseCandleSnapshot([hlRow(t0, t0 + D - 1, o, h, l, c)], "1d", NOW, "SOL"), HlError, `${o}/${h}/${l}/${c}`);
+  bad("0x1A", "2", "1", "1.5"); // hex
+  bad("1.5", "1e3", "1", "1.5"); // exponent
+  bad(" 12 ", "20", "1", "1.5"); // whitespace
+  bad("-5", "2", "1", "1.5"); // negative
+  bad("0", "2", "1", "1.5"); // zero
+  bad("1.5", "1", "2", "1.5"); // h < l
+  bad("3", "2", "1", "1.5"); // o above h
+  bad("1.5", "2", "1", "0.5"); // c below l
+  assert.equal(parseCandleSnapshot([hlRow(t0, t0 + D - 1, "1", "2", "1", "2")], "1d", NOW, "SOL").rows.length, 1); // edges are fine
+});
+
+test("parseCandleSnapshot: a row for another coin or interval is an HlError", () => {
+  const t0 = Date.UTC(2026, 9, 1);
+  assert.throws(() => parseCandleSnapshot([{ ...hlRow(t0, t0 + D - 1), s: "BTC" }], "1d", NOW, "SOL"), HlError);
+  assert.throws(() => parseCandleSnapshot([{ ...hlRow(t0, t0 + D - 1), i: "1h" }], "1d", NOW, "SOL"), HlError);
+  assert.throws(() => parseCandleSnapshot([{ ...hlRow(t0, t0 + D - 1), s: undefined }], "1d", NOW, "SOL"), HlError);
 });
 
 test("backfillWindows + chunkRanges: three tiers, chunked by TIER_CHUNK_MS, last chunk clipped to `to`", () => {
@@ -102,7 +123,8 @@ function fakeFetch(calls: Call[], candles: Candles, meta: () => unknown = () => 
   return (async (input: string | URL | Request, init?: RequestInit) => {
     const body = JSON.parse(String(init?.body));
     calls.push({ url: String(input), contentType: (init?.headers as Record<string, string> | undefined)?.["Content-Type"], body });
-    const out = body.type === "meta" ? meta() : candles(body.req);
+    let out = body.type === "meta" ? meta() : candles(body.req);
+    if (Array.isArray(out)) out = out.map((r: object) => ({ ...r, s: body.req.coin, i: body.req.interval })); // a well-behaved server echoes coin/interval
     if (out instanceof Response) return out;
     return new Response(JSON.stringify(out), { status: 200 });
   }) as typeof fetch;
@@ -231,7 +253,7 @@ test("nextBackfillDelay: interval after a clean run, retry after errors / no mar
 test("startBackfill: runs once immediately, then on the interval; snapshot tracks runs and names the source; stop() clears the timer", async () => {
   const t = fakeTimers();
   const b = startBackfill({
-    pool: fakePool([]), env: ENV, now: () => NOW, log: () => undefined, markets: () => [{ symbol: "SOL" }], fetch: fakeFetch([], () => []),
+    pool: fakePool([]), logError: () => undefined, env: ENV, now: () => NOW, log: () => undefined, markets: () => [{ symbol: "SOL" }], fetch: fakeFetch([], () => []),
   }, t.timers);
   await new Promise((r) => setImmediate(r));
   assert.deepEqual(b.snapshot(), { enabled: true, lastRunAt: NOW, lastOkAt: NOW, lastError: null, rows: 0, source: "hyperliquid" });
@@ -244,7 +266,7 @@ test("startBackfill: a run with an error retries after BACKFILL_RETRY_MS, then b
   const t = fakeTimers();
   const status = { code: 429 };
   const b = startBackfill({
-    pool: fakePool([]), env: ENV, now: () => NOW, log: () => undefined, markets: () => [{ symbol: "SOL" }],
+    pool: fakePool([]), logError: () => undefined, env: ENV, now: () => NOW, log: () => undefined, markets: () => [{ symbol: "SOL" }],
     fetch: fakeFetch([], () => (status.code !== 200 ? new Response("", { status: status.code }) : [])),
   }, t.timers);
   await new Promise((r) => setImmediate(r));
@@ -261,7 +283,7 @@ test("startBackfill: a run that saw no markets (registry not read yet) retries a
   const t = fakeTimers();
   let list: { symbol: string }[] = [];
   const b = startBackfill({
-    pool: fakePool([]), env: ENV, now: () => NOW, log: () => undefined, markets: () => list, fetch: fakeFetch([], () => []),
+    pool: fakePool([]), logError: () => undefined, env: ENV, now: () => NOW, log: () => undefined, markets: () => list, fetch: fakeFetch([], () => []),
   }, t.timers);
   await new Promise((r) => setImmediate(r));
   assert.equal(b.snapshot().lastError, null);
@@ -276,7 +298,7 @@ test("startBackfill: disabled → no fetch, no timer, snapshot enabled=false", a
   const t = fakeTimers();
   let fetched = 0;
   const b = startBackfill({
-    pool: fakePool([]), env: { ...ENV, enabled: false }, markets: () => [{ symbol: "SOL" }],
+    pool: fakePool([]), logError: () => undefined, log: () => undefined, env: { ...ENV, enabled: false }, markets: () => [{ symbol: "SOL" }],
     fetch: (async () => { fetched++; return new Response(""); }) as typeof fetch,
   }, t.timers);
   await new Promise((r) => setImmediate(r));

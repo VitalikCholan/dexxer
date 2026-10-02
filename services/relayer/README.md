@@ -482,7 +482,7 @@ npm test        # node:test — keypairFromEnv b58 round-trip, health-payload st
                  # ixAccounts (trader AND relayer builders vs the IDL), poolBootstrap (tests/er bootstrap
                  # order), auth.ts (SIWS verification, challenge/siws/requireSession), the /sponsor + /nonce
                  # session gate, indexer/query.ts and knownSymbols (pure parsing)
-                 # **283 tests** = 269 passed + 14 Postgres skipped (run with `TEST_DATABASE_URL` they cover migrations 009/010 and the candles too)
+                 # **285 tests** = 271 passed + 14 Postgres skipped (run with `TEST_DATABASE_URL` they cover migrations 009/010 and the candles too)
                  # Needs DEXXER_IDL_DIR=$PWD/../../idl (the canonical IDL, as CI sets it).
 npx tsc --noEmit
 ```

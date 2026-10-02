@@ -98,20 +98,22 @@ export function candleSnapshotBody(coin: string, tier: StoredTier, fromMs: numbe
   return JSON.stringify({ type: "candleSnapshot", req: { coin, interval: TIER_INTERVAL[tier], startTime: fromMs, endTime: toMs } });
 }
 
+/** Plain positive decimal string only — no hex, exponent, sign or whitespace; `Number()` alone accepts all of those. */
 const decimal = (v: unknown): number | null => {
-  if (typeof v !== "string" || v.trim() === "") return null;
+  if (typeof v !== "string" || !/^\d+(\.\d+)?$/.test(v)) return null;
   const x = Number(v);
-  return Number.isFinite(x) ? x : null;
+  return Number.isFinite(x) && x > 0 ? x : null;
 };
 
 /**
  * `candleSnapshot` body → completed, aligned rows. A row whose bucket has not
  * ended (`T >= now`, the in-progress candle) or whose `t` is not a bucket start
  * of the tier is dropped and counted; the rest is 1e6-scaled. A body that is
- * not an array, or a row without numeric `t`/`T` and decimal-string o/h/l/c, is
- * an `HlError`.
+ * not an array, a row for another coin/interval (`s`/`i`), a row without numeric
+ * `t`/`T` and positive decimal-string o/h/l/c, or one with `h < l` or `o`/`c`
+ * outside `[l, h]`, is an `HlError` (the whole chunk is rejected).
  */
-export function parseCandleSnapshot(body: unknown, tier: StoredTier, now: number): { rows: CandleRow[]; misaligned: number; incomplete: number } {
+export function parseCandleSnapshot(body: unknown, tier: StoredTier, now: number, coin: string): { rows: CandleRow[]; misaligned: number; incomplete: number } {
   if (!Array.isArray(body)) throw new HlError("candleSnapshot: body is not an array");
   const rows: CandleRow[] = [];
   let misaligned = 0;
@@ -122,6 +124,9 @@ export function parseCandleSnapshot(body: unknown, tier: StoredTier, now: number
     if (!o || typeof o.t !== "number" || !Number.isFinite(o.t) || typeof o.T !== "number" || !Number.isFinite(o.T) || px.length !== 4 || px.some((x) => x === null)) {
       throw new HlError(`candleSnapshot: row ${i} is malformed`);
     }
+    if (o.s !== coin || o.i !== TIER_INTERVAL[tier]) throw new HlError(`candleSnapshot: row ${i} is for ${String(o.s)}/${String(o.i)}, expected ${coin}/${TIER_INTERVAL[tier]}`);
+    const [op, hi, lo, cl] = px as number[];
+    if (hi < lo || op < lo || op > hi || cl < lo || cl > hi) throw new HlError(`candleSnapshot: row ${i} violates l <= o,c <= h`);
     if (o.T >= now) {
       incomplete += 1;
       return;
@@ -130,7 +135,6 @@ export function parseCandleSnapshot(body: unknown, tier: StoredTier, now: number
       misaligned += 1;
       return;
     }
-    const [op, hi, lo, cl] = px as number[];
     rows.push({ t: o.t, o: toScaled(op), h: toScaled(hi), l: toScaled(lo), c: toScaled(cl) });
   });
   return { rows, misaligned, incomplete };
@@ -138,6 +142,8 @@ export function parseCandleSnapshot(body: unknown, tier: StoredTier, now: number
 
 export interface BackfillDeps {
   pool: DbPool;
+  /** Error lines (default `console.error`). */
+  logError?: (...args: unknown[]) => void;
   env: BackfillEnv;
   markets: () => { symbol: string }[];
   fetch: typeof fetch;
@@ -190,7 +196,7 @@ export async function runBackfill(deps: BackfillDeps): Promise<BackfillResult> {
         for (const ch of chunkRanges(w.fromMs, w.toMs, TIER_CHUNK_MS[w.tier])) {
           const r = await postInfo(deps, candleSnapshotBody(m.symbol, w.tier, ch.fromMs, ch.toMs));
           if (!r.ok) throw new Error(`HTTP ${r.status}`);
-          const parsed = parseCandleSnapshot(await r.json(), w.tier, now);
+          const parsed = parseCandleSnapshot(await r.json(), w.tier, now, m.symbol);
           if (parsed.misaligned > 0) log(`backfill: ${m.symbol} ${w.tier} dropped ${parsed.misaligned} misaligned rows`);
           if (parsed.incomplete > 0) log(`backfill: ${m.symbol} ${w.tier} dropped ${parsed.incomplete} incomplete rows`);
           const fresh = parsed.rows.filter((row) => !seen.has(row.t));
@@ -240,6 +246,8 @@ export function startBackfill(
   const snap: BackfillSnapshot = { enabled: deps.env.enabled, lastRunAt: null, lastOkAt: null, lastError: null, rows: 0, source: "hyperliquid" };
   let timer: ReturnType<typeof setTimeout> | null = null;
   let stopped = false;
+  const logOut = deps.log ?? console.log;
+  const logErr = deps.logError ?? console.error;
   const scheduleNext = (delay: number): void => {
     if (stopped) return;
     timer = st(() => { timer = null; void run(); }, delay);
@@ -253,25 +261,25 @@ export function startBackfill(
       const r = await runBackfill(deps);
       result = r;
       snap.rows = r.rows;
-      for (const s of r.skipped) (deps.log ?? console.log)(`backfill: skipped ${s}`);
+      for (const s of r.skipped) logOut(`backfill: skipped ${s}`);
       if (r.errors.length === 0) {
         snap.lastOkAt = at;
         snap.lastError = null;
       } else {
         snap.lastError = r.errors.join("; ");
-        for (const e of r.errors) console.error(`backfill: ${e}`);
+        for (const e of r.errors) logErr(`backfill: ${e}`);
       }
-      if (r.markets === 0 && r.errors.length === 0) (deps.log ?? console.log)("backfill: no markets yet — retrying soon");
+      if (r.markets === 0 && r.errors.length === 0) logOut("backfill: no markets yet — retrying soon");
     } catch (e) {
       snap.lastError = e instanceof Error ? e.message : String(e);
-      console.error("backfill: run failed", snap.lastError);
+      logErr("backfill: run failed", snap.lastError);
     }
     scheduleNext(nextBackfillDelay(result, deps.env));
   };
   if (snap.enabled) {
     void run();
   } else {
-    console.log("backfill: BACKFILL_ENABLED=false — candle history accrues from oracle ticks only");
+    logOut("backfill: BACKFILL_ENABLED=false — candle history accrues from oracle ticks only");
   }
   return {
     snapshot: () => ({ ...snap }),
