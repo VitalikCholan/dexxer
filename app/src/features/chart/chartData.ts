@@ -62,7 +62,45 @@ export interface HlcPoint {
 
 /** What the WebView draws: which series family, and its points. */
 export type SeriesData =
-  { kind: 'ohlc'; data: OhlcPoint[] } | { kind: 'value'; data: ValuePoint[] } | { kind: 'hlc'; data: HlcPoint[] }
+  | { kind: 'ohlc'; data: (OhlcPoint | Whitespace)[] }
+  | { kind: 'value'; data: (ValuePoint | Whitespace)[] }
+  | { kind: 'hlc'; data: (HlcPoint | Whitespace)[] }
+
+/** A lightweight-charts whitespace item: a slot on the time axis with nothing drawn. */
+export interface Whitespace {
+  time: number
+}
+
+/** Longest gap (in steps) that gets filled; wider gaps stay gaps so a lone old candle cannot create thousands of slots. */
+export const WHITESPACE_MAX_GAP = 1000
+
+export function isWhitespace(p: { time: number; value?: unknown; close?: unknown; high?: unknown }): p is Whitespace {
+  return p.value === undefined && p.close === undefined && p.high === undefined
+}
+
+/**
+ * `1s` (spec §2.10.5): the oracle prints every ~2 s, so about every other
+ * second has no candle. Whitespace keeps the time axis uniform without
+ * inventing prices — the relayer never synthesizes buckets, the client
+ * only marks where they are missing.
+ */
+export function fillWhitespace<P extends { time: number }>(
+  points: readonly P[],
+  stepSec: number,
+  maxGap = WHITESPACE_MAX_GAP,
+): (P | Whitespace)[] {
+  const out: (P | Whitespace)[] = []
+  for (let i = 0; i < points.length; i++) {
+    const p = points[i]
+    if (i > 0) {
+      const prev = points[i - 1].time
+      const gap = Math.round((p.time - prev) / stepSec)
+      if (gap > 1 && gap <= maxGap) for (let k = 1; k < gap; k++) out.push({ time: prev + k * stepSec })
+    }
+    out.push(p)
+  }
+  return out
+}
 
 /** One live mark from the indexer (`useMark`/WS), price raw 1e6 as a number. */
 export interface MarkPoint {

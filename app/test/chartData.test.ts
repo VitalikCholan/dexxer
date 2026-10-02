@@ -4,11 +4,14 @@ import assert from 'node:assert/strict'
 import {
   CHART_TYPES,
   MARK_TAIL_MAX,
+  WHITESPACE_MAX_GAP,
   appendMark,
   ema,
+  fillWhitespace,
   foldMarks,
   heikinAshi,
   isChartType,
+  isWhitespace,
   seriesFor,
   tailForKey,
 } from '../src/features/chart/chartData'
@@ -152,4 +155,43 @@ test('ema: seeded with the first close, k = 2 / (period + 1)', () => {
     e.map((p) => p.value),
     [10, 15, 17.5],
   )
+})
+
+test('fillWhitespace: inserts {time} items for missing steps; keeps real points; leaves gaps wider than maxGap alone', () => {
+  const pts = [
+    { time: 10, value: 1 },
+    { time: 13, value: 2 },
+    { time: 14, value: 3 },
+    { time: 5000, value: 4 },
+  ]
+  const out = fillWhitespace(pts, 1, 1000)
+  assert.deepEqual(out.slice(0, 5), [
+    { time: 10, value: 1 },
+    { time: 11 },
+    { time: 12 },
+    { time: 13, value: 2 },
+    { time: 14, value: 3 },
+  ])
+  assert.deepEqual(out[5], { time: 5000, value: 4 }) // 4986-step gap > maxGap: no fill
+  assert.equal(out.length, 6)
+  assert.deepEqual(fillWhitespace([], 1), [])
+  assert.deepEqual(fillWhitespace([{ time: 7, value: 1 }], 1), [{ time: 7, value: 1 }])
+  assert.ok(isWhitespace({ time: 11 }))
+  assert.ok(!isWhitespace({ time: 11, value: 0 }))
+  assert.equal(WHITESPACE_MAX_GAP, 1000)
+})
+
+test('fillWhitespace: non-1 steps and ohlc points', () => {
+  const out = fillWhitespace(
+    [
+      { time: 0, open: 1, high: 1, low: 1, close: 1 },
+      { time: 120, open: 2, high: 2, low: 2, close: 2 },
+    ],
+    60,
+  )
+  assert.deepEqual(
+    out.map((p) => p.time),
+    [0, 60, 120],
+  )
+  assert.deepEqual(out[1], { time: 60 })
 })

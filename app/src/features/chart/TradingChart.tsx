@@ -17,7 +17,16 @@ import { useTextStyle } from '@/src/ui/styles'
 import { Sheet } from '@/src/ui/Sheet'
 import { useCandles, useMark } from '@/src/lib/indexer'
 import { type PositionSlot } from '@/src/lib/positions'
-import { CHART_TYPES, TIMEFRAMES, ema, foldMarks, seriesFor, type ChartType, type Tf } from './chartData'
+import {
+  CHART_TYPES,
+  TIMEFRAMES,
+  ema,
+  fillWhitespace,
+  foldMarks,
+  seriesFor,
+  type ChartType,
+  type Tf,
+} from './chartData'
 import { chartHtml, type ChartColors } from './chartHtml'
 import { useChartPrefs } from './useChartPrefs'
 import { useMarkTail } from './useMarkTail'
@@ -86,11 +95,15 @@ export function TradingChart({ symbol, tf, onTfChange, position }: TradingChartP
   const mark = useMark(symbol)
   const tail = useMarkTail(mark.data, candles.dataUpdatedAt, symbol)
   const merged = useMemo(() => foldMarks(candles.data ?? [], tail, tf), [candles.data, tail, tf])
-  const series = useMemo(() => seriesFor(prefs.type, merged), [prefs.type, merged])
-  const emaPoints = useMemo(
-    () => (prefs.ema ? ema(seriesFor('candles', merged).data as { time: number; close: number }[], EMA_PERIOD) : null),
-    [prefs.ema, merged],
-  )
+  const series = useMemo(() => {
+    const s = seriesFor(prefs.type, merged)
+    return tf === '1s' ? ({ ...s, data: fillWhitespace(s.data, 1) } as typeof s) : s
+  }, [prefs.type, merged, tf])
+  const emaPoints = useMemo(() => {
+    if (!prefs.ema) return null
+    const pts = ema(seriesFor('candles', merged).data as { time: number; close: number }[], EMA_PERIOD)
+    return tf === '1s' ? fillWhitespace(pts, 1) : pts
+  }, [prefs.ema, merged, tf])
   const lines = useMemo(
     () =>
       prefs.positions && position

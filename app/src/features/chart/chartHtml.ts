@@ -13,7 +13,7 @@
 // owns only what must follow the finger — the OHLC row under the crosshair
 // and the High/Low of the visible range; everything else (series data per
 // chart type, EMA, the live mark folded in) arrives computed from
-// `chartData.ts`. Colors come in from the design tokens (`ChartColors`);
+// `chartData.ts` — on `1s` it may carry whitespace items ({ time } only). Colors come in from the design tokens (`ChartColors`);
 // nothing here hard-codes a palette.
 import { LWC_SOURCE } from './lwcSource.generated'
 
@@ -131,27 +131,34 @@ const BRIDGE = String.raw`
     main.applyOptions({ priceLineColor: C.accent, title: 'Mark' });
   }
 
+  // Series data may carry whitespace items ({ time } only, on 1s): they keep
+  // the time axis uniform and are never drawn, read or counted as bars.
+  function real(p) { return p.value != null || p.close != null || p.high != null; }
   function setData(s) {
     kind = s.kind;
     if (s.kind === 'hlc') {
-      series[0].setData(s.data.map(function (p) { return { time: p.time, value: p.high }; }));
-      series[1].setData(s.data.map(function (p) { return { time: p.time, value: p.low }; }));
-      series[2].setData(s.data.map(function (p) { return { time: p.time, value: p.close }; }));
+      series[0].setData(s.data.map(function (p) { return real(p) ? { time: p.time, value: p.high } : { time: p.time }; }));
+      series[1].setData(s.data.map(function (p) { return real(p) ? { time: p.time, value: p.low } : { time: p.time }; }));
+      series[2].setData(s.data.map(function (p) { return real(p) ? { time: p.time, value: p.close } : { time: p.time }; }));
     } else if (chartType === 'columns') {
       // Columns rise from just under the lowest close, not from 0 — from 0
       // the price scale spans 0…max and every column looks the same height.
-      var vals = s.data.map(function (p) { return p.value; });
+      var vals = s.data.filter(real).map(function (p) { return p.value; });
       var lo = Math.min.apply(null, vals), hi = Math.max.apply(null, vals);
       main.applyOptions({ base: lo - (hi - lo) * 0.1 });
-      main.setData(s.data.map(function (p, i) {
-        var prev = i > 0 ? s.data[i - 1].value : p.value;
-        return { time: p.time, value: p.value, color: p.value >= prev ? C.up : C.down };
+      var prevVal = null;
+      main.setData(s.data.map(function (p) {
+        if (!real(p)) return { time: p.time };
+        var color = prevVal == null || p.value >= prevVal ? C.up : C.down;
+        prevVal = p.value;
+        return { time: p.time, value: p.value, color: color };
       }));
     } else {
       main.setData(s.data);
     }
-    if (chartType === 'baseline' && s.data.length) main.applyOptions({ baseValue: { type: 'price', price: s.data[0].value } });
-    bars = s.data.slice();
+    var firstReal = s.data.filter(real)[0];
+    if (chartType === 'baseline' && firstReal) main.applyOptions({ baseValue: { type: 'price', price: firstReal.value } });
+    bars = s.data.filter(real);
   }
 
   function updatePoint(p) {
