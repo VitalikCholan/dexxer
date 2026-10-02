@@ -8,7 +8,8 @@
 // (Pyth Pro: trial key only; Pyth Benchmarks/Hermes: 401/404); Binance was
 // rejected (`HYPEUSDT` spot listed only on 24.09.2026).
 //
-// Limits: `1m` reaches back only ≈ 4 days, ≤ 5000 candles per response (our
+// Limits: only the most recent 5000 candles per interval exist (`1m` ≈ 3.5 d,
+// `1h` ≈ 208 d, `1d` ≈ 13.7 y — documented), ≤ 5000 candles per response (our
 // chunks stay below it: 1m 2 d, 1h 90 d, 1d 400 d), `endTime` is INCLUSIVE
 // (chunk boundaries repeat one candle — deduped per run, and harmless anyway
 // under ON CONFLICT DO NOTHING), and the in-progress candle is returned too —
@@ -50,7 +51,7 @@ export function backfillEnvFromProcess(): BackfillEnv {
     enabled: (process.env.BACKFILL_ENABLED ?? "true") !== "false",
     intervalMs: envNum("BACKFILL_INTERVAL_MS", 86_400_000, 600_000),
     retryMs: envNum("BACKFILL_RETRY_MS", 600_000, 60_000),
-    m1Days: envNum("BACKFILL_1M_DAYS", 4, 0), // Hyperliquid keeps ≈ 4 days of 1m
+    m1Days: envNum("BACKFILL_1M_DAYS", 4, 0), // Hyperliquid keeps the last 5000 1m candles (≈ 3.5 days)
     h1Days: envNum("BACKFILL_1H_DAYS", 90, 0),
     d1FromMs: Number.isFinite(from) ? from : Date.UTC(2023, 0, 1), // Hyperliquid's 1d history starts in 2023 (SOL); a later-listed coin just returns from its launch
     requestGapMs: envNum("BACKFILL_REQUEST_GAP_MS", 500, 0),
