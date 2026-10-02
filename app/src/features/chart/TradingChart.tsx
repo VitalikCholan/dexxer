@@ -1,37 +1,48 @@
 // app/src/features/chart/TradingChart.tsx
 //
 // C.5: the TradingView-style chart — lightweight-charts in a WebView
-// (`chartHtml.ts`), fed from the indexer's candles with the live mark folded
-// into the last bar (`chartData.ts`). Pan and pinch-zoom, crosshair with an
+// (`chartHtml.ts`), fed from the indexer's candles with the mark stream folded
+// into the newest buckets (`chartData.ts`). Pan and pinch-zoom, crosshair with an
 // OHLC row, High/Low of the visible range and the mark's last-price line are
 // the library's (driven from the page), plus −/+/↺ zoom buttons for one-hand
 // use; the toolbar here picks the
 // timeframe, the chart type (starred types get a quick-access chip, the rest
 // are in a sheet), auto/log scale, EMA(20) and entry / liq lines of the open
-// position. Only 1m / 5m / 15m: longer timeframes need the relayer.
+// position. All 16 timeframes; live marks fold in via `useMarkTail`.
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Linking, Pressable, ScrollView, Text, View } from 'react-native'
 import { WebView, type WebViewMessageEvent } from 'react-native-webview'
 import { useTheme } from '@/src/theme'
 import { useTextStyle } from '@/src/ui/styles'
 import { Sheet } from '@/src/ui/Sheet'
-import { useCandles } from '@/src/lib/indexer'
+import { useCandles, useMark } from '@/src/lib/indexer'
 import { type PositionSlot } from '@/src/lib/positions'
-import { CHART_TYPES, ema, seriesFor, withLiveMark, type ChartType, type Tf } from './chartData'
+import {
+  CHART_TYPES,
+  TIMEFRAMES,
+  ema,
+  fillWhitespace,
+  foldMarks,
+  liveUpdateKind,
+  scrollTargetFor,
+  secondsVisibleFor,
+  seriesFor,
+  type Rect1D,
+  type ChartType,
+  type Tf,
+} from './chartData'
 import { chartHtml, type ChartColors } from './chartHtml'
 import { useChartPrefs } from './useChartPrefs'
+import { useMarkTail } from './useMarkTail'
 
 const HEIGHT = 300
 const EMA_PERIOD = 20
-const TIMEFRAMES: Tf[] = ['1m', '5m', '15m']
 
 export interface TradingChartProps {
   /** Market symbol whose candles are drawn. */
   symbol: string
   tf: Tf
   onTfChange: (tf: Tf) => void
-  /** Live mark, raw 1e6. */
-  markUsd: bigint | null
   /** The same market's slot — entry / liq lines; null when there is none. */
   position: PositionSlot | null
 }
@@ -58,7 +69,7 @@ function Pill({ label, active, onPress }: { label: string; active?: boolean; onP
   )
 }
 
-export function TradingChart({ symbol, tf, onTfChange, markUsd, position }: TradingChartProps) {
+export function TradingChart({ symbol, tf, onTfChange, position }: TradingChartProps) {
   const { colors, space } = useTheme()
   const caption = useTextStyle('caption')
   const body = useTextStyle('body')
@@ -67,6 +78,21 @@ export function TradingChart({ symbol, tf, onTfChange, markUsd, position }: Trad
   const [picker, setPicker] = useState(false)
   const [ready, setReady] = useState(false)
   const web = useRef<WebView>(null)
+  const tfScroll = useRef<ScrollView>(null)
+  const tfRect = useRef<Partial<Record<Tf, Rect1D>>>({})
+  const scrollX = useRef(0)
+  const viewportW = useRef(0)
+  // Scroll only when the selected pill is not fully visible, and by the minimum.
+  const scrollToTf = (t: Tf, animated: boolean) => {
+    const pill = tfRect.current[t]
+    if (!pill || viewportW.current === 0) return
+    const x = scrollTargetFor(pill, { x: scrollX.current, width: viewportW.current }, space.sm)
+    if (x !== null) tfScroll.current?.scrollTo({ x, animated })
+  }
+  useEffect(() => {
+    scrollToTf(tf, true)
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- scrollToTf only closes over space.sm
+  }, [tf, space.sm])
 
   const chartColors: ChartColors = useMemo(
     () => ({
@@ -85,14 +111,18 @@ export function TradingChart({ symbol, tf, onTfChange, markUsd, position }: Trad
   )
   const html = useMemo(() => chartHtml(chartColors), [chartColors])
 
-  // eslint-disable-next-line react-hooks/purity -- the live bucket only needs the approximate wall clock at render
-  const now = Date.now()
-  const merged = useMemo(() => withLiveMark(candles.data ?? [], markUsd, tf, now), [candles.data, markUsd, tf, now])
-  const series = useMemo(() => seriesFor(prefs.type, merged), [prefs.type, merged])
-  const emaPoints = useMemo(
-    () => (prefs.ema ? ema(seriesFor('candles', merged).data as { time: number; close: number }[], EMA_PERIOD) : null),
-    [prefs.ema, merged],
-  )
+  const mark = useMark(symbol)
+  const tail = useMarkTail(mark.data, candles.dataUpdatedAt, symbol)
+  const merged = useMemo(() => foldMarks(candles.data ?? [], tail, tf), [candles.data, tail, tf])
+  const series = useMemo(() => {
+    const s = seriesFor(prefs.type, merged)
+    return tf === '1s' ? ({ ...s, data: fillWhitespace(s.data, 1) } as typeof s) : s
+  }, [prefs.type, merged, tf])
+  const emaPoints = useMemo(() => {
+    if (!prefs.ema) return null
+    const pts = ema(seriesFor('candles', merged).data as { time: number; close: number }[], EMA_PERIOD)
+    return tf === '1s' ? fillWhitespace(pts, 1) : pts
+  }, [prefs.ema, merged, tf])
   const lines = useMemo(
     () =>
       prefs.positions && position
@@ -105,15 +135,15 @@ export function TradingChart({ symbol, tf, onTfChange, markUsd, position }: Trad
     web.current?.injectJavaScript(`window.__dexxer && window.__dexxer(${JSON.stringify(msg)}); true;`)
   }
 
-  // Full redraw when the shape of what is drawn changes: new candles from
-  // the indexer, a different type, timeframe, scale, EMA or lines. The
-  // view refits only on a timeframe or type change, so a pinch-zoom
-  // survives the 30 s candle refresh.
-  const lastView = useRef('')
-  const key = `${tf}|${prefs.type}`
-  const candleStamp = candles.dataUpdatedAt
-  useEffect(() => {
-    if (!ready || series.data.length === 0) return
+  // What the page currently draws: `symbol|tf` of the last `render` with
+  // data, null before the first one, after a page reload and after an empty
+  // render. A tick is sent only onto the series it belongs to.
+  const renderedFor = useRef<string | null>(null)
+  // `symbol|tf` the page was last cleared for, so an empty series is sent once, not on every refetch.
+  const clearedFor = useRef<string | null>(null)
+  const drawKey = `${symbol}|${tf}`
+
+  function sendRender(resetView: boolean) {
     send({
       type: 'render',
       chartType: prefs.type,
@@ -121,23 +151,60 @@ export function TradingChart({ symbol, tf, onTfChange, markUsd, position }: Trad
       ema: emaPoints,
       lines,
       scale: prefs.log ? 'log' : 'auto',
-      resetView: lastView.current !== key,
+      resetView,
+      secondsVisible: secondsVisibleFor(tf),
     })
+  }
+
+  // Full redraw when the shape of what is drawn changes: new candles from
+  // the indexer, a different market, type, timeframe, scale, EMA or lines.
+  // The view refits only on a market, timeframe or type change, so a
+  // pinch-zoom survives the 30 s candle refresh.
+  const lastView = useRef('')
+  const key = `${symbol}|${tf}|${prefs.type}`
+  const candleStamp = candles.dataUpdatedAt
+  useEffect(() => {
+    if (!ready) return
+    if (series.data.length === 0) {
+      // Nothing for this market/tf yet (loading, or the indexer has no
+      // candles and no mark arrived): never leave another market's or
+      // timeframe's chart on screen under it. A chart this market/tf already
+      // drew (a fresh `1s` built from marks alone) stays until data comes.
+      if (renderedFor.current !== drawKey && clearedFor.current !== drawKey) {
+        sendRender(true)
+        clearedFor.current = drawKey
+        renderedFor.current = null
+        lastView.current = ''
+      }
+      return
+    }
+    sendRender(lastView.current !== key)
     lastView.current = key
+    renderedFor.current = drawKey
+    clearedFor.current = null
     // `series` / `emaPoints` also change on every mark; those go through the tick effect below.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ready, candleStamp, key, prefs.log, prefs.ema, lines])
 
-  // Mark ticks: only the last bar (and EMA point) moves.
+  // Mark ticks: only the last bar (and EMA point) moves — when the page
+  // holds this market/tf. A mark that beats the first candle render of a new
+  // market/tf draws the whole series instead (`liveUpdateKind`).
   useEffect(() => {
-    if (!ready || series.data.length === 0) return
-    send({
-      type: 'tick',
-      point: series.data[series.data.length - 1],
-      emaPoint: emaPoints ? emaPoints[emaPoints.length - 1] : null,
-    })
+    if (!ready) return
+    const kind = liveUpdateKind(renderedFor.current, drawKey, series.data.length > 0)
+    if (kind === 'tick') {
+      send({
+        type: 'tick',
+        point: series.data[series.data.length - 1],
+        emaPoint: emaPoints ? emaPoints[emaPoints.length - 1] : null,
+      })
+    } else if (kind === 'render') {
+      sendRender(true)
+      renderedFor.current = drawKey
+      clearedFor.current = null
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [markUsd])
+  }, [tail])
 
   function onMessage(e: WebViewMessageEvent) {
     try {
@@ -148,6 +215,8 @@ export function TradingChart({ symbol, tf, onTfChange, markUsd, position }: Trad
       }
       if (msg.type === 'ready') {
         lastView.current = ''
+        renderedFor.current = null
+        clearedFor.current = null
         setReady(true)
       }
     } catch {
@@ -165,9 +234,31 @@ export function TradingChart({ symbol, tf, onTfChange, markUsd, position }: Trad
 
   return (
     <View style={{ gap: space.sm }}>
-      <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: space.xs }}>
+      <ScrollView
+        ref={tfScroll}
+        horizontal
+        showsHorizontalScrollIndicator={false}
+        contentContainerStyle={{ gap: space.xs }}
+        scrollEventThrottle={16}
+        onScroll={(e) => {
+          scrollX.current = e.nativeEvent.contentOffset.x
+        }}
+        onLayout={(e) => {
+          viewportW.current = e.nativeEvent.layout.width
+          scrollToTf(tf, false)
+        }}
+      >
         {TIMEFRAMES.map((t) => (
-          <Pill key={t} label={t} active={t === tf} onPress={() => onTfChange(t)} />
+          <View
+            key={t}
+            onLayout={(e) => {
+              const { x, width } = e.nativeEvent.layout
+              tfRect.current[t] = { x, width }
+              if (t === tf) scrollToTf(t, false)
+            }}
+          >
+            <Pill label={t} active={t === tf} onPress={() => onTfChange(t)} />
+          </View>
         ))}
         <View style={{ width: space.sm }} />
         {/* First, so it never scrolls out of reach behind the starred types. */}

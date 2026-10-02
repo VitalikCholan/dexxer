@@ -4,7 +4,7 @@
 // scripts/gen-lwc.ts, no network) plus a small bridge. React Native sends
 // JSON messages through `window.__dexxer(msg)` (`injectJavaScript`):
 //
-//   { type: 'render', series, ema, lines, scale, resetView }  full redraw
+//   { type: 'render', series, ema, lines, scale, resetView, secondsVisible }  full redraw (empty series = clear)
 //   { type: 'tick', point, emaPoint }                          last bar only
 //   { type: 'zoom', dir: 1 | -1 | 0 }                          in / out / reset
 //
@@ -13,7 +13,7 @@
 // owns only what must follow the finger — the OHLC row under the crosshair
 // and the High/Low of the visible range; everything else (series data per
 // chart type, EMA, the live mark folded in) arrives computed from
-// `chartData.ts`. Colors come in from the design tokens (`ChartColors`);
+// `chartData.ts` — on `1s` it may carry whitespace items ({ time } only). Colors come in from the design tokens (`ChartColors`);
 // nothing here hard-codes a palette.
 import { LWC_SOURCE } from './lwcSource.generated'
 
@@ -38,9 +38,14 @@ const BRIDGE = String.raw`
   var L = LightweightCharts;
   var el = document.getElementById('chart');
   var ohlcEl = document.getElementById('ohlc');
+  var secondsVisible = false;  // set by each render message (1s timeframe)
+  function timeOpts() {
+    return secondsVisible ? { hour: '2-digit', minute: '2-digit', second: '2-digit' } : { hour: '2-digit', minute: '2-digit' };
+  }
   var chart = L.createChart(el, {
     autoSize: true,
-    layout: { background: { type: 'solid', color: C.bg }, textColor: C.textDim, fontFamily: 'monospace', fontSize: 11, attributionLogo: false },
+    // Apache-2.0 NOTICE of lightweight-charts: the TradingView attribution must stay visible. The link opens in the system browser (TradingChart's onShouldStartLoadWithRequest).
+    layout: { background: { type: 'solid', color: C.bg }, textColor: C.textDim, fontFamily: 'monospace', fontSize: 11, attributionLogo: true },
     grid: { vertLines: { color: C.grid }, horzLines: { color: C.grid } },
     rightPriceScale: { borderColor: C.border },
     timeScale: { borderColor: C.border, timeVisible: true, secondsVisible: false, rightOffset: 4, barSpacing: 6, minBarSpacing: 0.5 },
@@ -51,14 +56,14 @@ const BRIDGE = String.raw`
     localization: {
       timeFormatter: function (t) {
         var d = new Date(t * 1000);
-        return d.toLocaleDateString([], { month: 'short', day: 'numeric' }) + ' ' + d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+        return d.toLocaleDateString([], { month: 'short', day: 'numeric' }) + ' ' + d.toLocaleTimeString([], timeOpts());
       },
     },
   });
   chart.timeScale().applyOptions({
     tickMarkFormatter: function (t, kind) {
       var d = new Date(t * 1000);
-      return kind < 3 ? d.toLocaleDateString([], { month: 'short', day: 'numeric' }) : d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+      return kind < 3 ? d.toLocaleDateString([], { month: 'short', day: 'numeric' }) : d.toLocaleTimeString([], timeOpts());
     },
   });
 
@@ -131,27 +136,44 @@ const BRIDGE = String.raw`
     main.applyOptions({ priceLineColor: C.accent, title: 'Mark' });
   }
 
+  // Series data may carry whitespace items ({ time } only, on 1s): they keep
+  // the time axis uniform and are never drawn, read or counted as bars.
+  function real(p) { return p.value != null || p.close != null || p.high != null; }
   function setData(s) {
     kind = s.kind;
+    // An empty series (a market or timeframe with nothing to draw yet) clears
+    // the chart, so the previous one never stays on screen under it; the
+    // columns base and the baseline below need at least one real point.
+    if (!s.data.length) {
+      series.forEach(function (x) { x.setData([]); });
+      bars = [];
+      return;
+    }
     if (s.kind === 'hlc') {
-      series[0].setData(s.data.map(function (p) { return { time: p.time, value: p.high }; }));
-      series[1].setData(s.data.map(function (p) { return { time: p.time, value: p.low }; }));
-      series[2].setData(s.data.map(function (p) { return { time: p.time, value: p.close }; }));
+      series[0].setData(s.data.map(function (p) { return real(p) ? { time: p.time, value: p.high } : { time: p.time }; }));
+      series[1].setData(s.data.map(function (p) { return real(p) ? { time: p.time, value: p.low } : { time: p.time }; }));
+      series[2].setData(s.data.map(function (p) { return real(p) ? { time: p.time, value: p.close } : { time: p.time }; }));
     } else if (chartType === 'columns') {
       // Columns rise from just under the lowest close, not from 0 — from 0
       // the price scale spans 0…max and every column looks the same height.
-      var vals = s.data.map(function (p) { return p.value; });
-      var lo = Math.min.apply(null, vals), hi = Math.max.apply(null, vals);
-      main.applyOptions({ base: lo - (hi - lo) * 0.1 });
-      main.setData(s.data.map(function (p, i) {
-        var prev = i > 0 ? s.data[i - 1].value : p.value;
-        return { time: p.time, value: p.value, color: p.value >= prev ? C.up : C.down };
+      var vals = s.data.filter(real).map(function (p) { return p.value; });
+      if (vals.length) {
+        var lo = Math.min.apply(null, vals), hi = Math.max.apply(null, vals);
+        main.applyOptions({ base: lo - (hi - lo) * 0.1 });
+      }
+      var prevVal = null;
+      main.setData(s.data.map(function (p) {
+        if (!real(p)) return { time: p.time };
+        var color = prevVal == null || p.value >= prevVal ? C.up : C.down;
+        prevVal = p.value;
+        return { time: p.time, value: p.value, color: color };
       }));
     } else {
       main.setData(s.data);
     }
-    if (chartType === 'baseline' && s.data.length) main.applyOptions({ baseValue: { type: 'price', price: s.data[0].value } });
-    bars = s.data.slice();
+    var firstReal = s.data.filter(real)[0];
+    if (chartType === 'baseline' && firstReal) main.applyOptions({ baseValue: { type: 'price', price: firstReal.value } });
+    bars = s.data.filter(real);
   }
 
   function updatePoint(p) {
@@ -187,12 +209,13 @@ const BRIDGE = String.raw`
   function refreshHighLow() {
     hlLines.forEach(function (l) { main.removePriceLine(l); });
     hlLines = [];
-    var r = chart.timeScale().getVisibleLogicalRange();
+    // By time, not index: logical indices count whitespace slots, bars does not.
+    var r = chart.timeScale().getVisibleRange();
     if (!r || !bars.length) return;
-    var from = Math.max(0, Math.floor(r.from)), to = Math.min(bars.length - 1, Math.ceil(r.to));
     var hi = -Infinity, lo = Infinity;
-    for (var i = from; i <= to; i++) {
+    for (var i = 0; i < bars.length; i++) {
       var b = bars[i];
+      if (b.time < r.from || b.time > r.to) continue;
       var h = b.high != null ? b.high : b.value, l = b.low != null ? b.low : b.value;
       if (h > hi) hi = h;
       if (l < lo) lo = l;
@@ -229,6 +252,8 @@ const BRIDGE = String.raw`
   function post(m) { window.ReactNativeWebView.postMessage(JSON.stringify(m)); }
   function handle(msg) {
     if (msg.type === 'render') {
+      secondsVisible = !!msg.secondsVisible;
+      chart.timeScale().applyOptions({ secondsVisible: secondsVisible });
       if (msg.chartType !== chartType || !main) { clear(); chartType = msg.chartType; build(chartType); }
       setData(msg.series);
       setEma(msg.ema);

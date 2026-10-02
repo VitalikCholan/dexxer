@@ -189,6 +189,8 @@ markets.start();
 const indexerStats: IndexerStats = { ticks: 0, lastTickTs: null, lastPublishTimeMs: null, lastPoolSlot: null, feeds: {} };
 let wsHub: ReturnType<typeof attachWs> | null = null;
 let stopIndexer: (() => void) | null = null;
+let stopRetention: (() => void) | null = null;
+let backfill: { snapshot: () => import("./indexer/backfill.js").BackfillSnapshot; stop: () => void } | null = null;
 if (cfg.indexerEnabled && !pool) {
   console.warn("indexer: INDEXER_ENABLED=true but no DATABASE_URL — indexer disabled (needs Postgres)");
 } else if (cfg.indexerEnabled && pool) {
@@ -199,6 +201,17 @@ if (cfg.indexerEnabled && !pool) {
     const hub = wsHub;
     stopIndexer = startIndexer({ pool, stats: indexerStats, broadcast: (msg) => hub.broadcast(msg), markets: () => markets.list() });
     console.log("indexer: started (oracle candles per market, Pool/BalancesRoot snapshots, /ws)");
+    const { startRetention, TICKS_RETENTION_MS } = await import("./indexer/retention.js");
+    stopRetention = startRetention(pool, { intervalMs: COMMIT_INTERVAL_MS });
+    console.log(`retention: ticks older than ${TICKS_RETENTION_MS} ms deleted every ${COMMIT_INTERVAL_MS} ms`);
+    const { startBackfill, backfillEnvFromProcess } = await import("./indexer/backfill.js");
+    // SOL even while the registry is empty (boot-time refresh failed) — the same `withSol` view the crank ticks.
+    backfill = startBackfill({
+      pool,
+      env: backfillEnvFromProcess(),
+      markets: () => withSol(markets.list().map((m) => ({ symbol: m.symbol })), () => ({ symbol: "SOL" })),
+      fetch: globalThis.fetch.bind(globalThis),
+    });
   } catch (e) {
     // Fix round 1 (code review): the indexer is a best-effort add-on — a
     // failure starting its subscriptions (bad IDL path, RPC unreachable at
@@ -273,6 +286,7 @@ console.log(`marketWatch: watching ${marketPda.toBase58()} on ${cfg.erRpc} (unau
 
 app.use(
   healthRouter({
+    getBackfillSnapshot: () => backfill?.snapshot() ?? { enabled: false, lastRunAt: null, lastOkAt: null, lastError: null, rows: 0, source: "hyperliquid" as const },
     state,
     baseConn,
     crankPubkey: cfg.crank.publicKey,
@@ -332,6 +346,8 @@ function handleSignal(signal: string): void {
   if (shuttingDown) return;
   shuttingDown = true;
   stopIndexer?.();
+  stopRetention?.();
+  backfill?.stop();
   wsHub?.close();
   stopMarketWatch();
   markets.stop();

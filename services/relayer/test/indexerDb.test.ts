@@ -6,6 +6,7 @@
 //   TEST_DATABASE_URL=postgres://postgres:pw@127.0.0.1:55432/postgres npm test
 // CI has no Postgres service, so there only indexerQuery.test.ts (the pure
 // parsing half) runs.
+import { readFileSync } from "node:fs";
 import { after, before, beforeEach, test } from "node:test";
 import assert from "node:assert/strict";
 import express from "express";
@@ -14,9 +15,12 @@ import { Keypair } from "@solana/web3.js";
 import pg from "pg";
 import { createPool, migrate, type DbPool } from "../src/db.js";
 import {
+  deleteTicksBefore,
+  insertBackfillCandles,
   insertPoolSnapshot,
   insertTick,
   latestTick,
+  listCandles,
   listPoolSnapshots,
   listTicks,
 } from "../src/indexer/store.js";
@@ -56,7 +60,7 @@ after(async () => {
 
 beforeEach(async () => {
   if (!ADMIN_URL) return;
-  await pool.query("TRUNCATE pool_snapshots, ticks");
+  await pool.query("TRUNCATE pool_snapshots, ticks, candles");
 });
 
 const NOW = 1_800_000_000_000;
@@ -194,4 +198,95 @@ test("the disclosure endpoints are gone", async () => {
   } finally {
     await new Promise<void>((r) => server.close(() => r()));
   }
+});
+
+// --- candles (migration 009, spec §2.10.2) ---
+
+dbTest("insertTick upserts the 1m/1h/1d candle: o kept, h/l stretched, c latest, source oracle", async () => {
+  const t0 = Date.UTC(2026, 9, 1, 12, 0, 5);
+  await insertTick(pool, { market: "SOL", ts: t0, price: 100n, slot: 1, publishTime: t0 });
+  await insertTick(pool, { market: "SOL", ts: t0 + 10_000, price: 120n, slot: 2, publishTime: t0 + 10_000 });
+  await insertTick(pool, { market: "SOL", ts: t0 + 20_000, price: 90n, slot: 3, publishTime: t0 + 20_000 });
+  const m1 = await listCandles(pool, "SOL", "1m", 0);
+  assert.deepEqual(m1, [{ t: Date.UTC(2026, 9, 1, 12, 0), o: 100n, h: 120n, l: 90n, c: 90n }]);
+  const h1 = await listCandles(pool, "SOL", "1h", 0);
+  assert.equal(h1[0].t, Date.UTC(2026, 9, 1, 12));
+  const d1 = await listCandles(pool, "SOL", "1d", 0);
+  assert.equal(d1[0].t, Date.UTC(2026, 9, 1));
+  const { rows } = await pool.query<{ source: string }>("SELECT source FROM candles WHERE market = 'SOL' AND tf = '1m'");
+  assert.equal(rows[0].source, "oracle");
+});
+
+dbTest("insertTick: a late tick in an older 1m bucket touches only that 1m bucket's h/l/c (its 1h/1d bucket is shared, so their h/l/c move too — see insertTick JSDoc)", async () => {
+  const t0 = Date.UTC(2026, 9, 1, 12, 0, 5);
+  await insertTick(pool, { market: "SOL", ts: t0, price: 100n, slot: 1, publishTime: t0 });
+  await insertTick(pool, { market: "SOL", ts: t0 + 60_000, price: 110n, slot: 2, publishTime: t0 + 60_000 });
+  await insertTick(pool, { market: "SOL", ts: t0 + 1_000, price: 95n, slot: 3, publishTime: t0 + 1_000 }); // late, first bucket
+  const m1 = await listCandles(pool, "SOL", "1m", 0);
+  assert.equal(m1.length, 2);
+  assert.deepEqual(m1[0], { t: Date.UTC(2026, 9, 1, 12, 0), o: 100n, h: 100n, l: 95n, c: 95n });
+  assert.deepEqual(m1[1], { t: Date.UTC(2026, 9, 1, 12, 1), o: 110n, h: 110n, l: 110n, c: 110n });
+});
+
+dbTest("insertBackfillCandles never overwrites; a later oracle tick flips a hyperliquid bucket to oracle", async () => {
+  const t = Date.UTC(2026, 9, 1, 12, 0);
+  const n1 = await insertBackfillCandles(pool, "BTC", "1m", [{ t, o: 1n, h: 2n, l: 1n, c: 2n }, { t: t + 60_000, o: 2n, h: 3n, l: 2n, c: 3n }]);
+  assert.equal(n1, 2);
+  const n2 = await insertBackfillCandles(pool, "BTC", "1m", [{ t, o: 9n, h: 9n, l: 9n, c: 9n }]);
+  assert.equal(n2, 0);
+  assert.deepEqual((await listCandles(pool, "BTC", "1m", 0))[0], { t, o: 1n, h: 2n, l: 1n, c: 2n });
+  await insertTick(pool, { market: "BTC", ts: t + 30_000, price: 5n, slot: 1, publishTime: t });
+  const after = await listCandles(pool, "BTC", "1m", 0);
+  assert.deepEqual(after[0], { t, o: 1n, h: 5n, l: 1n, c: 5n });
+  const { rows } = await pool.query<{ source: string }>("SELECT source FROM candles WHERE market = 'BTC' AND tf = '1m' AND t = $1", [t]);
+  assert.equal(rows[0].source, "oracle");
+  const bf = await pool.query<{ source: string }>("SELECT source FROM candles WHERE market = 'BTC' AND tf = '1m' AND t = $1", [t + 60_000]);
+  assert.equal(bf.rows[0].source, "hyperliquid");
+  // the oracle candle also blocks a later backfill of the same bucket
+  assert.equal(await insertBackfillCandles(pool, "BTC", "1m", [{ t, o: 7n, h: 7n, l: 7n, c: 7n }]), 0);
+});
+
+dbTest("migration 010: candles.source accepts 'hyperliquid', still 'pyth_pro', rejects others", async () => {
+  const t = Date.UTC(2026, 9, 1, 13, 0);
+  const ins = (source: string, market: string) =>
+    pool.query("INSERT INTO candles (market, tf, t, o, h, l, c, source) VALUES ($1, '1m', $2, 1, 1, 1, 1, $3)", [market, t, source]);
+  await ins("hyperliquid", "M10A");
+  await ins("pyth_pro", "M10B"); // legacy value stays readable
+  await assert.rejects(ins("binance", "M10C"), /candles_source_check/);
+});
+
+dbTest("listCandles filters by market, tier and sinceT", async () => {
+  const t = Date.UTC(2026, 9, 1);
+  await insertBackfillCandles(pool, "ETH", "1d", [{ t, o: 1n, h: 1n, l: 1n, c: 1n }, { t: t + 86_400_000, o: 2n, h: 2n, l: 2n, c: 2n }]);
+  await insertBackfillCandles(pool, "SOL", "1d", [{ t, o: 3n, h: 3n, l: 3n, c: 3n }]);
+  assert.equal((await listCandles(pool, "ETH", "1d", t + 1)).length, 1);
+  assert.equal((await listCandles(pool, "ETH", "1h", 0)).length, 0);
+  assert.equal((await listCandles(pool, "SOL", "1d", 0)).length, 1);
+});
+
+dbTest("deleteTicksBefore removes only older ticks; the rolled-up candles stay", async () => {
+  const t0 = Date.UTC(2026, 9, 1, 12, 0, 5);
+  await insertTick(pool, { market: "SOL", ts: t0, price: 100n, slot: 1, publishTime: t0 });
+  await insertTick(pool, { market: "SOL", ts: t0 + 60_000, price: 110n, slot: 2, publishTime: t0 + 60_000 });
+  assert.equal(await deleteTicksBefore(pool, t0 + 1), 1);
+  assert.equal((await listTicks(pool, "SOL", 0)).length, 1);
+  assert.equal((await listCandles(pool, "SOL", "1m", 0)).length, 2);
+});
+
+dbTest("migration 009 rolls existing ticks up into 1m/1h/1d (applied on a table with rows)", async () => {
+  // Re-run the roll-up statement against ticks inserted without candles to
+  // prove the SQL (the real migration ran on an empty scratch DB in `before`).
+  await pool.query("DELETE FROM candles");
+  const t0 = Date.UTC(2026, 9, 1, 12, 0, 5);
+  await pool.query("INSERT INTO ticks (market, ts, price, slot) VALUES ('SOL', $1, 100, 1), ('SOL', $2, 130, 2), ('SOL', $3, 80, 3)", [t0, t0 + 20_000, t0 + 3_600_000]);
+  await pool.query("DELETE FROM candles");
+  const sql = readFileSync(new URL("../migrations/009_candles.sql", import.meta.url), "utf8");
+  await pool.query(sql.slice(sql.indexOf("INSERT INTO candles")));
+  const m1 = await listCandles(pool, "SOL", "1m", 0);
+  assert.deepEqual(m1.map((c) => [c.t, c.o, c.h, c.l, c.c]), [
+    [Date.UTC(2026, 9, 1, 12, 0), 100n, 130n, 100n, 130n],
+    [Date.UTC(2026, 9, 1, 13, 0), 80n, 80n, 80n, 80n],
+  ]);
+  assert.equal((await listCandles(pool, "SOL", "1h", 0)).length, 2);
+  assert.equal((await listCandles(pool, "SOL", "1d", 0)).length, 1);
 });

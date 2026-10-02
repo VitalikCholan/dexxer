@@ -24,8 +24,6 @@ export interface ChartSectionProps {
   symbol: string
   tf: Tf
   onTfChange: (tf: Tf) => void
-  /** Live mark, raw 1e6. */
-  markUsd: bigint | null
   /** The selected market's slot, for the entry / liq lines. */
   position: PositionSlot | null
   market: TicketMarket | null
@@ -33,7 +31,7 @@ export interface ChartSectionProps {
   poolCapital: bigint | null
 }
 
-export function ChartSection({ symbol, tf, onTfChange, markUsd, position, market, poolCapital }: ChartSectionProps) {
+export function ChartSection({ symbol, tf, onTfChange, position, market, poolCapital }: ChartSectionProps) {
   const { colors, space } = useTheme()
   const micro = useTextStyle('micro')
   const [open, setOpen] = useState(true)
@@ -64,7 +62,7 @@ export function ChartSection({ symbol, tf, onTfChange, markUsd, position, market
         </Pressable>
       </View>
       {!open ? null : tab === 'chart' ? (
-        <TradingChart symbol={symbol} tf={tf} onTfChange={onTfChange} markUsd={markUsd} position={position} />
+        <TradingChart symbol={symbol} tf={tf} onTfChange={onTfChange} position={position} />
       ) : (
         <TradingRulesPanel market={market} poolCapital={poolCapital} />
       )}

@@ -22,6 +22,7 @@
 import { useEffect, useState } from 'react'
 import { useQuery, useQueryClient, type QueryClient, type UseQueryResult } from '@tanstack/react-query'
 import { RELAYER_URL } from './solana'
+import type { Tf } from '@/src/features/chart/timeframes'
 import {
   IndexerShapeError,
   parseCandles,
@@ -78,7 +79,8 @@ export async function getJson<T>(path: string, parse: (body: unknown) => T): Pro
 
 export const QK = {
   mark: (symbol: string) => ['indexer', 'mark', symbol] as const,
-  candles: (symbol: string, tf: string) => ['indexer', 'candles', symbol, tf] as const,
+  /** `limit` is part of the key: the header stats' 96×15m and the chart's 300×15m are different queries. */
+  candles: (symbol: string, tf: string, limit: number) => ['indexer', 'candles', symbol, tf, limit] as const,
   poolHistory: ['indexer', 'poolHistory'] as const,
   rootLatest: ['indexer', 'rootLatest'] as const,
 }
@@ -94,13 +96,19 @@ export function useMark(symbol: string): UseQueryResult<Mark> {
   })
 }
 
-/** Candle history of one market for one timeframe (`GET /prices?tf=&limit=&market=`) — no bigint fields, o/h/l/c are already plain numbers (relayer's own convention, see `indexer/http.ts`). */
-export function useCandles(symbol: string, tf: '1m' | '5m' | '15m' = '1m', limit = 300): UseQueryResult<Candle[]> {
+/** `/prices` refetch cadence: the mark tail keeps the chart live in between, so `1s` only needs a fresh baseline a bit more often. */
+export function candlesRefetchMs(tf: Tf): number {
+  return tf === '1s' ? 15_000 : 30_000
+}
+
+/** Candle history of one market for one of the 16 timeframes (`GET /prices?tf=&limit=&market=`) — no bigint fields, o/h/l/c are already plain numbers (relayer's own convention, see `indexer/http.ts`). */
+export function useCandles(symbol: string, tf: Tf = '1m', limit = 300): UseQueryResult<Candle[]> {
   useIndexerWs()
   return useQuery({
-    queryKey: QK.candles(symbol, tf),
+    queryKey: QK.candles(symbol, tf, limit),
     queryFn: () => getJson(`/prices?tf=${tf}&limit=${limit}&market=${encodeURIComponent(symbol)}`, parseCandles),
-    staleTime: 30_000,
+    staleTime: candlesRefetchMs(tf),
+    refetchInterval: candlesRefetchMs(tf),
   })
 }
 

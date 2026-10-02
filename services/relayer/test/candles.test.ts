@@ -7,10 +7,10 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { aggregateCandles, newSeries, pushTick, seriesCandles, tfMsOf } from "../src/indexer/candles.js";
+import { aggregateCandles, candlesForTf, newSeries, planPrices, pushTick, seriesCandles } from "../src/indexer/candles.js";
 
 test("candles: one tick produces o=h=l=c", () => {
-  const s = newSeries(60_000);
+  const s = newSeries("1m");
   pushTick(s, 1_000, 100n);
   const cs = seriesCandles(s);
   assert.equal(cs.length, 1);
@@ -23,7 +23,7 @@ test("candles: one tick produces o=h=l=c", () => {
 });
 
 test("candles: two ticks in the same bucket update h/l/c but keep o", () => {
-  const s = newSeries(60_000);
+  const s = newSeries("1m");
   pushTick(s, 1_000, 100n);
   pushTick(s, 2_000, 90n);
   const [c] = seriesCandles(s);
@@ -34,7 +34,7 @@ test("candles: two ticks in the same bucket update h/l/c but keep o", () => {
 });
 
 test("candles: a tick above h and below l inside the same bucket updates both", () => {
-  const s = newSeries(60_000);
+  const s = newSeries("1m");
   pushTick(s, 0, 100n);
   pushTick(s, 1_000, 120n); // new high
   pushTick(s, 2_000, 80n); // new low
@@ -46,7 +46,7 @@ test("candles: a tick above h and below l inside the same bucket updates both", 
 });
 
 test("candles: a tick across a bucket boundary starts a new candle", () => {
-  const s = newSeries(60_000);
+  const s = newSeries("1m");
   pushTick(s, 59_999, 100n);
   pushTick(s, 60_000, 200n);
   const cs = seriesCandles(s);
@@ -58,7 +58,7 @@ test("candles: a tick across a bucket boundary starts a new candle", () => {
 });
 
 test("candles: no empty buckets are created between distant ticks", () => {
-  const s = newSeries(60_000);
+  const s = newSeries("1m");
   pushTick(s, 0, 100n);
   pushTick(s, 600_000, 200n); // 10 buckets later
   const cs = seriesCandles(s);
@@ -66,7 +66,7 @@ test("candles: no empty buckets are created between distant ticks", () => {
 });
 
 test("candles: seriesCandles(limit) returns only the most recent buckets", () => {
-  const s = newSeries(60_000);
+  const s = newSeries("1m");
   for (let i = 0; i < 5; i++) pushTick(s, i * 60_000, BigInt(i));
   const cs = seriesCandles(s, 2);
   assert.equal(cs.length, 2);
@@ -88,9 +88,33 @@ test("aggregateCandles buckets a flat tick list per tf and respects limit", () =
   assert.equal(cs[1].c, 20n);
 });
 
-test("tfMsOf maps known timeframes and rejects unknown ones", () => {
-  assert.equal(tfMsOf("1m"), 60_000);
-  assert.equal(tfMsOf("5m"), 300_000);
-  assert.equal(tfMsOf("15m"), 900_000);
-  assert.throws(() => tfMsOf("1h"));
+test("aggregateCandles: 1s buckets from ticks ~2 s apart leave gaps, never synthesize", () => {
+  const cs = aggregateCandles([{ ts: 1_000, price: 1n }, { ts: 3_200, price: 2n }, { ts: 5_900, price: 3n }], "1s", 1000);
+  assert.deepEqual(cs.map((c) => c.t), [1_000, 3_000, 5_000]);
+});
+
+test("planPrices: 1s reads ticks (limit+1 seconds back); other tfs read their tier from limit buckets back", () => {
+  const now = Date.UTC(2026, 9, 1, 12, 34, 56, 789);
+  assert.deepEqual(planPrices("1s", 300, now), { tier: "ticks", since: now - 301_000 });
+  assert.deepEqual(planPrices("5m", 2, now), { tier: "1m", since: Date.UTC(2026, 9, 1, 12, 20) }); // bucket 12:30, 2 back = 12:20
+  assert.deepEqual(planPrices("12h", 1, now), { tier: "1h", since: Date.UTC(2026, 9, 1, 0) });
+  assert.deepEqual(planPrices("1M", 3, now), { tier: "1d", since: Date.UTC(2026, 6, 1) });
+  assert.deepEqual(planPrices("1W", 1, Date.UTC(2026, 9, 5)), { tier: "1d", since: Date.UTC(2026, 8, 28) }); // Monday exactly
+});
+
+test("candlesForTf: merges tier rows into the tf and keeps only the newest `limit`", () => {
+  const H = 3_600_000;
+  const rows = Array.from({ length: 30 }, (_, i) => ({ t: i * H, o: BigInt(i), h: BigInt(i + 1), l: BigInt(i), c: BigInt(i + 1) }));
+  const out = candlesForTf(rows, "12h", 2);
+  assert.equal(out.length, 2);
+  assert.equal(out[0].t, 12 * H);
+  assert.deepEqual(out[1], { t: 24 * H, o: 24n, h: 30n, l: 24n, c: 30n });
+});
+
+test("candlesForTf: a sparse table returns what exists (1M with three 1d rows → one or two candles, no padding)", () => {
+  const D = 86_400_000;
+  const rows = [Date.UTC(2026, 8, 29), Date.UTC(2026, 8, 30), Date.UTC(2026, 9, 1)].map((t, i) => ({ t, o: BigInt(i), h: BigInt(i), l: BigInt(i), c: BigInt(i) }));
+  const out = candlesForTf(rows, "1M", 1000);
+  assert.deepEqual(out.map((c) => c.t), [Date.UTC(2026, 8, 1), Date.UTC(2026, 9, 1)]);
+  assert.equal(rows[1].t - rows[0].t, D);
 });

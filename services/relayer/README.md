@@ -199,7 +199,7 @@ All endpoints return JSON. Base URL: the relayer's own domain.
 | Method & path | Query params | Returns |
 | --- | --- | --- |
 | `GET /markets` | — | `[{ symbol, market, feed, params: { maxLevBps, imrBps, mmrBps, openFeeBps, closeFeeBps, liqFeeBps, oiCap, maxPosition, minSize, maxStalenessSecs, pausedOpen } }]` — public `Market` fields only (no `MarketRisk`), `market`/`feed` base58, u64s as strings, SOL first then alphabetical; `[]` until the registry's first successful read (treat as "SOL only") |
-| `GET /prices` | `market` (symbol, default `SOL`), `tf` (`1m`\|`5m`\|`15m`, default `1m`), `limit` (default 300, max 1000) | `{ market, tf, candles: [{ t, o, h, l, c }] }` — `t` unix ms, `o/h/l/c` are plain numbers (USD price, 1e6 scale) |
+| `GET /prices?tf=<tf>&limit=<n>&market=<SYM>` | — | `{ market, tf, candles: [{ t, o, h, l, c }] }` (o/h/l/c 1e6-scaled numbers, `t` bucket start ms). `tf` is one of `1s 1m 5m 15m 30m 1h 2h 4h 6h 8h 12h 24h 2D 5D 1W 1M` (400 otherwise, the error lists them); `limit` default 300, max 1000. `1s` is aggregated from raw ticks (gaps where the oracle printed nothing); every other tf is merged at read time from the stored tier (`1m` → 1m…30m, `1h` → 1h…12h, `1d` → 24h…1M). `1W` buckets start Monday 00:00 UTC, `1M` on the 1st; `2D`/`5D` are fixed widths from the epoch. |
 | `GET /mark` | `market` (symbol, default `SOL`) | `{ market, price, slot, ts, publishTime, stale }` — `price` is a **string** (see Numbers below), or all-`null`/`stale:true` if no tick has landed yet. `publishTime` is the ORACLE's own `publish_time` in epoch ms; `stale = now - publishTime > ORACLE_STALE_MS` (30s) — see "Oracle staleness" below |
 | `GET /pool/history` | `limit` (default 100, max 1000), `cursor` (a slot) | array of Pool snapshot rows, oldest→newest within the page; `cursor` returns the page strictly older than that slot |
 | `GET /pool/latest` | — | one Pool snapshot row, or `null` |
@@ -240,6 +240,14 @@ looks perfectly live by arrival time. `publish_time` is stored per tick
 - `/prices` (candle history) is unaffected — it doesn't claim to be "now".
 
 A Pool snapshot row: `{ slot, ts, capital_total, protocol_liquidity, locked_total, fees_accrued, insurance, bad_debt_total }`.
+
+### Candles, retention, backfill (spec §2.10, 01.10.2026)
+
+Every oracle tick is one SQL round-trip (`store.ts` `insertTick`): the raw row into `ticks` and an upsert into the three stored candle tiers `candles(market, tf ∈ {1m,1h,1d}, t)` — `o` kept, `h`/`l` stretched, `c` = this price, `source = 'oracle'`. Migration `009_candles.sql` created the table and rolled every tick already stored into it once.
+
+Raw ticks are kept `TICKS_RETENTION_MS` (default 7 days) — `indexer/retention.ts` deletes older ones every `COMMIT_INTERVAL_MS`. They serve only `/mark` and `tf=1s`; candles hold the history.
+
+History before this relayer existed (and gaps while it was down) comes from the **Hyperliquid public info API** (`indexer/backfill.ts`, `POST https://api.hyperliquid.xyz/info`) — keyless and permanent, perp prices for all five markets, `1d` history since 2023. No key, no setup; `BACKFILL_ENABLED=false` turns it off (candles then accrue from ticks only). The coin is the market symbol, verified against `{"type":"meta"}` → `universe[].name` (fetched once per run); a market outside the universe is skipped with a log line, never guessed. Windows: `candleSnapshot` interval `1m` for `BACKFILL_1M_DAYS` (default 4 — Hyperliquid keeps only the last 5000 1m candles, ≈ 3.5 days), `1h` for `BACKFILL_1H_DAYS`, `1d` from `BACKFILL_1D_FROM`. Limits: ≤ 5000 candles per response (chunks: 1m 2 days, 1h 90 days, 1d 400 days), `endTime` is inclusive (a chunk boundary repeats one candle — deduped per run), the in-progress candle is returned too and dropped (the live bucket is the oracle's); the public rate limit is 1200 weight/min per IP and a `candleSnapshot` weighs 20 + 1 per 60 candles returned (`meta` 20), so the run paces itself by that documented weight (55 ms per weight unit after every response, failed ones included — ≈ 1090 weight/min, a margin for a shared egress IP; `BACKFILL_REQUEST_GAP_MS` is only a floor) and waits 60 s after an HTTP 429. A full first run is ≈ 1.5 min at zero latency (≈ 1515 weight × 55 ms); the run summary logs `weight=` (a failed response counts as the base weight 20, its true weight is unknown). Delisted coins (`isDelisted` in `meta`) are skipped. A non-2xx (an unknown coin answers 500 `null`) is an error for that market×tier only. Why not the others (measured 01–02.10.2026): Pyth Pro is trial-key only, Pyth Benchmarks/Hermes answer 404/401, Binance was rejected because `HYPEUSDT` spot was listed only on 24.09.2026. Rows are written with `source = 'hyperliquid'` and `ON CONFLICT DO NOTHING` — an oracle candle always wins; migration `010_candles_source_hyperliquid.sql` keeps the legacy `'pyth_pro'` value allowed so any old rows stay readable. Runs at start (over the registry plus SOL, even when the registry is still empty) and every `BACKFILL_INTERVAL_MS`; a run with any error (meta 5xx, a 429, …) or with no markets is retried after `BACKFILL_RETRY_MS` instead. `/healthz.backfill` = `{ enabled, lastRunAt, lastOkAt, lastError, rows, source: "hyperliquid" }`.
 
 ### Markets
 
@@ -417,6 +425,13 @@ enforced ComputeBudget `SetComputeUnitPrice` ceiling.
 | `SPONSOR_MAX_CU_PRICE_MICROLAMPORTS` | no (default `500000`) | fix (Phantom smoke 24.09): ceiling on a wallet-prepended ComputeBudget `SetComputeUnitPrice` this endpoint will co-sign. At the 1.4M CU transaction max the default caps the sponsor-paid priority fee at 700 000 lamports ≈ 0.0007 SOL/tx. `SetComputeUnitLimit` has no such cap — it cannot cost `fee_payer` more than the tx's own CU budget. Reported by `/healthz`'s `sponsor.maxCuPriceMicroLamports` |
 | `ASSETLINKS_PACKAGE` | no (default `com.dexxer.app`) | Android package name published in `GET /.well-known/assetlinks.json` (MWA identity verification, 24.09) |
 | `ASSETLINKS_SHA256_FINGERPRINTS` | no (default: Android debug keystore cert of the dev-client) | comma-separated SHA-256 signing-cert fingerprints for that statement; a release build MUST set its own (`keytool -list -v -keystore <ks> -alias <alias>` → `SHA256:`). Boot fails on a malformed value |
+| `TICKS_RETENTION_MS` | no (default `604800000` = 7 d, min `3600000`) | raw `ticks` older than this are deleted every `COMMIT_INTERVAL_MS` (candles keep the history) |
+| `BACKFILL_ENABLED` | no (default `true`) | `false` turns the Hyperliquid candle backfill (`indexer/backfill.ts`) off; no key is needed |
+| `BACKFILL_INTERVAL_MS` | no (default `86400000`, min `600000`) | how often the backfill re-runs |
+| `BACKFILL_RETRY_MS` | no (default `600000`, min `60000`) | delay before the next backfill run after one with errors or no markets |
+| `BACKFILL_1M_DAYS` / `BACKFILL_1H_DAYS` | no (default `4` / `90`) | how far back the `1m` / `1h` tiers are backfilled (Hyperliquid serves only the most recent 5000 candles per interval: `1m` ≈ 3.5 days, `1h` ≈ 208 days, `1d` ≈ 13.7 years) |
+| `BACKFILL_1D_FROM` | no (default `2023-01-01`) | ISO date the `1d` tier is backfilled from (Hyperliquid's 1d history starts in 2023; a later-listed coin returns from its launch) |
+| `BACKFILL_REQUEST_GAP_MS` | no (default `500`) | minimum pause between Hyperliquid requests (a floor): the real pause is weight-based — 55 ms per documented weight unit (`candleSnapshot` = 20 + 1 per 60 candles, limit 1200/min); pacing cannot be turned off |
 
 Never commit key values. Encode a local keyfile for Railway with:
 
@@ -467,6 +482,7 @@ npm test        # node:test — keypairFromEnv b58 round-trip, health-payload st
                  # ixAccounts (trader AND relayer builders vs the IDL), poolBootstrap (tests/er bootstrap
                  # order), auth.ts (SIWS verification, challenge/siws/requireSession), the /sponsor + /nonce
                  # session gate, indexer/query.ts and knownSymbols (pure parsing)
+                 # **285 tests** = 271 passed + 14 Postgres skipped (run with `TEST_DATABASE_URL` they cover migrations 009/010 and the candles too)
                  # Needs DEXXER_IDL_DIR=$PWD/../../idl (the canonical IDL, as CI sets it).
 npx tsc --noEmit
 ```
@@ -476,8 +492,8 @@ Run on the Node version in the repo's `.nvmrc` (24.18, as CI does): on 24.10
 (CJS named-export detection) — environment, not code.
 
 `test/indexerDb.test.ts` runs the indexer's SQL (pool-history pagination, per-market
-ticks) against a **real Postgres** and is skipped unless `TEST_DATABASE_URL`
-is set — CI has no Postgres, so there those 7 tests show as skipped. Locally:
+ticks, and candle migrations 009/010) against a **real Postgres** and is skipped unless `TEST_DATABASE_URL`
+is set — CI has no Postgres, so there those 14 tests show as skipped. Locally:
 
 ```sh
 docker run -d --rm --name idx-pg -e POSTGRES_PASSWORD=pw -p 127.0.0.1:55432:5432 postgres:16-alpine

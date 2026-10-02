@@ -194,23 +194,30 @@ export function startIndexer(deps: IndexerDeps): () => void {
           // announcement. The TEE re-pushes the same bytes every ER slot, so
           // "a notification arrived" is not evidence the publisher is alive —
           // its `publish_time` being recent is.
-          if (!isStale(publishedAt, now, ORACLE_STALE_MS)) staleAnnounced = false;
+          const stale = isStale(publishedAt, now, ORACLE_STALE_MS);
+          if (!stale) staleAnnounced = false;
           if (now - lastMarkAt < MARK_THROTTLE_MS) return;
           lastMarkAt = now;
           if (isSol) {
             stats.ticks += 1;
             stats.lastTickTs = now;
           }
-          void insertTick(pool, { market: symbol, ts: now, price: feed.price, slot, publishTime: publishedAt }).catch((e) =>
-            console.error(`indexer/${label}: insertTick failed`, String(e)),
-          );
+          // Frozen bytes (TEE outage: same `publish_time` re-pushed every slot) are
+          // not stored — they would roll into permanent `oracle` candles that the
+          // backfill's DO NOTHING can never repair. The broadcast below still says
+          // stale:true, and `/mark` reads staleness off the last fresh tick.
+          if (!stale) {
+            void insertTick(pool, { market: symbol, ts: now, price: feed.price, slot, publishTime: publishedAt }).catch((e) =>
+              console.error(`indexer/${label}: insertTick failed`, String(e)),
+            );
+          }
           broadcast({
             type: "mark",
             market: symbol,
             price: feed.price.toString(),
             ts: now,
             publishTime: publishedAt,
-            stale: isStale(publishedAt, now, ORACLE_STALE_MS),
+            stale,
           });
         },
         { checkIntervalMs: 1000, staleAfterMs: 3000 },

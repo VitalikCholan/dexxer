@@ -132,3 +132,10 @@ test("buildHealthPayload: a dead non-SOL market does not flip ok", () => {
   assert.equal(p.ok, true);
   assert.equal(p.markets.BTC.oracleStale, true);
 });
+
+test("buildHealthPayload: backfill snapshot is null by default and passed through when given", () => {
+  const state: RelayerState = { lastTickAt: 1, lastCommitAt: null, tick: 1, errors: [], marketTicks: {} };
+  assert.equal(buildHealthPayload(state, 2, null, null, "ok").backfill, null);
+  const snap = { enabled: true, lastRunAt: 5, lastOkAt: 5, lastError: null, rows: 12, source: "hyperliquid" as const };
+  assert.deepEqual(buildHealthPayload(state, 2, null, null, "ok", undefined, undefined, true, null, 300_000, {}, snap).backfill, snap);
+});
