@@ -8,6 +8,8 @@
 // Multi-market (plan 2, Task 8): `/mark` and `/prices` take `?market=<SYMBOL>`
 // (absent = SOL), `GET /markets` lists the registry's PUBLIC `Market` params,
 // and `/ws?markets=*|A,B` picks which markets' `mark` frames a client gets.
+// `/prices` serves 16 tfs (spec §2.10): `1s` aggregated from raw ticks, every
+// other tf merged from the stored `candles` tier (1m/1h/1d).
 // Every change is additive for the APK already in users' hands: it never
 // sends `?market=`/`?markets=`, so it keeps seeing exactly SOL.
 //
@@ -24,9 +26,10 @@ import { WebSocketServer } from "ws";
 import type { WebSocket } from "ws";
 import type { Server } from "http";
 import type { DbPool } from "../db.js";
-import { aggregateCandles, tfMsOf } from "./candles.js";
+import { aggregateCandles, candlesForTf, planPrices, type Candle } from "./candles.js";
+import { TIMEFRAMES, isTf } from "./timeframes.js";
 import { ORACLE_STALE_MS, isStale } from "./prices.js";
-import { latestPoolSnapshot, latestRoot, latestTick, listPoolSnapshots, listTicks } from "./store.js";
+import { latestPoolSnapshot, latestRoot, latestTick, listCandles, listPoolSnapshots, listTicks } from "./store.js";
 import { parseMarketParam, parsePoolHistoryQuery } from "./query.js";
 import type { WsMessage } from "./accounts.js";
 import type { MarketInfo } from "../markets.js";
@@ -73,20 +76,17 @@ export function indexerRouter(pool: DbPool, opts: IndexerRouterOpts): Router {
       return;
     }
     const tf = String(req.query.tf ?? "1m");
-    let tfMs: number;
-    try {
-      tfMs = tfMsOf(tf);
-    } catch {
-      res.status(400).json({ error: `unknown tf: ${tf} (expected 1m|5m|15m)` });
+    if (!isTf(tf)) {
+      res.status(400).json({ error: `unknown tf: ${tf} (expected ${TIMEFRAMES.join("|")})` });
       return;
     }
     const limit = clampLimit(req.query.limit, 300, 1000);
-    // Enough history to cover `limit` buckets, plus one extra bucket's
-    // margin for a tick landing right on a boundary.
-    const sinceTs = Date.now() - tfMs * (limit + 1);
-    const ticks = await listTicks(pool, mq.value, sinceTs);
-    const candles = aggregateCandles(ticks, tf, limit).map((c) => ({ t: c.t, o: Number(c.o), h: Number(c.h), l: Number(c.l), c: Number(c.c) }));
-    res.json({ market: mq.value, tf, candles });
+    const plan = planPrices(tf, limit, Date.now());
+    const candles: Candle[] =
+      plan.tier === "ticks"
+        ? aggregateCandles(await listTicks(pool, mq.value, plan.since), tf, limit)
+        : candlesForTf(await listCandles(pool, mq.value, plan.tier, plan.since), tf, limit);
+    res.json({ market: mq.value, tf, candles: candles.map((c) => ({ t: c.t, o: Number(c.o), h: Number(c.h), l: Number(c.l), c: Number(c.c) })) });
   });
 
   router.get("/mark", async (req, res) => {
