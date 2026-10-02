@@ -22,6 +22,7 @@
 import { useEffect, useState } from 'react'
 import { useQuery, useQueryClient, type QueryClient, type UseQueryResult } from '@tanstack/react-query'
 import { RELAYER_URL } from './solana'
+import type { Tf } from '@/src/features/chart/timeframes'
 import {
   IndexerShapeError,
   parseCandles,
@@ -94,8 +95,8 @@ export function useMark(symbol: string): UseQueryResult<Mark> {
   })
 }
 
-/** Candle history of one market for one timeframe (`GET /prices?tf=&limit=&market=`) — no bigint fields, o/h/l/c are already plain numbers (relayer's own convention, see `indexer/http.ts`). */
-export function useCandles(symbol: string, tf: '1m' | '5m' | '15m' = '1m', limit = 300): UseQueryResult<Candle[]> {
+/** Candle history of one market for one of the 16 timeframes (`GET /prices?tf=&limit=&market=`) — no bigint fields, o/h/l/c are already plain numbers (relayer's own convention, see `indexer/http.ts`). */
+export function useCandles(symbol: string, tf: Tf = '1m', limit = 300): UseQueryResult<Candle[]> {
   useIndexerWs()
   return useQuery({
     queryKey: QK.candles(symbol, tf),

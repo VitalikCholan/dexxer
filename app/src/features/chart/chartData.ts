@@ -3,7 +3,8 @@
 // Pure data side of the TradingView-style chart (C.5): the 12 chart types
 // as renderings of the same OHLC candles, Heikin Ashi, EMA, and folding the
 // live mark into the last candle. Everything the WebView draws is computed
-// here, so it runs under `npm test`; `chartHtml.ts` only maps a `kind` onto
+// here, so it runs under `npm test`; the 16 timeframes and their bucket
+// arithmetic come from `timeframes.ts`; `chartHtml.ts` only maps a `kind` onto
 // a lightweight-charts series.
 //
 // Prices leave this file in dollars and times in UTC seconds — what
@@ -11,6 +12,10 @@
 // (`indexer.ts`'s `Candle`). There is no volume: trade volume is private and
 // the oracle has none, so no volume pane and no VWAP.
 import type { Candle } from '@/src/lib/indexer'
+import { TIMEFRAMES, bucketStart, type Tf } from './timeframes'
+
+export { TIMEFRAMES }
+export type { Tf }
 
 export const CHART_TYPES = [
   { id: 'bars', label: 'Bars' },
@@ -34,9 +39,6 @@ export const DEFAULT_FAVORITES: ChartType[] = ['candles', 'line']
 export function isChartType(v: unknown): v is ChartType {
   return typeof v === 'string' && CHART_TYPES.some((t) => t.id === v)
 }
-
-export const TF_MS = { '1m': 60_000, '5m': 5 * 60_000, '15m': 15 * 60_000 } as const
-export type Tf = keyof typeof TF_MS
 
 const SCALE = 1e6
 
@@ -70,7 +72,7 @@ export type SeriesData =
 export function withLiveMark(candles: readonly Candle[], mark: bigint | null, tf: Tf, nowMs: number): Candle[] {
   if (mark === null || candles.length === 0) return [...candles]
   const p = Number(mark)
-  const bucket = Math.floor(nowMs / TF_MS[tf]) * TF_MS[tf]
+  const bucket = bucketStart(tf, nowMs)
   const last = candles[candles.length - 1]
   if (bucket < last.t) return [...candles]
   if (bucket === last.t) {
