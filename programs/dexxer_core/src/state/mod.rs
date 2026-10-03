@@ -6,6 +6,7 @@ pub mod faucet;
 pub mod fee_escrow;
 pub mod market;
 pub mod market_risk;
+pub mod order;
 pub mod permissions;
 pub mod pool;
 pub mod pool_live;
@@ -17,6 +18,7 @@ pub use faucet::*;
 pub use fee_escrow::*;
 pub use market::*;
 pub use market_risk::*;
+pub use order::*;
 pub use permissions::*;
 pub use pool::*;
 pub use pool_live::*;
@@ -151,8 +153,11 @@ mod size_tests {
             l1_rent(p),
             l1_rent(u) + l1_rent(p)
         );
-        assert_eq!(p, 3184, "Positions::SPACE is pinned by spec §2.9.1");
-        // `Positions` is pinned to exactly 3184 B by `positions.rs`'s layout
+        assert_eq!(
+            p, 3888,
+            "Positions::SPACE is pinned by spec §2.9.1 (+704 B of conditional orders)"
+        );
+        // `Positions` is pinned to exactly 3888 B by `positions.rs`'s layout
         // test (spec §2.9.1); the old per-market `Position` < 400 B bound
         // (spec §8 Q3) no longer applies to one account holding 16 slots.
         // Bound through a `let` (not the bare const expression) so clippy's

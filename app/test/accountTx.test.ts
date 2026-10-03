@@ -50,6 +50,7 @@ test('exitMarkets: SOL always, history and open-slot markets once each, at most 
     owner: k(),
     slots: [slot(eth)],
     history: [rec(btc), rec(btc), rec(sol)],
+    orders: [],
     version: 1,
     bump: 1,
   }
@@ -64,6 +65,7 @@ test('exitMarkets: SOL always, history and open-slot markets once each, at most 
     owner: k(),
     slots: [],
     history: Array.from({ length: 16 }, () => rec(k())),
+    orders: [],
     version: 1,
     bump: 1,
   }
@@ -76,7 +78,14 @@ test('exitMarkets: open slots first, then history newest first', () => {
   const open = k()
   const oldM = k()
   const newM = k()
-  const p: DecodedPositions = { owner: k(), slots: [slot(open)], history: [rec(oldM), rec(newM)], version: 1, bump: 1 }
+  const p: DecodedPositions = {
+    owner: k(),
+    slots: [slot(open)],
+    history: [rec(oldM), rec(newM)],
+    orders: [],
+    version: 1,
+    bump: 1,
+  }
   assert.deepEqual(
     exitMarkets(p, sol).map((m) => m.toBase58()),
     [sol, open, newM, oldM].map((m) => m.toBase58()),
@@ -138,4 +147,35 @@ test('exitIx builds with no session: Positions PDA from the owner alone, markets
   assert.ok(ix.keys[0].pubkey.equals(owner))
   assert.ok(ix.keys[3].pubkey.equals(positions))
   assert.ok(ix.keys[12].pubkey.equals(pdas.market()))
+})
+
+test('exitMarkets also names markets that only hold a pending order', () => {
+  const sol = k()
+  const orderOnly = k()
+  const p: DecodedPositions = {
+    owner: k(),
+    slots: [],
+    history: [],
+    orders: [
+      {
+        slot: 0,
+        market: orderOnly,
+        kind: 'Limit',
+        side: 'Long',
+        trigger: 1n,
+        size: 1n,
+        margin: 1n,
+        trailBps: 0,
+        extreme: 0n,
+        tp: 0n,
+        sl: 0n,
+      },
+    ],
+    version: 1,
+    bump: 1,
+  }
+  assert.deepEqual(
+    exitMarkets(p, sol).map((m) => m.toBase58()),
+    [sol, orderOnly].map((m) => m.toBase58()),
+  )
 })

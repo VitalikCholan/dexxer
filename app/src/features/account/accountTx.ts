@@ -152,7 +152,8 @@ const MAX_EXIT_MARKETS = 16
 
 /**
  * Markets whose liquidation tasks `undelegate_user` should cancel: SOL first
- * (never dropped), then open slots, then history newest first (a liquidated
+ * (never dropped), then open slots, then markets with a pending conditional
+ * order (their task keeps ticking until cancelled), then history newest first (a liquidated
  * position leaves its task running until the next open or the exit), unique,
  * at most 16 (the program's `remaining_accounts` cap).
  */
@@ -168,6 +169,7 @@ export function exitMarkets(p: DecodedPositions | null, sol: PublicKey): PublicK
   add(sol)
   if (p) {
     for (const s of p.slots) add(s.market)
+    for (const o of p.orders) add(o.market)
     for (let i = p.history.length - 1; i >= 0; i--) add(p.history[i].market)
   }
   return out.slice(0, MAX_EXIT_MARKETS)

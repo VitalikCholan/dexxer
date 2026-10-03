@@ -155,6 +155,12 @@ pub enum DexxerError {
     /// current mark (final review of week-6 slots, C1).
     #[msg("Position is liquidatable at the current mark")]
     PositionLiquidatable,
+    #[msg("all order slots are in use")]
+    OrderBookFull,
+    #[msg("invalid order parameters")]
+    InvalidOrder,
+    #[msg("order slot is empty")]
+    OrderNotFound,
 }
 
 impl From<MathError> for anchor_lang::error::Error {

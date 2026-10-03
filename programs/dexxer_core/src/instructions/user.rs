@@ -871,6 +871,7 @@ pub fn undelegate_user<'info>(ctx: Context<'info, UndelegateUser<'info>>) -> Res
         // `version`, `bump`, `_pad` and `_reserved` are kept: `owner` is the
         // PDA seed, the rest are structural and hold no trade data.
         p.scrub_slots();
+        p.scrub_orders();
         p.scrub_history();
         [p.bump]
     }; // RefMut dropped here — before every CPI below that takes `positions`
