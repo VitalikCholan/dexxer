@@ -9,7 +9,8 @@ import {
   validateExit,
   validateTrail,
 } from '../src/lib/orders'
-import type { DecodedOrder } from '../src/lib/codecs'
+import type { DecodedOrder } from '../src/lib/positions'
+import { PublicKey } from '@solana/web3.js'
 
 const $ = (n: number) => BigInt(Math.round(n * 1e6))
 
@@ -61,6 +62,7 @@ test('validateTrail bounds', () => {
 test('describeOrder', () => {
   const base: DecodedOrder = {
     slot: 0,
+    market: PublicKey.unique(),
     kind: 'TakeProfit',
     side: 'Long',
     trigger: $(160),

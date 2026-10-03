@@ -2,10 +2,10 @@
 //
 // Public-only account subscriptions for the indexer (Task 5). Every read
 // here uses ONLY public RPC — the TEE oracle feed read with NO auth token
-// (see `oracleConn` below), and base-layer `Pool`/`BalancesRoot`/
-// `Disclosure`, all of which are public accounts. This module NEVER touches
+// (see `oracleConn` below), and base-layer `Pool`/`BalancesRoot`,
+// both of which are public accounts. This module NEVER touches
 // `cfg.crank`/`cfg.feePayer` — those identities stay inside crank.ts/
-// disclosure.ts only (CLAUDE.md privacy rule: "жоден сервіс, крім
+// the crank/janitor modules only (CLAUDE.md privacy rule: "жоден сервіс, крім
 // крank-а, не тримає owner/session-токенів"; the indexer isn't the crank
 // either, it just happens to run in the same process — it reads what any
 // anonymous RPC client could read).
@@ -26,26 +26,32 @@
 // `staleAfterMs`", which is the actually useful property regardless of
 // what the WS subscription is doing underneath.
 //
-// Disclosure accounts have no interesting "change" to subscribe to (each
-// one is created once and never mutated again) — new ones are discovered
-// via `getProgramAccounts` memcmp every 30s plus `onProgramAccountChange`
-// with the same filter for near-real-time pickup in between polls.
+// Oracle feeds (plan 2, Task 8): one subscription per market in the registry
+// (`deps.markets()`), each with its own throttle/stale-watchdog state, ticks
+// written under the market's symbol and `mark` frames tagged `market`.
+// `reconcile()` runs at start and every FEED_RECONCILE_MS, so a market added
+// with `add-market` gets its feed indexed within ~65 s (registry refresh 60 s
+// + reconcile 5 s), no restart.
 
 import { Connection, Keypair, PublicKey } from "@solana/web3.js";
 import type { AccountInfo } from "@solana/web3.js";
 import { ORACLE, baseConn } from "../../../../tests/er/lib/env.js";
-import { DEXXER_CORE_PROGRAM_ID, DISCLOSURE_DISC, accountNs, decodeBalancesRoot, dexxerCoreProgram, pdas } from "../../../../tests/er/lib/program.js";
+import { accountNs, decodeBalancesRoot, dexxerCoreProgram, pdas } from "../../../../tests/er/lib/program.js";
 import { ORACLE_STALE_MS, decodeFeed, isStale, publishTimeMs } from "./prices.js";
-import { insertDisclosure, insertPoolSnapshot, insertRoot, insertTick } from "./store.js";
-import type { DisclosureRow } from "./store.js";
+import { insertPoolSnapshot, insertRoot, insertTick } from "./store.js";
 import type { DbPool } from "../db.js";
+import type { MarketInfo } from "../markets.js";
 
-/** Same devnet SOL/USD Lazer feed id the market was `init_market`'d with — see `tests/er/lib/admin.ts`'s `LAZER_FEED_ID` / `app/src/lib/pdas.ts`'s copy. Not imported from admin.ts (a much heavier, session/admin-oriented module) just for one string constant. */
-const LAZER_FEED_ID = "6";
-const FEED_PUBKEY = pdas.feedUnder(ORACLE, LAZER_FEED_ID);
+/** SOL's devnet Lazer feed id (`tests/er/lib/admin.ts`'s `LAZER_FEED_ID`) — used ONLY as the pre-registry fallback in `reconcile()`; every other feed comes from `Market.feed`. */
+const SOL_LAZER_FEED_ID = "6";
 
 const MARK_THROTTLE_MS = 1000;
-const DISCLOSURE_POLL_MS = 30_000;
+/**
+ * In-memory list diff only (no RPC), so it can run often: the registry itself
+ * refreshes every MARKETS_REFRESH_MS (60 s); two independent 60-s timers would
+ * let a new market wait up to ~120 s — at 5 s it is indexed within ~65 s.
+ */
+const FEED_RECONCILE_MS = 5_000;
 
 export interface IndexerStats {
   ticks: number;
@@ -53,16 +59,19 @@ export interface IndexerStats {
   /** Week-5 Task 5: the ORACLE's `publish_time` of the newest decoded update, in epoch ms — what `oracleStale` is computed from (see prices.ts::isStale). */
   lastPublishTimeMs: number | null;
   lastPoolSlot: number | null;
-  disclosures: number;
+  /** Per market symbol — the newest oracle `publish_time` (epoch ms). The top-level `ticks`/`lastTickTs`/`lastPublishTimeMs` above keep meaning SOL (/healthz compat). */
+  feeds: Record<string, { lastPublishTimeMs: number | null }>;
 }
 
-export type WsMessage = { type: "mark" | "pool" | "disclosure"; [k: string]: unknown };
+export type WsMessage = { type: "mark" | "pool"; [k: string]: unknown };
 export type Broadcast = (msg: WsMessage) => void;
 
 export interface IndexerDeps {
   pool: DbPool;
   stats: IndexerStats;
   broadcast: Broadcast;
+  /** The market registry's current list (markets.ts); may be empty until its first successful read. */
+  markets: () => MarketInfo[];
 }
 
 interface FallbackOpts {
@@ -134,13 +143,6 @@ function subscribeAccountWithFallback(
   };
 }
 
-function sideToString(v: unknown): string {
-  return v !== null && typeof v === "object" && "long" in (v as Record<string, unknown>) ? "long" : "short";
-}
-function reasonToString(v: unknown): string {
-  return v !== null && typeof v === "object" && "user" in (v as Record<string, unknown>) ? "user" : "liquidated";
-}
-
 export function startIndexer(deps: IndexerDeps): () => void {
   const { pool, stats, broadcast } = deps;
   const stops: Array<() => void> = [];
@@ -148,85 +150,143 @@ export function startIndexer(deps: IndexerDeps): () => void {
   const readOnly = Keypair.generate();
   const baseProg = dexxerCoreProgram(baseConn, readOnly);
 
-  // --- oracle feed: TEE RPC, NO auth token — a public read (privacy rule). ---
+  // --- oracle feeds: TEE RPC, NO auth token — a public read (privacy rule). ---
   const erRpc = process.env.ER_RPC;
   const erWs = process.env.ER_WS;
   if (!erRpc) {
     console.warn("indexer: ER_RPC not set, oracle price feed subscription disabled");
   } else {
     const oracleConn = new Connection(erRpc, { commitment: "confirmed", wsEndpoint: erWs });
-    let lastMarkAt = 0;
-    let lastPrice: bigint | null = null;
-    // Fix round 1 (code review): edge-triggered — `staleAnnounced` makes
-    // sure the WS "the feed went stale" frame is sent exactly once per
-    // outage, not on every watchdog tick (that would spam clients every
-    // second for the whole duration of a TEE outage).
-    let staleAnnounced = false;
-    stops.push(
-      subscribeAccountWithFallback(
+
+    /** One market's feed: its own throttle, last price and stale-announce state. Returns a stop function. */
+    function subscribeFeed(symbol: string, feedPubkey: PublicKey): () => void {
+      const isSol = symbol === "SOL";
+      const label = `oracle/${symbol}`;
+      let lastMarkAt = 0;
+      let lastPrice: bigint | null = null;
+      let lastPublishTimeMs: number | null = null;
+      // Fix round 1 (code review): edge-triggered — `staleAnnounced` makes
+      // sure the WS "the feed went stale" frame is sent exactly once per
+      // outage, not on every watchdog tick (that would spam clients every
+      // second for the whole duration of a TEE outage).
+      let staleAnnounced = false;
+      stats.feeds[symbol] = { lastPublishTimeMs: null };
+
+      const stopSub = subscribeAccountWithFallback(
         oracleConn,
-        FEED_PUBKEY,
+        feedPubkey,
         (data, slot) => {
           let feed;
           try {
             feed = decodeFeed(data);
           } catch (e) {
-            console.error("indexer/oracle: decodeFeed failed", String(e));
+            console.error(`indexer/${label}: decodeFeed failed`, String(e));
             return;
           }
           if (feed.postedSlot === 0n) return; // unfilled/stale — CLAUDE.md's oracle rule
           const now = Date.now();
           const publishedAt = publishTimeMs(feed.publishTime);
           lastPrice = feed.price;
-          stats.lastPublishTimeMs = publishedAt;
+          lastPublishTimeMs = publishedAt;
+          stats.feeds[symbol] = { lastPublishTimeMs: publishedAt };
+          if (isSol) stats.lastPublishTimeMs = publishedAt;
           // Week-5 Task 5: only a genuinely FRESH publish clears the stale
           // announcement. The TEE re-pushes the same bytes every ER slot, so
           // "a notification arrived" is not evidence the publisher is alive —
           // its `publish_time` being recent is.
-          if (!isStale(publishedAt, now, ORACLE_STALE_MS)) staleAnnounced = false;
+          const stale = isStale(publishedAt, now, ORACLE_STALE_MS);
+          if (!stale) staleAnnounced = false;
           if (now - lastMarkAt < MARK_THROTTLE_MS) return;
           lastMarkAt = now;
-          stats.ticks += 1;
-          stats.lastTickTs = now;
-          void insertTick(pool, { ts: now, price: feed.price, slot, publishTime: publishedAt }).catch((e) =>
-            console.error("indexer/oracle: insertTick failed", String(e)),
-          );
+          if (isSol) {
+            stats.ticks += 1;
+            stats.lastTickTs = now;
+          }
+          // Frozen bytes (TEE outage: same `publish_time` re-pushed every slot) are
+          // not stored — they would roll into permanent `oracle` candles that the
+          // backfill's DO NOTHING can never repair. The broadcast below still says
+          // stale:true, and `/mark` reads staleness off the last fresh tick.
+          if (!stale) {
+            void insertTick(pool, { market: symbol, ts: now, price: feed.price, slot, publishTime: publishedAt }).catch((e) =>
+              console.error(`indexer/${label}: insertTick failed`, String(e)),
+            );
+          }
           broadcast({
             type: "mark",
+            market: symbol,
             price: feed.price.toString(),
             ts: now,
             publishTime: publishedAt,
-            stale: isStale(publishedAt, now, ORACLE_STALE_MS),
+            stale,
           });
         },
         { checkIntervalMs: 1000, staleAfterMs: 3000 },
-        "oracle",
-      ),
-    );
+        label,
+      );
 
-    // Staleness watchdog (fix round 1, code review): the base-layer copy of
-    // the delegated oracle feed is a stale COMMIT snapshot, not a live
-    // fallback — a TEE outage must surface as `stale:true`, never as
-    // silently frozen prices served as if live. `/mark` computes staleness
-    // per-request straight off the DB row's `ts` (see http.ts); this
-    // watchdog is only for the WS push side, which has no "per-request"
-    // moment to compute it at — it must notice the transition itself.
-    const staleWatchdog = setInterval(() => {
-      const now = Date.now();
-      if (!staleAnnounced && isStale(stats.lastPublishTimeMs, now, ORACLE_STALE_MS)) {
-        staleAnnounced = true;
-        console.warn("indexer/oracle: feed stale by publish_time, broadcasting stale:true once");
-        broadcast({
-          type: "mark",
-          price: lastPrice !== null ? lastPrice.toString() : null,
-          ts: now,
-          publishTime: stats.lastPublishTimeMs,
-          stale: true,
-        });
+      // Staleness watchdog (fix round 1, code review): the base-layer copy of
+      // the delegated oracle feed is a stale COMMIT snapshot, not a live
+      // fallback — a TEE outage must surface as `stale:true`, never as
+      // silently frozen prices served as if live. `/mark` computes staleness
+      // per-request straight off the DB row (see http.ts); this watchdog is
+      // only for the WS push side, which has no "per-request" moment to
+      // compute it at — it must notice the transition itself.
+      const staleWatchdog = setInterval(() => {
+        const now = Date.now();
+        if (!staleAnnounced && isStale(lastPublishTimeMs, now, ORACLE_STALE_MS)) {
+          staleAnnounced = true;
+          console.warn(`indexer/${label}: feed stale by publish_time, broadcasting stale:true once`);
+          broadcast({
+            type: "mark",
+            market: symbol,
+            price: lastPrice !== null ? lastPrice.toString() : null,
+            ts: now,
+            publishTime: lastPublishTimeMs,
+            stale: true,
+          });
+        }
+      }, 1000);
+      staleWatchdog.unref();
+
+      return () => {
+        stopSub();
+        clearInterval(staleWatchdog);
+      };
+    }
+
+    // Keyed by symbol: a market is subscribed once and kept for the life of
+    // the process (the registry never drops a market on a failed refresh,
+    // and markets are never deleted on-chain). The feed is remembered so a
+    // registry `Market.feed` that differs from the pre-registry SOL fallback
+    // replaces it instead of the wrong account being indexed forever.
+    const feedSubs = new Map<string, { feed: PublicKey; stop: () => void }>();
+    function reconcile(): void {
+      const list = deps.markets();
+      if (list.length === 0 && !feedSubs.has("SOL")) {
+        // The registry hasn't read the ER yet (or that read failed): index
+        // SOL on its known feed right away rather than waiting — SOL is the
+        // market every existing client charts. When the registry later
+        // brings SOL (same feed), `feedSubs` already has it — no duplicate.
+        const feed = pdas.feedUnder(ORACLE, SOL_LAZER_FEED_ID);
+        feedSubs.set("SOL", { feed, stop: subscribeFeed("SOL", feed) });
+        return;
       }
-    }, 1000);
-    staleWatchdog.unref();
-    stops.push(() => clearInterval(staleWatchdog));
+      for (const m of list) {
+        const cur = feedSubs.get(m.symbol);
+        if (cur?.feed.equals(m.feed)) continue;
+        cur?.stop();
+        console.log(`indexer: subscribing ${m.symbol} oracle feed ${m.feed.toBase58()}`);
+        feedSubs.set(m.symbol, { feed: m.feed, stop: subscribeFeed(m.symbol, m.feed) });
+      }
+    }
+    reconcile();
+    const reconcileTimer = setInterval(reconcile, FEED_RECONCILE_MS);
+    reconcileTimer.unref();
+    stops.push(() => {
+      clearInterval(reconcileTimer);
+      for (const sub of feedSubs.values()) sub.stop();
+      feedSubs.clear();
+    });
   }
 
   // --- Pool: base RPC, public account, written every ~5 min by commit_aggregate. ---
@@ -302,93 +362,6 @@ export function startIndexer(deps: IndexerDeps): () => void {
       "root",
     ),
   );
-
-  // --- Disclosure: gPA discovery every 30s + onProgramAccountChange fast path. ---
-  async function ingestDisclosure(pubkey: PublicKey, data: Buffer): Promise<void> {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    let d: any;
-    try {
-      d = baseProg.coder.accounts.decode("disclosure", data);
-    } catch (e) {
-      console.error(`indexer/disclosure: decode failed for ${pubkey.toBase58()}`, String(e));
-      return;
-    }
-    const row: DisclosureRow = {
-      pubkey: pubkey.toBase58(),
-      market: new PublicKey(d.market).toBase58(),
-      side: sideToString(d.side),
-      size: BigInt(d.size.toString()),
-      entry: BigInt(d.entry.toString()),
-      exit: BigInt(d.exit.toString()),
-      pnl: BigInt(d.pnl.toString()),
-      fees: BigInt(d.fees.toString()),
-      reason: reasonToString(d.reason),
-      openedSlot: BigInt(d.openedSlot.toString()),
-      closedSlot: BigInt(d.closedSlot.toString()),
-      nonce: BigInt(d.nonce.toString()),
-      // Ingestion time, NOT `closed_slot`'s block time — an extra
-      // `getBlockTime` per discovered Disclosure isn't worth the RPC cost
-      // for a rolling public archive rather than a precise ledger
-      // (documented in README).
-      ts: Date.now(),
-    };
-    let isNew = false;
-    try {
-      isNew = await insertDisclosure(pool, row);
-    } catch (e) {
-      console.error(`indexer/disclosure: insertDisclosure failed for ${row.pubkey}`, String(e));
-      return;
-    }
-    if (isNew) {
-      stats.disclosures += 1;
-      broadcast({
-        type: "disclosure",
-        pubkey: row.pubkey,
-        market: row.market,
-        side: row.side,
-        size: row.size.toString(),
-        entry: row.entry.toString(),
-        exit: row.exit.toString(),
-        pnl: row.pnl.toString(),
-        fees: row.fees.toString(),
-        reason: row.reason,
-        opened_slot: row.openedSlot.toString(),
-        closed_slot: row.closedSlot.toString(),
-        nonce: row.nonce.toString(),
-        ts: row.ts,
-      });
-    }
-  }
-
-  async function pollDisclosures(): Promise<void> {
-    try {
-      const accs = await baseConn.getProgramAccounts(DEXXER_CORE_PROGRAM_ID, {
-        filters: [{ memcmp: { offset: 0, bytes: DISCLOSURE_DISC } }],
-      });
-      for (const a of accs) await ingestDisclosure(a.pubkey, a.account.data as Buffer);
-    } catch (e) {
-      console.error("indexer/disclosure: poll failed", String(e));
-    }
-  }
-  void pollDisclosures(); // catch up on startup
-  const disclosurePoll = setInterval(() => void pollDisclosures(), DISCLOSURE_POLL_MS);
-  disclosurePoll.unref();
-  stops.push(() => clearInterval(disclosurePoll));
-
-  let disclosureSubId: number | null = null;
-  try {
-    disclosureSubId = baseConn.onProgramAccountChange(
-      DEXXER_CORE_PROGRAM_ID,
-      (info) => void ingestDisclosure(info.accountId, info.accountInfo.data as Buffer),
-      "confirmed",
-      [{ memcmp: { offset: 0, bytes: DISCLOSURE_DISC } }],
-    );
-  } catch (e) {
-    console.error("indexer/disclosure: onProgramAccountChange failed, relying on 30s poll only", String(e));
-  }
-  stops.push(() => {
-    if (disclosureSubId !== null) void baseConn.removeProgramAccountChangeListener(disclosureSubId).catch(() => {});
-  });
 
   return () => {
     for (const stop of stops) stop();

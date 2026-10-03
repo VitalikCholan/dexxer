@@ -2,16 +2,11 @@
 //
 // Task 10: open-position card per design — side/leverage header, Size/
 // Entry/Mark/Margin/Liq. price rows, live uPnL, a liquidation-distance bar,
-// Close/Increase/Decrease actions.
+// Close/Increase/Decrease actions, and (week 6, C.4) Add margin.
 //
-// Week 5, Task 6: the "Recording commitment on-chain" pending badge this
-// card used to render for `Position.state === 'Closed' && !commitmentWritten`
-// is gone — `finalize_close` (week-5 Task 1) now pushes the `ClosedRecord`
-// straight into `DisclosureQueue` and resets `Position` to `Empty` in the
-// same instruction, so `Position.state` never observably sits at `Closed`
-// on this client (`Position.closed` is always `None`, `DecodedPosition`
-// no longer even carries the field — `codecs.ts`). That pending window is
-// HistoryScreen's job now (`useHistoryRows.ts`'s `pending_commitment` row).
+// Position slots: the card renders one OPEN slot of `Positions`
+// (`positions.ts` decodes only open slots, so there is no state to check);
+// `symbol` names its market.
 import { Text, View } from 'react-native'
 import { formatUsd2 } from '@/src/lib/status'
 import { useTheme } from '@/src/theme'
@@ -20,7 +15,8 @@ import { Card } from '@/src/ui/Card'
 import { Row } from '@/src/ui/Row'
 import { Badge } from '@/src/ui/Badge'
 import { Button } from '@/src/ui/Button'
-import { type DecodedPosition, type SideName } from '@/src/lib/codecs'
+import { type SideName } from '@/src/lib/codecs'
+import { type PositionSlot } from '@/src/lib/positions'
 import { computeUpnl } from '@/src/lib/trade'
 import { notional } from '@/src/lib/math'
 
@@ -83,20 +79,33 @@ if (__DEV__) {
 }
 
 export interface PositionCardProps {
-  position: DecodedPosition
+  position: PositionSlot
+  /** Market symbol for the labels (`SOL`, `BTC`, ...). */
+  symbol: string
   mark: bigint | null
   busy: boolean
   onClose: () => void
   onIncrease: () => void
   onDecrease: () => void
+  onAddMargin: () => void
+  /** Registry has no entry for this market yet: caption only, nothing is disabled. */
+  note?: string
 }
 
-export function PositionCard({ position: p, mark, busy, onClose, onIncrease, onDecrease }: PositionCardProps) {
+export function PositionCard({
+  position: p,
+  symbol,
+  mark,
+  busy,
+  onClose,
+  onIncrease,
+  onDecrease,
+  onAddMargin,
+  note,
+}: PositionCardProps) {
   const { colors, space } = useTheme()
   const heading = useTextStyle('heading')
   const caption = useTextStyle('caption')
-
-  if (p.state !== 'Open') return null
 
   const upnl = mark !== null ? computeUpnl(p.side, p.size, p.entry, mark) : null
   const upnlPct = upnl !== null && p.margin > 0n ? (Number(upnl) / Number(p.margin)) * 100 : null
@@ -113,11 +122,12 @@ export function PositionCard({ position: p, mark, busy, onClose, onIncrease, onD
     <Card>
       <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
         <Text style={[heading, { color: colors.textPrimary }]}>
-          SOL-PERP · {p.side} · {leverage !== null ? leverage.toFixed(1) : '—'}×
+          {symbol}-PERP · {p.side} · {leverage !== null ? leverage.toFixed(1) : '—'}×
         </Text>
         <Badge tone={p.side === 'Long' ? 'success' : 'danger'}>{p.side}</Badge>
       </View>
-      <Row label="Size" value={`${sol(p.size)} SOL`} />
+      {note ? <Text style={[caption, { color: colors.textTertiary }]}>{note}</Text> : null}
+      <Row label="Size" value={`${sol(p.size)} ${symbol}`} />
       <Row label="Entry" value={`$${formatUsd2(p.entry)}`} mono />
       <Row label="Mark" value={mark !== null ? `$${formatUsd2(mark)}` : '—'} mono />
       <Row
@@ -150,6 +160,13 @@ export function PositionCard({ position: p, mark, busy, onClose, onIncrease, onD
         <View style={{ flex: 1 }}>
           <Button variant="secondary" disabled={busy} onPress={onDecrease}>
             Decrease
+          </Button>
+        </View>
+      </View>
+      <View style={{ flexDirection: 'row', gap: space.sm }}>
+        <View style={{ flex: 1 }}>
+          <Button variant="secondary" disabled={busy} onPress={onAddMargin}>
+            Add margin
           </Button>
         </View>
         <View style={{ flex: 1 }}>

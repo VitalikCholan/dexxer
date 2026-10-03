@@ -65,8 +65,18 @@ flowchart LR
   онбординг** (`DelegateUser.payer`, нові `/sponsor`-shapes — виміряно 0
   лампортів на owner, включно з ER-леґом), identity-aware MWA auth-token,
   два devnet-апгрейди програми, relayer з карантином отруєних черг.
+- **Тиждень 6** — SIWS-сесії relayer-а для `/sponsor`/`/nonce`, мульти-маркет
+  (SOL/BTC/ETH/HYPE/ZEC), позиції-слоти (один `Positions` на 16 ринків,
+  розкриття угод скасовано, історія — приватне кільце), **чистий старт на
+  devnet 01.10.2026** — нова програма `Fyg2…UfCY`, relayer і dev-client APK
+  на ній; ліквідація лише планувальником виміряна за 8.5–10.2 с, relayer-ом —
+  за 2.9 с; smoke з fakewallet пройшов кроки 1–7 з 9
+  (1 — за логами й L1, 2–7 — за повідомленням власника).
 
-Деталі й виміряні цифри — `docs/superpowers/plans/week{1,2,3,4,5}-results.md`.
+Деталі й виміряні цифри — `docs/superpowers/plans/week{1,2,3,4,5,6}-results.md`.
+
+**Застаріло з 01.10.2026:** опис приватності й розкриття вище й нижче (13F, `Commitment`/`Disclosure`,
+`DisclosureQueue`, `Position` на ринок) — стан до тижня 6; актуальна модель — spec §2.9.
 
 ## Швидкий старт
 
@@ -140,7 +150,7 @@ npx solana-mobile@latest device install fakewallet
 
 | | |
 |---|---|
-| `dexxer_core` program id | `G2okX5Bae4CxfK8vzso1Ecc96QUv7E3P4YvxaZnaYXoV` |
+| `dexxer_core` program id | `Fyg2yJBoN97ScWxT37xBp2zaaiNncNqnGJ7PAbtnUfCY` (позиції-слоти, план 4; стара — `G2ok…`, див. `docs/deployments.md`) |
 | Base RPC | `https://rpc.magicblock.app/devnet` |
 | ER/TEE | `https://devnet-tee.magicblock.app` |
 | Relayer/індексер | `https://relayer-production-1ae7.up.railway.app` |
@@ -153,9 +163,10 @@ npx solana-mobile@latest device install fakewallet
 | `GET /mark` | останній mark-прайс (з `stale`-прапорцем) |
 | `GET /prices?tf=1m\|5m\|15m&limit=N` | OHLC-свічки |
 | `GET /pool/latest` | останній `Pool`-знімок (capital/locked/fees/…) |
-| `GET /disclosures?limit=N` | стрічка 13F-розкриттів без адрес |
+| `GET /markets` | символи ринків (SOL першим); `?market=` на `/mark`/`/prices`, `/ws?markets=` |
+| ~~`GET /disclosures?limit=N`~~ | **404 з 01.10.2026** — розкриття угод скасовано (spec §2.9) |
 | `GET /root/latest` | останній `BalancesRoot` (root_slot, листки) |
-| `wss://…/ws` | live `mark`/`pool`/`disclosure`-фрейми |
+| `wss://…/ws` | live `mark`/`pool`-фрейми (кадру `disclosure` з 01.10.2026 нема) |
 
 `dUSDC`-мінт — власний faucet-мінт, генерується bootstrap-скриптом
 (`Config.dusdc_mint`, не фіксована адреса в цьому README — пул фондує

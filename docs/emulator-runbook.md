@@ -100,3 +100,80 @@ adb devices; lsof -nP -i :8081 -i :8888 | grep LISTEN   # має бути пор
 - Тост із помилкою в апці зникає за ~5 с — читати `[dexxer] … failed` у logcat, не екран.
 - Blockhash на devnet живе ~25 с (Alpenglow) — будь-який повільний промпт гаманця на
   blockhash-tx = «confirm timeout». Owner-L1-tx мають іти на nonce.
+
+## 6. Smoke на програмі слотів (план 4)
+
+**Не виконувалось у плані 3** (01.10.2026: лише `tsc`/lint/unit і `expo export`); **план 4 —
+кроки 1–7 PASS, 8–9 не виконано** (1 — за логами й L1, 2–7 — за повідомленням власника; результати — в кінці розділу). Чек-лист
+для користувача з реальним гаманцем (fakewallet або Phantom). Передумова: нова програма
+задеплоєна, `bootstrapDevnet` і `add-market` (BTC тощо) виконані, relayer на новій адресі,
+APK зібрано на ту саму програму. Біля кожного кроку — що дивитись у logcat (`[dexxer]`).
+
+1. **Онбординг на двох акаунтах.** Свіжий гаманець → Onboarding → Confirm. Очікувано: три
+   L1-леги (`faucet+init_user`, `delegate_spl`, `delegate_user`) і ER-лег
+   (`permissions+session`). `UserAccount` і `Positions` під Delegation Program, «You're set».
+   Записати розміри tx лег, якщо їх видно в лозі.
+2. **Вибір ринку.** Trade → `MarketPicker` показує SOL і ринки з `GET /markets`. Обрати BTC:
+   заголовок стає `BTC-PERP`, ціна й графік — BTC. Перезапустити апку: BTC лишився обраним
+   (`dexxer.market`).
+3. **Open на SOL і на BTC.** Відкрити позицію на SOL, потім на BTC. Обидві tx проходять,
+   ціна кожного ринку оновлюється окремо.
+4. **Список позицій.** Positions — дві картки, `SOL-PERP` і `BTC-PERP`, у кожній свій mark.
+   Дії на картці BTC керують позицією BTC, не SOL.
+5. **Часткове зменшення.** Decrease на одній позиції (не повністю). History показує запис
+   `Partial close`, позиція лишається відкритою з меншим розміром.
+6. **Закриття.** Close одним дотиком на іншій картці. Картка зникає, у History з'являється
+   `Closed`.
+7. **Архів після перезапуску.** Повністю закрити апку і відкрити знову. History показує ті
+   самі записи (архів `dexxer.history.<owner>`), час «seen …» той самий.
+8. **Вихід із двома ринками.** Закрити все, вивести маржу до 0 → Account → Exit. У лозі /
+   в tx `undelegate_user` у `remaining_accounts` два ринки (SOL і BTC). Tx проходить,
+   обидва акаунти розделеговано.
+9. **Повторний онбординг після janitor-а.** Одразу після Exit відкрити Onboarding: стан
+   `Exited` (текст про очікування, без кроків). Протягом ≈5 хв (цикл коміту relayer-а,
+   `COMMIT_INTERVAL_MS`) janitor закриває акаунти (`close_exited_user`), і Onboarding
+   повертається до звичайного онбордингу. Пройти його ще раз.
+
+Будь-який провалений крок записати з рядком logcat і сигнатурою tx у `week6`-результати плану 4.
+
+### Результати smoke (план 4, Task 6, 01.10.2026)
+
+Вів власник на AVD `local_phone` (fakewallet), агент на кнопки гаманця не натискав. Середовище: dev
+client `com.dexxer.app`, `npm run android -- --no-bundler` (інкрементальна збірка, 55 с), APK
+`app/android/app/build/outputs/apk/debug/app-debug.apk` 110 870 032 B, sha256
+`4178ed2223f56777a6766f8cdf60a558eb35d3cc7890a98840fd4c464137e531`; сертифікат підпису SHA-256
+`FA:C6:17:45:DC:09:…:03:3B:9C` == дефолт `services/relayer/src/assetlinks.ts` == живий
+`/.well-known/assetlinks.json`. Бандл Metro: program id `Fyg2…UfCY` ×7, `G2ok…` ×0. Relayer —
+`https://relayer-production-1ae7.up.railway.app` (деплоймент `8b33d95d`, `COMMIT_INTERVAL_MS=300000`).
+Owner (свіжий акаунт fakewallet): `2TQerBRHvjxR3hGbSqGaSKZWBhbiB7mRfEWCeVeEFgWi`.
+
+| Крок | Результат | Що спостерігали |
+|---|---|---|
+| 1 | PASS | `[dexxer] selfFund: owner has 0 lamports, min 50000000 → sponsored`; `leg faucet+init_user: 3 ixs (+advance+2 CB), 795 bytes`, `leg delegate_spl: … 812 bytes`, `leg delegate_user: 1 ixs (+advance+2 CB), 765 bytes`, `leg permissions+session: 2 ixs (+blockhash), 506 bytes`; `feePayer` трьох L1-легів — `fee_payer` `3HgD…3Chnt`, ER-лега — owner. На L1 (публічний RPC): `NtRjGqL7…` 20:35:10, `3cCf6rVL…` 20:35:11, `36BWmyeX…` 20:35:12 (час за Києвом, UTC+3; так само нижче), помилок нема. Далі депозит: `selfFund … min 1000000 → sponsored`, `signOwnerL1: durable nonce slot 0 8HijrvhF…`, гаманець повернув `ixs=[111111,Comput,Comput,Fyg2yJ]` (advance першим, свої CB), `sendL1Sponsored: sent 2YRYNrwZ…` (20:35:26 на L1) |
+| 2 | PASS | вибір BTC, збереження після перезапуску (за повідомленням власника) |
+| 3 | PASS (після фіксу дефекту #1) | open на SOL і BTC — тости (ER-дії сигнатури в logcat не пишуть) |
+| 4 | PASS | дві картки, `/positions` у логах маршрутів |
+| 5 | PASS | `Partial close` у History |
+| 6 | PASS | картка зникла, `Closed` у History |
+| 7 | PASS | архів History після перезапуску апки |
+| 8 | **не виконано 01.10.2026** | власник відклав |
+| 9 | **не виконано 01.10.2026** | власник відклав |
+
+Кроки 2–7 — PASS за повідомленням власника; з логів видно лише маршрути (`Track /trade`, `/positions`,
+`/history`, `/account`), бо ER-дії сигнатур не логують.
+
+**Дефект #1 — виправлено `c0d39db`.** Open мовчки нічого не робив на жодному ринку. У Hermes
+`Buffer.subarray().toString()` повертає `"83,79,76,0,0,0,0,0"`, а не `"SOL"`, тож `decodeMarket.symbol`
+ніколи не дорівнював обраному символу: ринок/акаунти — `null`, `handleOpen` мовчки виходив. Знайдено
+тимчасовим DEBUG-логом (`[dexxer] DEBUG open gate … marketSymbol: '83,79,76,0,0,0,0,0'`; відкочено,
+не закомічено). Фікс — побайтове декодування символу (`pdas.ts`, `codecs.ts`) + регресійний тест.
+Застосовано перезавантаженням JS о 20:46; кроки 3–7 пройшли на цьому бандлі, нового APK не збирали.
+
+**Дефект #2 — виправлено `b276769`.** HYPE, Open Short 7× → тост `insufficient margin (6010)`:
+`LeverageSlider` мав зашиті 1–10× і не знав `max_lev_bps` ринку (HYPE/ZEC — 5×). Програма поводилась
+коректно. Фікс — повзунок і MAX обмежені `maxLeverage(market)`. JS перезавантажено о 20:58, **на
+пристрої повторно не перевірено**.
+
+Обмеження доказів: ER-дії (open/increase/decrease/close/add margin/exit) не пишуть сигнатуру в logcat,
+збої в Trade/Positions — лише тостом; `remaining_accounts` Exit (крок 8) з логів не перевірити — лише
+станом L1 за адресою власника.

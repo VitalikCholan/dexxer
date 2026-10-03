@@ -49,8 +49,8 @@ const BALANCES_ROOT_PDA = pdas.balancesRoot()
 export function ReceiptSection() {
   const { colors } = useTheme()
   const caption = useTextStyle('caption')
-  const { owner, conn, accounts, loading, error } = useTradeSession()
-  const user = useLiveAccount(conn, accounts?.userAccount ?? null, decodeUserForReceipt)
+  const { owner, conn, base, loading, error } = useTradeSession()
+  const user = useLiveAccount(conn, base?.userAccount ?? null, decodeUserForReceipt)
   const root = useLiveAccount(baseConn, BALANCES_ROOT_PDA, decodeBalancesRoot)
 
   if (!owner) return null
@@ -59,7 +59,7 @@ export function ReceiptSection() {
     <Card title="Receipt">
       {error || user.error || root.error ? (
         <Text style={[caption, { color: colors.short }]}>{error ?? user.error ?? root.error}</Text>
-      ) : loading || !conn || !accounts ? (
+      ) : loading || !conn || !base ? (
         <Skeleton lines={2} />
       ) : (
         <ReceiptBody owner={owner} user={user.value} root={root} />

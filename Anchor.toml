@@ -8,13 +8,13 @@ resolution = true
 skip-lint = false
 
 [programs.localnet]
-dexxer_core = "G2okX5Bae4CxfK8vzso1Ecc96QUv7E3P4YvxaZnaYXoV"
+dexxer_core = "Fyg2yJBoN97ScWxT37xBp2zaaiNncNqnGJ7PAbtnUfCY"
 mock_oracle = "68xBWNR1uKorC7keLWvsT1pCmKC4RnwvRF4LoV3CCprh"
 
 # mock_oracle is localnet/LiteSVM-only (see keys/README.md); devnet uses the
 # real Pyth Lazer feed instead, so only dexxer_core deploys there.
 [programs.devnet]
-dexxer_core = "G2okX5Bae4CxfK8vzso1Ecc96QUv7E3P4YvxaZnaYXoV"
+dexxer_core = "Fyg2yJBoN97ScWxT37xBp2zaaiNncNqnGJ7PAbtnUfCY"
 
 # Stays "localnet" by default (week-1 behaviour unchanged); pass
 # `--provider.cluster devnet` on the command line for devnet deploys.

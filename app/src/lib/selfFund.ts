@@ -13,7 +13,7 @@
 // transaction, and gets the normal wallet prompt.
 //
 // Thresholds are deliberately conservative: onboarding rent (Faucet,
-// UserAccount, Position, DisclosureQueue, ATA, eATA, three delegation
+// UserAccount, Positions, ATA, eATA, three delegation
 // records) is ≈0.03 SOL on devnet; the deposit leg is one `faucet_mint` fee.
 // Below the threshold we fall back to sponsoring rather than failing the
 // user on an "insufficient funds" mid-batch.
@@ -35,10 +35,16 @@ export async function canSelfFund(owner: PublicKey, minLamports: number): Promis
   try {
     const lamports = await baseConn.getBalance(owner, 'confirmed')
     const self = lamports >= minLamports
-    if (__DEV__) console.log(`[dexxer] selfFund: owner has ${lamports} lamports, min ${minLamports} → ${self ? 'self-funded' : 'sponsored'}`)
+    if (__DEV__)
+      console.log(
+        `[dexxer] selfFund: owner has ${lamports} lamports, min ${minLamports} → ${self ? 'self-funded' : 'sponsored'}`,
+      )
     return self
   } catch (e) {
-    if (__DEV__) console.log(`[dexxer] selfFund: balance read failed, defaulting to sponsored: ${e instanceof Error ? e.message : String(e)}`)
+    if (__DEV__)
+      console.log(
+        `[dexxer] selfFund: balance read failed, defaulting to sponsored: ${e instanceof Error ? e.message : String(e)}`,
+      )
     return false
   }
 }

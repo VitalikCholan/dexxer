@@ -108,7 +108,7 @@ fn commit_aggregate_snapshots_rounded_values() {
     )
     .unwrap();
     h.send(
-        &[ixs::commit_aggregate(&w.fee_payer.pubkey(), &w, &[], 8)],
+        &[ixs::commit_aggregate(&w.fee_payer.pubkey(), &w)],
         &[&w.fee_payer],
     )
     .unwrap();

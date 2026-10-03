@@ -7,10 +7,11 @@
 //! `open_position` itself and paid for by the program's own `FeeEscrow` PDA
 //! (which is therefore the task's authority — week-5 Task 0, measurement 3),
 //! calling `liquidation_check` on exactly that position's accounts every
-//! `LIQ_TASK_INTERVAL_MS`.
+//! `LIQ_TASK_INTERVAL_MS`. Since slots Task 4 "that position" is the slot of
+//! the task's market inside the trader's `Positions` account.
 //!
 //! `liquidation_check` is deliberately NOT a second crank:
-//!   * it never advances `Market.mark`/the EMA — the market-level schedule
+//!   * it never advances `Market.mark`/the EMA or `Market.sample_seq` — the market-level schedule
 //!     owns that, and two writers on one EMA would double-sample the index;
 //!   * it reads the oracle only as a FRESHNESS GATE on the mark it is about to
 //!     liquidate against (a dead crank freezes `mark`, and `check_deviation`
@@ -21,7 +22,7 @@
 use crate::{
     errors::DexxerError,
     instructions::trade::{finalize_close, open_core},
-    oracle::{check_deviation, check_open_quality, read_price},
+    oracle::{check_deviation, check_open_quality, read_price, OraclePrice},
     risk,
     state::*,
 };
@@ -57,86 +58,70 @@ pub fn fee_escrow_pda() -> Pubkey {
     Pubkey::find_program_address(&[FEE_ESCROW_SEED], &crate::ID).0
 }
 
-/// Shared hysteresis — the ONLY place `Position.liq_ticks` moves.
+/// Shared hysteresis — the ONLY place `PositionSlot.liq_ticks` changes: it
+/// advances here, and only a healthy check here resets it to 0.
+/// `increase_position` never touches it (final review C1) — an increase on a
+/// position liquidatable at the mark is refused outright.
 ///
 /// Returns `true` when this tick's health check says the position must be
 /// liquidated now. Both liquidation paths call it, so their semantics cannot
 /// diverge.
 ///
-/// TWO INDEPENDENT CALLERS, ONE COUNTER (fix round 1). `liq_ticks` advances
-/// once per CALL, and since week-5 Task 3 there are two callers running at
-/// different rates: the relayer's `crank_tick` at ~1 s and this position's
-/// scheduled `liquidation_check` at ~3.75 s (`LIQ_TASK_INTERVAL_MS` is 5 s but
-/// the scheduler overshoots — week-5 Task 0, measurement 1). They do not
-/// coordinate, so a scheduled tick that lands between two crank ticks counts
-/// the SAME `Market.mark` sample a second time — the very double-count
-/// `crank_tick` already refuses to make within one transaction (its
-/// duplicate-candidate check). The counter therefore no longer measures
-/// "distinct price samples", only "calls".
-///
-/// The fix is a parameter, not a layout change: `MarketParams`'s default
-/// `liq_hysteresis_ticks` went 2 -> 3 (`state/market.rs`). 3 is the smallest
-/// value for which the worst-case interleaving — crank, scheduled, crank —
-/// still spans at least two DISTINCT mark samples, which is what the original
-/// 2 meant on a single-caller crank. Raising it further would only delay the
-/// backstop.
-///
-/// Wall-clock grace differs per path as a consequence: 3 ticks is ~3 s of
-/// crank time but ~11 s of scheduled time. That asymmetry is accepted — see
-/// `LIQ_TASK_INTERVAL_MS` in `state/mod.rs`.
-pub(crate) fn liq_due(pos: &mut Position, market: &Market, mark: u64) -> Result<bool> {
-    if risk::liquidatable_now(pos, market, mark)? {
+/// `liq_ticks` counts distinct PRICE SAMPLES, not calls (risk #38). A sample is
+/// a distinct oracle print that `crank_tick` ACCEPTED — not one on which its
+/// deviation breaker tripped. `crank_tick` alone writes `Market.sample_seq`: it
+/// advances when the accepted print's `posted_slot` differs from
+/// `Market.last_print` (identity, not order). Two callers reach this function
+/// at different rates, several times per print — the relayer's `crank_tick` and the position's
+/// scheduled `liquidation_check`; a tick counts only when `sample_seq` is newer
+/// than `PositionSlot.last_liq_sample`. Crank calls on one print, and any
+/// number of checks, therefore count once. A healthy check resets the counter
+/// but keeps `last_liq_sample`: `sample_seq` only grows, so any later print
+/// counts again.
+pub(crate) fn liq_due(pos: &mut PositionSlot, market: &Market, mark: u64) -> Result<bool> {
+    if !risk::liquidatable_now(pos, market, mark)? {
+        pos.liq_ticks = 0;
+        return Ok(false);
+    }
+    if market.sample_seq > pos.last_liq_sample {
         pos.liq_ticks = pos
             .liq_ticks
             .checked_add(1)
             .ok_or(DexxerError::MathOverflow)?;
-        Ok(pos.liq_ticks >= market.liq_hysteresis_ticks)
-    } else {
-        pos.liq_ticks = 0;
-        Ok(false)
+        pos.last_liq_sample = market.sample_seq;
     }
+    Ok(pos.liq_ticks >= market.liq_hysteresis_ticks)
 }
 
 /// Shared liquidation settlement — the close itself, once `liq_due` has said
-/// so.
-///
-/// Returns `false` (not an error) when the owner's ring is full: the record is
-/// the only copy of the closed trade and must not be dropped, but neither may
-/// one such candidate abort the caller — on `crank_tick` that would take every
-/// other liquidation in the batch down with it (week-5 Task 1, fix round 1,
-/// finding 2). The position stays `Open` with its `liq_ticks` intact and
-/// liquidates on the first tick after a `commit_aggregate` reveal drains the
-/// ring.
+/// so. Nothing is queued any more (spec §2.9), so a liquidation can never be
+/// skipped: it always settles through `finalize_close`, which also writes the
+/// owner's history record with `reason = Liquidated`.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn liquidate_now(
     market_key: Pubkey,
     risk_acc: &mut MarketRisk,
     pool: &mut PoolLive,
     user: &mut UserAccount,
-    pos: &mut Position,
-    dq: &mut DisclosureQueue,
+    positions: &mut Positions,
+    idx: usize,
     mark: u64,
     fee_bps: u32,
     clock: &Clock,
-    delay_slots: u64,
-) -> Result<bool> {
-    if dq.len as usize >= DQ_CAPACITY {
-        return Ok(false);
-    }
+) -> Result<()> {
     finalize_close(
         market_key,
         risk_acc,
         pool,
         user,
-        pos,
-        dq,
+        positions,
+        idx,
         mark,
         fee_bps,
         CloseReason::Liquidated,
         clock,
-        delay_slots,
     )?;
-    Ok(true)
+    Ok(())
 }
 
 /// Accounts of the scheduled per-position task. This list is frozen at
@@ -145,7 +130,7 @@ pub(crate) fn liquidate_now(
 ///
 /// `market` is READ-ONLY on purpose: the mark belongs to the market-wide
 /// crank schedule. Everything else this instruction can write (`market_risk`,
-/// `pool_live`, `position`, `user_account`, `disclosure_queue`) is a delegated
+/// `pool_live`, `positions`, `user_account`) is a delegated
 /// account, which is also what lets them be writable in the outer
 /// `ScheduleTask` CPI's account list (a writable NON-delegated account there
 /// is rejected outright — see `ScheduleCrank.config` in `crank.rs`).
@@ -155,9 +140,9 @@ pub struct LiquidationCheck<'info> {
     /// includes a derived PDA (`liq_crank_signer`), which an account constraint
     /// cannot express without recomputing it on every field validation.
     pub crank: Signer<'info>,
-    // Boxed throughout: this context carries a `UserAccount`, a `Position` and
-    // a `DisclosureQueue` at once — the same trio that already forced boxing in
-    // `Trade` and `UndelegateUser`.
+    // Boxed throughout: this context carries several Borsh accounts at once —
+    // the same shape that already forced boxing in `Trade` and
+    // `UndelegateUser`. `positions` is zero-copy and needs no box.
     #[account(seeds = [CONFIG_SEED], bump = config.bump)]
     pub config: Box<Account<'info, Config>>,
     #[account(seeds = [MARKET_SEED, &market.symbol], bump = market.bump)]
@@ -168,31 +153,29 @@ pub struct LiquidationCheck<'info> {
     pub pool_live: Box<Account<'info, PoolLive>>,
     /// CHECK: validated in oracle::read_price (key == market.feed, owner == config.oracle_program)
     pub feed: UncheckedAccount<'info>,
+    // The slot is found by `market.key()` in the body; a market with no open
+    // slot makes the tick a no-op.
     #[account(
         mut,
-        seeds = [POSITION_SEED, position.owner.as_ref(), market.key().as_ref()],
-        bump = position.bump,
-        has_one = market
+        seeds = [POSITIONS_SEED, user_account.owner.as_ref()],
+        bump = positions.load()?.bump
     )]
-    pub position: Box<Account<'info, Position>>,
-    // Same owner-consistency checks `crank_tick` runs on a candidate triple,
+    pub positions: AccountLoader<'info, Positions>,
+    // Same owner-consistency checks `crank_tick` runs on a candidate pair,
     // expressed declaratively since this context has exactly one candidate.
     #[account(
         mut,
         seeds = [USER_SEED, user_account.owner.as_ref()],
         bump = user_account.bump,
-        constraint = user_account.owner == position.owner @ DexxerError::InvalidCandidate
+        constraint = user_account.owner == positions.load()?.owner @ DexxerError::InvalidCandidate
     )]
     pub user_account: Box<Account<'info, UserAccount>>,
-    #[account(
-        mut,
-        seeds = [DQ_SEED, disclosure_queue.owner.as_ref()],
-        bump = disclosure_queue.bump,
-        constraint = disclosure_queue.owner == position.owner @ DexxerError::InvalidCandidate
-    )]
-    pub disclosure_queue: Box<Account<'info, DisclosureQueue>>,
 }
 
+/// Read-only on `market`: it never advances the price sample. Liquidation
+/// without the relayer therefore still needs a live `crank_tick` source (the
+/// market's scheduled crank) to see new prints — with no crank at all nothing
+/// is liquidated, deliberately: a frozen mark is not liquidated on.
 pub fn liquidation_check(mut ctx: Context<LiquidationCheck>) -> Result<()> {
     let clock = Clock::get()?;
     let a = &mut ctx.accounts;
@@ -210,12 +193,20 @@ pub fn liquidation_check(mut ctx: Context<LiquidationCheck>) -> Result<()> {
     let authorized = signer == liq_crank_signer(&fee_escrow_pda()) || signer == a.config.crank;
     require!(authorized, DexxerError::Unauthorized);
 
-    // A task keeps ticking after its position closes (nothing cancels it from
-    // inside a scheduled tick) — measured safe, and this is where it becomes a
-    // no-op (week-5 Task 0, "Тік по «закритій позиції»").
-    // With conditional orders pending the task has work to do on an idle
-    // (`Empty`) position too: its entry orders.
-    if a.position.state != PositionState::Open && !a.position.has_orders() {
+    // A liquidated or user-closed position leaves its task registered until
+    // the next open on this market or the owner's exit (nothing cancels it
+    // from inside a scheduled tick): a tick on a market with no open slot is a
+    // no-op, never an error (spec §2.9.2; week-5 Task 0, "Тік по «закритій
+    // позиції»"). The borrow is scoped: nothing below issues a CPI, but the
+    // write happens in its own `load_mut` further down.
+    let market_key = a.market.key();
+    // With conditional orders pending the task has work to do on a market with
+    // no open slot too: its entry orders.
+    let (open_idx, has_orders) = {
+        let p = a.positions.load()?;
+        (p.find_open(&market_key), p.has_orders_on(&market_key))
+    };
+    if open_idx.is_none() && !has_orders {
         return Ok(());
     }
 
@@ -242,139 +233,149 @@ pub fn liquidation_check(mut ctx: Context<LiquidationCheck>) -> Result<()> {
         return Ok(()); // market never marked; nothing to liquidate against
     }
 
-    let market_key = a.market.key();
     let fee_bps = a.market.liq_fee_bps as u32;
-    let delay = a.config.disclosure_delay_slots;
-    if a.position.state == PositionState::Open && liq_due(&mut a.position, &a.market, mark)? {
-        let done = liquidate_now(
-            market_key,
-            &mut a.market_risk,
-            &mut a.pool_live,
-            &mut a.user_account,
-            &mut a.position,
-            &mut a.disclosure_queue,
-            mark,
-            fee_bps,
-            &clock,
-            delay,
-        )?;
-        if !done {
-            // Ring full — skipped, not failed (see `liquidate_now`). The
-            // accrued `liq_ticks` stays, so the next tick retries.
-            msg!("liq check: queue full {}", a.position.key());
-        }
-    }
-    // Liquidation always goes first: a position that is liquidatable this tick
-    // must not be rescued by a stop that happens to share the tick.
-    run_orders(a, &px, mark, &clock)
-}
-
-/// Execute this position's triggered conditional orders against `mark`.
-///
-/// Runs on every scheduled tick after the liquidation check, and never fails
-/// the tick: an order that can no longer be filled (no margin, risk limit hit)
-/// is dropped rather than retried forever, and transient conditions (paused,
-/// poor oracle quality, full disclosure ring) leave the order in place.
-fn run_orders(
-    a: &mut LiquidationCheck,
-    px: &crate::oracle::OraclePrice,
-    mark: u64,
-    clock: &Clock,
-) -> Result<()> {
-    match a.position.state {
-        PositionState::Open => {
-            let side = a.position.side;
-            // Trailing orders chase the best price first, so a single tick that
-            // both makes a new high and reverses uses the new high.
-            for o in a.position.orders.iter_mut() {
-                if o.kind == OrderKind::TrailingStop {
-                    o.extreme = trail_extreme(side, o.extreme, mark);
-                }
-            }
-            let hit = a.position.orders.iter().any(|o| {
-                let trigger = match o.kind {
-                    OrderKind::TrailingStop => {
-                        match trailing_stop_price(side, o.extreme, o.trail_bps) {
-                            Ok(t) => t,
-                            Err(_) => return false,
-                        }
-                    }
-                    _ => o.trigger,
-                };
-                o.kind.is_reduce_only() && is_triggered(o.kind, side, trigger, mark)
-            });
-            if !hit {
-                return Ok(());
-            }
-            if a.disclosure_queue.len as usize >= DQ_CAPACITY {
-                msg!("orders: queue full {}", a.position.key());
-                return Ok(());
-            }
-            let market_key = a.market.key();
-            let fee_bps = a.market.close_fee_bps as u32;
-            let delay = a.config.disclosure_delay_slots;
-            // Reported as a user close on purpose: the public disclosure must
-            // not reveal that this exit was a resting order.
-            finalize_close(
+    let mut positions = a.positions.load_mut()?;
+    if let Some(idx) = open_idx {
+        if liq_due(&mut positions.slots[idx], &a.market, mark)? {
+            liquidate_now(
                 market_key,
                 &mut a.market_risk,
                 &mut a.pool_live,
                 &mut a.user_account,
-                &mut a.position,
-                &mut a.disclosure_queue,
+                &mut positions,
+                idx,
                 mark,
                 fee_bps,
-                CloseReason::User,
-                clock,
-                delay,
+                &clock,
             )?;
-            msg!("orders: closed {}", a.position.key());
         }
-        PositionState::Empty => {
-            if a.config.paused || a.market.paused_open || check_open_quality(px, &a.market).is_err()
-            {
+    }
+    // Liquidation always goes first: a position that is liquidatable this tick
+    // must not be rescued by a stop that happens to share the tick.
+    if has_orders {
+        run_orders(
+            a.config.paused,
+            &a.market,
+            market_key,
+            &mut a.market_risk,
+            &mut a.pool_live,
+            &mut a.user_account,
+            &mut positions,
+            &px,
+            mark,
+            &clock,
+        )?;
+    }
+    Ok(())
+}
+
+/// Execute this market's triggered conditional orders against `mark`.
+///
+/// Runs on every scheduled tick after the liquidation check, and never fails
+/// the tick on a bad order: one that can no longer be filled (no margin, risk
+/// limit hit) is dropped rather than retried forever, and transient conditions
+/// (paused, poor oracle quality) leave the order in place.
+#[allow(clippy::too_many_arguments)]
+fn run_orders(
+    paused: bool,
+    market: &Market,
+    market_key: Pubkey,
+    risk_acc: &mut MarketRisk,
+    pool: &mut PoolLive,
+    user: &mut UserAccount,
+    positions: &mut Positions,
+    px: &OraclePrice,
+    mark: u64,
+    clock: &Clock,
+) -> Result<()> {
+    if let Some(idx) = positions.find_open(&market_key) {
+        let side = positions.slots[idx].side();
+        // Trailing orders chase the best price first, so a single tick that
+        // both makes a new high and reverses uses the new high.
+        let mut hit = false;
+        for o in positions.orders.iter_mut() {
+            if o.market != market_key || !o.kind().is_reduce_only() {
+                continue;
+            }
+            let trigger = if o.kind() == OrderKind::TrailingStop {
+                o.extreme = trail_extreme(side, o.extreme, mark);
+                match trailing_stop_price(side, o.extreme, o.trail_bps) {
+                    Ok(t) => t,
+                    Err(_) => continue,
+                }
+            } else {
+                o.trigger
+            };
+            if is_triggered(o.kind(), side, trigger, mark) {
+                hit = true;
+            }
+        }
+        if !hit {
+            return Ok(());
+        }
+        // Reported as a user close on purpose: nothing about this exit says it
+        // was a resting order.
+        finalize_close(
+            market_key,
+            risk_acc,
+            pool,
+            user,
+            positions,
+            idx,
+            mark,
+            market.close_fee_bps as u32,
+            CloseReason::User,
+            clock,
+        )?;
+        msg!("orders: closed");
+        return Ok(());
+    }
+    // No open position: entry orders.
+    if paused || market.paused_open || check_open_quality(px, market).is_err() {
+        return Ok(());
+    }
+    for i in 0..ORDER_SLOTS {
+        let o = positions.orders[i];
+        if o.market != market_key
+            || !o.kind().is_entry()
+            || !is_triggered(o.kind(), o.side(), o.trigger, mark)
+        {
+            continue;
+        }
+        let opened = open_core(
+            market,
+            market_key,
+            risk_acc,
+            pool,
+            user,
+            positions,
+            o.side(),
+            o.size,
+            o.margin,
+            mark,
+            clock.slot,
+        );
+        match opened {
+            Ok(()) => {
+                // One position per market: the sibling entries are moot.
+                positions.clear_entry_orders(&market_key);
+                attach_exits(positions, &o);
+                msg!("orders: opened");
                 return Ok(());
             }
-            for i in 0..ORDER_SLOTS {
-                let o = a.position.orders[i];
-                if !o.kind.is_entry() || !is_triggered(o.kind, o.side, o.trigger, mark) {
-                    continue;
-                }
-                let opened = open_core(
-                    &a.market,
-                    &mut a.market_risk,
-                    &mut a.pool_live,
-                    &mut a.user_account,
-                    &mut a.position,
-                    o.side,
-                    o.size,
-                    o.margin,
-                    mark,
-                    clock.slot,
-                );
-                match opened {
-                    Ok(()) => {
-                        // One position per market: the sibling entries are moot.
-                        a.position.clear_entry_orders();
-                        attach_exits(&mut a.position, &o);
-                        msg!("orders: opened {}", a.position.key());
-                        return Ok(());
-                    }
-                    Err(_) => {
-                        a.position.orders[i] = Order::default();
-                        msg!("orders: dropped slot {}", i);
-                    }
-                }
+            Err(_) => {
+                positions.orders[i] = bytemuck::Zeroable::zeroed();
+                msg!("orders: dropped slot {}", i);
             }
         }
-        PositionState::Closed => {}
     }
     Ok(())
 }
 
 /// Turn an entry order's `tp`/`sl` into live reduce-only orders on the
-/// position it just opened.
-fn attach_exits(pos: &mut Position, entry: &Order) {
+/// position it just opened (a free slot is needed; without one the exit is
+/// simply not attached).
+fn attach_exits(positions: &mut Positions, entry: &OrderSlot) {
     for (kind, trigger) in [
         (OrderKind::TakeProfit, entry.tp),
         (OrderKind::StopLoss, entry.sl),
@@ -382,12 +383,19 @@ fn attach_exits(pos: &mut Position, entry: &Order) {
         if trigger == 0 {
             continue;
         }
-        if let Some(slot) = pos.orders.iter_mut().find(|o| o.is_empty()) {
-            *slot = Order {
-                kind,
-                side: entry.side,
+        if let Some(i) = positions.free_order_slot() {
+            positions.orders[i] = OrderSlot {
+                market: entry.market,
                 trigger,
-                ..Order::default()
+                size: 0,
+                margin: 0,
+                extreme: 0,
+                tp: 0,
+                sl: 0,
+                kind: kind.as_u8(),
+                side: entry.side,
+                trail_bps: 0,
+                _pad: [0; 4],
             };
         }
     }
@@ -408,8 +416,8 @@ fn attach_exits(pos: &mut Position, entry: &Order) {
 /// accounts it already passes.
 ///
 /// Re-registering an existing `task_id` is an UPDATE, not an error (week-5
-/// Task 0, measurement 1): a second `open_position` on the same position PDA
-/// simply refreshes the task.
+/// Task 0, measurement 1): a second `open_position` on the same market of the
+/// same `Positions` PDA simply refreshes the task.
 pub(crate) fn schedule_liquidation_task<'info>(
     payer: &'info AccountInfo<'info>,
     magic_program: &'info AccountInfo<'info>,
@@ -441,13 +449,10 @@ pub(crate) fn schedule_liquidation_task<'info>(
 /// PDA that paid for the registration — a program PDA can own and cancel a
 /// task with no human signer anywhere (week-5 Task 0, measurement 3).
 ///
-/// KNOWN UNMEASURED (Task 4, M-I): what the validator does when the
-/// `task_id` does not exist. `ephemeral-rollups-sdk` 0.16.2 just forwards a
-/// `MagicBlockInstruction::CancelTask { task_id }` CPI, and a failing CPI
-/// cannot be caught from inside a program — so if an unknown id errors, a
-/// cancel on a never-registered task aborts the whole caller. Every call site
-/// is placed where a task is expected to exist, and each is gated on
-/// `magic_program.executable`.
+/// Cancelling a `task_id` that does not exist (never registered, or already
+/// cancelled) was measured on devnet to be a safe no-op, not an error (week 5,
+/// M-I) — which is what lets `undelegate_user` cancel for every market the
+/// client names. Every call site is gated on `magic_program.executable`.
 pub(crate) fn cancel_liquidation_task<'info>(
     authority: &'info AccountInfo<'info>,
     task_context: &'info AccountInfo<'info>,

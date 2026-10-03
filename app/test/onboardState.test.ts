@@ -11,7 +11,7 @@ import {
   isDelegated,
   l1KeysFor,
   l1ProgressFrom,
-  needsReuseQueue,
+  isExitedOnL1,
   readL1Snapshot,
   sessionFresh,
   type L1Snapshot,
@@ -23,18 +23,19 @@ function info(owner: PublicKey, data: Buffer = Buffer.alloc(0)): AccountInfo<Buf
 }
 async function userAccount(owner: PublicKey, exited: boolean): Promise<Buffer> {
   return coder.encode('UserAccount', {
-    version: 2,
+    version: 3,
     owner,
     session_key: PublicKey.default,
     session_expiry: new BN(0),
     actions_left: 20,
     free_margin: new BN(0),
     locked_margin: new BN(0),
-    nonce: new BN(0),
     last_withdraw_slot: new BN(0),
     exit_salt: Array(32).fill(1),
     bump: 255,
     exited,
+    rent_payer: PublicKey.default,
+    _reserved: Array(32).fill(0),
   })
 }
 const empty = (): L1Snapshot => ({ config: null, faucet: null, ownerAta: null, userAccount: null, eata: null })
@@ -73,9 +74,14 @@ test('l1ProgressFrom: no faucet -> NotOnboarded', () => {
 test('l1ProgressFrom: faucet but no UserAccount -> Funded', () => {
   assert.equal(l1ProgressFrom({ ...empty(), faucet: info(DEXXER_CORE_PROGRAM_ID) }), 'Funded')
 })
-test('l1ProgressFrom: UserAccount owned by dexxer_core -> Initialized', () => {
+test('l1ProgressFrom: UserAccount owned by dexxer_core -> Initialized', async () => {
+  const data = await userAccount(PublicKey.unique(), false)
   assert.equal(
-    l1ProgressFrom({ ...empty(), faucet: info(DEXXER_CORE_PROGRAM_ID), userAccount: info(DEXXER_CORE_PROGRAM_ID) }),
+    l1ProgressFrom({
+      ...empty(),
+      faucet: info(DEXXER_CORE_PROGRAM_ID),
+      userAccount: info(DEXXER_CORE_PROGRAM_ID, data),
+    }),
     'Initialized',
   )
 })
@@ -83,6 +89,18 @@ test('l1ProgressFrom: UserAccount under the Delegation Program -> Delegated', ()
   assert.equal(
     l1ProgressFrom({ ...empty(), faucet: info(DEXXER_CORE_PROGRAM_ID), userAccount: info(DELEGATION_PROGRAM_ID) }),
     'Delegated',
+  )
+})
+
+test('l1ProgressFrom: exited UserAccount under the program -> Exited', async () => {
+  const owner = PublicKey.unique()
+  assert.equal(
+    l1ProgressFrom({
+      ...empty(),
+      faucet: info(DEXXER_CORE_PROGRAM_ID),
+      userAccount: info(DEXXER_CORE_PROGRAM_ID, await userAccount(owner, true)),
+    }),
+    'Exited',
   )
 })
 
@@ -94,20 +112,20 @@ test('isDelegated is true only for a UserAccount owned by the Delegation Program
   assert.equal(isDelegated({ ...empty(), userAccount: info(DELEGATION_PROGRAM_ID) }), true)
 })
 
-test('needsReuseQueue: an exited, non-delegated UserAccount; never a delegated or missing one', async () => {
+test('isExitedOnL1: an exited, non-delegated UserAccount; never a delegated or missing one', async () => {
   const owner = PublicKey.unique()
-  assert.equal(needsReuseQueue(empty()), false)
+  assert.equal(isExitedOnL1(empty()), false)
   assert.equal(
-    needsReuseQueue({ ...empty(), userAccount: info(DEXXER_CORE_PROGRAM_ID, await userAccount(owner, false)) }),
+    isExitedOnL1({ ...empty(), userAccount: info(DEXXER_CORE_PROGRAM_ID, await userAccount(owner, false)) }),
     false,
   )
   assert.equal(
-    needsReuseQueue({ ...empty(), userAccount: info(DEXXER_CORE_PROGRAM_ID, await userAccount(owner, true)) }),
+    isExitedOnL1({ ...empty(), userAccount: info(DEXXER_CORE_PROGRAM_ID, await userAccount(owner, true)) }),
     true,
   )
   // Delegated accounts are Delegation-Program-owned clones; `exited` is not consulted.
   assert.equal(
-    needsReuseQueue({ ...empty(), userAccount: info(DELEGATION_PROGRAM_ID, await userAccount(owner, true)) }),
+    isExitedOnL1({ ...empty(), userAccount: info(DELEGATION_PROGRAM_ID, await userAccount(owner, true)) }),
     false,
   )
 })

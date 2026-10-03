@@ -10,12 +10,12 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { SCHEDULER_ACTIVE_WINDOW_MS, STALE_MS, buildHealthPayload, computeSchedulerActive } from "../src/health.js";
+import { SCHEDULER_ACTIVE_WINDOW_MS, STALE_MS, buildHealthPayload, buildMarketsHealth, computeSchedulerActive } from "../src/health.js";
 import type { RelayerState } from "../src/crank.js";
 
 test("buildHealthPayload: ok=true when the last tick is fresh", () => {
   const now = 1_000_000;
-  const state: RelayerState = { lastTickAt: now - 5_000, lastCommitAt: now - 60_000, tick: 42, errors: [] };
+  const state: RelayerState = { lastTickAt: now - 5_000, lastCommitAt: now - 60_000, tick: 42, errors: [], marketTicks: {} };
   const payload = buildHealthPayload(state, now, 1.5, 2.5, "ok");
   assert.equal(payload.ok, true);
   assert.equal(payload.tick, 42);
@@ -30,14 +30,14 @@ test("buildHealthPayload: ok=true when the last tick is fresh", () => {
 
 test("buildHealthPayload: ok=false (503-worthy) when the last tick is older than STALE_MS", () => {
   const now = 1_000_000;
-  const state: RelayerState = { lastTickAt: now - (STALE_MS + 1), lastCommitAt: null, tick: 7, errors: [] };
+  const state: RelayerState = { lastTickAt: now - (STALE_MS + 1), lastCommitAt: null, tick: 7, errors: [], marketTicks: {} };
   const payload = buildHealthPayload(state, now, null, null, "ok");
   assert.equal(payload.ok, false);
 });
 
 test("buildHealthPayload: ok=false when there has never been a tick (lastTickAt=null)", () => {
   const now = 1_000_000;
-  const state: RelayerState = { lastTickAt: null, lastCommitAt: null, tick: 0, errors: [] };
+  const state: RelayerState = { lastTickAt: null, lastCommitAt: null, tick: 0, errors: [], marketTicks: {} };
   const payload = buildHealthPayload(state, now, null, null, "error");
   assert.equal(payload.ok, false);
   assert.equal(payload.db, "error");
@@ -45,7 +45,7 @@ test("buildHealthPayload: ok=false when there has never been a tick (lastTickAt=
 
 test("buildHealthPayload: defaults crankEnabled=true and schedulerActive=null when omitted", () => {
   const now = 1_000_000;
-  const state: RelayerState = { lastTickAt: now - 5_000, lastCommitAt: null, tick: 1, errors: [] };
+  const state: RelayerState = { lastTickAt: now - 5_000, lastCommitAt: null, tick: 1, errors: [], marketTicks: {} };
   const payload = buildHealthPayload(state, now, null, null, "ok");
   assert.equal(payload.crankEnabled, true);
   assert.equal(payload.schedulerActive, null);
@@ -55,7 +55,7 @@ test("buildHealthPayload: defaults crankEnabled=true and schedulerActive=null wh
 
 test("buildHealthPayload: ok=true when crankEnabled=false, even with no tick ever", () => {
   const now = 1_000_000;
-  const state: RelayerState = { lastTickAt: null, lastCommitAt: null, tick: 0, errors: [] };
+  const state: RelayerState = { lastTickAt: null, lastCommitAt: null, tick: 0, errors: [], marketTicks: {} };
   const payload = buildHealthPayload(state, now, null, null, "ok", undefined, undefined, false, true);
   assert.equal(payload.ok, true);
   assert.equal(payload.crankEnabled, false);
@@ -64,14 +64,14 @@ test("buildHealthPayload: ok=true when crankEnabled=false, even with no tick eve
 
 test("buildHealthPayload: ok=true when crankEnabled=false, even with a very stale tick", () => {
   const now = 1_000_000;
-  const state: RelayerState = { lastTickAt: now - (STALE_MS * 10), lastCommitAt: null, tick: 5, errors: [] };
+  const state: RelayerState = { lastTickAt: now - (STALE_MS * 10), lastCommitAt: null, tick: 5, errors: [], marketTicks: {} };
   const payload = buildHealthPayload(state, now, null, null, "ok", undefined, undefined, false, null);
   assert.equal(payload.ok, true);
 });
 
 test("buildHealthPayload: crankEnabled=true (explicit) preserves the pre-Task-7 staleness behavior", () => {
   const now = 1_000_000;
-  const state: RelayerState = { lastTickAt: now - (STALE_MS + 1), lastCommitAt: null, tick: 7, errors: [] };
+  const state: RelayerState = { lastTickAt: now - (STALE_MS + 1), lastCommitAt: null, tick: 7, errors: [], marketTicks: {} };
   const payload = buildHealthPayload(state, now, null, null, "ok", undefined, undefined, true, null);
   assert.equal(payload.ok, false);
 });
@@ -97,24 +97,45 @@ test("computeSchedulerActive: false when crank is disabled but Market's last cha
   assert.equal(computeSchedulerActive(false, now - (SCHEDULER_ACTIVE_WINDOW_MS + 1), now), false);
 });
 
-// --- Week-5 Task 5: commitIntervalTicks ---
+// --- commitIntervalMs ---
 
-test("buildHealthPayload: reports commitIntervalTicks, defaulting to 300", () => {
-  const state = { lastTickAt: Date.now(), lastCommitAt: null, tick: 1, errors: [] };
-  assert.equal(buildHealthPayload(state, Date.now(), null, null, "ok").commitIntervalTicks, 300);
+test("buildHealthPayload: reports commitIntervalMs, defaulting to 300000", () => {
+  const state = { lastTickAt: Date.now(), lastCommitAt: null, tick: 1, errors: [], marketTicks: {} };
+  assert.equal(buildHealthPayload(state, Date.now(), null, null, "ok").commitIntervalMs, 300_000);
   assert.equal(
-    buildHealthPayload(state, Date.now(), null, null, "ok", undefined, undefined, true, null, 60).commitIntervalTicks,
-    60,
+    buildHealthPayload(state, Date.now(), null, null, "ok", undefined, undefined, true, null, 60_000).commitIntervalMs,
+    60_000,
   );
 });
 
-// --- Week-5 Task 7: commitMaxActions ---
+// --- Plan 2 Task 9: per-market health ---
 
-test("buildHealthPayload: reports commitMaxActions, defaulting to 4", () => {
-  const state = { lastTickAt: Date.now(), lastCommitAt: null, tick: 1, errors: [] };
-  assert.equal(buildHealthPayload(state, Date.now(), null, null, "ok").commitMaxActions, 4);
-  assert.equal(
-    buildHealthPayload(state, Date.now(), null, null, "ok", undefined, undefined, true, null, 300, 6).commitMaxActions,
-    6,
+test("buildMarketsHealth: per-market tick age and oracle staleness", () => {
+  const now = 1_000_000;
+  const h = buildMarketsHealth(
+    ["SOL", "BTC"],
+    { SOL: now - 1_500 },
+    { SOL: { lastPublishTimeMs: now - 2_000 }, BTC: { lastPublishTimeMs: now - 120_000 } },
+    now,
   );
+  assert.deepEqual(h.SOL, { lastTickAt: now - 1_500, tickAgeMs: 1_500, lastPublishTimeMs: now - 2_000, oracleStale: false });
+  assert.equal(h.BTC.lastTickAt, null);
+  assert.equal(h.BTC.tickAgeMs, null);
+  assert.equal(h.BTC.oracleStale, true);
+});
+
+test("buildHealthPayload: a dead non-SOL market does not flip ok", () => {
+  const now = Date.now();
+  const state = { lastTickAt: now, lastCommitAt: null, tick: 1, errors: [], marketTicks: {} };
+  const markets = buildMarketsHealth(["SOL", "BTC"], {}, {}, now);
+  const p = buildHealthPayload(state, now, null, null, "ok", undefined, undefined, true, null, 300_000, markets);
+  assert.equal(p.ok, true);
+  assert.equal(p.markets.BTC.oracleStale, true);
+});
+
+test("buildHealthPayload: backfill snapshot is null by default and passed through when given", () => {
+  const state: RelayerState = { lastTickAt: 1, lastCommitAt: null, tick: 1, errors: [], marketTicks: {} };
+  assert.equal(buildHealthPayload(state, 2, null, null, "ok").backfill, null);
+  const snap = { enabled: true, lastRunAt: 5, lastOkAt: 5, lastError: null, rows: 12, source: "hyperliquid" as const };
+  assert.deepEqual(buildHealthPayload(state, 2, null, null, "ok", undefined, undefined, true, null, 300_000, {}, snap).backfill, snap);
 });

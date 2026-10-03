@@ -14,8 +14,8 @@ pub mod risk;
 pub mod state;
 pub mod token;
 use instructions::*;
-use state::{DisclosureArgs, MarketParams, OrderKind, Side};
-declare_id!("G2okX5Bae4CxfK8vzso1Ecc96QUv7E3P4YvxaZnaYXoV");
+use state::{MarketParams, OrderKind, Side};
+declare_id!("Fyg2yJBoN97ScWxT37xBp2zaaiNncNqnGJ7PAbtnUfCY");
 
 #[ephemeral]
 #[program]
@@ -27,7 +27,6 @@ pub mod dexxer_core {
         crank: Pubkey,
         oracle_program: Pubkey,
         tee_validator: Pubkey,
-        disclosure_delay_slots: u64,
         scheduler_signer: Pubkey,
         fee_payer: Pubkey,
         magic_fee_vault: Pubkey,
@@ -37,7 +36,6 @@ pub mod dexxer_core {
             crank,
             oracle_program,
             tee_validator,
-            disclosure_delay_slots,
             scheduler_signer,
             fee_payer,
             magic_fee_vault,
@@ -45,10 +43,11 @@ pub mod dexxer_core {
     }
     pub fn init_market(
         ctx: Context<InitMarket>,
+        symbol: [u8; 8],
         params: MarketParams,
         lazer_feed_id: String,
     ) -> Result<()> {
-        admin::init_market(ctx, params, lazer_feed_id)
+        admin::init_market(ctx, symbol, params, lazer_feed_id)
     }
     pub fn init_pool(ctx: Context<InitPool>) -> Result<()> {
         admin::init_pool(ctx)
@@ -68,9 +67,6 @@ pub mod dexxer_core {
     ) -> Result<()> {
         admin::set_scheduler_signer(ctx, new_scheduler_signer)
     }
-    pub fn set_disclosure_delay(ctx: Context<AdminConfig>, slots: u64) -> Result<()> {
-        admin::set_disclosure_delay(ctx, slots)
-    }
     pub fn seed_pool(ctx: Context<SeedPool>, amount: u64) -> Result<()> {
         admin::seed_pool(ctx, amount)
     }
@@ -89,8 +85,8 @@ pub mod dexxer_core {
     pub fn init_user(ctx: Context<InitUser>, exit_salt: [u8; 32]) -> Result<()> {
         user::init_user(ctx, exit_salt)
     }
-    pub fn set_session(
-        ctx: Context<SetSession>,
+    pub fn set_session<'info>(
+        ctx: Context<'info, SetSession<'info>>,
         session_key: Pubkey,
         expiry: i64,
         actions: u32,
@@ -177,17 +173,14 @@ pub mod dexxer_core {
     ) -> Result<()> {
         crank::cancel_crank(ctx, task_id)
     }
-    pub fn commit_aggregate<'info>(
-        ctx: Context<'info, CommitAggregate<'info>>,
-        max_actions: u8,
-    ) -> Result<()> {
-        commit::commit_aggregate(ctx, max_actions)
+    pub fn commit_aggregate(ctx: Context<CommitAggregate>) -> Result<()> {
+        commit::commit_aggregate(ctx)
     }
     pub fn commit_market(ctx: Context<CommitMarket>) -> Result<()> {
         commit::commit_market(ctx)
     }
-    pub fn delegate_market(ctx: Context<DelegateMarket>) -> Result<()> {
-        admin::delegate_market(ctx)
+    pub fn delegate_market(ctx: Context<DelegateMarket>, symbol: [u8; 8]) -> Result<()> {
+        admin::delegate_market(ctx, symbol)
     }
     pub fn delegate_pool(ctx: Context<DelegatePool>) -> Result<()> {
         admin::delegate_pool(ctx)
@@ -210,31 +203,8 @@ pub mod dexxer_core {
     pub fn undelegate_user<'info>(ctx: Context<'info, UndelegateUser<'info>>) -> Result<()> {
         user::undelegate_user(ctx)
     }
-    pub fn close_orphan_queue(ctx: Context<CloseOrphanQueue>) -> Result<()> {
-        user::close_orphan_queue(ctx)
-    }
     pub fn close_exited_user(ctx: Context<CloseExitedUser>) -> Result<()> {
         user::close_exited_user(ctx)
-    }
-    pub fn init_user_reuse_queue(
-        ctx: Context<InitUserReuseQueue>,
-        exit_salt: [u8; 32],
-    ) -> Result<()> {
-        user::init_user_reuse_queue(ctx, exit_salt)
-    }
-    pub fn write_commitment(
-        ctx: Context<WriteCommitment>,
-        nonce: u64,
-        hash: [u8; 32],
-    ) -> Result<()> {
-        disclosure::write_commitment(ctx, nonce, hash)
-    }
-    pub fn write_disclosure(
-        ctx: Context<WriteDisclosure>,
-        args: DisclosureArgs,
-        salt: [u8; 32],
-    ) -> Result<()> {
-        disclosure::write_disclosure(ctx, args, salt)
     }
     pub fn init_balances_root(ctx: Context<InitBalancesRoot>) -> Result<()> {
         root::init_balances_root(ctx)

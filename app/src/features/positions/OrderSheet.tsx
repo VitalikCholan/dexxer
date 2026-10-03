@@ -12,20 +12,21 @@ import { Sheet } from '@/src/ui/Sheet'
 import { Segment } from '@/src/ui/Segment'
 import { Input } from '@/src/ui/Input'
 import { Button } from '@/src/ui/Button'
-import { type DecodedPosition } from '@/src/lib/codecs'
+import { type PositionSlot } from '@/src/lib/positions'
 import { usdAmount, type OrderParams } from '@/src/lib/trade'
 import { type ExitKind, validateExit, validateTrail } from '@/src/lib/orders'
 
 export interface OrderSheetProps {
   open: boolean
   onClose: () => void
-  position: DecodedPosition
+  position: PositionSlot
+  symbol: string
   markUsd: bigint | null
   busy: boolean
   onSubmit: (p: OrderParams) => Promise<void>
 }
 
-export function OrderSheet({ open, onClose, position, markUsd, busy, onSubmit }: OrderSheetProps) {
+export function OrderSheet({ open, onClose, position, symbol, markUsd, busy, onSubmit }: OrderSheetProps) {
   const { colors } = useTheme()
   const caption = useTextStyle('caption')
   const [kind, setKind] = useState<ExitKind>('TakeProfit')
@@ -47,7 +48,7 @@ export function OrderSheet({ open, onClose, position, markUsd, busy, onSubmit }:
   }
 
   return (
-    <Sheet open={open} onClose={onClose} title="Add exit order">
+    <Sheet open={open} onClose={onClose} title={`Add exit order · ${symbol}`}>
       <Segment
         value={kind}
         onChange={setKind}

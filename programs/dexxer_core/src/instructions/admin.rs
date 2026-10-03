@@ -21,7 +21,7 @@ pub struct InitConfig<'info> {
     pub token_program: Program<'info, Token>,
     pub rent: Sysvar<'info, Rent>,
 }
-// Single admin bootstrap ix carrying 8 distinct config values; a params-struct
+// Single admin bootstrap ix carrying 7 distinct config values; a params-struct
 // refactor would churn every caller (client + LiteSVM) for no runtime benefit.
 #[allow(clippy::too_many_arguments)]
 pub fn init_config(
@@ -29,7 +29,6 @@ pub fn init_config(
     crank: Pubkey,
     oracle_program: Pubkey,
     tee_validator: Pubkey,
-    disclosure_delay_slots: u64,
     scheduler_signer: Pubkey,
     fee_payer: Pubkey,
     magic_fee_vault: Pubkey,
@@ -42,7 +41,6 @@ pub fn init_config(
     c.oracle_program = oracle_program;
     c.tee_validator = tee_validator;
     c.dusdc_mint = ctx.accounts.dusdc_mint.key();
-    c.disclosure_delay_slots = disclosure_delay_slots;
     // Week-2 Task 1 M1: scheduled ticks are NOT signed by the flat
     // `magicblock_magic_program_api::pda::CRANK_SIGNER` PDA — caller supplies
     // the real signer here as a starting value. Task 6 (fix round 3) found the
@@ -64,12 +62,13 @@ pub fn init_config(
 }
 
 #[derive(Accounts)]
+#[instruction(symbol: [u8; 8])]
 pub struct InitMarket<'info> {
     #[account(mut)]
     pub admin: Signer<'info>,
     #[account(seeds = [CONFIG_SEED], bump = config.bump, has_one = admin @ DexxerError::Unauthorized)]
     pub config: Account<'info, Config>,
-    #[account(init, payer = admin, space = 8 + Market::INIT_SPACE, seeds = [MARKET_SEED, &SOL_SYMBOL], bump)]
+    #[account(init, payer = admin, space = 8 + Market::INIT_SPACE, seeds = [MARKET_SEED, &symbol], bump)]
     pub market: Account<'info, Market>,
     #[account(init, payer = admin, space = 8 + MarketRisk::INIT_SPACE, seeds = [RISK_SEED, market.key().as_ref()], bump)]
     pub market_risk: Account<'info, MarketRisk>,
@@ -77,17 +76,21 @@ pub struct InitMarket<'info> {
 }
 pub fn init_market(
     ctx: Context<InitMarket>,
+    symbol: [u8; 8],
     params: MarketParams,
     lazer_feed_id: String,
 ) -> Result<()> {
+    require!(validate_symbol(&symbol), DexxerError::InvalidSymbol);
     require!(params.validate(), DexxerError::InvalidParams);
     let m = &mut ctx.accounts.market;
     m.version = 1;
-    m.symbol = SOL_SYMBOL;
+    m.symbol = symbol;
     m.feed = feed_pda(&ctx.accounts.config.oracle_program, &lazer_feed_id);
     apply_params(m, &params);
     m.mark = 0;
     m.mark_slot = 0;
+    m.last_print = 0;
+    m.sample_seq = 0;
     m.paused_open = false;
     m.stale_ticks = 0;
     m.bump = ctx.bumps.market;
@@ -231,15 +234,6 @@ pub fn set_scheduler_signer(ctx: Context<AdminConfig>, new_scheduler_signer: Pub
     ctx.accounts.config.scheduler_signer = new_scheduler_signer;
     Ok(())
 }
-// Week-5 Task 5: `disclosure_delay_slots` was written once, in `init_config`,
-// and never again — an already-deployed config could not retune the reveal
-// delay without a full re-bootstrap. Same `AdminConfig` pattern as the two
-// above. `0` is a legal value (reveal in the same cycle as the commitment),
-// and is what the week-5 demo runs on devnet.
-pub fn set_disclosure_delay(ctx: Context<AdminConfig>, slots: u64) -> Result<()> {
-    ctx.accounts.config.disclosure_delay_slots = slots;
-    Ok(())
-}
 
 #[derive(Accounts)]
 pub struct SeedPool<'info> {
@@ -297,23 +291,24 @@ pub fn seed_pool(ctx: Context<SeedPool>, amount: u64) -> Result<()> {
 // account is created for them here — market data stays readable to the crank.
 #[delegate]
 #[derive(Accounts)]
+#[instruction(symbol: [u8; 8])]
 pub struct DelegateMarket<'info> {
     #[account(mut)]
     pub admin: Signer<'info>,
     #[account(seeds = [CONFIG_SEED], bump = config.bump, has_one = admin @ DexxerError::Unauthorized)]
     pub config: Account<'info, Config>,
     /// CHECK: delegated PDA
-    #[account(mut, del, seeds = [MARKET_SEED, &SOL_SYMBOL], bump)]
+    #[account(mut, del, seeds = [MARKET_SEED, &symbol], bump)]
     pub market: UncheckedAccount<'info>,
     /// CHECK: delegated PDA
     #[account(mut, del, seeds = [RISK_SEED, market.key().as_ref()], bump)]
     pub market_risk: UncheckedAccount<'info>,
 }
-pub fn delegate_market(ctx: Context<DelegateMarket>) -> Result<()> {
+pub fn delegate_market(ctx: Context<DelegateMarket>, symbol: [u8; 8]) -> Result<()> {
     let market_key = ctx.accounts.market.key();
     ctx.accounts.delegate_market(
         &ctx.accounts.admin,
-        &[MARKET_SEED, &SOL_SYMBOL],
+        &[MARKET_SEED, &symbol],
         DelegateConfig {
             validator: Some(ctx.accounts.config.tee_validator),
             ..Default::default()

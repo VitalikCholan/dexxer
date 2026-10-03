@@ -2,7 +2,6 @@ use anchor_lang::prelude::Pubkey;
 
 pub mod balances_root;
 pub mod config;
-pub mod disclosure;
 pub mod faucet;
 pub mod fee_escrow;
 pub mod market;
@@ -11,11 +10,10 @@ pub mod order;
 pub mod permissions;
 pub mod pool;
 pub mod pool_live;
-pub mod position;
+pub mod positions;
 pub mod user;
 pub use balances_root::*;
 pub use config::*;
-pub use disclosure::*;
 pub use faucet::*;
 pub use fee_escrow::*;
 pub use market::*;
@@ -24,7 +22,7 @@ pub use order::*;
 pub use permissions::*;
 pub use pool::*;
 pub use pool_live::*;
-pub use position::*;
+pub use positions::*;
 pub use user::*;
 
 pub const CONFIG_SEED: &[u8] = b"config";
@@ -32,13 +30,10 @@ pub const MARKET_SEED: &[u8] = b"market";
 pub const RISK_SEED: &[u8] = b"risk";
 pub const POOL_SEED: &[u8] = b"pool";
 pub const USER_SEED: &[u8] = b"user";
-pub const POSITION_SEED: &[u8] = b"position";
-pub const DQ_SEED: &[u8] = b"dq";
+pub const POSITIONS_SEED: &[u8] = b"positions";
 pub const FAUCET_SEED: &[u8] = b"faucet";
 pub const MINT_AUTH_SEED: &[u8] = b"mint_auth";
 pub const FEE_ESCROW_SEED: &[u8] = b"fee_escrow";
-pub const COMMIT_SEED: &[u8] = b"commit";
-pub const DISCLOSURE_SEED: &[u8] = b"disclosure";
 pub const BALANCES_ROOT_SEED: &[u8] = b"balances_root";
 pub const POOL_LIVE_SEED: &[u8] = b"pool_live";
 /// Public `Pool` snapshot granularity: 100 dUSDC (6 decimals). Assets round down, liabilities round up (spec §2.5.1).
@@ -47,32 +42,17 @@ pub const SNAPSHOT_STEP: u64 = 100_000_000;
 pub const ROOT_LEAVES: usize = 64;
 /// UserAccounts per `set_balances_root` call (tx size / CU budget).
 pub const ROOT_BATCH: usize = 16;
-/// HARD program ceiling on post-commit actions per `commit_aggregate` bundle — NOT the number
-/// a bundle actually carries. The per-bundle count is chosen by the caller via
-/// `commit_aggregate(max_actions)`, clamped here to `[1, MAX_ACTIONS_PER_COMMIT]` (week-5
-/// final review C1), so the safe number is tunable from the relayer's `COMMIT_MAX_ACTIONS`
-/// env without a program redeploy.
-///
-/// Measured truth on the REAL `write_commitment`/`write_disclosure` action shape (week 5,
-/// Task 7, live devnet-tee): **8 real actions = bridge `0xA0000002` FAIL, 4 = PASS**. Week 3's
-/// M-C figure (28 PASS / 29 FAIL) was taken with a cheap 5-account spike action and does NOT
-/// describe this shape — the real actions are far heavier per action. Raising this constant
-/// without re-measuring would hand a client a budget the bridge rejects.
-pub const MAX_ACTIONS_PER_COMMIT: usize = 8;
-/// `ActionArgs::new` default escrow index (magic-actions.md).
-pub const ACTION_ESCROW_INDEX: u8 = 255;
 pub const SOL_SYMBOL: [u8; 8] = *b"SOL\0\0\0\0\0";
 pub const PERMISSION_MEMBERS: usize = 3; // owner, session, crank
 /// Upper bound on `crank_tick` candidates the PROGRAM accepts in one call.
 ///
-/// It is not what a client can actually fit: since week-5 Task 1 a candidate is
-/// a `[Position, UserAccount, DisclosureQueue]` triple, and a legacy (non-v0)
-/// transaction carrying 8 triples plus a ComputeBudget instruction already
-/// measures ~1175 bytes — 9 triples overflow the 1232-byte packet (measured,
-/// fix round 1, finding 1). Clients on legacy transactions must therefore chunk
-/// at 8 (`CRANK_TX_MAX_CANDIDATES` in `services/relayer/src/crank.ts`); the
-/// program cap stays 16 so a v0 transaction with an address-lookup table can
-/// use the whole budget later.
+/// A candidate is a `[Positions, UserAccount]` pair (week-6 slots Task 1; it
+/// was a triple with the `DisclosureQueue` before trade disclosure was
+/// removed; since slots Task 4 the first account is the trader's `Positions`
+/// and the slot is found by the tick's market). The client-side legacy-transaction chunk size
+/// (`CRANK_TX_MAX_CANDIDATES` in `services/relayer/src/crank.ts`) was measured
+/// on triples and is not re-measured here; the program cap stays 16 so a v0
+/// transaction with an address-lookup table can use the whole budget.
 pub const MAX_CANDIDATES: usize = 16;
 // Week-2 Task 5 fix round 2 (controller ruling): guards against a sybil
 // griefing the shared `FeeEscrow`'s commit budget via a `withdraw(1)`-per-tx
@@ -89,28 +69,26 @@ pub const WITHDRAW_COOLDOWN_SLOTS: u64 = 300;
 /// 5 s, not the market crank's 1 s: the scheduler was measured to overshoot
 /// the requested interval (16 ticks per 60 s at `interval 5000` — week-5
 /// Task 0, measurement 1), and every position carries its own task, so the
-/// tick rate is multiplied by the number of open positions. `liq_ticks`
-/// hysteresis is counted in TICKS, not wall time, which means the same
-/// `Market.liq_hysteresis_ticks` is ~3 s of grace on the crank path and ~11 s
-/// on this one. That is deliberate and this constant is NOT adjusted for it:
-/// the scheduled path is the backstop, the crank is the fast path, and a
-/// backstop that fires later is the safe direction.
+/// tick rate is multiplied by the number of open positions.
 ///
-/// What DID have to be adjusted is the tick budget itself: both callers share
-/// one `Position.liq_ticks`, so the default `liq_hysteresis_ticks` went 2 -> 3
-/// to keep the gate spanning more than one distinct mark sample — the full
-/// reasoning is on `liq_due` in `instructions/liquidation.rs`.
+/// Neither interval sets the grace period any more: both callers share one
+/// `PositionSlot.liq_ticks`, which counts distinct oracle prints accepted by
+/// `crank_tick` (`Market.sample_seq` vs `last_liq_sample`, risk #38), not
+/// calls — see `liq_due` in `instructions/liquidation.rs`. The grace is
+/// `Market.liq_hysteresis_ticks` prints of the feed, however often either path
+/// runs; this interval only bounds how late after a print the backstop looks.
 pub const LIQ_TASK_INTERVAL_MS: i64 = 5_000;
 
 /// Magic Actions `task_id` for one position's liquidation task.
 ///
 /// `task_id` is VALIDATOR-GLOBAL, not per-program (week-5 Task 0, open item
 /// 1), so it must be derived from something globally unique to this position —
-/// its own PDA. keccak256 is the project's hash primitive everywhere else
+/// the trader's `Positions` PDA plus the market key (one position per market
+/// per trader). keccak256 is the project's hash primitive everywhere else
 /// (week-3 rule), and the first 8 bytes are plenty: a collision would need two
-/// positions whose PDAs share a 64-bit keccak prefix.
-pub fn liq_task_id(position: &Pubkey) -> i64 {
-    let h = solana_keccak_hasher::hashv(&[position.as_ref()]).to_bytes();
+/// (positions, market) pairs that share a 64-bit keccak prefix.
+pub fn liq_task_id(positions: &Pubkey, market: &Pubkey) -> i64 {
+    let h = solana_keccak_hasher::hashv(&[positions.as_ref(), market.as_ref()]).to_bytes();
     let mut b = [0u8; 8];
     b.copy_from_slice(&h[..8]);
     i64::from_le_bytes(b)
@@ -121,27 +99,30 @@ mod liq_task_tests {
     use super::*;
 
     #[test]
-    fn liq_task_id_is_deterministic_and_position_specific() {
+    fn liq_task_id_is_deterministic_and_key_specific() {
         let a = Pubkey::new_from_array([7u8; 32]);
         let b = Pubkey::new_from_array([8u8; 32]);
-        assert_eq!(liq_task_id(&a), liq_task_id(&a), "same input, same id");
-        assert_ne!(liq_task_id(&a), liq_task_id(&b));
+        let m = Pubkey::new_from_array([1u8; 32]);
+        assert_eq!(
+            liq_task_id(&a, &m),
+            liq_task_id(&a, &m),
+            "same input, same id"
+        );
+        assert_ne!(liq_task_id(&a, &m), liq_task_id(&b, &m));
     }
 
-    /// Golden vector — pins the byte layout (keccak256 of the raw 32 pubkey
-    /// bytes, first 8 bytes read little-endian) so a client that recomputes
-    /// the id off-chain can be checked against the same number.
+    /// Golden vector: keccak256(positions ‖ market), first 8 bytes
+    /// little-endian — off-chain clients are checked against the same number.
     #[test]
     fn liq_task_id_golden_vector() {
-        let p = Pubkey::new_from_array([0u8; 32]);
-        let h = solana_keccak_hasher::hashv(&[p.as_ref()]).to_bytes();
-        let expected = i64::from_le_bytes(h[..8].try_into().unwrap());
-        assert_eq!(liq_task_id(&p), expected);
-        // keccak256(32 zero bytes) = 290decd9548b62a8d60345a988386fc84ba6bc95484008f6362f93160ef3e563
-        assert_eq!(&h[..8], &[0x29, 0x0d, 0xec, 0xd9, 0x54, 0x8b, 0x62, 0xa8]);
-        assert_eq!(
-            liq_task_id(&p),
-            i64::from_le_bytes([0x29, 0x0d, 0xec, 0xd9, 0x54, 0x8b, 0x62, 0xa8])
+        let positions = Pubkey::new_from_array([1u8; 32]);
+        let market = Pubkey::new_from_array([2u8; 32]);
+        const GOLDEN: i64 = 1_387_748_199_796_337_972;
+        assert_eq!(liq_task_id(&positions, &market), GOLDEN);
+        assert_ne!(
+            liq_task_id(&market, &positions),
+            GOLDEN,
+            "argument order is part of the id"
         );
     }
 }
@@ -162,17 +143,23 @@ mod size_tests {
     #[test]
     fn print_sizes_for_spec_q3() {
         let u = 8 + UserAccount::INIT_SPACE;
-        let p = 8 + Position::INIT_SPACE;
-        let d = 8 + DisclosureQueue::INIT_SPACE;
+        let p = Positions::SPACE;
         let m = 8 + Market::INIT_SPACE;
         let perm = rent(EphemeralPermission::size_of(PERMISSION_MEMBERS) as u32);
-        println!("UserAccount {u} B, Position {p} B, DisclosureQueue {d} B; L1 rent total {} lamports; ER permission prefund {perm} lamports x3",
-            l1_rent(u) + l1_rent(p) + l1_rent(d));
-        assert!(
-            p < 700,
-            "Position must stay under 700 B (spec §8 Q3, grown by ORDER_SLOTS orders)"
+        println!(
+            "UserAccount {u} B (L1 rent {} lamports), Positions {p} B (L1 rent {} lamports); \
+             L1 rent total {} lamports; ER permission prefund {perm} lamports x2",
+            l1_rent(u),
+            l1_rent(p),
+            l1_rent(u) + l1_rent(p)
         );
-        assert!(d < 1300, "DisclosureQueue must stay under 1300 B");
+        assert_eq!(
+            p, 3888,
+            "Positions::SPACE is pinned by spec §2.9.1 (+704 B of conditional orders)"
+        );
+        // `Positions` is pinned to exactly 3888 B by `positions.rs`'s layout
+        // test (spec §2.9.1); the old per-market `Position` < 400 B bound
+        // (spec §8 Q3) no longer applies to one account holding 16 slots.
         // Bound through a `let` (not the bare const expression) so clippy's
         // `assertions_on_constants` lint doesn't fire on a compile-time-true assert.
         assert!(m < 300, "Market must stay under 300 B");

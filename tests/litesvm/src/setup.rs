@@ -8,6 +8,22 @@ use solana_signer::Signer;
 
 pub const SEED_AMOUNT: u64 = 100_000_000_000; // 100,000 dUSDC
 
+/// `"BTC"` → `b"BTC\0\0\0\0\0"`, the on-chain market symbol / PDA seed.
+pub fn sym(s: &str) -> [u8; 8] {
+    let mut b = [0u8; 8];
+    b[..s.len()].copy_from_slice(s.as_bytes());
+    b
+}
+
+/// One market's accounts — everything a market-scoped instruction needs.
+#[derive(Clone, Copy)]
+pub struct Mkt {
+    pub symbol: [u8; 8],
+    pub market: Pubkey,
+    pub risk: Pubkey,
+    pub feed: Pubkey,
+}
+
 pub struct World {
     pub admin: Keypair,
     pub crank: Keypair,
@@ -31,21 +47,9 @@ pub struct World {
     pub fee_payer: Keypair,
 }
 
-/// `Config.disclosure_delay_slots` every `World::bootstrap` uses — long enough
-/// that a freshly closed trade's `reveal_after_slot` is still in the future, so
-/// a `commit_aggregate` in the same slot schedules `write_commitment` only.
-pub const DEFAULT_DISCLOSURE_DELAY: u64 = 100;
-
 impl World {
     pub fn bootstrap(h: &mut Harness) -> World {
-        Self::bootstrap_inner(h, true, DEFAULT_DISCLOSURE_DELAY)
-    }
-
-    /// Same as `bootstrap`, with an explicit `Config.disclosure_delay_slots`.
-    /// `0` makes every closed record due the instant it is queued, which is how
-    /// the one-bundle commitment+disclosure path is exercised (week-5 Task 1).
-    pub fn bootstrap_with_delay(h: &mut Harness, disclosure_delay_slots: u64) -> World {
-        Self::bootstrap_inner(h, true, disclosure_delay_slots)
+        Self::bootstrap_inner(h, true)
     }
 
     /// Same as `bootstrap`, but stops short of `init_pool_live` (and, since
@@ -55,14 +59,10 @@ impl World {
     /// exist so the `has_one = admin` check (not "account already in use")
     /// is what fires.
     pub fn bootstrap_without_pool_live(h: &mut Harness) -> World {
-        Self::bootstrap_inner(h, false, DEFAULT_DISCLOSURE_DELAY)
+        Self::bootstrap_inner(h, false)
     }
 
-    fn bootstrap_inner(
-        h: &mut Harness,
-        with_pool_live: bool,
-        disclosure_delay_slots: u64,
-    ) -> World {
+    fn bootstrap_inner(h: &mut Harness, with_pool_live: bool) -> World {
         let admin = Keypair::new();
         let crank = Keypair::new();
         let mint_kp = Keypair::new();
@@ -83,7 +83,6 @@ impl World {
                 &crank.pubkey(),
                 &oracle_program,
                 &Pubkey::new_unique(),
-                disclosure_delay_slots,
                 &crank.pubkey(), // scheduler_signer: fixed test crank, no real scheduler on LiteSVM
                 &admin.pubkey(), // fee_payer: reuse admin locally, no real scheduler on LiteSVM
                 &magic_fee_vault,
@@ -94,6 +93,7 @@ impl World {
         h.send(
             &[ixs::init_market(
                 &admin.pubkey(),
+                dexxer_core::state::SOL_SYMBOL,
                 MarketParams::sol_perp_defaults(),
                 "6",
             )],
@@ -180,8 +180,7 @@ impl World {
             .unwrap();
         let t = Trader {
             user: pdas::user(&o),
-            position: pdas::position(&o, &self.market),
-            dq: pdas::dq(&o),
+            positions: pdas::positions(&o),
             ata: ata(&o, &self.mint),
             kp,
         };
@@ -196,16 +195,72 @@ impl World {
 pub struct Trader {
     pub kp: Keypair,
     pub user: Pubkey,
-    pub position: Pubkey,
-    pub dq: Pubkey,
+    pub positions: Pubkey,
     pub ata: Pubkey,
 }
 
 impl World {
-    /// Writes a 134-byte PriceUpdateV2 feed owned by `oracle_program` (layout from spikes/04, exponent +8).
+    pub fn sol(&self) -> Mkt {
+        Mkt {
+            symbol: dexxer_core::state::SOL_SYMBOL,
+            market: self.market,
+            risk: self.risk,
+            feed: self.feed,
+        }
+    }
+
+    /// `init_market` for another symbol under the same admin/oracle (LiteSVM:
+    /// no delegation, so the market is usable straight away).
+    pub fn add_market(
+        &self,
+        h: &mut Harness,
+        symbol: &str,
+        lazer_feed_id: &str,
+        params: MarketParams,
+    ) -> Mkt {
+        let s = sym(symbol);
+        h.send(
+            &[ixs::init_market(
+                &self.admin.pubkey(),
+                s,
+                params,
+                lazer_feed_id,
+            )],
+            &[&self.admin],
+        )
+        .unwrap();
+        let market = pdas::market_for(&s);
+        Mkt {
+            symbol: s,
+            market,
+            risk: pdas::risk(&market),
+            feed: pdas::feed_for(&self.oracle_program, lazer_feed_id),
+        }
+    }
+
     pub fn set_price(
         &self,
         h: &mut Harness,
+        price_1e6: u64,
+        conf_bps: u32,
+        publish_time: i64,
+        posted_slot: u64,
+    ) {
+        self.set_price_on(
+            h,
+            &self.sol(),
+            price_1e6,
+            conf_bps,
+            publish_time,
+            posted_slot,
+        );
+    }
+
+    /// Writes a 134-byte PriceUpdateV2 feed owned by `oracle_program` (layout from spikes/04, exponent +8).
+    pub fn set_price_on(
+        &self,
+        h: &mut Harness,
+        m: &Mkt,
         price_1e6: u64,
         conf_bps: u32,
         publish_time: i64,
@@ -228,7 +283,7 @@ impl World {
         d.push(0);
         h.svm
             .set_account(
-                self.feed,
+                m.feed,
                 Account {
                     lamports: 10_000_000,
                     data: d,
@@ -243,24 +298,25 @@ impl World {
 
 impl Trader {
     pub fn trade_accounts(&self, w: &World, signer: &Pubkey) -> Vec<AccountMeta> {
+        self.trade_accounts_on(w, &w.sol(), signer)
+    }
+
+    pub fn trade_accounts_on(&self, w: &World, m: &Mkt, signer: &Pubkey) -> Vec<AccountMeta> {
         vec![
             AccountMeta::new_readonly(*signer, true), // Trade.signer is not `mut`
             AccountMeta::new_readonly(w.config, false),
-            AccountMeta::new(w.market, false),
-            AccountMeta::new(w.risk, false),
+            AccountMeta::new(m.market, false),
+            AccountMeta::new(m.risk, false),
             AccountMeta::new(w.pool_live, false),
             AccountMeta::new(self.user, false),
-            AccountMeta::new(self.position, false),
-            AccountMeta::new_readonly(w.feed, false),
-            AccountMeta::new(self.dq, false),
+            AccountMeta::new(self.positions, false),
+            AccountMeta::new_readonly(m.feed, false),
             AccountMeta::new(w.fee_escrow, false),
-            // `task_context` is unconstrained (week-5 Task 3 will pass the real
-            // Magic Actions task context here): Task 0's spike measured that any
-            // existing writable account is accepted, so the position PDA stands
-            // in — it always exists and is already writable in this very
-            // instruction. No Magic program is deployed on LiteSVM, so nothing
-            // ever reads it here.
-            AccountMeta::new(self.position, false),
+            // `task_context` is pinned to the `Positions` PDA by the program
+            // (week-5 Task 3 fix round 1): it always exists and is already
+            // writable in this very instruction. No Magic program is deployed
+            // on LiteSVM, so nothing ever reads it here.
+            AccountMeta::new(self.positions, false),
             AccountMeta::new_readonly(pdas::magic_program(), false),
             // `liq_crank_signer` (week-5 Task 3): the signer a scheduled
             // `liquidation_check` tick carries. Only checked on the scheduling

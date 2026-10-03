@@ -1,7 +1,7 @@
 // services/relayer/src/indexer/store.ts
 //
-// Postgres read/write helpers for the four indexer tables (migration
-// `001_indexer.sql`). Every writer is a plain upsert (`ON CONFLICT`) so a
+// Postgres read/write helpers for the indexer tables (migrations
+// `001_indexer.sql`, `009_candles.sql`, `010_candles_source_hyperliquid.sql`). Every writer is a plain upsert (`ON CONFLICT`) so a
 // resubscribe/reconnect in `accounts.ts` re-processing the same account
 // state never crashes on a duplicate primary key.
 //
@@ -12,7 +12,8 @@
 // exceed 2^53 (capital_total etc, as USDC volume grows). See README.
 
 import type { DbPool } from "../db.js";
-import type { DisclosureQuery, PoolHistoryQuery, StatsQuery } from "./query.js";
+import type { PoolHistoryQuery } from "./query.js";
+import { TIER_TF, bucketStart, type StoredTier } from "./timeframes.js";
 
 export interface TickRow {
   ts: number;
@@ -33,23 +34,6 @@ export interface PoolSnapshotRow {
   badDebtTotal: bigint;
 }
 
-export interface DisclosureRow {
-  pubkey: string;
-  /** L1 `Disclosure.market` (base58). The trader is never disclosed (`Disclosure.owner` is always zero). */
-  market: string;
-  side: string;
-  size: bigint;
-  entry: bigint;
-  exit: bigint;
-  pnl: bigint;
-  fees: bigint;
-  reason: string;
-  openedSlot: bigint;
-  closedSlot: bigint;
-  nonce: bigint;
-  ts: number;
-}
-
 export interface RootRow {
   rootSlot: number;
   ts: number;
@@ -57,23 +41,85 @@ export interface RootRow {
   leavesHex: string[];
 }
 
-export async function insertTick(pool: DbPool, row: TickRow): Promise<void> {
+export interface CandleRow {
+  /** Bucket start, unix ms. */
+  t: number;
+  o: bigint;
+  h: bigint;
+  l: bigint;
+  c: bigint;
+}
+
+/** 1m / 1h / 1d bucket starts of a tick — the `$6..$8` of `insertTick`'s SQL. Pure (test/candleSql.test.ts). */
+export function tickBucketParams(ts: number): [number, number, number] {
+  return [bucketStart(TIER_TF["1m"], ts), bucketStart(TIER_TF["1h"], ts), bucketStart(TIER_TF["1d"], ts)];
+}
+
+/**
+ * `market` is the registry symbol (`MarketInfo.symbol`, e.g. "SOL") — ticks are keyed `(market, ts)` since migration 008.
+ * Spec §2.10.2: one round-trip writes the tick AND upserts its 1m/1h/1d
+ * candle (o kept, h = GREATEST, l = LEAST, c = this price, source flips to
+ * 'oracle'). `c` is the latest only under an ASSUMPTION: ticks of one market
+ * land in `ts` order. `accounts.ts` fires this unawaited (`void insertTick`),
+ * so two in-flight inserts can commit out of order and a late tick then
+ * overwrites the 1m/1h/1d `c` with an older price (h/l stay correct). The
+ * real fix — a `last_ts` guard on the candle row — is deferred.
+ */
+export async function insertTick(pool: DbPool, row: TickRow & { market: string }): Promise<void> {
+  const [m1, h1, d1] = tickBucketParams(row.ts);
   await pool.query(
-    "INSERT INTO ticks (ts, price, slot, publish_time) VALUES ($1, $2, $3, $4) ON CONFLICT (ts) DO UPDATE SET price = EXCLUDED.price, slot = EXCLUDED.slot, publish_time = EXCLUDED.publish_time",
-    [row.ts, row.price.toString(), row.slot, row.publishTime],
+    `WITH tick AS (
+       INSERT INTO ticks (market, ts, price, slot, publish_time) VALUES ($1, $2, $3, $4, $5)
+       ON CONFLICT (market, ts) DO UPDATE SET price = EXCLUDED.price, slot = EXCLUDED.slot, publish_time = EXCLUDED.publish_time
+     )
+     INSERT INTO candles (market, tf, t, o, h, l, c, source) VALUES
+       ($1, '1m', $6, $3, $3, $3, $3, 'oracle'),
+       ($1, '1h', $7, $3, $3, $3, $3, 'oracle'),
+       ($1, '1d', $8, $3, $3, $3, $3, 'oracle')
+     ON CONFLICT (market, tf, t) DO UPDATE SET
+       h = GREATEST(candles.h, EXCLUDED.h), l = LEAST(candles.l, EXCLUDED.l), c = EXCLUDED.c, source = 'oracle'`,
+    [row.market, row.ts, row.price.toString(), row.slot, row.publishTime, m1, h1, d1],
   );
 }
 
-export async function listTicks(pool: DbPool, sinceTs: number): Promise<{ ts: number; price: bigint }[]> {
-  const { rows } = await pool.query<{ ts: string; price: string }>("SELECT ts, price FROM ticks WHERE ts >= $1 ORDER BY ts ASC", [
-    sinceTs,
-  ]);
+export async function listCandles(pool: DbPool, market: string, tier: StoredTier, sinceT: number): Promise<CandleRow[]> {
+  const { rows } = await pool.query<{ t: string; o: string; h: string; l: string; c: string }>(
+    "SELECT t, o, h, l, c FROM candles WHERE market = $1 AND tf = $2 AND t >= $3 ORDER BY t ASC",
+    [market, tier, sinceT],
+  );
+  return rows.map((r) => ({ t: Number(r.t), o: BigInt(r.o), h: BigInt(r.h), l: BigInt(r.l), c: BigInt(r.c) }));
+}
+
+/** Backfill rows (source 'hyperliquid'): never overwrite — an oracle candle, or an earlier backfill, wins. Returns how many were inserted. */
+export async function insertBackfillCandles(pool: DbPool, market: string, tier: StoredTier, rows: CandleRow[]): Promise<number> {
+  if (rows.length === 0) return 0;
+  const { rowCount } = await pool.query(
+    `INSERT INTO candles (market, tf, t, o, h, l, c, source)
+     SELECT $1, $2, unnest($3::bigint[]), unnest($4::bigint[]), unnest($5::bigint[]), unnest($6::bigint[]), unnest($7::bigint[]), 'hyperliquid'
+     ON CONFLICT (market, tf, t) DO NOTHING`,
+    [market, tier, rows.map((r) => r.t), rows.map((r) => r.o.toString()), rows.map((r) => r.h.toString()), rows.map((r) => r.l.toString()), rows.map((r) => r.c.toString())],
+  );
+  return rowCount ?? 0;
+}
+
+/** Retention (spec §2.10.2): raw ticks older than `cutoffTs` go; candles keep the history. Returns rows deleted. */
+export async function deleteTicksBefore(pool: DbPool, cutoffTs: number): Promise<number> {
+  const { rowCount } = await pool.query("DELETE FROM ticks WHERE ts < $1", [cutoffTs]);
+  return rowCount ?? 0;
+}
+
+export async function listTicks(pool: DbPool, market: string, sinceTs: number): Promise<{ ts: number; price: bigint }[]> {
+  const { rows } = await pool.query<{ ts: string; price: string }>(
+    "SELECT ts, price FROM ticks WHERE market = $1 AND ts >= $2 ORDER BY ts ASC",
+    [market, sinceTs],
+  );
   return rows.map((r) => ({ ts: Number(r.ts), price: BigInt(r.price) }));
 }
 
-export async function latestTick(pool: DbPool): Promise<TickRow | null> {
+export async function latestTick(pool: DbPool, market: string): Promise<TickRow | null> {
   const { rows } = await pool.query<{ ts: string; price: string; slot: string; publish_time: string | null }>(
-    "SELECT ts, price, slot, publish_time FROM ticks ORDER BY ts DESC LIMIT 1",
+    "SELECT ts, price, slot, publish_time FROM ticks WHERE market = $1 ORDER BY ts DESC LIMIT 1",
+    [market],
   );
   const r = rows[0];
   if (!r) return null;
@@ -136,118 +182,6 @@ export async function latestPoolSnapshot(pool: DbPool): Promise<Record<string, u
     "SELECT slot, ts, capital_total, protocol_liquidity, locked_total, fees_accrued, insurance, bad_debt_total FROM pool_snapshots ORDER BY slot DESC LIMIT 1",
   );
   return rows[0] ? poolRowToJson(rows[0]) : null;
-}
-
-/**
- * Returns `true` only the first time this `pubkey` is inserted — `accounts.ts` uses that to decide whether to broadcast over WS (a resubscribe/re-poll re-seeing an already-known Disclosure must not re-broadcast it).
- * A re-seen row still missing `market` (ingested before migration 007) gets it backfilled, silently.
- */
-export async function insertDisclosure(pool: DbPool, row: DisclosureRow): Promise<boolean> {
-  const { rowCount } = await pool.query(
-    `INSERT INTO disclosures (pubkey, side, size, entry, exit, pnl, fees, reason, opened_slot, closed_slot, nonce, ts, market)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
-     ON CONFLICT (pubkey) DO NOTHING`,
-    [
-      row.pubkey,
-      row.side,
-      row.size.toString(),
-      row.entry.toString(),
-      row.exit.toString(),
-      row.pnl.toString(),
-      row.fees.toString(),
-      row.reason,
-      row.openedSlot.toString(),
-      row.closedSlot.toString(),
-      row.nonce.toString(),
-      row.ts,
-      row.market,
-    ],
-  );
-  if ((rowCount ?? 0) > 0) return true;
-  await pool.query("UPDATE disclosures SET market = $2 WHERE pubkey = $1 AND market IS NULL", [row.pubkey, row.market]);
-  return false;
-}
-
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-function disclosureRowToJson(r: any): Record<string, unknown> {
-  return {
-    pubkey: r.pubkey,
-    market: r.market,
-    side: r.side,
-    size: r.size,
-    entry: r.entry,
-    exit: r.exit,
-    pnl: r.pnl,
-    fees: r.fees,
-    reason: r.reason,
-    opened_slot: r.opened_slot,
-    closed_slot: r.closed_slot,
-    nonce: r.nonce,
-    ts: Number(r.ts),
-  };
-}
-
-/** Newest `closed_slot` first (ties by `pubkey`), after `q.cursor` when set, narrowed by `q`'s filters. */
-export async function listDisclosures(pool: DbPool, q: DisclosureQuery): Promise<Record<string, unknown>[]> {
-  const params: unknown[] = [];
-  const p = (v: unknown) => `$${params.push(v)}`;
-  const where: string[] = [];
-  if (q.cursor) where.push(`(closed_slot, pubkey) < (${p(q.cursor.closedSlot.toString())}::bigint, ${p(q.cursor.pubkey)})`);
-  if (q.side) where.push(`side = ${p(q.side)}`);
-  if (q.reason) where.push(`reason = ${p(q.reason)}`);
-  if (q.market) where.push(`market = ${p(q.market)}`);
-  if (q.from !== null) where.push(`ts >= ${p(q.from)}`);
-  if (q.to !== null) where.push(`ts <= ${p(q.to)}`);
-  const { rows } = await pool.query(
-    `SELECT pubkey, market, side, size, entry, exit, pnl, fees, reason, opened_slot, closed_slot, nonce, ts FROM disclosures
-     ${where.length > 0 ? `WHERE ${where.join(" AND ")}` : ""}
-     ORDER BY closed_slot DESC, pubkey DESC LIMIT ${p(q.limit)}`,
-    params,
-  );
-  return rows.map(disclosureRowToJson);
-}
-
-export interface DisclosureStats {
-  trades: number;
-  longs: number;
-  shorts: number;
-  liquidations: number;
-  /** Trades with `pnl > 0`. */
-  wins: number;
-  /** `wins / trades`; `null` when there are no trades in the window. */
-  win_rate: number | null;
-  /** Σ opening notional in quote base units — `ceil(size · entry / 1e9)` per trade, the same rounding as `math.rs::notional`. */
-  volume_quote: string;
-  pnl_total: string;
-  fees_total: string;
-}
-
-/** Aggregates over the public disclosure feed only — never the private `MarketRisk`/`PoolLive` (CLAUDE.md: servers read only public accounts). */
-export async function disclosureStats(pool: DbPool, q: StatsQuery): Promise<DisclosureStats> {
-  const { rows } = await pool.query<{
-    trades: number;
-    longs: number;
-    shorts: number;
-    liquidations: number;
-    wins: number;
-    volume_quote: string;
-    pnl_total: string;
-    fees_total: string;
-  }>(
-    `SELECT COUNT(*)::int AS trades,
-            COUNT(*) FILTER (WHERE side = 'long')::int AS longs,
-            COUNT(*) FILTER (WHERE side = 'short')::int AS shorts,
-            COUNT(*) FILTER (WHERE reason = 'liquidated')::int AS liquidations,
-            COUNT(*) FILTER (WHERE pnl > 0)::int AS wins,
-            COALESCE(SUM(CEIL(size::numeric * entry / 1000000000)), 0)::text AS volume_quote,
-            COALESCE(SUM(pnl::numeric), 0)::text AS pnl_total,
-            COALESCE(SUM(fees::numeric), 0)::text AS fees_total
-     FROM disclosures
-     WHERE ts >= $1 AND ts <= $2 AND ($3::text IS NULL OR market = $3)`,
-    [q.from, q.to, q.market],
-  );
-  const r = rows[0];
-  return { ...r, win_rate: r.trades > 0 ? r.wins / r.trades : null };
 }
 
 export async function insertRoot(pool: DbPool, row: RootRow): Promise<void> {

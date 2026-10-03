@@ -68,25 +68,25 @@ impl Harness {
         T::try_deserialize(&mut acc.data.as_slice()).expect("deserialize")
     }
 
-    /// Replace `key` with an empty, system-owned account — LiteSVM's stand-in
-    /// for "this account is not in the ER clone (any more)". Needed because no
-    /// Magic program is deployed here, so `commit_and_undelegate` is skipped
-    /// and an undelegated account never actually leaves the ledger; week-5
-    /// Task 2's `close_orphan_queue` reads exactly that absence as its
-    /// orphan signal. Same lever `World::set_price` uses for the oracle feed.
-    pub fn blank_account(&mut self, key: &Pubkey) {
-        self.svm
-            .set_account(
-                *key,
-                solana_account::Account {
-                    lamports: 0,
-                    data: vec![],
-                    owner: solana_system_interface::program::ID,
-                    executable: false,
-                    rent_epoch: 0,
-                },
-            )
-            .unwrap();
+    /// A copy of a zero-copy `Positions` account (after the 8-byte
+    /// discriminator). `bytemuck` through anchor-lang's re-export, so this
+    /// crate needs no dependency of its own on it.
+    pub fn positions(&self, key: &Pubkey) -> dexxer_core::state::Positions {
+        let acc = self.svm.get_account(key).expect("account missing");
+        anchor_lang::__private::bytemuck::pod_read_unaligned(
+            &acc.data[8..8 + core::mem::size_of::<dexxer_core::state::Positions>()],
+        )
+    }
+
+    /// The trader's OPEN slot on `market`, if any.
+    pub fn slot(
+        &self,
+        t: &setup::Trader,
+        market: &Pubkey,
+    ) -> Option<dexxer_core::state::PositionSlot> {
+        let p = self.positions(&t.positions);
+        let m = apk(*market);
+        p.find_open(&m).map(|i| p.slots[i])
     }
 
     pub fn warp(&mut self, slot: u64, unix_ts: i64) {
@@ -143,6 +143,29 @@ pub fn assert_invariant(h: &Harness, w: &setup::World, traders: &[&setup::Trader
 /// Same as `assert_invariant`, but every assertion message is prefixed with `ctx`
 /// (e.g. `"step {step}: "`) so a randomized-sequence failure names the failing step.
 pub fn assert_invariant_ctx(h: &Harness, w: &setup::World, traders: &[&setup::Trader], ctx: &str) {
+    assert_invariant_markets_ctx(h, w, traders, &[w.market], ctx);
+}
+
+/// `assert_invariant` across several markets: each trader's open margin is
+/// summed over their open slots whose market is in `markets` (spec §2.9).
+pub fn assert_invariant_markets(
+    h: &Harness,
+    w: &setup::World,
+    traders: &[&setup::Trader],
+    markets: &[Pubkey],
+) {
+    assert_invariant_markets_ctx(h, w, traders, markets, "");
+}
+
+/// protocol_liquidity + fees + insurance + Σ free + Σ open margins (every
+/// market) == capital_total == vault balance.
+pub fn assert_invariant_markets_ctx(
+    h: &Harness,
+    w: &setup::World,
+    traders: &[&setup::Trader],
+    markets: &[Pubkey],
+    ctx: &str,
+) {
     // week-4 Task 1: trading writes PoolLive now, not the public Pool (only
     // commit_aggregate publishes a rounded Pool snapshot) — the invariant must
     // read the live counters to see per-action state.
@@ -151,17 +174,24 @@ pub fn assert_invariant_ctx(h: &Harness, w: &setup::World, traders: &[&setup::Tr
     let mut locked_sum: u64 = 0;
     for t in traders {
         let u: dexxer_core::state::UserAccount = h.account(&t.user);
-        let p: dexxer_core::state::Position = h.account(&t.position);
-        let open_margin = if p.state == dexxer_core::state::PositionState::Open {
-            p.margin
-        } else {
-            0
-        };
+        let mut open_margin = 0u64;
+        let wanted: Vec<_> = markets.iter().map(|m| apk(*m)).collect();
+        // A closed (`close_exited_user`) account holds no position.
+        if h.svm
+            .get_account(&t.positions)
+            .is_some_and(|a| !a.data.is_empty())
+        {
+            for s in h.positions(&t.positions).slots.iter() {
+                if s.is_open() && wanted.contains(&s.market) {
+                    open_margin += s.margin;
+                }
+            }
+        }
         sum += u.free_margin + open_margin;
         locked_sum += open_margin;
         assert_eq!(
             u.locked_margin, open_margin,
-            "{ctx}user.locked_margin != position.margin for {}",
+            "{ctx}user.locked_margin != Σ open margins for {}",
             t.user
         );
     }
@@ -173,6 +203,6 @@ pub fn assert_invariant_ctx(h: &Harness, w: &setup::World, traders: &[&setup::Tr
     );
     assert_eq!(
         pool.locked_total, locked_sum,
-        "{ctx}pool.locked_total != Σ position.margin over Open positions"
+        "{ctx}pool.locked_total != Σ slot.margin over open slots"
     );
 }

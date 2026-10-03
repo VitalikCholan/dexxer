@@ -1,14 +1,14 @@
 // app/src/features/positions/OrdersCard.tsx
 //
-// Pending conditional orders (private — they live in the owner's `Position`).
-// Entry orders (Limit/Stop) wait on an empty position, exit orders (TP/SL/
-// Trailing) on an open one; each row cancels its slot.
+// Pending conditional orders of ONE market (private — they live in the owner's
+// `Positions`). Entry orders (Limit/Stop) wait for a market with no position,
+// exit orders (TP/SL/Trailing) protect an open one; each row cancels its slot.
 import { Text, View } from 'react-native'
 import { useTheme } from '@/src/theme'
 import { useTextStyle } from '@/src/ui/styles'
 import { Card } from '@/src/ui/Card'
 import { Button } from '@/src/ui/Button'
-import { type DecodedOrder } from '@/src/lib/codecs'
+import { type DecodedOrder } from '@/src/lib/positions'
 import { describeOrder } from '@/src/lib/orders'
 
 export interface OrdersCardProps {

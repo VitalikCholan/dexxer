@@ -30,7 +30,7 @@ deployed programs; `Connection`s hit real L1/ER JSON-RPC endpoints.
 ```bash
 cd tests/er
 npm run q1   # spec §8 Q1: deposit -> free_margin
-npm run q2   # spec §8 Q2: three permissions in one ER tx (run after q1)
+npm run q2   # spec §8 Q2: two permissions in one ER tx (run after q1)
 ```
 
 Each script logs every step's signature and prints a final `Q1 PASS`/`Q2
@@ -40,7 +40,7 @@ scroll up for the specific `ok:`/`FAIL:` line and the raw error.
 
 `q2` assumes `q1` has already run for the same persisted identity (same
 `.keys/user.json`): it reuses that user's already-delegated
-`UserAccount`/`Position`/`DisclosureQueue`.
+`UserAccount`/`Positions`.
 
 ### Fresh run vs. re-run
 
@@ -70,6 +70,9 @@ now-11,000e6 pool. For a clean assertion run, start from a fresh mb-stack
   feed, and delegates Market/MarketRisk/Pool(+its eATA)/Feed to the ER.
 - `q1-deposit.ts` — spec §8 Q1 scenario + asserts.
 - `q2-permissions.ts` — spec §8 Q2 scenario + asserts (run after q1).
+- `devnet/add-market.ts` — `npm run devnet:add-market -- <BTC|ETH|HYPE|ZEC> [--schedule]`:
+  lists a market from `lib/markets.ts`'s catalog on devnet (init + delegate,
+  private `MarketRisk`, optional mark-only scheduler task); idempotent.
 
 Keys are generated into `.keys/` (gitignored) on first run and reused after
 that (`admin`, `mint`, `user`).

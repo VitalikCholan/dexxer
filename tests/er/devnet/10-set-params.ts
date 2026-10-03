@@ -17,7 +17,9 @@
 // the L1 `Market` snapshot stays stale until the next one, exactly as before.
 //
 // Run: `npm run devnet:setparams -- liqHysteresisTicks=3`
-//      `npm run devnet:setparams` (no args) just prints the live params.
+//      `npm run devnet:setparams -- --market BTC maxStalenessSecs=20` (any
+//      listed market; default SOL — the market is `pdas.marketFor(symbol)`)
+//      `npm run devnet:setparams` (no args) just prints the live SOL params.
 
 export {}; // module marker: top-level await below requires this file to be a module
 
@@ -67,7 +69,19 @@ const admin = loadOrCreateKey("devnet-admin");
 const conn = await teeConn(admin);
 const core = dexxerCoreProgram(conn, admin);
 const config = pdas.config();
-const market = pdas.market();
+
+// `--market SYM` (anywhere in argv, default SOL) picks the market; the rest are KEY=VALUE patches.
+const argv = process.argv.slice(2);
+let symbol = "SOL";
+const marketFlag = argv.indexOf("--market");
+if (marketFlag >= 0) {
+  const value = argv[marketFlag + 1];
+  assert(value !== undefined && !value.startsWith("--") && !value.includes("="), "--market takes a symbol (e.g. --market BTC)");
+  symbol = value.toUpperCase();
+  argv.splice(marketFlag, 2);
+}
+const market = pdas.marketFor(symbol);
+console.log(`market ${symbol}: ${market.toBase58()}`);
 
 const live = await accountNs(core).market.fetch(market);
 const params: Record<string, unknown> = {};
@@ -75,7 +89,7 @@ for (const f of MARKET_PARAM_FIELDS) params[f] = live[f];
 // `BN` fields stringify as `{...}` through plain JSON.stringify — print every value via String().
 console.log("live Market params:", JSON.stringify(Object.fromEntries(MARKET_PARAM_FIELDS.map((f) => [f, String(params[f])]))));
 
-const patches = process.argv.slice(2);
+const patches = argv;
 if (patches.length === 0) {
   console.log("no KEY=VALUE arguments given — nothing to write");
   process.exit(0);
@@ -103,4 +117,4 @@ for (const arg of patches) {
   const key = arg.slice(0, arg.indexOf("=")) as ParamField;
   assert(String(after[key]) === String(params[key]), `${key} on-chain == ${String(params[key])} (got ${String(after[key])})`);
 }
-console.log("10-SET-PARAMS PASS", JSON.stringify({ sig, patched: patches }));
+console.log("10-SET-PARAMS PASS", JSON.stringify({ market: symbol, sig, patched: patches }));

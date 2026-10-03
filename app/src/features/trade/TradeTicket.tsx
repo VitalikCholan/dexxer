@@ -1,12 +1,16 @@
 // app/src/features/trade/TradeTicket.tsx
 //
 // Task 10: Long/Short + Size/Margin/Leverage form, live preview row, Open
-// button. Leverage convention (`math.ts`'s header comment): a plain integer
+// button. Week 6 (C.4): that form is the Open tab; the Close tab
+// (`CloseTab.tsx`) closes part or all of the position via `decrease_position`. Leverage convention (`math.ts`'s header comment): a plain integer
 // 1..10× (matches `ui/LeverageSlider`'s step). Changing Size or dragging the
 // slider recomputes Margin at that leverage (`deriveTicket`, below, wraps
 // `math.marginForLeverage`); typing a custom Margin overrides it until
 // either changes again — `open_position` only ever sees the Margin field's
 // current value, leverage is a UI convenience, not a program argument.
+// Position slots: `position` is the SELECTED market's slot (null = no
+// position there: Open only, no Close tab); `openBlocked` (all 16 slots taken
+// elsewhere, `tradingRules.ts`'s `slotGate`) disables Open before sending.
 // Insufficient-margin gate (post-launch smoke-test fix, 23.09.2026): see
 // `deriveTicket`'s doc comment in `ticketMath.ts` (week 6: the pure math
 // moved there so it runs under `npm test`; this file is render-only).
@@ -20,10 +24,12 @@ import { LeverageSlider } from '@/src/ui/LeverageSlider'
 import { Card } from '@/src/ui/Card'
 import { Row } from '@/src/ui/Row'
 import { Button } from '@/src/ui/Button'
+import { CloseTab } from './CloseTab'
 import * as math from '@/src/lib/math'
 import { formatUsd2 } from '@/src/lib/status'
-import { deriveTicket, impliedLeverage, safeLiq } from './ticketMath'
+import { clampLeverage, deriveTicket, impliedLeverage, safeLiq } from './ticketMath'
 import { type SideName } from '@/src/lib/codecs'
+import { type PositionSlot } from '@/src/lib/positions'
 import { solSize, usdAmount, type OrderParams } from '@/src/lib/trade'
 import { validateAttached } from '@/src/lib/orders'
 
@@ -31,19 +37,10 @@ export interface MarketParams {
   imrBps: bigint
   mmrBps: bigint
   openFeeBps: bigint
-}
-
-export interface TradeTicketProps {
-  markUsd: bigint | null
-  market: MarketParams | null
-  freeMarginUsd: bigint | null
-  hasOpenPosition: boolean
-  busy: boolean
-  disabled?: boolean
-  /** Raw program units: size 1e9, margin/limit 1e6 — no number round trip on the way to `openPosition`. */
-  onOpen: (side: SideName, size: bigint, margin: bigint, limitPrice: bigint, exits: Exits) => Promise<void>
-  /** Limit/Stop entry: parked as a conditional order and executed when the mark reaches the trigger. */
-  onPlace: (p: OrderParams) => Promise<void>
+  closeFeeBps: bigint
+  minSize: bigint
+  /** Integer leverage cap of THIS market (`maxLeverage(max_lev_bps, imr_bps)`): the slider's and MAX's upper bound. */
+  maxLeverage: number
 }
 
 /** Optional TP/SL (raw 1e6 prices, 0 = none) that ride along with an entry. */
@@ -54,16 +51,87 @@ export interface Exits {
 
 type OrderType = 'market' | 'limit' | 'stop'
 
-export function TradeTicket({
+export interface TradeTicketProps {
+  markUsd: bigint | null
+  market: MarketParams | null
+  freeMarginUsd: bigint | null
+  /** Selected market symbol — the size field's unit. */
+  symbol: string
+  /** The selected market's slot; null when the trader has none there. */
+  position: PositionSlot | null
+  /** Set when Open must not be sent (no free slot): shown above the slider, and the Open button is disabled. */
+  openBlocked: string | null
+  busy: boolean
+  disabled?: boolean
+  /** Raw program units: size 1e9, margin/limit 1e6 — no number round trip on the way to `openPosition`. */
+  onOpen: (side: SideName, size: bigint, margin: bigint, limitPrice: bigint, exits: Exits) => Promise<void>
+  /** Limit/Stop entry: parked as a conditional order and executed when the mark reaches the trigger. */
+  onPlace: (p: OrderParams) => Promise<void>
+  /** Raw 1e9 size — `decrease_position`'s `close_size`. */
+  onClose: (closeSize: bigint) => Promise<void>
+}
+
+export function TradeTicket({ position, onClose, ...open }: TradeTicketProps) {
+  const { colors } = useTheme()
+  const caption = useTextStyle('caption')
+  const [tab, setTab] = useState<'open' | 'close'>('open')
+  const hasOpenPosition = position !== null
+  // No slot on this market: the Close tab is not offered at all, and a full
+  // close drops back to Open (render-time adjust, as in OpenForm below).
+  if (!hasOpenPosition && tab === 'close') setTab('open')
+
+  return (
+    <Card>
+      <Segment
+        compact
+        value={tab}
+        onChange={setTab}
+        options={
+          hasOpenPosition
+            ? [
+                { value: 'open', label: 'Open' },
+                { value: 'close', label: 'Close' },
+              ]
+            : [{ value: 'open', label: 'Open' }]
+        }
+      />
+      {tab === 'open' ? (
+        <OpenForm {...open} hasOpenPosition={hasOpenPosition} />
+      ) : (
+        <CloseTab
+          // A fresh position starts with an empty field, not the last close's text.
+          key={hasOpenPosition ? `${position.entry}` : 'none'}
+          position={position}
+          symbol={open.symbol}
+          markUsd={open.markUsd}
+          closeFeeBps={open.market?.closeFeeBps ?? null}
+          minSize={open.market?.minSize ?? null}
+          busy={open.busy}
+          disabled={open.disabled}
+          onClose={onClose}
+        />
+      )}
+      <Text style={[caption, { color: colors.textSecondary, textAlign: 'center' }]}>
+        No wallet prompt — signed by your session key
+      </Text>
+    </Card>
+  )
+}
+
+type OpenFormProps = Omit<TradeTicketProps, 'position' | 'onClose'> & { hasOpenPosition: boolean }
+
+function OpenForm({
   markUsd,
   market,
   freeMarginUsd,
+  symbol,
+  openBlocked,
   hasOpenPosition,
   busy,
   disabled,
   onOpen,
   onPlace,
-}: TradeTicketProps) {
+}: OpenFormProps) {
   const { colors, space } = useTheme()
   const caption = useTextStyle('caption')
 
@@ -102,6 +170,12 @@ export function TradeTicket({
   // `deriveTicket` (always 2dp, `'0.00'` while not ready) is the sole
   // source of the synced text, so there's nothing stale left to concatenate
   // into a malformed value.
+  // The market's leverage cap (10 until the live `Market` has loaded). A
+  // leverage carried over from a 10× market is clamped the moment a 5×
+  // market's params arrive — same render-time adjust pattern as below.
+  const maxLev = market?.maxLeverage ?? 10
+  if (leverage > maxLev) setLeverage(clampLeverage(leverage, maxLev))
+
   const [prevSizeSol, setPrevSizeSol] = useState(sizeSol)
   const [prevLeverage, setPrevLeverage] = useState(leverage)
   if (sizeSol !== prevSizeSol || leverage !== prevLeverage) {
@@ -121,7 +195,7 @@ export function TradeTicket({
 
   const availableUsd = freeMarginUsd !== null ? formatUsd2(freeMarginUsd) : '—'
 
-  // MAX: margin = available, then pick the smallest integer leverage (1..10,
+  // MAX: margin = available, then pick the smallest integer leverage (1..maxLev,
   // `LeverageSlider`'s step) whose derived margin doesn't exceed it —
   // `Math.ceil` (not "nearest") so `deriveTicket`'s pool-favoring round-up
   // lands at-or-under `available`, not over it. Syncs `prevLeverage` in the
@@ -131,7 +205,7 @@ export function TradeTicket({
     if (freeMarginUsd === null) return
     setMarginUsd(formatUsd2(freeMarginUsd))
     if (ntl !== null && freeMarginUsd > 0n) {
-      const implied = impliedLeverage(ntl, freeMarginUsd)
+      const implied = impliedLeverage(ntl, freeMarginUsd, maxLev)
       setLeverage(implied)
       setPrevLeverage(implied)
     }
@@ -139,7 +213,7 @@ export function TradeTicket({
 
   if (hasOpenPosition) {
     return (
-      <Card>
+      <View style={{ gap: space.md }}>
         <Segment
           tone="long-short"
           value={side}
@@ -149,13 +223,15 @@ export function TradeTicket({
             { value: 'short', label: 'Short' },
           ]}
         />
-        <Text style={[caption, { color: colors.textSecondary }]}>One position per market. Close it in Positions.</Text>
-      </Card>
+        <Text style={[caption, { color: colors.textSecondary }]}>
+          One position per market. Close it on the Close tab, or change it in Positions.
+        </Text>
+      </View>
     )
   }
 
   const canSubmit =
-    !(disabled || busy || markUsd === null || derived.insufficient || exitProblem !== null) &&
+    !(disabled || busy || markUsd === null || derived.insufficient || openBlocked !== null || exitProblem !== null) &&
     (!isEntryOrder || triggerBig > 0n)
 
   function submit() {
@@ -175,7 +251,7 @@ export function TradeTicket({
   }
 
   return (
-    <Card>
+    <View style={{ gap: space.md }}>
       <Segment
         compact
         value={orderType}
@@ -211,7 +287,7 @@ export function TradeTicket({
       ) : null}
       <View style={{ flexDirection: 'row', gap: space.md }}>
         <View style={{ flex: 1 }}>
-          <Input label="Size" value={sizeSol} onChangeText={setSizeSol} suffix="SOL" keyboardType="decimal-pad" />
+          <Input label="Size" value={sizeSol} onChangeText={setSizeSol} suffix={symbol} keyboardType="decimal-pad" />
         </View>
         <View style={{ flex: 1 }}>
           <Input
@@ -228,7 +304,8 @@ export function TradeTicket({
       {derived.insufficient ? (
         <Text style={[caption, { color: colors.short }]}>Insufficient margin — lower size or leverage, or deposit</Text>
       ) : null}
-      <LeverageSlider value={leverage} onChange={setLeverage} />
+      {openBlocked ? <Text style={[caption, { color: colors.short }]}>{openBlocked}</Text> : null}
+      <LeverageSlider value={leverage} onChange={setLeverage} max={maxLev} />
       <View style={{ gap: space.xs }}>
         <Row
           label={isEntryOrder ? 'Entry at' : 'Entry ≈'}
@@ -270,9 +347,6 @@ export function TradeTicket({
               ? 'Open Long'
               : 'Open Short'}
       </Button>
-      <Text style={[caption, { color: colors.textSecondary, textAlign: 'center' }]}>
-        No wallet prompt — signed by your session key
-      </Text>
-    </Card>
+    </View>
   )
 }

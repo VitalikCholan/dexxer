@@ -24,18 +24,21 @@ import { useTeeConnection } from '@/src/lib/er'
 import { useMwaSigning } from '@/src/lib/mwa/useMwaSigning'
 import { useRelayerSession } from '@/src/lib/relayerAuth'
 import { useLiveAccount } from '@/src/lib/live'
-import { decodeDisclosureQueue, decodePosition, decodeUserAccount } from '@/src/lib/codecs'
+import { decodeUserAccount } from '@/src/lib/codecs'
+import { decodePositions } from '@/src/lib/positions'
 import { describeTxError } from '@/src/lib/errors'
 import { formatSessionLeft, formatUsd2 } from '@/src/lib/status'
 import { pdas } from '@/src/lib/pdas'
+import { FEATURES } from '@/src/lib/features'
 import { useTradeSession } from '../trade/useTradeSession'
 import { useOnboardingGate } from '../onboard/useOnboardingGate'
 import { SetupAccountCard } from '../onboard/SetupAccountCard'
 import { ReceiptSection } from '../receipt/ReceiptSection'
+import { PoolSnapshotCard } from '../receipt/PoolSnapshotCard'
 import { DepositSheet } from './DepositSheet'
 import { WithdrawSheet } from './WithdrawSheet'
 import { ExitSheet, type ExitChecklist } from './ExitSheet'
-import { buildAccountPdas, depositTx, exitTx, withdrawTx } from './accountTx'
+import { buildAccountPdas, depositTx, exitMarkets, exitTx, withdrawTx } from './accountTx'
 
 type OpenSheet = 'deposit' | 'withdraw' | 'exit' | null
 
@@ -51,17 +54,20 @@ export function AccountScreen() {
   const { signTransactions } = useMwaSigning()
   const { getConnection } = useTeeConnection()
   const { ensureRelayerSession } = useRelayerSession()
-  const { owner, conn, accounts, loading, error } = useTradeSession()
+  const { owner, conn, base, loading, error } = useTradeSession()
   const gate = useOnboardingGate()
   const mwa = useMemo(
     () => ({ signTransactions, getConnection, ensureRelayerSession }),
     [signTransactions, getConnection, ensureRelayerSession],
   )
 
-  const dqPubkey = owner ? pdas.disclosureQueue(owner) : null
-  const user = useLiveAccount(conn, accounts?.userAccount ?? null, decodeUserAccount)
-  const position = useLiveAccount(conn, accounts?.position ?? null, decodePosition)
-  const dq = useLiveAccount(conn, dqPubkey, decodeDisclosureQueue)
+  // Derived from the owner alone, never from `base`: Exit (`undelegate_user`)
+  // is owner/MWA-signed and must work without a local session key (new
+  // device, cleared storage, unfinished onboarding). `base.positions` is for
+  // trading only.
+  const positionsPubkey = useMemo(() => (owner ? pdas.positions(owner) : null), [owner])
+  const user = useLiveAccount(conn, base?.userAccount ?? null, decodeUserAccount)
+  const positionsLive = useLiveAccount(conn, positionsPubkey, decodePositions)
 
   const [sheet, setSheet] = useState<OpenSheet>(null)
   const [busy, setBusy] = useState(false)
@@ -95,9 +101,11 @@ export function AccountScreen() {
     [owner, run, mwa],
   )
   const handleExit = useCallback(() => {
-    if (!owner || !accounts || !dqPubkey) return Promise.resolve()
-    return run('Exit', async () => exitTx(await buildAccountPdas(owner), mwa, accounts.position, dqPubkey))
-  }, [owner, accounts, dqPubkey, run, mwa])
+    if (!owner || !positionsPubkey) return Promise.resolve()
+    return run('Exit', async () =>
+      exitTx(await buildAccountPdas(owner), mwa, positionsPubkey, exitMarkets(positionsLive.value, pdas.market())),
+    )
+  }, [owner, positionsPubkey, positionsLive.value, run, mwa])
 
   if (!account) {
     return (
@@ -117,12 +125,9 @@ export function AccountScreen() {
   const sessionLabel = formatSessionLeft(expirySec, now, actionsLeft)
 
   const checklist: ExitChecklist = {
-    noOpenPosition: position.value === null || position.value.state === 'Empty',
+    noOpenPosition: positionsLive.value === null || positionsLive.value.slots.length === 0,
     balanceWithdrawn: user.value === null || (user.value.freeMargin === 0n && user.value.lockedMargin === 0n),
   }
-  // Informational only (week-5 Task 2 retired the `QueueNotEmpty` gate) —
-  // how many still-queued trades will be revealed on schedule after exit.
-  const pendingDisclosures = dq.value?.len ?? 0
 
   return (
     <Page>
@@ -137,8 +142,8 @@ export function AccountScreen() {
           <Badge tone={sessionActive ? 'success' : 'danger'}>{sessionLabel}</Badge>
         </View>
 
-        {gate.status === 'needs_setup' ? null : error || user.error || position.error || dq.error ? (
-          <Text style={{ color: colors.short }}>{error ?? user.error ?? position.error ?? dq.error}</Text>
+        {gate.status === 'needs_setup' ? null : error || user.error || positionsLive.error ? (
+          <Text style={{ color: colors.short }}>{error ?? user.error ?? positionsLive.error}</Text>
         ) : null}
 
         {gate.status === 'needs_setup' ? (
@@ -164,14 +169,19 @@ export function AccountScreen() {
               </View>
             </Card>
 
-            <ReceiptSection />
+            {/* Receipt and Exit are temporarily hidden — `src/lib/features.ts`. */}
+            {FEATURES.receipt ? <ReceiptSection /> : null}
 
-            <Card title="Exit">
-              <Text style={{ color: colors.textSecondary }}>Return your private accounts to L1, fields erased.</Text>
-              <Button variant="destructive" onPress={() => setSheet('exit')}>
-                Exit private account
-              </Button>
-            </Card>
+            <PoolSnapshotCard />
+
+            {FEATURES.exit ? (
+              <Card title="Exit">
+                <Text style={{ color: colors.textSecondary }}>Return your private accounts to L1, fields erased.</Text>
+                <Button variant="destructive" onPress={() => setSheet('exit')}>
+                  Exit private account
+                </Button>
+              </Card>
+            ) : null}
           </>
         )}
 
@@ -188,10 +198,9 @@ export function AccountScreen() {
           onSubmit={handleWithdraw}
         />
         <ExitSheet
-          open={sheet === 'exit'}
+          open={FEATURES.exit && sheet === 'exit'}
           onClose={() => setSheet(null)}
           checklist={checklist}
-          pendingDisclosures={pendingDisclosures}
           busy={busy}
           onConfirm={handleExit}
         />

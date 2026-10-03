@@ -1,9 +1,9 @@
 // Conditional orders (Limit / Stop / TP / SL / Trailing). Orders live in
-// `Position.orders` and are executed by the per-position scheduled task, i.e.
+// `Positions.orders` and are executed by the per-position scheduled task, i.e.
 // by `liquidation_check` — every test here drives that very instruction.
 use dexxer_core::{errors::DexxerError, state::*};
 use dexxer_litesvm::{
-    assert_custom_error, assert_invariant, ixs,
+    assert_custom_error, assert_invariant, assert_invariant_markets, ixs,
     setup::{Trader, World},
     Harness,
 };
@@ -108,12 +108,37 @@ fn exit_tp_sl(h: &mut Harness, w: &World, t: &Trader, kind: OrderKind, trigger: 
 }
 
 fn orders(h: &Harness, t: &Trader) -> Vec<OrderKind> {
-    h.account::<Position>(&t.position)
+    h.positions(&t.positions)
         .orders
         .iter()
         .filter(|o| !o.is_empty())
-        .map(|o| o.kind)
+        .map(|o| o.kind())
         .collect()
+}
+
+/// The SOL slot, if open.
+fn slot(h: &Harness, w: &World, t: &Trader) -> Option<PositionSlot> {
+    h.slot(t, &w.market)
+}
+
+fn is_open(h: &Harness, w: &World, t: &Trader) -> bool {
+    slot(h, w, t).is_some()
+}
+
+/// The `n`th non-empty order slot.
+fn order_at(h: &Harness, t: &Trader, n: usize) -> OrderSlot {
+    *h.positions(&t.positions)
+        .orders
+        .iter()
+        .filter(|o| !o.is_empty())
+        .nth(n)
+        .expect("order")
+}
+
+/// The most recent history record (closes land here, not in a queue).
+fn last_record(h: &Harness, t: &Trader) -> HistoryRecord {
+    let p = h.positions(&t.positions);
+    p.history[(p.history_head as usize + HISTORY_LEN - 1) % HISTORY_LEN]
 }
 
 #[test]
@@ -125,22 +150,18 @@ fn take_profit_closes_long_at_trigger() {
 
     mark(&mut h, &w, 155);
     tick(&mut h, &w, &t);
-    assert_eq!(
-        h.account::<Position>(&t.position).state,
-        PositionState::Open
-    );
+    assert!(is_open(&h, &w, &t));
 
     mark(&mut h, &w, 160);
     tick(&mut h, &w, &t);
-    let pos: Position = h.account(&t.position);
-    assert_eq!(pos.state, PositionState::Empty);
+    assert!(!is_open(&h, &w, &t));
     assert!(orders(&h, &t).is_empty());
-    let dq: DisclosureQueue = h.account(&t.dq);
-    assert_eq!(dq.len, 1);
+    let rec = last_record(&h, &t);
+    assert_eq!(h.positions(&t.positions).history_len, 1);
     // Indistinguishable from a manual close in the public disclosure.
-    assert_eq!(dq.records[0].reason, CloseReason::User);
-    assert_eq!(dq.records[0].exit, 160 * P);
-    assert!(dq.records[0].pnl > 0);
+    assert_eq!(rec.reason, HISTORY_REASON_USER);
+    assert_eq!(rec.exit, 160 * P);
+    assert!(rec.pnl > 0);
     assert_invariant(&h, &w, &[&t]);
 }
 
@@ -155,16 +176,13 @@ fn stop_loss_closes_and_cancels_the_take_profit() {
 
     mark(&mut h, &w, 145);
     tick(&mut h, &w, &t);
-    assert_eq!(
-        h.account::<Position>(&t.position).state,
-        PositionState::Empty
-    );
+    assert!(!is_open(&h, &w, &t));
     assert!(
         orders(&h, &t).is_empty(),
         "the sibling exit must die with the position"
     );
-    let dq: DisclosureQueue = h.account(&t.dq);
-    assert!(dq.records[0].pnl < 0);
+    let rec = last_record(&h, &t);
+    assert!(rec.pnl < 0);
     assert_invariant(&h, &w, &[&t]);
 }
 
@@ -230,9 +248,9 @@ fn short_side_directions_are_mirrored() {
     .unwrap();
     mark(&mut h, &w, 140);
     tick(&mut h, &w, &t);
-    let dq: DisclosureQueue = h.account(&t.dq);
-    assert_eq!(dq.records[0].exit, 140 * P);
-    assert!(dq.records[0].pnl > 0);
+    let rec = last_record(&h, &t);
+    assert_eq!(rec.exit, 140 * P);
+    assert!(rec.pnl > 0);
     assert_invariant(&h, &w, &[&t]);
 }
 
@@ -285,9 +303,8 @@ fn placing_the_same_exit_kind_replaces_it() {
     open_long(&mut h, &w, &t);
     exit_tp_sl(&mut h, &w, &t, OrderKind::StopLoss, 140);
     exit_tp_sl(&mut h, &w, &t, OrderKind::StopLoss, 145);
-    let pos: Position = h.account(&t.position);
     assert_eq!(orders(&h, &t), vec![OrderKind::StopLoss]);
-    assert_eq!(pos.orders[0].trigger, 145 * P);
+    assert_eq!(order_at(&h, &t, 0).trigger, 145 * P);
 }
 
 #[test]
@@ -313,28 +330,18 @@ fn trailing_stop_follows_the_high_and_fires_on_reversal() {
 
     mark(&mut h, &w, 160); // high 160 -> stop 152
     tick(&mut h, &w, &t);
-    assert_eq!(
-        h.account::<Position>(&t.position).orders[0].extreme,
-        160 * P
-    );
+    assert_eq!(order_at(&h, &t, 0).extreme, 160 * P);
     mark(&mut h, &w, 155); // above the stop: holds, extreme stays
     tick(&mut h, &w, &t);
-    let pos: Position = h.account(&t.position);
-    assert_eq!(pos.state, PositionState::Open);
-    assert_eq!(pos.orders[0].extreme, 160 * P);
+    assert!(is_open(&h, &w, &t));
+    assert_eq!(order_at(&h, &t, 0).extreme, 160 * P);
 
     mark(&mut h, &w, 151); // through 152
     tick(&mut h, &w, &t);
-    assert_eq!(
-        h.account::<Position>(&t.position).state,
-        PositionState::Empty
-    );
-    let dq: DisclosureQueue = h.account(&t.dq);
-    assert_eq!(dq.records[0].exit, 151 * P);
-    assert!(
-        dq.records[0].pnl > 0,
-        "locked in profit above the $150 entry"
-    );
+    assert!(!is_open(&h, &w, &t));
+    let rec = last_record(&h, &t);
+    assert_eq!(rec.exit, 151 * P);
+    assert!(rec.pnl > 0, "locked in profit above the $150 entry");
     assert_invariant(&h, &w, &[&t]);
 }
 
@@ -384,22 +391,15 @@ fn limit_buy_fills_when_mark_drops_to_trigger_with_attached_exits() {
     .unwrap();
 
     tick(&mut h, &w, &t); // mark 150 > 140: waits
-    assert_eq!(
-        h.account::<Position>(&t.position).state,
-        PositionState::Empty
-    );
+    assert!(!is_open(&h, &w, &t));
     mark(&mut h, &w, 145);
     tick(&mut h, &w, &t);
-    assert_eq!(
-        h.account::<Position>(&t.position).state,
-        PositionState::Empty
-    );
+    assert!(!is_open(&h, &w, &t));
 
     mark(&mut h, &w, 140);
     tick(&mut h, &w, &t);
-    let pos: Position = h.account(&t.position);
-    assert_eq!(pos.state, PositionState::Open);
-    assert_eq!(pos.side, Side::Long);
+    let pos = slot(&h, &w, &t).expect("open");
+    assert_eq!(pos.side(), Side::Long);
     assert_eq!(pos.size, SOL10);
     assert_eq!(pos.entry, 140 * P);
     // Entry order consumed; TP and SL attached.
@@ -412,10 +412,7 @@ fn limit_buy_fills_when_mark_drops_to_trigger_with_attached_exits() {
     // ...and the attached TP then works like any other.
     mark(&mut h, &w, 150);
     tick(&mut h, &w, &t);
-    assert_eq!(
-        h.account::<Position>(&t.position).state,
-        PositionState::Empty
-    );
+    assert!(!is_open(&h, &w, &t));
     assert_invariant(&h, &w, &[&t]);
 }
 
@@ -454,9 +451,8 @@ fn stop_entry_short_fires_on_breakdown_and_siblings_are_dropped() {
     assert_eq!(orders(&h, &t).len(), 2);
     mark(&mut h, &w, 145);
     tick(&mut h, &w, &t);
-    let pos: Position = h.account(&t.position);
-    assert_eq!(pos.state, PositionState::Open);
-    assert_eq!(pos.side, Side::Short);
+    let pos = slot(&h, &w, &t).expect("open");
+    assert_eq!(pos.side(), Side::Short);
     assert!(
         orders(&h, &t).is_empty(),
         "one position per market: the other entry is moot"
@@ -484,10 +480,7 @@ fn entry_order_that_cannot_be_afforded_is_dropped_not_retried() {
     )
     .unwrap();
     tick(&mut h, &w, &t);
-    assert_eq!(
-        h.account::<Position>(&t.position).state,
-        PositionState::Empty
-    );
+    assert!(!is_open(&h, &w, &t));
     assert!(orders(&h, &t).is_empty());
     assert_invariant(&h, &w, &[&t]);
 }
@@ -669,10 +662,7 @@ fn stale_oracle_leaves_orders_untouched() {
     // Feed goes stale: no execution on an untrusted price, and no error.
     w.set_price(&mut h, 140 * P, 5, NOW - 100, 500);
     tick(&mut h, &w, &t);
-    assert_eq!(
-        h.account::<Position>(&t.position).state,
-        PositionState::Open
-    );
+    assert!(is_open(&h, &w, &t));
     assert_eq!(orders(&h, &t), vec![OrderKind::StopLoss]);
 }
 
@@ -699,10 +689,112 @@ fn undelegate_scrubs_pending_orders() {
     let bal = h.account::<UserAccount>(&t.user).free_margin;
     h.send(&[ixs::withdraw(&t.kp.pubkey(), &t, &w, bal)], &[&t.kp])
         .unwrap();
-    h.send(&[ixs::undelegate_user(&t.kp.pubkey(), &t, &w)], &[&t.kp])
-        .unwrap();
+    h.send(
+        &[ixs::undelegate_user(&t.kp.pubkey(), &t, &w, &[w.market])],
+        &[&t.kp],
+    )
+    .unwrap();
     assert!(
         orders(&h, &t).is_empty(),
         "pending intent must not reach L1"
     );
+}
+
+/// One `Positions` account serves every market: an order carries its market,
+/// so ticks, cancels and fills never cross markets.
+#[test]
+fn orders_are_scoped_to_their_market() {
+    let mut h = Harness::new();
+    let (w, t) = world(&mut h);
+    let btc = w.add_market(
+        &mut h,
+        "BTC",
+        "1",
+        MarketParams {
+            min_size: 20_000,
+            max_staleness_secs: 15,
+            ..MarketParams::sol_perp_defaults()
+        },
+    );
+    let mut p = MarketParams::sol_perp_defaults();
+    p.ema_alpha_bps = 10_000;
+    p.max_deviation_bps = 10_000;
+    p.min_size = 20_000;
+    p.max_staleness_secs = 15;
+    h.send(
+        &[ixs::set_params(
+            &w.admin.pubkey(),
+            &w.config,
+            &btc.market,
+            p,
+        )],
+        &[&w.admin],
+    )
+    .unwrap();
+    const B80K: u64 = 80_000_000_000;
+    const BTC_01: u64 = 10_000_000; // 0.01 BTC -> $800 notional at $80k
+    w.set_price_on(&mut h, &btc, B80K, 5, NOW, 100);
+    h.send(
+        &[ixs::crank_tick_on(&w.crank.pubkey(), &w, &btc, &[])],
+        &[&w.crank],
+    )
+    .unwrap();
+
+    // A SOL position with a TP, and a BTC limit-buy resting below the market.
+    open_long(&mut h, &w, &t);
+    exit_tp_sl(&mut h, &w, &t, OrderKind::TakeProfit, 170);
+    h.send(
+        &[ixs::place_order_on(
+            &t.kp.pubkey(),
+            &t,
+            &w,
+            &btc,
+            OrderKind::Limit,
+            Side::Long,
+            BTC_01,
+            80_000_000,
+            78_000_000_000,
+            0,
+            0,
+            0,
+        )],
+        &[&t.kp],
+    )
+    .unwrap();
+    assert_eq!(
+        orders(&h, &t),
+        vec![OrderKind::TakeProfit, OrderKind::Limit]
+    );
+
+    // The BTC order cannot be cancelled through the SOL market, nor the SOL
+    // one through BTC.
+    let r = h.send(&[ixs::cancel_order(&t.kp.pubkey(), &t, &w, 1)], &[&t.kp]);
+    assert_custom_error(&r, err(DexxerError::OrderNotFound));
+    let r = h.send(
+        &[ixs::cancel_order_on(&t.kp.pubkey(), &t, &w, &btc, 0)],
+        &[&t.kp],
+    );
+    assert_custom_error(&r, err(DexxerError::OrderNotFound));
+
+    // A SOL tick that satisfies the SOL TP closes SOL only; the BTC limit stays.
+    mark(&mut h, &w, 170);
+    tick(&mut h, &w, &t);
+    assert!(!is_open(&h, &w, &t));
+    assert_eq!(orders(&h, &t), vec![OrderKind::Limit]);
+
+    // The BTC tick fills the BTC limit when BTC reaches it.
+    w.set_price_on(&mut h, &btc, 78_000_000_000, 5, NOW, 101);
+    h.send(
+        &[ixs::crank_tick_on(&w.crank.pubkey(), &w, &btc, &[])],
+        &[&w.crank],
+    )
+    .unwrap();
+    h.send(
+        &[ixs::liquidation_check_on(&w.crank.pubkey(), &w, &btc, &t)],
+        &[&w.crank],
+    )
+    .unwrap();
+    assert!(h.slot(&t, &btc.market).is_some());
+    assert!(orders(&h, &t).is_empty());
+    assert_invariant_markets(&h, &w, &[&t], &[w.market, btc.market]);
 }

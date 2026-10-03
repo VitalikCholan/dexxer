@@ -8,7 +8,7 @@
 // Adapter (`mwa.getConnection`/`signTransactions`), the same pattern
 // `useOnboarding.ts`/`batchOnboarding.ts` already use, never the session key.
 import { BN } from '@coral-xyz/anchor'
-import { PublicKey } from '@solana/web3.js'
+import { Connection, PublicKey, TransactionInstruction } from '@solana/web3.js'
 import { getAssociatedTokenAddressSync, TOKEN_PROGRAM_ID } from '@solana/spl-token'
 import {
   EPHEMERAL_VAULT_ID,
@@ -23,6 +23,7 @@ import { dexxerCoreProgram } from '@/src/lib/anchor'
 import { readConfigDusdcMint } from '@/src/lib/codecs'
 import { usdAmount } from '@/src/lib/trade'
 import { pdas } from '@/src/lib/pdas'
+import type { DecodedPositions } from '@/src/lib/positions'
 import { sendErOwner, sendL1, sendL1Sponsored, type Mwa } from '@/src/lib/txSend'
 import { SELF_FUND_TX_MIN_LAMPORTS, canSelfFund } from '@/src/lib/selfFund'
 
@@ -147,34 +148,50 @@ export async function withdrawTx(
   return sendErOwner(ownerTee, p.owner, [ix], mwa.signTransactions)
 }
 
+const MAX_EXIT_MARKETS = 16
+
 /**
- * `undelegate_user` (ER, owner-signed). The Exit checklist (no open
- * position, empty disclosure queue, zero margin) is the CALLER's
- * responsibility to check first (`AccountScreen.tsx`'s exit checklist) —
- * the program re-asserts every precondition independently regardless.
+ * Markets whose liquidation tasks `undelegate_user` should cancel: SOL first
+ * (never dropped), then open slots, then markets with a pending conditional
+ * order (their task keeps ticking until cancelled), then history newest first (a liquidated
+ * position leaves its task running until the next open or the exit), unique,
+ * at most 16 (the program's `remaining_accounts` cap).
  */
-export async function exitTx(
+export function exitMarkets(p: DecodedPositions | null, sol: PublicKey): PublicKey[] {
+  const out: PublicKey[] = []
+  const seen = new Set<string>()
+  const add = (m: PublicKey) => {
+    const key = m.toBase58()
+    if (seen.has(key)) return
+    seen.add(key)
+    out.push(m)
+  }
+  add(sol)
+  if (p) {
+    for (const s of p.slots) add(s.market)
+    for (const o of p.orders) add(o.market)
+    for (let i = p.history.length - 1; i >= 0; i--) add(p.history[i].market)
+  }
+  return out.slice(0, MAX_EXIT_MARKETS)
+}
+
+/** The `undelegate_user` instruction (12 named accounts + `markets` read-only as remaining accounts). */
+export async function exitIx(
   p: AccountPdas,
-  mwa: Pick<Mwa, 'signTransactions' | 'getConnection'>,
-  position: PublicKey,
-  dq: PublicKey,
-): Promise<string> {
-  const ownerTee = await mwa.getConnection(p.owner)
-  const coreEr = dexxerCoreProgram(ownerTee, p.owner)
-  const userPermission = permissionPdaFromAccount(p.userAccount)
-  const positionPermission = permissionPdaFromAccount(position)
-  const dqPermission = permissionPdaFromAccount(dq)
-  const ix = await coreEr.methods
+  conn: Connection,
+  positions: PublicKey,
+  markets: PublicKey[],
+): Promise<TransactionInstruction> {
+  const coreEr = dexxerCoreProgram(conn, p.owner)
+  return coreEr.methods
     .undelegateUser()
     .accounts({
       owner: p.owner,
       config: p.config,
       userAccount: p.userAccount,
-      position,
-      dq,
-      userPermission,
-      positionPermission,
-      dqPermission,
+      positions,
+      userPermission: permissionPdaFromAccount(p.userAccount),
+      positionsPermission: permissionPdaFromAccount(positions),
       ephemeralVault: EPHEMERAL_VAULT_ID,
       permissionProgram: PERMISSION_PROGRAM_ID,
       feeEscrow: p.feeEscrow,
@@ -182,6 +199,23 @@ export async function exitTx(
       magicContext: MAGIC_CONTEXT_ID,
       magicProgram: MAGIC_PROGRAM_ID,
     })
+    .remainingAccounts(markets.map((pubkey) => ({ pubkey, isWritable: false, isSigner: false })))
     .instruction()
+}
+
+/**
+ * `undelegate_user` (ER, owner-signed). Program gates: `open_count == 0` and
+ * zero margin (the caller's Exit checklist mirrors them; the program
+ * re-asserts both). `markets` (<= 16, unique) are the markets whose
+ * liquidation tasks to cancel.
+ */
+export async function exitTx(
+  p: AccountPdas,
+  mwa: Pick<Mwa, 'signTransactions' | 'getConnection'>,
+  positions: PublicKey,
+  markets: PublicKey[],
+): Promise<string> {
+  const ownerTee = await mwa.getConnection(p.owner)
+  const ix = await exitIx(p, ownerTee, positions, markets)
   return sendErOwner(ownerTee, p.owner, [ix], mwa.signTransactions)
 }

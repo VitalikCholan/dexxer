@@ -1,12 +1,12 @@
 // services/relayer/test/indexerDb.test.ts
 //
-// The indexer's SQL (pagination, filters, /stats aggregates, the `market`
-// backfill) against a REAL Postgres — skipped unless TEST_DATABASE_URL points
+// The indexer's SQL (pool-history pagination, per-market ticks) against a REAL Postgres — skipped unless TEST_DATABASE_URL points
 // at a server this test may create/drop a scratch database on, e.g.
 //   docker run -d --rm -e POSTGRES_PASSWORD=pw -p 127.0.0.1:55432:5432 postgres:16-alpine
 //   TEST_DATABASE_URL=postgres://postgres:pw@127.0.0.1:55432/postgres npm test
 // CI has no Postgres service, so there only indexerQuery.test.ts (the pure
 // parsing half) runs.
+import { readFileSync } from "node:fs";
 import { after, before, beforeEach, test } from "node:test";
 import assert from "node:assert/strict";
 import express from "express";
@@ -14,9 +14,21 @@ import type { AddressInfo } from "node:net";
 import { Keypair } from "@solana/web3.js";
 import pg from "pg";
 import { createPool, migrate, type DbPool } from "../src/db.js";
-import { disclosureStats, insertDisclosure, insertPoolSnapshot, listDisclosures, listPoolSnapshots, type DisclosureRow } from "../src/indexer/store.js";
+import {
+  deleteTicksBefore,
+  insertBackfillCandles,
+  insertPoolSnapshot,
+  insertTick,
+  latestTick,
+  listCandles,
+  listPoolSnapshots,
+  listTicks,
+} from "../src/indexer/store.js";
 import { indexerRouter } from "../src/indexer/http.js";
-import { parseDisclosureQuery, parsePoolHistoryQuery, parseStatsQuery } from "../src/indexer/query.js";
+import { parsePoolHistoryQuery } from "../src/indexer/query.js";
+import { marketInfoFrom, type MarketInfo } from "../src/markets.js";
+import { pdas, symbolBytes } from "../../../tests/er/lib/program.js";
+import { BN } from "@coral-xyz/anchor";
 
 const ADMIN_URL = process.env.TEST_DATABASE_URL;
 const skip = ADMIN_URL ? false : "TEST_DATABASE_URL not set (needs a real Postgres)";
@@ -48,91 +60,12 @@ after(async () => {
 
 beforeEach(async () => {
   if (!ADMIN_URL) return;
-  await pool.query("TRUNCATE disclosures, pool_snapshots");
+  await pool.query("TRUNCATE pool_snapshots, ticks, candles");
 });
 
-const M1 = Keypair.generate().publicKey.toBase58();
-const M2 = Keypair.generate().publicKey.toBase58();
 const NOW = 1_800_000_000_000;
-const HOUR = 3_600_000;
-
-function row(o: Partial<DisclosureRow> = {}): DisclosureRow {
-  return {
-    pubkey: Keypair.generate().publicKey.toBase58(),
-    market: M1,
-    side: "long",
-    size: 1_000_000_000n,
-    entry: 100_000_000n,
-    exit: 101_000_000n,
-    pnl: 1_000_000n,
-    fees: 100_000n,
-    reason: "user",
-    openedSlot: 1n,
-    closedSlot: 10n,
-    nonce: 0n,
-    ts: NOW - HOUR,
-    ...o,
-  };
-}
-
-function q(query: Record<string, unknown>) {
-  const r = parseDisclosureQuery(query);
-  assert.ok(r.ok, "test query must parse");
-  return r.value;
-}
 
 // --- store ---
-
-dbTest("insertDisclosure: true on a new row, false on a re-seen one; market is stored", async () => {
-  const r = row();
-  assert.equal(await insertDisclosure(pool, r), true);
-  assert.equal(await insertDisclosure(pool, r), false);
-  const [only] = await listDisclosures(pool, q({}));
-  assert.equal(only.market, M1);
-});
-
-dbTest("insertDisclosure: backfills market on a pre-migration row WITHOUT reporting it as new (no WS re-broadcast)", async () => {
-  const r = row();
-  await pool.query(
-    "INSERT INTO disclosures (pubkey, side, size, entry, exit, pnl, fees, reason, opened_slot, closed_slot, nonce, ts) VALUES ($1, 'long', 1, 1, 1, 0, 0, 'user', 1, 10, 0, 1)",
-    [r.pubkey],
-  );
-  assert.equal(await insertDisclosure(pool, r), false);
-  const { rows } = await pool.query("SELECT market FROM disclosures WHERE pubkey = $1", [r.pubkey]);
-  assert.equal(rows[0].market, M1);
-});
-
-dbTest("listDisclosures: newest closed_slot first; the cursor walks every row exactly once, ties on closed_slot included", async () => {
-  const rows = [row({ closedSlot: 30n }), row({ closedSlot: 20n }), row({ closedSlot: 20n }), row({ closedSlot: 20n }), row({ closedSlot: 10n })];
-  for (const r of rows) await insertDisclosure(pool, r);
-  const seen: string[] = [];
-  let cursor: string | undefined;
-  for (let page = 0; page < 10; page++) {
-    const items = await listDisclosures(pool, q({ limit: "2", ...(cursor ? { cursor } : {}) }));
-    if (items.length === 0) break;
-    seen.push(...items.map((i) => String(i.pubkey)));
-    const last = items[items.length - 1];
-    cursor = `${String(last.closed_slot)}.${String(last.pubkey)}`;
-  }
-  assert.equal(seen.length, rows.length);
-  assert.equal(new Set(seen).size, rows.length);
-  const slots = (await listDisclosures(pool, q({}))).map((i) => Number(i.closed_slot));
-  assert.deepEqual(slots, [...slots].sort((a, b) => b - a));
-});
-
-dbTest("listDisclosures: side / reason / market / from / to filters", async () => {
-  await insertDisclosure(pool, row({ side: "long", reason: "user", market: M1, ts: 1000 }));
-  await insertDisclosure(pool, row({ side: "short", reason: "liquidated", market: M1, ts: 2000 }));
-  await insertDisclosure(pool, row({ side: "long", reason: "liquidated", market: M2, ts: 3000 }));
-  const count = async (query: Record<string, unknown>) => (await listDisclosures(pool, q(query))).length;
-  assert.equal(await count({ side: "long" }), 2);
-  assert.equal(await count({ reason: "liquidated" }), 2);
-  assert.equal(await count({ market: M2 }), 1);
-  assert.equal(await count({ from: "2000" }), 2);
-  assert.equal(await count({ to: "2000" }), 2);
-  assert.equal(await count({ from: "1500", to: "2500" }), 1);
-  assert.equal(await count({ side: "long", reason: "liquidated", market: M2 }), 1);
-});
 
 dbTest("listPoolSnapshots: oldest-first within a page; the slot cursor pages backwards in time", async () => {
   for (const slot of [1, 2, 3, 4, 5]) {
@@ -148,49 +81,41 @@ dbTest("listPoolSnapshots: oldest-first within a page; the slot cursor pages bac
   assert.deepEqual(await page({ limit: "2", cursor: "2" }), [1]);
 });
 
-dbTest("disclosureStats: counts, win rate, ceil-rounded opening notional, pnl/fees — within the window and market", async () => {
-  await insertDisclosure(pool, row({ side: "long", size: 2_000_000_000n, entry: 100_000_000n, pnl: 5_000_000n, fees: 1_000_000n, reason: "user", market: M1, ts: NOW - 1 * HOUR }));
-  await insertDisclosure(pool, row({ side: "short", size: 1_000_000_000n, entry: 150_000_000n, pnl: -3_000_000n, fees: 1_000_000n, reason: "liquidated", market: M1, ts: NOW - 2 * HOUR }));
-  // 3 · 1 / 1e9 rounds UP to 1 — same as math.rs::notional (div_ceil).
-  await insertDisclosure(pool, row({ side: "long", size: 3n, entry: 1n, pnl: 0n, fees: 0n, reason: "user", market: M2, ts: NOW - 3 * HOUR }));
-  await insertDisclosure(pool, row({ side: "long", size: 1_000_000_000n, entry: 100_000_000n, pnl: 1_000_000n, fees: 0n, market: M1, ts: NOW - 48 * HOUR }));
+dbTest("ticks are per market; latestTick/listTicks never mix markets", async () => {
+  await insertTick(pool, { market: "SOL", ts: NOW, price: 150_000_000n, slot: 1, publishTime: NOW });
+  await insertTick(pool, { market: "BTC", ts: NOW, price: 80_000_000_000n, slot: 1, publishTime: NOW });
+  assert.equal((await latestTick(pool, "SOL"))?.price, 150_000_000n);
+  assert.equal((await latestTick(pool, "BTC"))?.price, 80_000_000_000n);
+  assert.equal((await listTicks(pool, "BTC", NOW - 1)).length, 1);
+  assert.equal(await latestTick(pool, "ETH"), null);
+});
 
-  const stats = async (query: Record<string, unknown>) => {
-    const r = parseStatsQuery(query, NOW);
-    assert.ok(r.ok);
-    return disclosureStats(pool, r.value);
-  };
-
-  const day = await stats({});
-  assert.deepEqual(
-    { trades: day.trades, longs: day.longs, shorts: day.shorts, liquidations: day.liquidations, wins: day.wins },
-    { trades: 3, longs: 2, shorts: 1, liquidations: 1, wins: 1 },
+dbTest("migration 008: ticks' primary key is (market, ts) and a pre-008 row reads as SOL", async () => {
+  // A row inserted without `market` is what a pre-008 row looks like after the migration's DEFAULT.
+  await pool.query("INSERT INTO ticks (ts, price, slot, publish_time) VALUES ($1, 1, 1, $1)", [NOW - 5]);
+  assert.equal((await latestTick(pool, "SOL"))?.ts, NOW - 5);
+  const { rows } = await pool.query<{ col: string }>(
+    `SELECT a.attname AS col FROM pg_index i JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = ANY(i.indkey)
+     WHERE i.indrelid = 'ticks'::regclass AND i.indisprimary ORDER BY array_position(i.indkey, a.attnum)`,
   );
-  assert.equal(day.win_rate, 1 / 3);
-  assert.equal(day.volume_quote, "350000001");
-  assert.equal(day.pnl_total, "2000000");
-  assert.equal(day.fees_total, "2000000");
-
-  const m1 = await stats({ market: M1 });
-  assert.equal(m1.trades, 2);
-  assert.equal(m1.win_rate, 0.5);
-  assert.equal(m1.volume_quote, "350000000");
-
-  assert.equal((await stats({ window: "7d" })).trades, 4);
-  assert.equal((await stats({ window: "all" })).trades, 4);
-
-  const empty = await stats({ market: Keypair.generate().publicKey.toBase58() });
-  assert.deepEqual(
-    { trades: empty.trades, win_rate: empty.win_rate, volume_quote: empty.volume_quote, pnl_total: empty.pnl_total },
-    { trades: 0, win_rate: null, volume_quote: "0", pnl_total: "0" },
-  );
+  assert.deepEqual(rows.map((r) => r.col), ["market", "ts"]);
 });
 
 // --- HTTP ---
 
-async function withIndexer(fn: (url: string) => Promise<void>) {
+function marketInfo(sym: string): MarketInfo {
+  return marketInfoFrom(pdas.marketFor(sym), {
+    symbol: Array.from(symbolBytes(sym)), feed: Keypair.generate().publicKey,
+    maxLevBps: 100_000, imrBps: 1_000, mmrBps: 500, openFeeBps: 6, closeFeeBps: 6, liqFeeBps: 100,
+    oiCap: new BN(0), maxPosition: new BN("100000000000"), minSize: new BN(20_000), maxStalenessSecs: new BN(15),
+    pausedOpen: false,
+  });
+}
+const SOL_BTC = [marketInfo("SOL"), marketInfo("BTC")];
+
+async function withIndexer(fn: (url: string) => Promise<void>, markets: () => MarketInfo[] = () => SOL_BTC) {
   const app = express();
-  app.use(indexerRouter(pool, { now: () => NOW }));
+  app.use(indexerRouter(pool, { markets }));
   const server = app.listen(0);
   await new Promise<void>((r) => server.once("listening", r));
   try {
@@ -200,30 +125,11 @@ async function withIndexer(fn: (url: string) => Promise<void>) {
   }
 }
 
-dbTest("GET /disclosures: still a plain array; X-Next-Cursor only on a full page, and following it reaches the rest", async () => {
-  for (const s of [5n, 4n, 3n]) await insertDisclosure(pool, row({ closedSlot: s }));
+dbTest("GET /pool/history: 400 with a reason on a bad parameter", async () => {
   await withIndexer(async (url) => {
-    const first = await fetch(`${url}/disclosures?limit=2`);
-    assert.equal(first.status, 200);
-    const a = (await first.json()) as { closed_slot: string }[];
-    assert.ok(Array.isArray(a));
-    assert.equal(a.length, 2);
-    const next = first.headers.get("x-next-cursor");
-    assert.ok(next);
-    const second = await fetch(`${url}/disclosures?limit=2&cursor=${encodeURIComponent(next)}`);
-    const b = (await second.json()) as { closed_slot: string }[];
-    assert.deepEqual(b.map((d) => Number(d.closed_slot)), [3]);
-    assert.equal(second.headers.get("x-next-cursor"), null);
-  });
-});
-
-dbTest("GET /disclosures, /pool/history and /stats: 400 with a reason on a bad parameter", async () => {
-  await withIndexer(async (url) => {
-    for (const path of ["/disclosures?side=up", "/disclosures?cursor=nope", "/pool/history?cursor=x", "/stats?window=1y"]) {
-      const res = await fetch(url + path);
-      assert.equal(res.status, 400, path);
-      assert.ok(((await res.json()) as { error: string }).error, path);
-    }
+    const res = await fetch(`${url}/pool/history?cursor=x`);
+    assert.equal(res.status, 400);
+    assert.ok(((await res.json()) as { error: string }).error);
   });
 });
 
@@ -238,18 +144,149 @@ dbTest("GET /pool/history: X-Next-Cursor is the oldest slot of a full page", asy
   });
 });
 
-dbTest("GET /stats: the window and market echo back with the aggregates", async () => {
-  await insertDisclosure(pool, row({ market: M1, ts: NOW - HOUR }));
+dbTest("GET /mark and /prices: ?market= picks the market (default SOL), 400 on bad format, 404 on unknown", async () => {
+  const t = Date.now();
+  await insertTick(pool, { market: "SOL", ts: t, price: 150_000_000n, slot: 1, publishTime: t });
+  await insertTick(pool, { market: "BTC", ts: t, price: 80_000_000_000n, slot: 2, publishTime: t });
   await withIndexer(async (url) => {
-    const res = await fetch(`${url}/stats?window=7d&market=${M1}`);
-    assert.equal(res.status, 200);
-    const s = (await res.json()) as { window: string; market: string; from: number; to: number; trades: number };
-    assert.deepEqual({ window: s.window, market: s.market, from: s.from, to: s.to, trades: s.trades }, {
-      window: "7d",
-      market: M1,
-      from: NOW - 7 * 24 * HOUR,
-      to: NOW,
-      trades: 1,
-    });
+    const btc = await fetch(`${url}/mark?market=BTC`);
+    assert.equal(btc.status, 200);
+    const b = (await btc.json()) as { market: string; price: string; stale: boolean };
+    assert.deepEqual({ market: b.market, price: b.price, stale: b.stale }, { market: "BTC", price: "80000000000", stale: false });
+    const sol = (await (await fetch(`${url}/mark`)).json()) as { market: string; price: string };
+    assert.deepEqual({ market: sol.market, price: sol.price }, { market: "SOL", price: "150000000" });
+
+    assert.equal((await fetch(`${url}/mark?market=DOGE`)).status, 404);
+    const bad = await fetch(`${url}/mark?market=btc`);
+    assert.equal(bad.status, 400);
+    assert.ok(((await bad.json()) as { error: string }).error);
+
+    const prices = (await (await fetch(`${url}/prices?market=BTC&tf=1m`)).json()) as { market: string; tf: string; candles: { c: number }[] };
+    assert.equal(prices.market, "BTC");
+    assert.deepEqual(prices.candles.map((c) => c.c), [80_000_000_000]);
+    assert.equal((await fetch(`${url}/prices?market=DOGE`)).status, 404);
+    assert.equal((await fetch(`${url}/prices?market=b-t`)).status, 400);
+
+    const list = (await (await fetch(`${url}/markets`)).json()) as { symbol: string }[];
+    assert.deepEqual(list.map((m) => m.symbol), ["SOL", "BTC"]);
   });
+});
+
+dbTest("GET /mark: SOL stays queryable before the registry has loaded (empty list)", async () => {
+  const t = Date.now();
+  await insertTick(pool, { market: "SOL", ts: t, price: 150_000_000n, slot: 1, publishTime: t });
+  await withIndexer(async (url) => {
+    const res = await fetch(`${url}/mark`);
+    assert.equal(res.status, 200);
+    assert.equal(((await res.json()) as { price: string }).price, "150000000");
+    assert.equal((await fetch(`${url}/mark?market=BTC`)).status, 404);
+  }, () => []);
+});
+
+// Needs no database: the removed routes never reach the pool, so a stub will do.
+test("the disclosure endpoints are gone", async () => {
+  const app = express();
+  app.use(indexerRouter({} as DbPool, { markets: () => SOL_BTC }));
+  const server = app.listen(0);
+  await new Promise<void>((r) => server.once("listening", r));
+  try {
+    const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+    for (const path of ["/disclosures", "/stats"]) {
+      const res = await fetch(`${base}${path}`);
+      assert.equal(res.status, 404, path);
+    }
+  } finally {
+    await new Promise<void>((r) => server.close(() => r()));
+  }
+});
+
+// --- candles (migration 009, spec §2.10.2) ---
+
+dbTest("insertTick upserts the 1m/1h/1d candle: o kept, h/l stretched, c latest, source oracle", async () => {
+  const t0 = Date.UTC(2026, 9, 1, 12, 0, 5);
+  await insertTick(pool, { market: "SOL", ts: t0, price: 100n, slot: 1, publishTime: t0 });
+  await insertTick(pool, { market: "SOL", ts: t0 + 10_000, price: 120n, slot: 2, publishTime: t0 + 10_000 });
+  await insertTick(pool, { market: "SOL", ts: t0 + 20_000, price: 90n, slot: 3, publishTime: t0 + 20_000 });
+  const m1 = await listCandles(pool, "SOL", "1m", 0);
+  assert.deepEqual(m1, [{ t: Date.UTC(2026, 9, 1, 12, 0), o: 100n, h: 120n, l: 90n, c: 90n }]);
+  const h1 = await listCandles(pool, "SOL", "1h", 0);
+  assert.equal(h1[0].t, Date.UTC(2026, 9, 1, 12));
+  const d1 = await listCandles(pool, "SOL", "1d", 0);
+  assert.equal(d1[0].t, Date.UTC(2026, 9, 1));
+  const { rows } = await pool.query<{ source: string }>("SELECT source FROM candles WHERE market = 'SOL' AND tf = '1m'");
+  assert.equal(rows[0].source, "oracle");
+});
+
+dbTest("insertTick: a late tick in an older 1m bucket touches only that 1m bucket's h/l/c (its 1h/1d bucket is shared, so their h/l/c move too — see insertTick JSDoc)", async () => {
+  const t0 = Date.UTC(2026, 9, 1, 12, 0, 5);
+  await insertTick(pool, { market: "SOL", ts: t0, price: 100n, slot: 1, publishTime: t0 });
+  await insertTick(pool, { market: "SOL", ts: t0 + 60_000, price: 110n, slot: 2, publishTime: t0 + 60_000 });
+  await insertTick(pool, { market: "SOL", ts: t0 + 1_000, price: 95n, slot: 3, publishTime: t0 + 1_000 }); // late, first bucket
+  const m1 = await listCandles(pool, "SOL", "1m", 0);
+  assert.equal(m1.length, 2);
+  assert.deepEqual(m1[0], { t: Date.UTC(2026, 9, 1, 12, 0), o: 100n, h: 100n, l: 95n, c: 95n });
+  assert.deepEqual(m1[1], { t: Date.UTC(2026, 9, 1, 12, 1), o: 110n, h: 110n, l: 110n, c: 110n });
+});
+
+dbTest("insertBackfillCandles never overwrites; a later oracle tick flips a hyperliquid bucket to oracle", async () => {
+  const t = Date.UTC(2026, 9, 1, 12, 0);
+  const n1 = await insertBackfillCandles(pool, "BTC", "1m", [{ t, o: 1n, h: 2n, l: 1n, c: 2n }, { t: t + 60_000, o: 2n, h: 3n, l: 2n, c: 3n }]);
+  assert.equal(n1, 2);
+  const n2 = await insertBackfillCandles(pool, "BTC", "1m", [{ t, o: 9n, h: 9n, l: 9n, c: 9n }]);
+  assert.equal(n2, 0);
+  assert.deepEqual((await listCandles(pool, "BTC", "1m", 0))[0], { t, o: 1n, h: 2n, l: 1n, c: 2n });
+  await insertTick(pool, { market: "BTC", ts: t + 30_000, price: 5n, slot: 1, publishTime: t });
+  const after = await listCandles(pool, "BTC", "1m", 0);
+  assert.deepEqual(after[0], { t, o: 1n, h: 5n, l: 1n, c: 5n });
+  const { rows } = await pool.query<{ source: string }>("SELECT source FROM candles WHERE market = 'BTC' AND tf = '1m' AND t = $1", [t]);
+  assert.equal(rows[0].source, "oracle");
+  const bf = await pool.query<{ source: string }>("SELECT source FROM candles WHERE market = 'BTC' AND tf = '1m' AND t = $1", [t + 60_000]);
+  assert.equal(bf.rows[0].source, "hyperliquid");
+  // the oracle candle also blocks a later backfill of the same bucket
+  assert.equal(await insertBackfillCandles(pool, "BTC", "1m", [{ t, o: 7n, h: 7n, l: 7n, c: 7n }]), 0);
+});
+
+dbTest("migration 010: candles.source accepts 'hyperliquid', still 'pyth_pro', rejects others", async () => {
+  const t = Date.UTC(2026, 9, 1, 13, 0);
+  const ins = (source: string, market: string) =>
+    pool.query("INSERT INTO candles (market, tf, t, o, h, l, c, source) VALUES ($1, '1m', $2, 1, 1, 1, 1, $3)", [market, t, source]);
+  await ins("hyperliquid", "M10A");
+  await ins("pyth_pro", "M10B"); // legacy value stays readable
+  await assert.rejects(ins("binance", "M10C"), /candles_source_check/);
+});
+
+dbTest("listCandles filters by market, tier and sinceT", async () => {
+  const t = Date.UTC(2026, 9, 1);
+  await insertBackfillCandles(pool, "ETH", "1d", [{ t, o: 1n, h: 1n, l: 1n, c: 1n }, { t: t + 86_400_000, o: 2n, h: 2n, l: 2n, c: 2n }]);
+  await insertBackfillCandles(pool, "SOL", "1d", [{ t, o: 3n, h: 3n, l: 3n, c: 3n }]);
+  assert.equal((await listCandles(pool, "ETH", "1d", t + 1)).length, 1);
+  assert.equal((await listCandles(pool, "ETH", "1h", 0)).length, 0);
+  assert.equal((await listCandles(pool, "SOL", "1d", 0)).length, 1);
+});
+
+dbTest("deleteTicksBefore removes only older ticks; the rolled-up candles stay", async () => {
+  const t0 = Date.UTC(2026, 9, 1, 12, 0, 5);
+  await insertTick(pool, { market: "SOL", ts: t0, price: 100n, slot: 1, publishTime: t0 });
+  await insertTick(pool, { market: "SOL", ts: t0 + 60_000, price: 110n, slot: 2, publishTime: t0 + 60_000 });
+  assert.equal(await deleteTicksBefore(pool, t0 + 1), 1);
+  assert.equal((await listTicks(pool, "SOL", 0)).length, 1);
+  assert.equal((await listCandles(pool, "SOL", "1m", 0)).length, 2);
+});
+
+dbTest("migration 009 rolls existing ticks up into 1m/1h/1d (applied on a table with rows)", async () => {
+  // Re-run the roll-up statement against ticks inserted without candles to
+  // prove the SQL (the real migration ran on an empty scratch DB in `before`).
+  await pool.query("DELETE FROM candles");
+  const t0 = Date.UTC(2026, 9, 1, 12, 0, 5);
+  await pool.query("INSERT INTO ticks (market, ts, price, slot) VALUES ('SOL', $1, 100, 1), ('SOL', $2, 130, 2), ('SOL', $3, 80, 3)", [t0, t0 + 20_000, t0 + 3_600_000]);
+  await pool.query("DELETE FROM candles");
+  const sql = readFileSync(new URL("../migrations/009_candles.sql", import.meta.url), "utf8");
+  await pool.query(sql.slice(sql.indexOf("INSERT INTO candles")));
+  const m1 = await listCandles(pool, "SOL", "1m", 0);
+  assert.deepEqual(m1.map((c) => [c.t, c.o, c.h, c.l, c.c]), [
+    [Date.UTC(2026, 9, 1, 12, 0), 100n, 130n, 100n, 130n],
+    [Date.UTC(2026, 9, 1, 13, 0), 80n, 80n, 80n, 80n],
+  ]);
+  assert.equal((await listCandles(pool, "SOL", "1h", 0)).length, 2);
+  assert.equal((await listCandles(pool, "SOL", "1d", 0)).length, 1);
 });

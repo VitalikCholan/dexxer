@@ -19,7 +19,7 @@
 // unreliable on real devnet). The trader/session keys are persisted under
 // `.keys/devnet-trader-<run>.json` / `.keys/devnet-session-<run>.json` (via
 // `loadOrCreateKey`, so a unique per-run name never collides with a prior
-// run's identity) and the run's pointer + Position pre-delegation snapshot
+// run's identity) and the run's pointer + Positions pre-delegation snapshot
 // are written to `.keys/devnet-run-latest.json` for 02/03/04 to pick up.
 //
 // Session funding deviates from the brief's literal
@@ -57,20 +57,16 @@ if ((process.env.DEXXER_NET ?? "local") === "devnet") {
 const { BN } = await import("@coral-xyz/anchor");
 const { PublicKey, SystemProgram, Transaction, sendAndConfirmTransaction, LAMPORTS_PER_SOL } = await import("@solana/web3.js");
 const { getOrCreateAssociatedTokenAccount, getAssociatedTokenAddressSync, TOKEN_PROGRAM_ID } = await import("@solana/spl-token");
-const {
-  DELEGATION_PROGRAM_ID,
-  EPHEMERAL_VAULT_ID,
-  MAGIC_PROGRAM_ID,
-  PERMISSION_PROGRAM_ID,
-  delegateSpl,
-  permissionPdaFromAccount,
-} = await import("@magicblock-labs/ephemeral-rollups-sdk");
+const { delegateSpl } = await import("@magicblock-labs/ephemeral-rollups-sdk");
 const envMod = await import("../lib/env.js");
 const { ER_VALIDATOR, NET, baseConn, loadOrCreateKey, sendAndConfirmIx, teeConn, waitDelegated } = envMod;
 const assert: (cond: unknown, msg: string) => asserts cond = envMod.assert;
-const { DEXXER_CORE_PROGRAM_ID, accountNs, dexxerCoreProgram, delegationTriple, pdas } = await import("../lib/program.js");
+const { accountNs, dexxerCoreProgram, pdas } = await import("../lib/program.js");
 const { bootstrapDevnet } = await import("../lib/admin.js");
-const { creditDeposit, initPermissions, tradeAccounts, U64_MAX, usd, solSize } = await import("../lib/trader.js");
+const {
+  creditDeposit, delegateUserAccounts, initPermissions, initUserAccounts, permissionAccounts, readPositions, tradeAccounts, U64_MAX, usd, solSize,
+} = await import("../lib/trader.js");
+const { slotFor } = await import("../lib/positions.js");
 
 if (NET !== "devnet") {
   console.error(`FAIL: DEXXER_NET must be "devnet" (got "${NET}"). Run: DEXXER_NET=devnet npm run devnet:onboard`);
@@ -119,10 +115,9 @@ async function main() {
 
   const core = dexxerCoreProgram(baseConn, owner);
   const config = pdas.config();
-  const market = pdas.market();
+  const market = boot.market;
   const userAccount = pdas.userAccount(owner.publicKey);
-  const position = pdas.position(owner.publicKey, market);
-  const disclosureQueue = pdas.disclosureQueue(owner.publicKey);
+  const positions = pdas.positions(owner.publicKey);
   const faucetPda = pdas.faucet(owner.publicKey);
   const mintAuth = pdas.mintAuth();
   const ownerAta = getAssociatedTokenAddressSync(boot.mint, owner.publicKey);
@@ -147,19 +142,16 @@ async function main() {
 
   console.log("=== init_user ===");
   // Week 3: per-user secret salting this account's leaf in the public `BalancesRoot`.
-  const exitSalt = new Uint8Array(randomBytes(32));
-  const initUserSig = await core.methods
-    .initUser(Array.from(exitSalt))
-    .accounts({ owner: owner.publicKey, payer: owner.publicKey, config, market, userAccount, position, disclosureQueue, systemProgram: SystemProgram.programId })
-    .rpc();
+  const exitSalt = Array.from(randomBytes(32));
+  const initUserSig = await core.methods.initUser(exitSalt).accounts(initUserAccounts(owner.publicKey, owner.publicKey)).rpc();
   console.log("init_user", initUserSig);
 
-  // --- pre-delegation Position byte snapshot (task-5 brief: for 02's
+  // --- pre-delegation Positions byte snapshot (task-5 brief: for 02's
   // leak-test comparison against what base RPC still shows post-delegation) ---
-  const positionPreDelegateInfo = await baseConn.getAccountInfo(position, "confirmed");
-  assert(positionPreDelegateInfo !== null, "Position account exists pre-delegation (readable snapshot)");
-  const positionSnapshotB64 = positionPreDelegateInfo!.data.toString("base64");
-  console.log("Position pre-delegation snapshot:", positionPreDelegateInfo!.data.length, "bytes, owner", positionPreDelegateInfo!.owner.toBase58());
+  const positionsPreDelegateInfo = await baseConn.getAccountInfo(positions, "confirmed");
+  assert(positionsPreDelegateInfo !== null, "Positions account exists pre-delegation (readable snapshot)");
+  const positionsSnapshotB64 = positionsPreDelegateInfo!.data.toString("base64");
+  console.log("Positions pre-delegation snapshot:", positionsPreDelegateInfo!.data.length, "bytes, owner", positionsPreDelegateInfo!.owner.toBase58());
 
   console.log("=== delegateSpl (deposit) ===");
   const delegateSplIxs = await delegateSpl(owner.publicKey, boot.mint, DEPOSIT, {
@@ -171,43 +163,19 @@ async function main() {
   console.log("delegateSpl", delegateSplSig);
 
   console.log("=== delegate_user ===");
-  const ut = delegationTriple(userAccount, DEXXER_CORE_PROGRAM_ID);
-  const pt = delegationTriple(position, DEXXER_CORE_PROGRAM_ID);
-  const dt = delegationTriple(disclosureQueue, DEXXER_CORE_PROGRAM_ID);
+  // Week-5 Task 3 (P1): `payer` funds the delegation records. The devnet
+  // scripts keep the owner paying; sponsoring it is the relayer's job.
   const delegateUserSig = await core.methods
     .delegateUser()
-    .accounts({
-      owner: owner.publicKey,
-      // Week-5 Task 3 (P1): `payer` funds the three delegation records. The
-      // devnet scripts keep the owner paying; sponsoring it is Task 5/6.
-      payer: owner.publicKey,
-      config,
-      market,
-      bufferUserAccount: ut.buffer,
-      delegationRecordUserAccount: ut.record,
-      delegationMetadataUserAccount: ut.metadata,
-      userAccount,
-      bufferPosition: pt.buffer,
-      delegationRecordPosition: pt.record,
-      delegationMetadataPosition: pt.metadata,
-      position,
-      bufferDisclosureQueue: dt.buffer,
-      delegationRecordDisclosureQueue: dt.record,
-      delegationMetadataDisclosureQueue: dt.metadata,
-      disclosureQueue,
-      ownerProgram: DEXXER_CORE_PROGRAM_ID,
-      delegationProgram: DELEGATION_PROGRAM_ID,
-      systemProgram: SystemProgram.programId,
-    })
+    .accounts(delegateUserAccounts(owner.publicKey, owner.publicKey))
     .rpc();
   console.log("delegate_user", delegateUserSig);
 
   await waitDelegated(baseConn, userAccount, "UserAccount");
-  await waitDelegated(baseConn, position, "Position");
-  await waitDelegated(baseConn, disclosureQueue, "DisclosureQueue");
+  await waitDelegated(baseConn, positions, "Positions");
 
   console.log("=== credit_deposit (ER, owner token) ===");
-  const trader = { kp: owner, userAccount, position, disclosureQueue, userAta: ownerAta };
+  const trader = { kp: owner, userAccount, positions, userAta: ownerAta };
   const creditSig = await creditDeposit(boot, trader, DEPOSIT);
   console.log("credit_deposit", creditSig);
 
@@ -225,25 +193,9 @@ async function main() {
 
   console.log("=== set_session (ER, rebuilds members=[owner, session, crank]) ===");
   const expiry = Math.floor(Date.now() / 1000) + 3600;
-  const userPermission = permissionPdaFromAccount(userAccount);
-  const positionPermission = permissionPdaFromAccount(position);
-  const dqPermission = permissionPdaFromAccount(disclosureQueue);
   const setSessionIx = await coreOwnerEr.methods
     .setSession(session.publicKey, new BN(expiry), 20)
-    .accounts({
-      owner: owner.publicKey,
-      config,
-      market,
-      userAccount,
-      position,
-      disclosureQueue,
-      userPermission,
-      positionPermission,
-      dqPermission,
-      permissionProgram: PERMISSION_PROGRAM_ID,
-      ephemeralVault: EPHEMERAL_VAULT_ID,
-      magicProgram: MAGIC_PROGRAM_ID,
-    })
+    .accounts(permissionAccounts(owner.publicKey))
     .instruction();
   const setSessionSig = await sendAndConfirmIx(ownerConn, owner, setSessionIx);
   console.log("set_session", setSessionSig, "expiry", expiry, "actions", 20);
@@ -262,21 +214,21 @@ async function main() {
   const coreSessionEr = dexxerCoreProgram(sessionConn, session);
   const openIx = await coreSessionEr.methods
     .openPosition({ long: {} }, new BN(solSize(OPEN_SIZE_SOL).toString()), new BN(usd(OPEN_MARGIN_USD).toString()), new BN(U64_MAX.toString()))
-    .accounts({ signer: session.publicKey, ...tradeAccounts(boot, { userAccount, position, disclosureQueue }) })
+    .accounts({ signer: session.publicKey, ...tradeAccounts({ config, poolLive: boot.poolLive }, { userAccount, positions }, boot) })
     .instruction();
   const openSig = await sendAndConfirmIx(sessionConn, session, openIx);
   console.log("open_position (session-signed)", openSig);
 
-  // --- assert: Position.state == Open, read via OWNER token (proves owner
-  // retains read visibility even though session signed the tx) ---
-  const positionAfterOpen = await accountNs(coreOwnerEr).position.fetch(position);
-  assert("open" in positionAfterOpen.state, `Position.state == Open (got ${JSON.stringify(positionAfterOpen.state)})`);
-  console.log("Position after open (owner-token read):", {
-    state: positionAfterOpen.state,
-    side: positionAfterOpen.side,
-    size: positionAfterOpen.size.toString(),
-    entry: positionAfterOpen.entry.toString(),
-    margin: positionAfterOpen.margin.toString(),
+  // --- assert: an open SOL slot in Positions, read via OWNER token (proves
+  // owner retains read visibility even though session signed the tx) ---
+  const slotAfterOpen = slotFor(await readPositions(ownerConn, positions), market);
+  assert(slotAfterOpen !== null, "Positions has an open slot on the SOL market");
+  console.log("SOL slot after open (owner-token read):", {
+    index: slotAfterOpen.index,
+    side: slotAfterOpen.side,
+    size: slotAfterOpen.size.toString(),
+    entry: slotAfterOpen.entry.toString(),
+    margin: slotAfterOpen.margin.toString(),
   });
 
   // --- persist run state for 02/03/04 ---
@@ -295,10 +247,9 @@ async function main() {
     feed: boot.feed.toBase58(),
     config: config.toBase58(),
     userAccount: userAccount.toBase58(),
-    position: position.toBase58(),
-    disclosureQueue: disclosureQueue.toBase58(),
+    positions: positions.toBase58(),
     userAta: ownerAta.toBase58(),
-    positionSnapshotB64,
+    positionsSnapshotB64,
     sigs: {
       fundSig,
       faucetSig,
@@ -314,7 +265,7 @@ async function main() {
   };
   writeFileSync(RUN_POINTER_PATH, JSON.stringify(runState, null, 2));
   console.log("\nrun state persisted:", RUN_POINTER_PATH);
-  console.log("\n01-ONBOARD-PRIVATE PASS", { owner: runState.owner, session: runState.session, position: runState.position, openSig });
+  console.log("\n01-ONBOARD-PRIVATE PASS", { owner: runState.owner, session: runState.session, positions: runState.positions, openSig });
 }
 
 main().catch((e) => {

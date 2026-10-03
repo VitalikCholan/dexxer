@@ -1,21 +1,24 @@
 //! Conditional orders (Limit / Stop / Take-profit / Stop-loss / Trailing stop).
 //!
-//! Orders live in `Position.orders`, a fixed array of slots, so they inherit
-//! the position's privacy model for free: the account is a delegated PDA with
-//! an `EphemeralPermission { owner, session, crank }`, which means nobody but
-//! the owner (and the crank) can read what a trader is waiting for. There is
-//! no separate order account to onboard, delegate or permission.
+//! Orders live in `Positions.orders`, a fixed array of slots at the END of the
+//! trader's single `Positions` account, so they inherit its privacy model for
+//! free: a delegated PDA with an `EphemeralPermission { owner, session,
+//! crank }`, which means nobody but the owner (and the crank) can read what a
+//! trader is waiting for. There is no separate order account to onboard,
+//! delegate or permission. The market is part of the slot's DATA (like
+//! `PositionSlot.market`), so one pool of slots serves every market.
 //!
-//! Orders are executed by the per-position scheduled task that already runs
-//! `liquidation_check` — see `instructions/liquidation.rs::run_orders`. Every
-//! trigger is evaluated against `Market.mark`, the same price liquidations use.
-use super::position::Side;
+//! Orders are executed by the per-(trader, market) scheduled task that already
+//! runs `liquidation_check` — see `instructions/liquidation.rs::run_orders`.
+//! Every trigger is evaluated against `Market.mark`, the same price
+//! liquidations use.
+use super::positions::Side;
 use crate::errors::MathError;
 use anchor_lang::prelude::*;
 
-/// Order slots per position. Small on purpose: an order costs account space in
-/// the ER and a few thousand CU on every scheduled tick.
-pub const ORDER_SLOTS: usize = 4;
+/// Order slots per trader, shared by all markets. Small on purpose: an order
+/// costs account space in the ER and a few thousand CU on every scheduled tick.
+pub const ORDER_SLOTS: usize = 8;
 /// Trailing distance bounds, in basis points of the extreme price.
 pub const MIN_TRAIL_BPS: u16 = 10;
 pub const MAX_TRAIL_BPS: u16 = 5_000;
@@ -53,46 +56,68 @@ impl OrderKind {
     }
 }
 
-#[derive(AnchorSerialize, AnchorDeserialize, Clone, Copy, Debug, PartialEq, Eq, InitSpace)]
-pub struct Order {
-    pub kind: OrderKind,
-    /// Entry orders: the side to open. Reduce-only orders: the side of the
-    /// position they protect (copied from it at placement).
-    pub side: Side,
+impl OrderKind {
+    pub fn as_u8(self) -> u8 {
+        match self {
+            OrderKind::None => 0,
+            OrderKind::Limit => 1,
+            OrderKind::Stop => 2,
+            OrderKind::TakeProfit => 3,
+            OrderKind::StopLoss => 4,
+            OrderKind::TrailingStop => 5,
+        }
+    }
+    /// Only ever called on a byte this program wrote with `as_u8`; anything
+    /// else reads as an empty slot.
+    pub fn from_u8(v: u8) -> Self {
+        match v {
+            1 => OrderKind::Limit,
+            2 => OrderKind::Stop,
+            3 => OrderKind::TakeProfit,
+            4 => OrderKind::StopLoss,
+            5 => OrderKind::TrailingStop,
+            _ => OrderKind::None,
+        }
+    }
+}
+
+/// One order slot. `zero_copy` like the rest of `Positions` (an all-zero slot
+/// is an empty one: `kind == 0`).
+#[zero_copy]
+#[repr(C)]
+pub struct OrderSlot {
+    /// The market this order trades. Part of the data, not the address.
+    pub market: Pubkey,
     /// Trigger price (mark units). Unused (0) for `TrailingStop`.
     pub trigger: u64,
     /// Entry orders only.
     pub size: u64,
     pub margin: u64,
-    /// `TrailingStop` only: distance from `extreme`, in bps.
-    pub trail_bps: u16,
     /// `TrailingStop` only: best mark seen since placement (highest for a
     /// long, lowest for a short).
     pub extreme: u64,
     /// Entry orders only: take-profit / stop-loss to attach on fill (0 = none).
     pub tp: u64,
     pub sl: u64,
+    /// `OrderKind::as_u8`.
+    pub kind: u8,
+    /// Entry orders: the side to open. Reduce-only orders: the side of the
+    /// position they protect (copied from it at placement). `Side::as_u8`.
+    pub side: u8,
+    /// `TrailingStop` only: distance from `extreme`, in bps.
+    pub trail_bps: u16,
+    pub _pad: [u8; 4],
 }
 
-impl Default for Order {
-    fn default() -> Self {
-        Self {
-            kind: OrderKind::None,
-            side: Side::Long,
-            trigger: 0,
-            size: 0,
-            margin: 0,
-            trail_bps: 0,
-            extreme: 0,
-            tp: 0,
-            sl: 0,
-        }
+impl OrderSlot {
+    pub fn kind(&self) -> OrderKind {
+        OrderKind::from_u8(self.kind)
     }
-}
-
-impl Order {
+    pub fn side(&self) -> Side {
+        Side::from_u8(self.side)
+    }
     pub fn is_empty(&self) -> bool {
-        self.kind == OrderKind::None
+        self.kind() == OrderKind::None
     }
 }
 

@@ -13,7 +13,7 @@
 // touching module caches.
 
 export interface NetworkConfig {
-  /** Base-layer (L1) RPC — wallet balance, L1 legs, `Disclosure`/`BalancesRoot` reads. */
+  /** Base-layer (L1) RPC — wallet balance, L1 legs, `BalancesRoot` reads. */
   baseRpc: string
   /** The wallet-ui `MobileWalletProvider` endpoint (`useMobileWallet().connection`): the PUBLIC devnet RPC, which serves `requestAirdrop` — `baseRpc` (MagicBlock's) is for the app's own reads and sends. */
   walletRpc: string

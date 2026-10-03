@@ -4,7 +4,7 @@
 // the same trigger directions as the program, so the UI can refuse a price the
 // chain would reject (or that would fire on the very next tick), and labels
 // for the order list. Prices are raw 1e6 bigints, like everywhere in `lib/`.
-import { type DecodedOrder, type OrderKindName, type SideName } from './codecs'
+import { type DecodedOrder, type OrderKindName, type SideName } from './positions'
 import { formatUsd2 } from './status'
 
 export const MIN_TRAIL_BPS = 10

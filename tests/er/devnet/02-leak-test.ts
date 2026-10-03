@@ -3,18 +3,19 @@
 // Task 5, script 2 of 4: spec §6.4 level-4 leak test against real devnet +
 // devnet-tee.magicblock.app, run immediately after 01-onboard-private.ts
 // (reads its persisted `.keys/devnet-run-latest.json` — trader/session
-// identities, PDAs, and the pre-delegation Position byte snapshot).
+// identities, PDAs, and the pre-delegation Positions byte snapshot). The
+// subject is the trader's one `Positions` account (spec §2.9).
 //
 // Six checks (brief):
-//   (a) base RPC: Position owner == Delegation Program, bytes unchanged vs
+//   (a) base RPC: Positions owner == Delegation Program, bytes unchanged vs
 //       01's pre-delegation snapshot (spec: L1 shows only the delegated
 //       account under the Delegation Program with onboarding-time bytes —
 //       CLAUDE.md: "нуль комітів на L1 до закриття").
 //   (b) TEE without an auth token -> error.
 //   (c) a stranger's own TEE token -> read returns null (not a member).
-//   (d) session token -> position visible.
-//   (e) crank token -> position visible.
-//   (f) owner token -> position visible, state == Open.
+//   (d) session token -> Positions visible.
+//   (e) crank token -> Positions visible.
+//   (f) owner token -> Positions visible, with an open slot on the SOL market.
 //
 // LEAK TEST PASS only if all six hold. Run: `npm run devnet:leak`.
 
@@ -35,7 +36,7 @@ const { Connection, Keypair, PublicKey } = await import("@solana/web3.js");
 const { DELEGATION_PROGRAM_ID } = await import("@magicblock-labs/ephemeral-rollups-sdk");
 const envMod = await import("../lib/env.js");
 const { ER, NET, baseConn, loadOrCreateKey, teeConn } = envMod;
-const { accountNs, dexxerCoreProgram } = await import("../lib/program.js");
+const { decodePositions, slotFor } = await import("../lib/positions.js");
 
 if (NET !== "devnet") {
   console.error(`FAIL: DEXXER_NET must be "devnet" (got "${NET}"). Run: DEXXER_NET=devnet npm run devnet:leak`);
@@ -49,16 +50,17 @@ interface RunState {
   owner: string;
   session: string;
   crank: string;
-  position: string;
+  positions: string;
+  market: string;
   traderName: string;
   sessionName: string;
-  positionSnapshotB64: string;
+  positionsSnapshotB64: string;
 }
 
 async function main() {
   const run: RunState = JSON.parse(readFileSync(RUN_POINTER_PATH, "utf8"));
   console.log("loaded run state:", RUN_POINTER_PATH, "run id", (run as any).runId);
-  const position = new PublicKey(run.position);
+  const position = new PublicKey(run.positions);
   const owner = loadOrCreateKey(run.traderName);
   const session = loadOrCreateKey(run.sessionName);
   const crank = loadOrCreateKey("devnet-crank");
@@ -69,10 +71,10 @@ async function main() {
   // --- (a) base RPC: owner == Delegation Program, bytes unchanged ---
   const baseInfo = await baseConn.getAccountInfo(position, "confirmed");
   const ownerIsDelegation = baseInfo !== null && baseInfo.owner.equals(DELEGATION_PROGRAM_ID);
-  const bytesUnchanged = baseInfo !== null && baseInfo.data.toString("base64") === run.positionSnapshotB64;
+  const bytesUnchanged = baseInfo !== null && baseInfo.data.toString("base64") === run.positionsSnapshotB64;
   results.a_base_owner_and_bytes = {
     pass: ownerIsDelegation && bytesUnchanged,
-    note: `owner=${baseInfo?.owner.toBase58() ?? "null"} (Delegation Program? ${ownerIsDelegation}), bytesUnchanged=${bytesUnchanged} (${baseInfo?.data.length ?? 0}B vs snapshot ${Buffer.from(run.positionSnapshotB64, "base64").length}B)`,
+    note: `owner=${baseInfo?.owner.toBase58() ?? "null"} (Delegation Program? ${ownerIsDelegation}), bytesUnchanged=${bytesUnchanged} (${baseInfo?.data.length ?? 0}B vs snapshot ${Buffer.from(run.positionsSnapshotB64, "base64").length}B)`,
   };
 
   // --- (b) TEE without a token -> non-visible. Brief's literal expectation
@@ -131,15 +133,14 @@ async function main() {
     note: crankInfo === null ? "null (unexpected)" : `visible: ${crankInfo.data.length}B`,
   };
 
-  // --- (f) owner token -> visible, state == Open ---
+  // --- (f) owner token -> visible, an open slot on the SOL market ---
   const ownerConn = await teeConn(owner);
   const ownerInfo = await ownerConn.getAccountInfo(position, "confirmed");
-  const core = dexxerCoreProgram(ownerConn, owner);
-  const positionState = await accountNs(core).position.fetch(position);
-  const isOpen = "open" in positionState.state;
+  const slot = ownerInfo ? slotFor(decodePositions(ownerInfo.data), new PublicKey(run.market)) : null;
+  const isOpen = slot !== null;
   results.f_owner_visible_open = {
     pass: ownerInfo !== null && isOpen,
-    note: `visible=${ownerInfo !== null}, state=${JSON.stringify(positionState.state)}`,
+    note: `visible=${ownerInfo !== null}, SOL slot=${slot ? `#${slot.index} ${slot.side} size ${slot.size}` : "none"}`,
   };
 
   console.log("\n=== LEAK TEST TABLE (spec §6.4 level 4) ===");

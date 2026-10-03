@@ -120,13 +120,73 @@ if (__DEV__) {
 
 /**
  * MAX button: margin = everything available, then the smallest integer
- * leverage (1..10, `LeverageSlider`'s step) whose derived margin does not
+ * leverage (1..`maxLev`, the market's cap, `LeverageSlider`'s step) whose derived margin does not
  * exceed it. Ceil (not "nearest") so `deriveTicket`'s pool-favouring
  * round-up lands at-or-under `available`, not over it. Pure bigint — the
  * component used to do this through `Number(...)`.
  */
-export function impliedLeverage(ntl: bigint, available: bigint): number {
+export function impliedLeverage(ntl: bigint, available: bigint, maxLev = 10): number {
+  const cap = BigInt(Math.max(1, Math.floor(maxLev)))
   if (available <= 0n) return 1
   const q = (ntl + available - 1n) / available
-  return Number(q < 1n ? 1n : q > 10n ? 10n : q)
+  return Number(q < 1n ? 1n : q > cap ? cap : q)
+}
+
+/**
+ * The slider's range is the MARKET's, not a constant: HYPE/ZEC allow 5×
+ * while SOL/BTC/ETH allow 10× (`max_lev_bps`/`imr_bps`). A leverage picked
+ * on one market is clamped when the user switches to a tighter one — the
+ * program would otherwise reject the open with `InsufficientMargin` (6010),
+ * which is exactly what the plan-4 smoke hit on HYPE at 7×.
+ */
+export function clampLeverage(value: number, maxLev: number): number {
+  const cap = Math.max(1, Math.floor(maxLev))
+  return Math.min(cap, Math.max(1, Math.round(value)))
+}
+
+// --- Close tab and Add margin (C.4) ---
+
+export type CloseBlock = 'no_size' | 'exceeds' | 'remainder_below_min' | null
+
+/** `decrease_position`'s requires: `0 < close ≤ size`, and a partial close must leave at least `min_size`. */
+export function closeBlock(closeSize: bigint, posSize: bigint, minSize: bigint | null): CloseBlock {
+  if (closeSize <= 0n) return 'no_size'
+  if (closeSize > posSize) return 'exceeds'
+  if (closeSize < posSize && minSize !== null && posSize - closeSize < minSize) return 'remainder_below_min'
+  return null
+}
+
+/**
+ * What closing `closeSize` at `mark` realizes: PnL (`math.rs::decrease_pnl`
+ * is `upnl` on the closed part, truncated toward zero), the close fee, and
+ * the margin released pro rata, floored — the remainder keeps the rounding
+ * (`trade.rs::decrease_position`).
+ */
+export function closePreview(
+  side: SideName,
+  closeSize: bigint,
+  posSize: bigint,
+  entry: bigint,
+  margin: bigint,
+  mark: bigint,
+  closeFeeBps: bigint,
+): { pnl: bigint; fee: bigint; released: bigint } {
+  const diff = side === 'Long' ? mark - entry : entry - mark
+  return {
+    pnl: (closeSize * diff) / math.SIZE_SCALE,
+    fee: math.fee(math.notional(closeSize, mark), closeFeeBps),
+    released: posSize > 0n ? (margin * closeSize) / posSize : 0n,
+  }
+}
+
+/** `add_margin` recomputes liq at the same entry/size with the bigger margin (`trade.rs`). Null = no liq price (below 1×). */
+export function liqAfterAddMargin(
+  side: SideName,
+  entry: bigint,
+  size: bigint,
+  margin: bigint,
+  add: bigint,
+  mmrBps: bigint,
+): bigint | null {
+  return safeLiq(side, entry, size, margin + add, mmrBps)
 }

@@ -1,10 +1,9 @@
 // tests/er/devnet/08-undelegate.ts
 //
-// Task 8, script 3 of 3 (M-A on dexxer_core): full exit for the trader
-// created by `06-commitment-reveal.ts` — close out its still-open second
-// position, drain the disclosure queue, withdraw all margin, then
-// `undelegate_user` (owner-TEE) and poll base until `UserAccount`/
-// `Position`/`DisclosureQueue` are owned by `dexxer_core` itself (not the
+// Week 3 Task 8 (M-A on dexxer_core): full exit for the trader
+// created by `01-onboard-private.ts` — close its still-open SOL position,
+// withdraw all margin, then `undelegate_user` (owner-TEE) and poll base until
+// `UserAccount`/`Positions` are owned by `dexxer_core` itself (not the
 // Delegation Program) with every private field scrubbed.
 //
 // Week 3 Task 1 already measured `commit_and_undelegate` after
@@ -13,18 +12,16 @@
 // script is the first time the exact same mechanism runs on `dexxer_core`
 // itself, hence "M-A confirmed on dexxer_core" rather than a bare "PASS".
 //
-// Preconditions for `undelegate_user` (instructions/user.rs): `Position.state
-// == Empty`, `DisclosureQueue.len == 0`, `UserAccount.free_margin == 0 &&
-// locked_margin == 0`. The 06 trader ends its run with: its Position already
-// `Empty` (week-5 Task 1: a close frees it on the spot), position #2's record
-// still sitting in the `DisclosureQueue` uncommitted (06 only drives record
-// #1's reveal), and nonzero free_margin. This script closes that gap: commit
-// and then reveal whatever is left in the queue, withdraw(all), then
-// undelegate. Task 8b (ruling 9): `Commitment` is hash-seeded, so a single
-// commit is always sufficient — no nonce-collision retry loop needed.
+// Position slots (spec §2.9): no disclosure queue to drain any more. The gate
+// of `undelegate_user` is `Positions.open_count() == 0` (no open slot) AND
+// `free_margin == 0 && locked_margin == 0` — both checked by the program
+// (instructions/user.rs). The market keys the trader
+// traded (history ring) plus SOL go in as read-only remaining accounts (≤16)
+// so the program cancels each market's liquidation task. After the exit the
+// `Positions` body — slots and history, bytes [40, 40 + 3072) — must be zero.
 //
 // Run: `npm run devnet:undelegate` (from tests/er). Requires
-// `06-commitment-reveal.ts` to have run (`.keys/devnet-run-mb-latest.json`).
+// `01-onboard-private.ts` to have run (`.keys/devnet-run-latest.json`).
 
 import { readFileSync } from "fs";
 import { dirname, resolve } from "path";
@@ -42,20 +39,14 @@ if ((process.env.DEXXER_NET ?? "local") === "devnet") {
 const { BN } = await import("@coral-xyz/anchor");
 const { PublicKey } = await import("@solana/web3.js");
 const { TOKEN_PROGRAM_ID, getAssociatedTokenAddressSync } = await import("@solana/spl-token");
-const {
-  DELEGATION_PROGRAM_ID,
-  MAGIC_PROGRAM_ID,
-  MAGIC_CONTEXT_ID,
-  PERMISSION_PROGRAM_ID,
-  EPHEMERAL_VAULT_ID,
-  permissionPdaFromAccount,
-} = await import("@magicblock-labs/ephemeral-rollups-sdk");
+const { MAGIC_PROGRAM_ID, MAGIC_CONTEXT_ID } = await import("@magicblock-labs/ephemeral-rollups-sdk");
 const envMod = await import("../lib/env.js");
 const { NET, baseConn, loadOrCreateKey, sendAndConfirmIx, teeConn, sleep } = envMod;
 const assert: (cond: unknown, msg: string) => asserts cond = envMod.assert;
-const { DEXXER_CORE_PROGRAM_ID, accountNs, dexxerCoreProgram, pdas, commitmentHash, sideIndex, reasonIndex } = await import("../lib/program.js");
+const { DEXXER_CORE_PROGRAM_ID, accountNs, dexxerCoreProgram, pdas } = await import("../lib/program.js");
 const { bootstrapDevnet } = await import("../lib/admin.js");
-const { openPosition, closePosition } = await import("../lib/trader.js");
+const { closePosition, readPositions, undelegateUserAccounts } = await import("../lib/trader.js");
+const { MAX_SLOTS, slotFor } = await import("../lib/positions.js");
 
 if (NET !== "devnet") {
   console.error(`FAIL: DEXXER_NET must be "devnet" (got "${NET}"). Run: DEXXER_NET=devnet npm run devnet:undelegate`);
@@ -66,52 +57,20 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 const KEYS_DIR = resolve(HERE, "..", ".keys");
 const UNDELEGATE_POLL_MS = 180_000;
 
-function recToArgsAndSalt(rec: any) {
-  return {
-    args: {
-      market: new PublicKey(rec.market),
-      side: sideIndex(rec.side),
-      size: BigInt(rec.size.toString()),
-      entry: BigInt(rec.entry.toString()),
-      exit: BigInt(rec.exit.toString()),
-      pnl: BigInt(rec.pnl.toString()),
-      fees: BigInt(rec.fees.toString()),
-      reason: reasonIndex(rec.reason),
-      openedSlot: BigInt(rec.openedSlot.toString()),
-      closedSlot: BigInt(rec.closedSlot.toString()),
-      nonce: BigInt(rec.nonce.toString()),
-      revealAfterSlot: BigInt(rec.revealAfterSlot.toString()),
-    },
-    salt: Uint8Array.from(rec.salt as number[]),
-  };
-}
-
-async function pollBase<T>(label: string, fn: () => Promise<T | null>, tries = 60, delayMs = 2000): Promise<T> {
-  for (let i = 0; i < tries; i++) {
-    const v = await fn();
-    if (v !== null) return v;
-    await sleep(delayMs);
-  }
-  throw new Error(`timeout polling for ${label} (${tries * delayMs}ms)`);
-}
-
 async function main() {
-  const pointerPath = resolve(KEYS_DIR, "devnet-run-mb-latest.json");
+  const pointerPath = resolve(KEYS_DIR, "devnet-run-latest.json");
   const runState = JSON.parse(readFileSync(pointerPath, "utf8"));
-  console.log("loaded 06 run state:", pointerPath, "trader:", runState.owner);
+  console.log("loaded 01 run state:", pointerPath, "trader:", runState.owner);
 
   console.log("=== bootstrapDevnet (idempotent) ===");
   const boot = await bootstrapDevnet();
   const feePayer = loadOrCreateKey("devnet-fee-payer");
-  const coreBaseAdmin = dexxerCoreProgram(baseConn, boot.admin);
 
   const owner = loadOrCreateKey(runState.traderName);
-  const market = pdas.market();
   const userAccount = pdas.userAccount(owner.publicKey);
-  const position = pdas.position(owner.publicKey, market);
-  const disclosureQueue = pdas.disclosureQueue(owner.publicKey);
+  const positions = pdas.positions(owner.publicKey);
   const userAta = getAssociatedTokenAddressSync(boot.mint, owner.publicKey);
-  console.log("owner:", owner.publicKey.toBase58(), "position:", position.toBase58(), "dq:", disclosureQueue.toBase58());
+  console.log("owner:", owner.publicKey.toBase58(), "positions:", positions.toBase58());
 
   const ownerConn = await teeConn(owner);
   const coreOwnerEr = dexxerCoreProgram(ownerConn, owner);
@@ -121,73 +80,20 @@ async function main() {
 
   const sigs: Record<string, string> = {};
 
-  async function commitAggregate(remainingKey: InstanceType<typeof PublicKey> | null): Promise<string> {
-    const ix = await feePayerCore.methods
-      .commitAggregate(4)
-      .accounts({
-        config: pdas.config(), payer: feePayer.publicKey, pool: boot.pool, poolLive: boot.poolLive, balancesRoot: boot.balancesRoot,
-        feeEscrow: boot.feeEscrow, magicFeeVault: cfg.magicFeeVault, magicContext: MAGIC_CONTEXT_ID, magicProgram: MAGIC_PROGRAM_ID,
-      })
-      .remainingAccounts(remainingKey ? [{ pubkey: remainingKey, isWritable: true, isSigner: false }] : [])
-      .instruction();
-    return sendAndConfirmIx(feePayerConn, feePayer, ix);
-  }
-
-  // `ClosedRecord.reveal_after_slot` is an ER slot, and the ER's slot counter
-  // is unrelated to the base layer's (week-5 Task 4: ~343.4M vs ~503.1M, and
-  // the ER advances ~80 slots/s against base's ~2.5). Polling base here — what
-  // this script did through week 4 — compared two different counters and
-  // returned instantly. Poll the ER.
-  async function waitForErSlot(target: bigint) {
-    let cur = BigInt(await ownerConn.getSlot("confirmed"));
-    while (cur < target) {
-      await sleep(1000);
-      cur = BigInt(await ownerConn.getSlot("confirmed"));
-    }
-  }
-
-  // === Step 1: drain whatever 06 left in the ring (week-5 Task 1: the record
-  // of 06's second close is queued and uncommitted). Past the record's
-  // `reveal_after_slot`, ONE `commit_aggregate` emits both `write_commitment`
-  // and `write_disclosure` and pops it. If the ring is already empty (a
-  // re-run), skip.
-  const posNow = await accountNs(coreOwnerEr).position.fetch(position);
-  assert("empty" in posNow.state, "Position.state == Empty (close frees it immediately since week-5 Task 1)");
-  const dqBefore = await accountNs(coreOwnerEr).disclosureQueue.fetch(disclosureQueue);
-  if (dqBefore.len > 0) {
-    console.log("\n=== draining the record 06's second close left in the ring ===");
-    const rec = dqBefore.records[dqBefore.head];
-    const { args, salt } = recToArgsAndSalt(rec);
-    const hash = commitmentHash(args, salt);
-    await waitForErSlot(args.revealAfterSlot);
-    const sig = await commitAggregate(disclosureQueue);
-    console.log(`commit_aggregate(dq — commitment + disclosure in one bundle) sig=${sig}`);
-    const commitmentAcc = await pollBase(`Commitment[hash]`, async () => {
-      try {
-        return await accountNs(coreBaseAdmin).commitment.fetch(pdas.commitment(hash));
-      } catch {
-        return null;
-      }
-    });
-    const onChainHash = Uint8Array.from(commitmentAcc.hash as number[]);
-    const matches = Buffer.compare(Buffer.from(hash), Buffer.from(onChainHash)) === 0;
-    assert(matches, "closeout commitment hash matches (hash-seeded, no collision possible)");
-    sigs.closeoutCommit = sig;
-    await pollBase("Disclosure[hash]", async () => {
-      try {
-        return await accountNs(coreBaseAdmin).disclosure.fetch(pdas.disclosure(hash));
-      } catch {
-        return null;
-      }
-    });
-    console.log("Disclosure landed on L1 from the same bundle");
+  // === Step 1: close the SOL position 01 left open (a re-run finds it closed).
+  // Only SOL is closed here: 01 trades nothing else, and another market's
+  // feed/risk accounts are not derivable from its key alone.
+  const trader = { name: runState.traderName, kp: owner, userAccount, positions, userAta, exitSalt: [], sigs: {}, creditDepositCU: null };
+  if (slotFor(await readPositions(ownerConn, positions), boot.market)) {
+    console.log("\n=== close_position (SOL slot 01 left open) ===");
+    sigs.closePosition = await closePosition(boot, trader, 0);
+    console.log("close_position", sigs.closePosition);
     await sleep(3000);
   } else {
-    console.log("DisclosureQueue already empty (re-run) — skipping closeout");
+    console.log("SOL slot already closed (re-run) — skipping close");
   }
-
-  const dqNow = await accountNs(coreOwnerEr).disclosureQueue.fetch(disclosureQueue);
-  assert(dqNow.len === 0, `DisclosureQueue.len == 0 before undelegate_user (got ${dqNow.len})`);
+  const positionsBefore = await readPositions(ownerConn, positions);
+  assert(positionsBefore.slots.length === 0, `no open slot before undelegate_user (got ${positionsBefore.slots.length})`);
 
   // === Step 2: withdraw(all) ===
   const uaBefore = await accountNs(coreOwnerEr).userAccount.fetch(userAccount);
@@ -213,55 +119,40 @@ async function main() {
   assert(freeMarginAfter === 0n && lockedMarginAfter === 0n, "free_margin == 0 && locked_margin == 0 before undelegate_user");
 
   // === Step 3: undelegate_user (owner-TEE) ===
+  // Every market in the history ring plus SOL, deduplicated, read-only, ≤16:
+  // the program cancels each market's liquidation task for this trader.
   console.log("\n=== undelegate_user (owner-TEE) ===");
-  const userPermission = permissionPdaFromAccount(userAccount);
-  const positionPermission = permissionPdaFromAccount(position);
-  const dqPermission = permissionPdaFromAccount(disclosureQueue);
+  const marketKeys = [boot.market, ...positionsBefore.history.map((h) => h.market)];
+  const markets = marketKeys.filter((m, i) => marketKeys.findIndex((k) => k.equals(m)) === i).slice(0, MAX_SLOTS);
+  console.log("markets passed for task cancel:", markets.map((m) => m.toBase58()));
   const undelegateIx = await coreOwnerEr.methods
     .undelegateUser()
-    .accounts({
-      owner: owner.publicKey,
-      config: pdas.config(),
-      userAccount,
-      position,
-      dq: disclosureQueue,
-      userPermission,
-      positionPermission,
-      dqPermission,
-      ephemeralVault: EPHEMERAL_VAULT_ID,
-      permissionProgram: PERMISSION_PROGRAM_ID,
-      feeEscrow: boot.feeEscrow,
-      magicFeeVault: cfg.magicFeeVault,
-      magicContext: MAGIC_CONTEXT_ID,
-      magicProgram: MAGIC_PROGRAM_ID,
-    })
+    .accounts(undelegateUserAccounts(owner.publicKey, cfg.magicFeeVault))
+    .remainingAccounts(markets.map((pubkey) => ({ pubkey, isWritable: false, isSigner: false })))
     .instruction();
   const t0 = Date.now();
   sigs.undelegateUser = await sendAndConfirmIx(ownerConn, owner, undelegateIx);
   console.log("undelegate_user (ER)", sigs.undelegateUser);
 
   // === Step 4: poll base <=180s for owner flip + scrub verification ===
-  console.log("\n=== polling base (<=180s) for UserAccount/Position/DisclosureQueue owner == dexxer_core, scrubbed bytes ===");
+  console.log("\n=== polling base (<=180s) for UserAccount/Positions owner == dexxer_core, scrubbed bytes ===");
   let landed = false;
   let finalUserAccount: any = null;
-  let finalPosition: any = null;
-  let finalDq: any = null;
+  let finalPositionsData: Buffer | null = null;
   const deadline = Date.now() + UNDELEGATE_POLL_MS;
   while (Date.now() < deadline) {
-    const [uaInfo, posInfo, dqInfo] = await Promise.all([
+    const [uaInfo, posInfo] = await Promise.all([
       baseConn.getAccountInfo(userAccount, "confirmed"),
-      baseConn.getAccountInfo(position, "confirmed"),
-      baseConn.getAccountInfo(disclosureQueue, "confirmed"),
+      baseConn.getAccountInfo(positions, "confirmed"),
     ]);
     const ownersOk =
       !!uaInfo && uaInfo.owner.equals(DEXXER_CORE_PROGRAM_ID) &&
-      !!posInfo && posInfo.owner.equals(DEXXER_CORE_PROGRAM_ID) &&
-      !!dqInfo && dqInfo.owner.equals(DEXXER_CORE_PROGRAM_ID);
+      !!posInfo && posInfo.owner.equals(DEXXER_CORE_PROGRAM_ID);
     if (ownersOk) {
       const coreBaseOwner = dexxerCoreProgram(baseConn, owner);
       finalUserAccount = coreBaseOwner.coder.accounts.decode("userAccount", uaInfo!.data);
-      finalPosition = coreBaseOwner.coder.accounts.decode("position", posInfo!.data);
-      finalDq = coreBaseOwner.coder.accounts.decode("disclosureQueue", dqInfo!.data);
+      // `Positions` is zero-copy: raw bytes, never the Borsh coder.
+      finalPositionsData = posInfo!.data;
       landed = true;
       break;
     }
@@ -272,14 +163,12 @@ async function main() {
 
   if (!landed) {
     console.log("08-UNDELEGATE: DID NOT LAND within 180s. Recording signatures and current base state for the report.");
-    const [uaInfo, posInfo, dqInfo] = await Promise.all([
+    const [uaInfo, posInfo] = await Promise.all([
       baseConn.getAccountInfo(userAccount, "confirmed"),
-      baseConn.getAccountInfo(position, "confirmed"),
-      baseConn.getAccountInfo(disclosureQueue, "confirmed"),
+      baseConn.getAccountInfo(positions, "confirmed"),
     ]);
     console.log("UserAccount owner:", uaInfo?.owner.toBase58() ?? "null");
-    console.log("Position owner:", posInfo?.owner.toBase58() ?? "null");
-    console.log("DisclosureQueue owner:", dqInfo?.owner.toBase58() ?? "null");
+    console.log("Positions owner:", posInfo?.owner.toBase58() ?? "null");
     console.log("sigs:", JSON.stringify(sigs, null, 2));
     // Round 2 (fix round 2 requirement): if undelegate_user still fails,
     // capture the ER-side transaction directly (json + jsonParsed) plus
@@ -321,8 +210,9 @@ async function main() {
   const exitSaltBytes = Uint8Array.from(finalUserAccount.exitSalt as number[]);
   assert(exitSaltBytes.every((b: number) => b === 0), "UserAccount.exit_salt == 0");
   assert(BigInt(finalUserAccount.lastWithdrawSlot.toString()) === 0n, "UserAccount.last_withdraw_slot == 0");
-  assert(finalDq.len === 0, "DisclosureQueue.len == 0 (base, post-undelegate)");
-  assert("empty" in finalPosition.state, "Position.state == Empty (base, post-undelegate)");
+  // Slots (16 x 96) and history ring (16 x 96) start right after disc(8) + owner(32).
+  const body = finalPositionsData!.subarray(40, 40 + 3072);
+  assert(body.length === 3072 && body.every((b) => b === 0), "Positions slots + history bytes [40, 3112) are all zero (base, post-undelegate)");
 
   console.log("\nM-A confirmed on dexxer_core", {
     owner: owner.publicKey.toBase58(),

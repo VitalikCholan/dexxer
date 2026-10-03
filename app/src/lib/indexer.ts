@@ -14,7 +14,7 @@
 //
 // One shared WS connection (module-level singleton, RN's global
 // `WebSocket` — not the `ws` package the relayer itself uses) patches the
-// matching query-cache entries on `mark`/`pool`/`disclosure` frames, so a
+// matching query-cache entries on `mark`/`pool` frames, so a
 // screen using these hooks gets push updates between REST refetches without
 // opening its own socket. Reconnects with exponential backoff (1s, 2s, 4s,
 // ... capped at `MAX_BACKOFF_MS`); `useIndexerConnected()` exposes the
@@ -22,9 +22,18 @@
 import { useEffect, useState } from 'react'
 import { useQuery, useQueryClient, type QueryClient, type UseQueryResult } from '@tanstack/react-query'
 import { RELAYER_URL } from './solana'
-import { IndexerShapeError, parseCandles, parseDisclosure, parseMark, parsePoolSnapshot, parseRootLatest, parseWsFrame } from './indexerCodec'
+import type { Tf } from '@/src/features/chart/timeframes'
+import {
+  IndexerShapeError,
+  parseCandles,
+  parseMark,
+  parsePoolSnapshot,
+  parseRootLatest,
+  parseWsFrame,
+} from './indexerCodec'
 
-const WS_URL = `${RELAYER_URL.replace(/^http/, 'ws')}/ws`
+/** One socket for every market (`?markets=*`; without it the relayer sends SOL only) — each `mark` frame names its `market`. */
+export const WS_URL = `${RELAYER_URL.replace(/^http/, 'ws')}/ws?markets=*`
 
 /** `GET /prices` candle — o/h/l/c are plain numbers (relayer convention). */
 export interface Candle {
@@ -47,6 +56,8 @@ export interface Mark {
   slot: number | null
   ts: number | null
   stale: boolean
+  /** Market symbol (`SOL`, `BTC`, ...) the mark belongs to. */
+  market: string
 }
 export interface PoolSnapshot {
   slot: number
@@ -58,54 +69,46 @@ export interface PoolSnapshot {
   insurance: bigint
   badDebtTotal: bigint
 }
-export interface Disclosure {
-  pubkey: string
-  side: string
-  size: bigint
-  entry: bigint
-  exit: bigint
-  pnl: bigint
-  fees: bigint
-  reason: string
-  openedSlot: bigint
-  closedSlot: bigint
-  nonce: bigint
-  ts: number
-}
 
 /** Fetch + validate: `parse` is one of `indexerCodec.ts`'s parsers, so a shape mismatch throws `IndexerShapeError` here (surfacing as the query's `error`), never later. */
-async function getJson<T>(path: string, parse: (body: unknown) => T): Promise<T> {
+export async function getJson<T>(path: string, parse: (body: unknown) => T): Promise<T> {
   const res = await fetch(`${RELAYER_URL}${path}`)
   if (!res.ok) throw new Error(`${path}: HTTP ${res.status}`)
   return parse(await res.json())
 }
 
 export const QK = {
-  mark: ['indexer', 'mark'] as const,
-  candles: (tf: string) => ['indexer', 'candles', tf] as const,
+  mark: (symbol: string) => ['indexer', 'mark', symbol] as const,
+  /** `limit` is part of the key: the header stats' 96×15m and the chart's 300×15m are different queries. */
+  candles: (symbol: string, tf: string, limit: number) => ['indexer', 'candles', symbol, tf, limit] as const,
   poolHistory: ['indexer', 'poolHistory'] as const,
-  disclosures: ['indexer', 'disclosures'] as const,
   rootLatest: ['indexer', 'rootLatest'] as const,
 }
 
-/** Latest oracle mark, `bigint`-converted. REST refetches every 5s; the WS `mark` frame patches the cache in between (see `useIndexerWs` below). */
-export function useMark(): UseQueryResult<Mark> {
+/** Latest oracle mark of one market, `bigint`-converted. REST refetches every 5s; the WS `mark` frame for the same market patches the cache in between (see `useIndexerWs` below). */
+export function useMark(symbol: string): UseQueryResult<Mark> {
   useIndexerWs()
   return useQuery({
-    queryKey: QK.mark,
-    queryFn: () => getJson('/mark', parseMark),
+    queryKey: QK.mark(symbol),
+    queryFn: () => getJson(`/mark?market=${encodeURIComponent(symbol)}`, parseMark),
     staleTime: 5_000,
     refetchInterval: 5_000,
   })
 }
 
-/** Candle history for one timeframe (`GET /prices?tf=&limit=`) — no bigint fields, o/h/l/c are already plain numbers (relayer's own convention, see `indexer/http.ts`). */
-export function useCandles(tf: '1m' | '5m' | '15m' = '1m', limit = 300): UseQueryResult<Candle[]> {
+/** `/prices` refetch cadence: the mark tail keeps the chart live in between, so `1s` only needs a fresh baseline a bit more often. */
+export function candlesRefetchMs(tf: Tf): number {
+  return tf === '1s' ? 15_000 : 30_000
+}
+
+/** Candle history of one market for one of the 16 timeframes (`GET /prices?tf=&limit=&market=`) — no bigint fields, o/h/l/c are already plain numbers (relayer's own convention, see `indexer/http.ts`). */
+export function useCandles(symbol: string, tf: Tf = '1m', limit = 300): UseQueryResult<Candle[]> {
   useIndexerWs()
   return useQuery({
-    queryKey: QK.candles(tf),
-    queryFn: () => getJson(`/prices?tf=${tf}&limit=${limit}`, parseCandles),
-    staleTime: 30_000,
+    queryKey: QK.candles(symbol, tf, limit),
+    queryFn: () => getJson(`/prices?tf=${tf}&limit=${limit}&market=${encodeURIComponent(symbol)}`, parseCandles),
+    staleTime: candlesRefetchMs(tf),
+    refetchInterval: candlesRefetchMs(tf),
   })
 }
 
@@ -116,16 +119,6 @@ export function usePoolHistory(limit = 100): UseQueryResult<PoolSnapshot[]> {
     queryKey: QK.poolHistory,
     queryFn: () => getJson(`/pool/history?limit=${limit}`, (b) => (Array.isArray(b) ? b.map(parsePoolSnapshot) : [])),
     staleTime: 30_000,
-  })
-}
-
-/** Revealed L1 `Disclosure` feed (`GET /disclosures?limit=`), newest-first, `bigint`-converted. Patched by the WS `disclosure` frame. Not owner-filtered — this is the public 13F feed, not "my history" (see HistoryScreen.tsx for the owner-matched view). */
-export function useDisclosures(limit = 100): UseQueryResult<Disclosure[]> {
-  useIndexerWs()
-  return useQuery({
-    queryKey: QK.disclosures,
-    queryFn: () => getJson(`/disclosures?limit=${limit}`, (b) => (Array.isArray(b) ? b.map(parseDisclosure) : [])),
-    staleTime: 15_000,
   })
 }
 
@@ -283,7 +276,8 @@ export class IndexerWs {
     }
     if (frame === null) return // a frame type this build does not know
     if (frame.type === 'mark') {
-      qc.setQueryData<Mark>(QK.mark, (prev) => ({
+      // Only the frame's own market: a BTC push must never land in SOL's cache.
+      qc.setQueryData<Mark>(QK.mark(frame.market), (prev) => ({
         price: frame.price,
         // The `mark` WS frame carries no slot (see accounts.ts's broadcast
         // call) — keep whatever the last REST fetch/poll observed rather than
@@ -291,19 +285,13 @@ export class IndexerWs {
         slot: prev?.slot ?? null,
         ts: frame.ts,
         stale: frame.stale,
+        market: frame.market,
       }))
     } else if (frame.type === 'pool') {
       const { type: _t, ...next } = frame
       qc.setQueryData<PoolSnapshot[]>(QK.poolHistory, (prev) =>
         [...(prev ?? []).filter((p) => p.slot !== next.slot), next].slice(-POOL_HISTORY_MAX),
       )
-    } else if (frame.type === 'disclosure') {
-      const { type: _t, ...next } = frame
-      qc.setQueryData<Disclosure[]>(QK.disclosures, (prev) => {
-        const list = prev ?? []
-        if (list.some((d) => d.pubkey === next.pubkey)) return list
-        return [next, ...list]
-      })
     }
   }
 }
