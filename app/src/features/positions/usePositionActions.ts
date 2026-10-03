@@ -12,13 +12,16 @@ import * as math from '@/src/lib/math'
 import { type DecodedMarket } from '@/src/lib/codecs'
 import {
   addMargin,
+  cancelOrder,
   closePosition,
   decreasePosition,
   increasePosition,
+  placeOrder,
   solSize,
   tradeAccountsFor,
   usdAmount,
   type BaseTradeAccounts,
+  type OrderParams,
 } from '@/src/lib/trade'
 import { controlTarget, isCloseStale, shouldFireClose, type PendingClose, type PositionRow } from './positionRows'
 
@@ -98,5 +101,21 @@ export function usePositionActions(
     [conn, session, accounts, run],
   )
 
-  return { requestClose, increase, decrease, addMargin: addMarginTo, busy, ready: accounts !== null }
+  const place = useCallback(
+    async (p: OrderParams) => {
+      if (!conn || !session || !accounts) return false
+      return run('Order', () => placeOrder(conn, session, accounts, p))
+    },
+    [conn, session, accounts, run],
+  )
+
+  const cancel = useCallback(
+    async (slot: number) => {
+      if (!conn || !session || !accounts) return false
+      return run('Cancel', () => cancelOrder(conn, session, accounts, slot))
+    },
+    [conn, session, accounts, run],
+  )
+
+  return { requestClose, increase, decrease, addMargin: addMarginTo, place, cancel, busy, ready: accounts !== null }
 }

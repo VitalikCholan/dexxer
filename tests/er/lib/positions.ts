@@ -15,7 +15,9 @@ const RECORD = 96;
 const SLOTS_AT = DISC + 32;
 const HISTORY_AT = DISC + 1568;
 const HEAD_AT = DISC + 3104;
-export const POSITIONS_SIZE = DISC + 3176;
+// 3176 B of slots + history, then the 8 conditional-order slots (88 B each,
+// state/order.rs) appended at the end.
+export const POSITIONS_SIZE = DISC + 3176 + 704;
 
 export interface PositionSlot {
   index: number;

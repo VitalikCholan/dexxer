@@ -13,10 +13,12 @@ import { pdas } from '../src/lib/pdas'
 import { POSITIONS_DISC, POSITIONS_SIZE } from '../src/lib/positions'
 import {
   addMargin,
+  cancelOrder,
   closePosition,
   decreasePosition,
   increasePosition,
   openPosition,
+  placeOrder,
   tradeAccountsFor,
   U64_MAX,
   type TradeAccounts,
@@ -182,4 +184,47 @@ test('addMargin encodes the bigint amount exactly', async () => {
   const ix = lastIx(sent)
   assert.equal(ix.name, 'add_margin')
   assert.equal(ix.args.amount, 12_345_678n)
+})
+
+test('placeOrder encodes an entry order with attached TP/SL, on the same 12 accounts as every trade ix', async () => {
+  const { conn, sent } = fakeConn()
+  await placeOrder(conn as never, Keypair.generate(), accounts, {
+    kind: 'Limit',
+    side: 'short',
+    size: 1_250_000_000n,
+    margin: 25_000_000n,
+    trigger: 152_500_000n,
+    tp: 140_000_000n,
+    sl: 160_000_000n,
+  })
+  const ix = lastIx(sent)
+  assert.equal(ix.name, 'place_order')
+  assert.deepEqual(ix.args.kind, { Limit: {} })
+  assert.deepEqual(ix.args.side, { Short: {} })
+  assert.equal(ix.args.size, 1_250_000_000n)
+  assert.equal(ix.args.margin, 25_000_000n)
+  assert.equal(ix.args.trigger, 152_500_000n)
+  assert.equal(ix.args.trail_bps, 0)
+  assert.equal(ix.args.tp, 140_000_000n)
+  assert.equal(ix.args.sl, 160_000_000n)
+  const tx = Transaction.from(sent[sent.length - 1])
+  assert.equal(tx.instructions[0].keys.length, 12)
+  assert.ok(tx.instructions[0].keys[2].pubkey.equals(btc), 'the order is for the market in `accounts`')
+})
+
+test('placeOrder encodes a trailing stop by distance, not price', async () => {
+  const { conn, sent } = fakeConn()
+  await placeOrder(conn as never, Keypair.generate(), accounts, { kind: 'TrailingStop', trailBps: 300 })
+  const ix = lastIx(sent)
+  assert.deepEqual(ix.args.kind, { TrailingStop: {} })
+  assert.equal(ix.args.trail_bps, 300)
+  assert.equal(ix.args.trigger, 0n)
+})
+
+test('cancelOrder encodes the slot', async () => {
+  const { conn, sent } = fakeConn()
+  await cancelOrder(conn as never, Keypair.generate(), accounts, 2)
+  const ix = lastIx(sent)
+  assert.equal(ix.name, 'cancel_order')
+  assert.equal(ix.args.slot, 2)
 })

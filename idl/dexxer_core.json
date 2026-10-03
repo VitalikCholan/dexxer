@@ -270,6 +270,215 @@
       ]
     },
     {
+      "name": "cancel_order",
+      "discriminator": [
+        95,
+        129,
+        237,
+        240,
+        8,
+        49,
+        223,
+        132
+      ],
+      "accounts": [
+        {
+          "name": "signer",
+          "signer": true
+        },
+        {
+          "name": "config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "market",
+          "writable": true,
+          "relations": [
+            "market_risk"
+          ]
+        },
+        {
+          "name": "market_risk",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  114,
+                  105,
+                  115,
+                  107
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "market"
+              }
+            ]
+          }
+        },
+        {
+          "name": "pool_live",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  111,
+                  111,
+                  108,
+                  95,
+                  108,
+                  105,
+                  118,
+                  101
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "pool_live.mint",
+                "account": "PoolLive"
+              }
+            ]
+          }
+        },
+        {
+          "name": "user_account",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  117,
+                  115,
+                  101,
+                  114
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "user_account.owner",
+                "account": "UserAccount"
+              }
+            ]
+          }
+        },
+        {
+          "name": "positions",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  111,
+                  115,
+                  105,
+                  116,
+                  105,
+                  111,
+                  110,
+                  115
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "user_account.owner",
+                "account": "UserAccount"
+              }
+            ]
+          }
+        },
+        {
+          "name": "feed"
+        },
+        {
+          "name": "fee_escrow",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  102,
+                  101,
+                  101,
+                  95,
+                  101,
+                  115,
+                  99,
+                  114,
+                  111,
+                  119
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "task_context",
+          "docs": [
+            "task (week-5 Task 3), passed to `ScheduleTask`/`CancelTask` as account",
+            "index 1. No on-chain derivation for it exists in `ephemeral-rollups-sdk`",
+            "0.16.2 and the Magic Program treats it as an inert writable placeholder:",
+            "any already-existing writable account is accepted and left byte-identical",
+            "(week-5 Task 0, measurement 6).",
+            "",
+            "PINNED TO `positions` anyway (fix round 1, M-1). \"Any writable account\"",
+            "plus `mut` would let a caller name ANOTHER trader's delegated account",
+            "here, write-locking it for the duration of the transaction — a free",
+            "contention/DoS handle on someone else's position, which the placeholder's",
+            "inertness does nothing to prevent. Pinning it costs nothing (every client",
+            "already passes the `Positions` PDA) and additionally guarantees that the",
+            "registration and the later cancel name the same account. Anchor permits",
+            "the duplicate key because neither field is `init`."
+          ],
+          "writable": true
+        },
+        {
+          "name": "magic_program",
+          "address": "Magic11111111111111111111111111111111111111"
+        },
+        {
+          "name": "liq_crank_signer",
+          "docs": [
+            "`liquidation_check` ticks — `crank_signer_pda(fee_escrow)`, since the",
+            "`FeeEscrow` PDA is the `ScheduleTask` CPI payer and therefore the task",
+            "authority (week-5 Task 0). Deliberately NOT `Config.scheduler_signer`,",
+            "which is `crank_signer_pda(admin)` and belongs to the market-wide",
+            "`schedule_crank` task. Verified against the derivation in",
+            "`open_position` on the scheduling path only, so the ~1.5k CU",
+            "`find_program_address` is not charged to every trade."
+          ]
+        }
+      ],
+      "args": [
+        {
+          "name": "slot",
+          "type": "u8"
+        }
+      ]
+    },
+    {
       "name": "close_exited_user",
       "discriminator": [
         85,
@@ -4965,6 +5174,254 @@
       "args": []
     },
     {
+      "name": "place_order",
+      "docs": [
+        "Conditional orders (Limit / Stop / TP / SL / Trailing). See `state/order.rs`."
+      ],
+      "discriminator": [
+        51,
+        194,
+        155,
+        175,
+        109,
+        130,
+        96,
+        106
+      ],
+      "accounts": [
+        {
+          "name": "signer",
+          "signer": true
+        },
+        {
+          "name": "config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "market",
+          "writable": true,
+          "relations": [
+            "market_risk"
+          ]
+        },
+        {
+          "name": "market_risk",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  114,
+                  105,
+                  115,
+                  107
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "market"
+              }
+            ]
+          }
+        },
+        {
+          "name": "pool_live",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  111,
+                  111,
+                  108,
+                  95,
+                  108,
+                  105,
+                  118,
+                  101
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "pool_live.mint",
+                "account": "PoolLive"
+              }
+            ]
+          }
+        },
+        {
+          "name": "user_account",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  117,
+                  115,
+                  101,
+                  114
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "user_account.owner",
+                "account": "UserAccount"
+              }
+            ]
+          }
+        },
+        {
+          "name": "positions",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  111,
+                  115,
+                  105,
+                  116,
+                  105,
+                  111,
+                  110,
+                  115
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "user_account.owner",
+                "account": "UserAccount"
+              }
+            ]
+          }
+        },
+        {
+          "name": "feed"
+        },
+        {
+          "name": "fee_escrow",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  102,
+                  101,
+                  101,
+                  95,
+                  101,
+                  115,
+                  99,
+                  114,
+                  111,
+                  119
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "task_context",
+          "docs": [
+            "task (week-5 Task 3), passed to `ScheduleTask`/`CancelTask` as account",
+            "index 1. No on-chain derivation for it exists in `ephemeral-rollups-sdk`",
+            "0.16.2 and the Magic Program treats it as an inert writable placeholder:",
+            "any already-existing writable account is accepted and left byte-identical",
+            "(week-5 Task 0, measurement 6).",
+            "",
+            "PINNED TO `positions` anyway (fix round 1, M-1). \"Any writable account\"",
+            "plus `mut` would let a caller name ANOTHER trader's delegated account",
+            "here, write-locking it for the duration of the transaction — a free",
+            "contention/DoS handle on someone else's position, which the placeholder's",
+            "inertness does nothing to prevent. Pinning it costs nothing (every client",
+            "already passes the `Positions` PDA) and additionally guarantees that the",
+            "registration and the later cancel name the same account. Anchor permits",
+            "the duplicate key because neither field is `init`."
+          ],
+          "writable": true
+        },
+        {
+          "name": "magic_program",
+          "address": "Magic11111111111111111111111111111111111111"
+        },
+        {
+          "name": "liq_crank_signer",
+          "docs": [
+            "`liquidation_check` ticks — `crank_signer_pda(fee_escrow)`, since the",
+            "`FeeEscrow` PDA is the `ScheduleTask` CPI payer and therefore the task",
+            "authority (week-5 Task 0). Deliberately NOT `Config.scheduler_signer`,",
+            "which is `crank_signer_pda(admin)` and belongs to the market-wide",
+            "`schedule_crank` task. Verified against the derivation in",
+            "`open_position` on the scheduling path only, so the ~1.5k CU",
+            "`find_program_address` is not charged to every trade."
+          ]
+        }
+      ],
+      "args": [
+        {
+          "name": "kind",
+          "type": {
+            "defined": {
+              "name": "OrderKind"
+            }
+          }
+        },
+        {
+          "name": "side",
+          "type": {
+            "defined": {
+              "name": "Side"
+            }
+          }
+        },
+        {
+          "name": "size",
+          "type": "u64"
+        },
+        {
+          "name": "margin",
+          "type": "u64"
+        },
+        {
+          "name": "trigger",
+          "type": "u64"
+        },
+        {
+          "name": "trail_bps",
+          "type": "u16"
+        },
+        {
+          "name": "tp",
+          "type": "u64"
+        },
+        {
+          "name": "sl",
+          "type": "u64"
+        }
+      ]
+    },
+    {
       "name": "process_undelegation",
       "discriminator": [
         196,
@@ -6596,6 +7053,21 @@
       "code": 6050,
       "name": "PositionLiquidatable",
       "msg": "Position is liquidatable at the current mark"
+    },
+    {
+      "code": 6051,
+      "name": "OrderBookFull",
+      "msg": "all order slots are in use"
+    },
+    {
+      "code": 6052,
+      "name": "InvalidOrder",
+      "msg": "invalid order parameters"
+    },
+    {
+      "code": 6053,
+      "name": "OrderNotFound",
+      "msg": "order slot is empty"
     }
   ],
   "types": [
@@ -7105,6 +7577,123 @@
       }
     },
     {
+      "name": "OrderKind",
+      "type": {
+        "kind": "enum",
+        "variants": [
+          {
+            "name": "None"
+          },
+          {
+            "name": "Limit"
+          },
+          {
+            "name": "Stop"
+          },
+          {
+            "name": "TakeProfit"
+          },
+          {
+            "name": "StopLoss"
+          },
+          {
+            "name": "TrailingStop"
+          }
+        ]
+      }
+    },
+    {
+      "name": "OrderSlot",
+      "docs": [
+        "One order slot. `zero_copy` like the rest of `Positions` (an all-zero slot",
+        "is an empty one: `kind == 0`)."
+      ],
+      "serialization": "bytemuck",
+      "repr": {
+        "kind": "c"
+      },
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "market",
+            "docs": [
+              "The market this order trades. Part of the data, not the address."
+            ],
+            "type": "pubkey"
+          },
+          {
+            "name": "trigger",
+            "docs": [
+              "Trigger price (mark units). Unused (0) for `TrailingStop`."
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "size",
+            "docs": [
+              "Entry orders only."
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "margin",
+            "type": "u64"
+          },
+          {
+            "name": "extreme",
+            "docs": [
+              "`TrailingStop` only: best mark seen since placement (highest for a",
+              "long, lowest for a short)."
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "tp",
+            "docs": [
+              "Entry orders only: take-profit / stop-loss to attach on fill (0 = none)."
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "sl",
+            "type": "u64"
+          },
+          {
+            "name": "kind",
+            "docs": [
+              "`OrderKind::as_u8`."
+            ],
+            "type": "u8"
+          },
+          {
+            "name": "side",
+            "docs": [
+              "Entry orders: the side to open. Reduce-only orders: the side of the",
+              "position they protect (copied from it at placement). `Side::as_u8`."
+            ],
+            "type": "u8"
+          },
+          {
+            "name": "trail_bps",
+            "docs": [
+              "`TrailingStop` only: distance from `extreme`, in bps."
+            ],
+            "type": "u16"
+          },
+          {
+            "name": "_pad",
+            "type": {
+              "array": [
+                "u8",
+                4
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
       "name": "Pool",
       "type": {
         "kind": "struct",
@@ -7351,6 +7940,24 @@
               "array": [
                 "u8",
                 64
+              ]
+            }
+          },
+          {
+            "name": "orders",
+            "docs": [
+              "Conditional orders of every market (`state/order.rs`). Appended after",
+              "`_reserved`, so every earlier offset is unchanged; an account created",
+              "before this field is shorter and must be re-onboarded."
+            ],
+            "type": {
+              "array": [
+                {
+                  "defined": {
+                    "name": "OrderSlot"
+                  }
+                },
+                8
               ]
             }
           }

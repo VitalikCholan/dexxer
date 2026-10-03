@@ -28,15 +28,22 @@ import { decodeUserAccount, readMarket, type SideName } from '@/src/lib/codecs'
 import { describeTxError } from '@/src/lib/errors'
 import { useSelectedMarket } from '@/src/lib/markets'
 import { pdas } from '@/src/lib/pdas'
-import { decodePositions } from '@/src/lib/positions'
-import { decreasePosition, openPosition, tradeAccountsFor } from '@/src/lib/trade'
+import { decodePositions, ordersFor } from '@/src/lib/positions'
+import {
+  cancelOrder,
+  decreasePosition,
+  openPosition,
+  placeOrder,
+  tradeAccountsFor,
+  type OrderParams,
+} from '@/src/lib/trade'
 import * as math from '@/src/lib/math'
 import { ChartSection, type Tf } from './ChartSection'
 import { TradeActivity } from './TradeActivity'
 import { TradeHeader } from './TradeHeader'
 import { MarketInfoCard } from './MarketInfoCard'
 import { maxLeverage, rangeStats } from './headerStats'
-import { TradeTicket, type MarketParams } from './TradeTicket'
+import { TradeTicket, type Exits, type MarketParams } from './TradeTicket'
 import { decodeTicketMarket } from './marketLimits'
 import { slotGate } from './tradingRules'
 import { useTradeSession } from './useTradeSession'
@@ -125,7 +132,7 @@ export function TradeScreen() {
     : null
 
   const handleOpen = useCallback(
-    async (side: SideName, size: bigint, margin: bigint, limitPrice: bigint) => {
+    async (side: SideName, size: bigint, margin: bigint, limitPrice: bigint, exits: Exits) => {
       if (!conn || !session || !accounts) return
       if (openBlocked) {
         showToast({ tone: 'danger', text: openBlocked })
@@ -137,6 +144,19 @@ export function TradeScreen() {
         if (!mkt || mkt.mark === 0n) throw new Error('Market has no mark price yet')
         await openPosition(conn, session, accounts, side === 'Long' ? 'long' : 'short', size, margin, limitPrice)
         showToast({ tone: 'success', text: `Opened ${side} ${Number(size) / 1_000_000_000} ${symbol}` })
+        // TP/SL ride along as separate session-signed orders right after the
+        // open lands. A failure here must not look like a failed open.
+        for (const [kind, trigger] of [
+          ['TakeProfit', exits.tp],
+          ['StopLoss', exits.sl],
+        ] as const) {
+          if (trigger === 0n) continue
+          try {
+            await placeOrder(conn, session, accounts, { kind, trigger })
+          } catch (e) {
+            showToast({ tone: 'danger', text: `Position opened, but ${kind} was not set: ${describeTxError(e)}` })
+          }
+        }
       } catch (e) {
         showToast({ tone: 'danger', text: describeTxError(e) })
       } finally {
@@ -144,6 +164,38 @@ export function TradeScreen() {
       }
     },
     [conn, session, accounts, openBlocked, symbol],
+  )
+
+  const handlePlace = useCallback(
+    async (p: OrderParams) => {
+      if (!conn || !session || !accounts) return
+      setBusy(true)
+      try {
+        await placeOrder(conn, session, accounts, p)
+        showToast({ tone: 'success', text: `${p.kind} order placed` })
+      } catch (e) {
+        showToast({ tone: 'danger', text: describeTxError(e) })
+      } finally {
+        setBusy(false)
+      }
+    },
+    [conn, session, accounts],
+  )
+
+  const handleCancel = useCallback(
+    async (slot: number) => {
+      if (!conn || !session || !accounts) return
+      setBusy(true)
+      try {
+        await cancelOrder(conn, session, accounts, slot)
+        showToast({ tone: 'success', text: 'Order cancelled' })
+      } catch (e) {
+        showToast({ tone: 'danger', text: describeTxError(e) })
+      } finally {
+        setBusy(false)
+      }
+    },
+    [conn, session, accounts],
   )
 
   const handleClose = useCallback(
@@ -239,11 +291,19 @@ export function TradeScreen() {
             busy={busy}
             disabled={tradingPaused || sessionExpired || sessionUsedUp || !session}
             onOpen={handleOpen}
+            onPlace={handlePlace}
             onClose={handleClose}
           />
         )}
 
-        <TradeActivity symbol={symbol} position={position} markUsd={markUsd} />
+        <TradeActivity
+          symbol={symbol}
+          position={position}
+          markUsd={markUsd}
+          orders={ordersFor(positionsLive.value, marketPda)}
+          busy={busy}
+          onCancel={(slot) => void handleCancel(slot)}
+        />
 
         <MarketInfoCard symbol={symbol} market={market} />
       </ScrollView>

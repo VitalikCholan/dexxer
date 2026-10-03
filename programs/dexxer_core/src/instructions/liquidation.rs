@@ -21,8 +21,8 @@
 //!     apart.
 use crate::{
     errors::DexxerError,
-    instructions::trade::finalize_close,
-    oracle::{check_deviation, read_price},
+    instructions::trade::{finalize_close, open_core},
+    oracle::{check_deviation, check_open_quality, read_price, OraclePrice},
     risk,
     state::*,
 };
@@ -200,9 +200,15 @@ pub fn liquidation_check(mut ctx: Context<LiquidationCheck>) -> Result<()> {
     // позиції»"). The borrow is scoped: nothing below issues a CPI, but the
     // write happens in its own `load_mut` further down.
     let market_key = a.market.key();
-    let Some(idx) = a.positions.load()?.find_open(&market_key) else {
-        return Ok(());
+    // With conditional orders pending the task has work to do on a market with
+    // no open slot too: its entry orders.
+    let (open_idx, has_orders) = {
+        let p = a.positions.load()?;
+        (p.find_open(&market_key), p.has_orders_on(&market_key))
     };
+    if open_idx.is_none() && !has_orders {
+        return Ok(());
+    }
 
     // Freshness gate. Two independent ways the mark can be untrustworthy:
     // the oracle itself is stale/too wide (spec §3.5 — skip, never liquidate
@@ -229,20 +235,170 @@ pub fn liquidation_check(mut ctx: Context<LiquidationCheck>) -> Result<()> {
 
     let fee_bps = a.market.liq_fee_bps as u32;
     let mut positions = a.positions.load_mut()?;
-    if liq_due(&mut positions.slots[idx], &a.market, mark)? {
-        liquidate_now(
+    if let Some(idx) = open_idx {
+        if liq_due(&mut positions.slots[idx], &a.market, mark)? {
+            liquidate_now(
+                market_key,
+                &mut a.market_risk,
+                &mut a.pool_live,
+                &mut a.user_account,
+                &mut positions,
+                idx,
+                mark,
+                fee_bps,
+                &clock,
+            )?;
+        }
+    }
+    // Liquidation always goes first: a position that is liquidatable this tick
+    // must not be rescued by a stop that happens to share the tick.
+    if has_orders {
+        run_orders(
+            a.config.paused,
+            &a.market,
             market_key,
             &mut a.market_risk,
             &mut a.pool_live,
             &mut a.user_account,
             &mut positions,
-            idx,
+            &px,
             mark,
-            fee_bps,
             &clock,
         )?;
     }
     Ok(())
+}
+
+/// Execute this market's triggered conditional orders against `mark`.
+///
+/// Runs on every scheduled tick after the liquidation check, and never fails
+/// the tick on a bad order: one that can no longer be filled (no margin, risk
+/// limit hit) is dropped rather than retried forever, and transient conditions
+/// (paused, poor oracle quality) leave the order in place.
+#[allow(clippy::too_many_arguments)]
+fn run_orders(
+    paused: bool,
+    market: &Market,
+    market_key: Pubkey,
+    risk_acc: &mut MarketRisk,
+    pool: &mut PoolLive,
+    user: &mut UserAccount,
+    positions: &mut Positions,
+    px: &OraclePrice,
+    mark: u64,
+    clock: &Clock,
+) -> Result<()> {
+    if let Some(idx) = positions.find_open(&market_key) {
+        let side = positions.slots[idx].side();
+        // Trailing orders chase the best price first, so a single tick that
+        // both makes a new high and reverses uses the new high.
+        let mut hit = false;
+        for o in positions.orders.iter_mut() {
+            if o.market != market_key || !o.kind().is_reduce_only() {
+                continue;
+            }
+            let trigger = if o.kind() == OrderKind::TrailingStop {
+                o.extreme = trail_extreme(side, o.extreme, mark);
+                match trailing_stop_price(side, o.extreme, o.trail_bps) {
+                    Ok(t) => t,
+                    Err(_) => continue,
+                }
+            } else {
+                o.trigger
+            };
+            if is_triggered(o.kind(), side, trigger, mark) {
+                hit = true;
+            }
+        }
+        if !hit {
+            return Ok(());
+        }
+        // Reported as a user close on purpose: nothing about this exit says it
+        // was a resting order.
+        finalize_close(
+            market_key,
+            risk_acc,
+            pool,
+            user,
+            positions,
+            idx,
+            mark,
+            market.close_fee_bps as u32,
+            CloseReason::User,
+            clock,
+        )?;
+        msg!("orders: closed");
+        return Ok(());
+    }
+    // No open position: entry orders.
+    if paused || market.paused_open || check_open_quality(px, market).is_err() {
+        return Ok(());
+    }
+    for i in 0..ORDER_SLOTS {
+        let o = positions.orders[i];
+        if o.market != market_key
+            || !o.kind().is_entry()
+            || !is_triggered(o.kind(), o.side(), o.trigger, mark)
+        {
+            continue;
+        }
+        let opened = open_core(
+            market,
+            market_key,
+            risk_acc,
+            pool,
+            user,
+            positions,
+            o.side(),
+            o.size,
+            o.margin,
+            mark,
+            clock.slot,
+        );
+        match opened {
+            Ok(()) => {
+                // One position per market: the sibling entries are moot.
+                positions.clear_entry_orders(&market_key);
+                attach_exits(positions, &o);
+                msg!("orders: opened");
+                return Ok(());
+            }
+            Err(_) => {
+                positions.orders[i] = bytemuck::Zeroable::zeroed();
+                msg!("orders: dropped slot {}", i);
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Turn an entry order's `tp`/`sl` into live reduce-only orders on the
+/// position it just opened (a free slot is needed; without one the exit is
+/// simply not attached).
+fn attach_exits(positions: &mut Positions, entry: &OrderSlot) {
+    for (kind, trigger) in [
+        (OrderKind::TakeProfit, entry.tp),
+        (OrderKind::StopLoss, entry.sl),
+    ] {
+        if trigger == 0 {
+            continue;
+        }
+        if let Some(i) = positions.free_order_slot() {
+            positions.orders[i] = OrderSlot {
+                market: entry.market,
+                trigger,
+                size: 0,
+                margin: 0,
+                extreme: 0,
+                tp: 0,
+                sl: 0,
+                kind: kind.as_u8(),
+                side: entry.side,
+                trail_bps: 0,
+                _pad: [0; 4],
+            };
+        }
+    }
 }
 
 // ------------------------------------------------------------ task lifecycle

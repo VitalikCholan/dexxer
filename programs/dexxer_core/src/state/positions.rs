@@ -13,6 +13,7 @@
 use anchor_lang::prelude::*;
 
 use crate::errors::DexxerError;
+use crate::state::order::{OrderKind, OrderSlot, ORDER_SLOTS};
 
 #[derive(AnchorSerialize, AnchorDeserialize, Clone, Copy, Debug, PartialEq, Eq, InitSpace)]
 pub enum Side {
@@ -128,6 +129,10 @@ pub struct Positions {
     pub bump: u8,
     pub _pad: [u8; 4],
     pub _reserved: [u8; 64],
+    /// Conditional orders of every market (`state/order.rs`). Appended after
+    /// `_reserved`, so every earlier offset is unchanged; an account created
+    /// before this field is shorter and must be re-onboarded.
+    pub orders: [OrderSlot; ORDER_SLOTS],
 }
 
 impl Positions {
@@ -193,6 +198,49 @@ impl Positions {
     pub fn scrub_slots(&mut self) {
         self.slots = bytemuck::Zeroable::zeroed();
     }
+
+    /// Pending orders are private trading intent: nothing of them may reach L1.
+    pub fn scrub_orders(&mut self) {
+        self.orders = bytemuck::Zeroable::zeroed();
+    }
+
+    pub fn has_orders_on(&self, market: &Pubkey) -> bool {
+        self.orders
+            .iter()
+            .any(|o| !o.is_empty() && o.market == *market)
+    }
+
+    /// Index of this market's order of `kind`, if any.
+    pub fn find_order(&self, market: &Pubkey, kind: OrderKind) -> Option<usize> {
+        self.orders
+            .iter()
+            .position(|o| o.kind() == kind && o.market == *market)
+    }
+
+    pub fn free_order_slot(&self) -> Option<usize> {
+        self.orders.iter().position(|o| o.is_empty())
+    }
+
+    /// Reduce-only orders protect THIS market's position; they die with it
+    /// (called from `finalize_close`). Entry orders stay — they are about the
+    /// next one.
+    pub fn clear_reduce_only(&mut self, market: &Pubkey) {
+        for o in self.orders.iter_mut() {
+            if o.market == *market && o.kind().is_reduce_only() {
+                *o = bytemuck::Zeroable::zeroed();
+            }
+        }
+    }
+
+    /// One position per market: once an entry order on `market` fills, its
+    /// sibling entries are moot.
+    pub fn clear_entry_orders(&mut self, market: &Pubkey) {
+        for o in self.orders.iter_mut() {
+            if o.market == *market && o.kind().is_entry() {
+                *o = bytemuck::Zeroable::zeroed();
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -215,8 +263,9 @@ mod tests {
     fn layout_is_exactly_the_spec() {
         assert_eq!(core::mem::size_of::<PositionSlot>(), 96);
         assert_eq!(core::mem::size_of::<HistoryRecord>(), 96);
-        assert_eq!(core::mem::size_of::<Positions>(), 3176);
-        assert_eq!(Positions::SPACE, 3184);
+        assert_eq!(core::mem::size_of::<OrderSlot>(), 88);
+        assert_eq!(core::mem::size_of::<Positions>(), 3880);
+        assert_eq!(Positions::SPACE, 3888);
     }
 
     #[test]
@@ -372,6 +421,17 @@ mod tests {
         assert_eq!(offset_of!(Positions, history_len), 3105);
         assert_eq!(offset_of!(Positions, version), 3106);
         assert_eq!(offset_of!(Positions, bump), 3107);
+        assert_eq!(offset_of!(Positions, orders), 3176);
+        assert_eq!(offset_of!(OrderSlot, market), 0);
+        assert_eq!(offset_of!(OrderSlot, trigger), 32);
+        assert_eq!(offset_of!(OrderSlot, size), 40);
+        assert_eq!(offset_of!(OrderSlot, margin), 48);
+        assert_eq!(offset_of!(OrderSlot, extreme), 56);
+        assert_eq!(offset_of!(OrderSlot, tp), 64);
+        assert_eq!(offset_of!(OrderSlot, sl), 72);
+        assert_eq!(offset_of!(OrderSlot, kind), 80);
+        assert_eq!(offset_of!(OrderSlot, side), 81);
+        assert_eq!(offset_of!(OrderSlot, trail_bps), 82);
         assert_eq!(offset_of!(PositionSlot, market), 0);
         assert_eq!(offset_of!(PositionSlot, size), 32);
         assert_eq!(offset_of!(PositionSlot, entry), 40);

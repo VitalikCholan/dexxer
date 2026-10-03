@@ -12,12 +12,14 @@ import { Skeleton } from '@/src/ui/Skeleton'
 import { EmptyState } from '@/src/ui/EmptyState'
 import { useLiveAccount } from '@/src/lib/live'
 import { decodeMarket, decodeUserAccount } from '@/src/lib/codecs'
-import { decodePositions } from '@/src/lib/positions'
+import { decodePositions, ordersFor } from '@/src/lib/positions'
 import { useMarkets } from '@/src/lib/markets'
 import { PositionCard } from './PositionCard'
 import { IncreaseSheet } from './IncreaseSheet'
 import { DecreaseSheet } from './DecreaseSheet'
 import { AddMarginSheet } from './AddMarginSheet'
+import { OrderSheet } from './OrderSheet'
+import { OrdersCard } from './OrdersCard'
 import { displaySymbol, marketMatches, positionRows } from './positionRows'
 import { usePositionActions } from './usePositionActions'
 import { useTradeSession } from '../trade/useTradeSession'
@@ -34,7 +36,7 @@ export function PositionsScreen() {
   const rows = useMemo(() => positionRows(positionsLive.value, markets.data ?? []), [positionsLive.value, markets.data])
 
   const [activeIndex, setActiveIndex] = useState<number | null>(null)
-  const [sheet, setSheet] = useState<'increase' | 'decrease' | 'margin' | null>(null)
+  const [sheet, setSheet] = useState<'increase' | 'decrease' | 'margin' | 'order' | null>(null)
   const active = rows.find((r) => r.slot.index === activeIndex) ?? null
 
   // The active card's public `Market`, read live at the slot's own key (one subscriber; the registry is not involved).
@@ -96,6 +98,14 @@ export function PositionsScreen() {
             onDecrease={() => choose('decrease')}
             onAddMargin={() => choose('margin')}
           />
+          {isActive ? (
+            <OrdersCard
+              orders={ordersFor(positionsLive.value, r.slot.market)}
+              busy={actions.busy}
+              onAdd={() => setSheet('order')}
+              onCancel={(slot) => void actions.cancel(slot)}
+            />
+          ) : null}
         </Pressable>
       )
     })
@@ -125,6 +135,15 @@ export function PositionsScreen() {
               markUsd={mark}
               busy={actions.busy}
               onSubmit={submit(actions.decrease)}
+            />
+            <OrderSheet
+              open={sheet === 'order'}
+              onClose={() => setSheet(null)}
+              position={active.slot}
+              symbol={displaySymbol(active, liveMarket)}
+              markUsd={mark}
+              busy={actions.busy}
+              onSubmit={submit(actions.place)}
             />
             <AddMarginSheet
               open={sheet === 'margin'}

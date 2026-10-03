@@ -206,6 +206,12 @@ fn register_liq_task<'info>(a: &'info Trade<'info>) -> Result<()> {
 /// it ticks, finds no open slot on its market, and returns — until the next
 /// `open_position` re-registers it (an update) or `undelegate_user` cancels it.
 fn cancel_liq_task<'info>(a: &'info Trade<'info>) -> Result<()> {
+    // The same task also drives this market's conditional orders: while any is
+    // pending (an entry order waiting on a market with no position, say) it
+    // must keep ticking.
+    if a.positions.load()?.has_orders_on(&a.market.key()) {
+        return Ok(());
+    }
     if !a.magic_program.executable {
         msg!("liq task: skipped (no magic program)");
         return Ok(());
@@ -227,47 +233,33 @@ fn seed_mark(market: &mut Market, index: u64, slot: u64) {
     }
 }
 
-pub fn open_position<'info>(
-    mut ctx: Context<'info, Trade<'info>>,
+/// The state change of opening a position, shared by `open_position` and the
+/// scheduled execution of entry orders (`liquidation::run_orders`).
+///
+/// Every check that can fail runs BEFORE the first write, so a caller that
+/// swallows the error (the order executor drops the failing order and carries
+/// on) never leaves a half-applied open behind.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn open_core(
+    market: &Market,
+    market_key: Pubkey,
+    risk_acc: &mut MarketRisk,
+    pool: &mut PoolLive,
+    user: &mut UserAccount,
+    positions: &mut Positions,
     side: Side,
     size: u64,
     margin: u64,
-    limit_price: u64,
+    price: u64,
+    slot: u64,
 ) -> Result<()> {
-    let clock = Clock::get()?;
-    let a = &mut ctx.accounts;
-    require!(!a.config.paused, DexxerError::Paused);
-    require!(!a.market.paused_open, DexxerError::OpenPaused);
-    assert_trader(&a.signer.key(), &mut a.user_account, clock.unix_timestamp)?;
-    let market_key = a.market.key();
-    // Pick the slot before any money moves: `PositionNotEmpty` if this market
-    // already has a position, `NoFreeSlot` when all sixteen are taken. The
-    // slot itself is written only after every computation below succeeded.
-    let idx = a.positions.load()?.alloc(&market_key)?;
-    let px = read_price(&a.feed.to_account_info(), &a.market, &a.config, &clock)?;
-    check_open_quality(&px, &a.market)?;
-    check_deviation(&px, &a.market)?;
-    match side {
-        Side::Long => require!(px.price <= limit_price, DexxerError::SlippageExceeded),
-        Side::Short => require!(px.price >= limit_price, DexxerError::SlippageExceeded),
-    }
-    let chk = risk::check_open(
-        &a.market,
-        &a.market_risk,
-        &a.pool_live,
-        side,
-        size,
-        margin,
-        px.price,
-    )?;
+    let idx = positions.alloc(&market_key)?;
+    let chk = risk::check_open(market, risk_acc, pool, side, size, margin, price)?;
     let cost = margin
         .checked_add(chk.open_fee)
         .ok_or(DexxerError::MathOverflow)?;
-    require!(
-        a.user_account.free_margin >= cost,
-        DexxerError::InsufficientMargin
-    );
-    let u = &mut a.user_account;
+    require!(user.free_margin >= cost, DexxerError::InsufficientMargin);
+    let u = &mut *user;
     u.free_margin = u
         .free_margin
         .checked_sub(cost)
@@ -276,7 +268,7 @@ pub fn open_position<'info>(
         .locked_margin
         .checked_add(margin)
         .ok_or(DexxerError::MathOverflow)?;
-    let pool = &mut a.pool_live;
+    let pool = &mut *pool;
     pool.locked_total = pool
         .locked_total
         .checked_add(margin)
@@ -285,8 +277,8 @@ pub fn open_position<'info>(
         .fees_accrued
         .checked_add(chk.open_fee)
         .ok_or(DexxerError::MathOverflow)?;
-    let entry_notional = math::notional(size, px.price)?;
-    let r = &mut a.market_risk;
+    let entry_notional = math::notional(size, price)?;
+    let r = &mut *risk_acc;
     match side {
         Side::Long => {
             r.oi_long = r
@@ -306,24 +298,64 @@ pub fn open_position<'info>(
         .checked_add(1)
         .ok_or(DexxerError::MathOverflow)?;
     {
-        let mut positions = a.positions.load_mut()?;
         positions.slots[idx] = PositionSlot {
             market: market_key,
             size,
-            entry: px.price,
+            entry: price,
             margin,
             liq_price: chk.liq_price,
-            opened_slot: clock.slot,
-            // Exact at open: entry == px.price, so notional(size, entry) == entry_notional.
+            opened_slot: slot,
+            // Exact at open: entry == price, so notional(size, entry) == entry_notional.
             oi_notional: entry_notional,
             // Only oracle prints seen AFTER the open may count against it.
-            last_liq_sample: a.market.sample_seq,
+            last_liq_sample: market.sample_seq,
             state: SLOT_OPEN,
             side: side.as_u8(),
             liq_ticks: 0,
             _pad: [0; 5],
         };
-    } // RefMut dropped before the scheduler CPI borrows the account
+    }
+
+    Ok(())
+}
+
+pub fn open_position<'info>(
+    mut ctx: Context<'info, Trade<'info>>,
+    side: Side,
+    size: u64,
+    margin: u64,
+    limit_price: u64,
+) -> Result<()> {
+    let clock = Clock::get()?;
+    let a = &mut ctx.accounts;
+    require!(!a.config.paused, DexxerError::Paused);
+    require!(!a.market.paused_open, DexxerError::OpenPaused);
+    assert_trader(&a.signer.key(), &mut a.user_account, clock.unix_timestamp)?;
+    let market_key = a.market.key();
+    // Pick the slot before any money moves: `PositionNotEmpty` if this market
+    // already has a position, `NoFreeSlot` when all sixteen are taken. The
+    // slot itself is written only after every computation below succeeded.
+    a.positions.load()?.alloc(&market_key)?;
+    let px = read_price(&a.feed.to_account_info(), &a.market, &a.config, &clock)?;
+    check_open_quality(&px, &a.market)?;
+    check_deviation(&px, &a.market)?;
+    match side {
+        Side::Long => require!(px.price <= limit_price, DexxerError::SlippageExceeded),
+        Side::Short => require!(px.price >= limit_price, DexxerError::SlippageExceeded),
+    }
+    open_core(
+        &a.market,
+        market_key,
+        &mut a.market_risk,
+        &mut a.pool_live,
+        &mut a.user_account,
+        &mut *a.positions.load_mut()?,
+        side,
+        size,
+        margin,
+        px.price,
+        clock.slot,
+    )?;
     seed_mark(&mut a.market, px.price, clock.slot);
     // Every mutation above is done: hand the accounts over as a shared,
     // `'info`-scoped reference so the scheduler CPI can borrow them (see
@@ -790,5 +822,156 @@ pub fn finalize_close(
     // Every byte back to zero, `market` included: leaving any field set would
     // show a phantom trade to the owner's client.
     positions.clear_slot(idx);
+    // Reduce-only orders protect THIS position; they die with it (OCO).
+    positions.clear_reduce_only(&market_key);
     Ok(s)
+}
+
+// ------------------------------------------------------------ conditional orders
+
+/// Place (or, for reduce-only kinds, replace) a conditional order on this
+/// market.
+///
+/// * Entry orders (`Limit`, `Stop`) need NO open position on the market;
+///   `size`/`margin` are what will be opened, `tp`/`sl` (0 = none) are
+///   attached on fill.
+/// * Reduce-only orders (`TakeProfit`, `StopLoss`, `TrailingStop`) need an
+///   open position on the market, always close all of it, and live one per
+///   kind and market — placing another replaces the old one. `side`, `size`
+///   and `margin` are ignored.
+///
+/// No margin is reserved at placement: the order is checked against the
+/// owner's free margin and the risk limits when it fires, and dropped if it
+/// no longer fits. Any placement (re-)registers the (trader, market)
+/// scheduled task, which is also what executes the orders; registering an
+/// existing task id is an update, not an error (week-5 Task 0).
+#[allow(clippy::too_many_arguments)]
+pub fn place_order<'info>(
+    mut ctx: Context<'info, Trade<'info>>,
+    kind: OrderKind,
+    side: Side,
+    size: u64,
+    margin: u64,
+    trigger: u64,
+    trail_bps: u16,
+    tp: u64,
+    sl: u64,
+) -> Result<()> {
+    let clock = Clock::get()?;
+    let a = &mut ctx.accounts;
+    require!(!a.config.paused, DexxerError::Paused);
+    assert_trader(&a.signer.key(), &mut a.user_account, clock.unix_timestamp)?;
+    require!(kind != OrderKind::None, DexxerError::InvalidOrder);
+    let market_key = a.market.key();
+    let mark = a.market.mark;
+    {
+        let mut positions = a.positions.load_mut()?;
+        let open = positions.find_open(&market_key);
+        let order = if kind.is_entry() {
+            require!(open.is_none(), DexxerError::PositionNotEmpty);
+            require!(
+                trigger > 0 && size >= a.market.min_size && margin > 0,
+                DexxerError::InvalidOrder
+            );
+            // Attached exits must sit on the correct side of the entry trigger.
+            match side {
+                Side::Long => require!(
+                    (tp == 0 || tp > trigger) && (sl == 0 || sl < trigger),
+                    DexxerError::InvalidOrder
+                ),
+                Side::Short => require!(
+                    (tp == 0 || tp < trigger) && (sl == 0 || sl > trigger),
+                    DexxerError::InvalidOrder
+                ),
+            }
+            OrderSlot {
+                market: market_key,
+                trigger,
+                size,
+                margin,
+                extreme: 0,
+                tp,
+                sl,
+                kind: kind.as_u8(),
+                side: side.as_u8(),
+                trail_bps: 0,
+                _pad: [0; 4],
+            }
+        } else {
+            let idx = open.ok_or(DexxerError::PositionNotOpen)?;
+            let pside = positions.slots[idx].side();
+            let mut o = OrderSlot {
+                market: market_key,
+                trigger: 0,
+                size: 0,
+                margin: 0,
+                extreme: 0,
+                tp: 0,
+                sl: 0,
+                kind: kind.as_u8(),
+                side: pside.as_u8(),
+                trail_bps: 0,
+                _pad: [0; 4],
+            };
+            if kind == OrderKind::TrailingStop {
+                require!(
+                    (MIN_TRAIL_BPS..=MAX_TRAIL_BPS).contains(&trail_bps) && mark > 0,
+                    DexxerError::InvalidOrder
+                );
+                o.trail_bps = trail_bps;
+                o.extreme = mark;
+            } else {
+                require!(trigger > 0, DexxerError::InvalidOrder);
+                // A TP/SL that is already past the mark would fire on the next
+                // tick — almost certainly a fat-fingered price, so refuse it.
+                if mark > 0 {
+                    require!(
+                        !is_triggered(kind, pside, trigger, mark),
+                        DexxerError::InvalidOrder
+                    );
+                }
+                o.trigger = trigger;
+            }
+            o
+        };
+        let idx = if kind.is_reduce_only() {
+            positions
+                .find_order(&market_key, kind)
+                .or_else(|| positions.free_order_slot())
+        } else {
+            positions.free_order_slot()
+        }
+        .ok_or(DexxerError::OrderBookFull)?;
+        positions.orders[idx] = order;
+    } // RefMut dropped before the scheduler CPI borrows the account
+    register_liq_task(ctx.accounts)
+}
+
+/// Cancel the order in `slot`. When the last order on a market with no open
+/// position goes, that market's scheduled task is cancelled with it.
+pub fn cancel_order<'info>(mut ctx: Context<'info, Trade<'info>>, slot: u8) -> Result<()> {
+    let clock = Clock::get()?;
+    let a = &mut ctx.accounts;
+    assert_trader(&a.signer.key(), &mut a.user_account, clock.unix_timestamp)?;
+    let market_key = a.market.key();
+    let idle = {
+        let mut positions = a.positions.load_mut()?;
+        let o = positions
+            .orders
+            .get_mut(slot as usize)
+            .ok_or(DexxerError::OrderNotFound)?;
+        // Only this market's orders: the account is shared by every market.
+        require!(
+            !o.is_empty() && o.market == market_key,
+            DexxerError::OrderNotFound
+        );
+        *o = bytemuck::Zeroable::zeroed();
+        positions.find_open(&market_key).is_none()
+    }; // RefMut dropped before the cancel CPI borrows the account
+    if idle {
+        // `cancel_liq_task` keeps the task alive while any order remains; an
+        // open position keeps it for liquidation regardless.
+        return cancel_liq_task(ctx.accounts);
+    }
+    Ok(())
 }
