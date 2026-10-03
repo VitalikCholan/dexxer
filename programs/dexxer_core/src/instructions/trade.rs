@@ -208,6 +208,12 @@ fn register_liq_task<'info>(a: &'info Trade<'info>) -> Result<()> {
 /// it ticks, sees `PositionState::Empty`, and returns — until the next
 /// `open_position` re-registers it (an update) or `undelegate_user` cancels it.
 fn cancel_liq_task<'info>(a: &'info Trade<'info>) -> Result<()> {
+    // The same task also drives the position's conditional orders: while any
+    // order is pending (an entry order waiting on an `Empty` position, say) it
+    // must keep ticking.
+    if a.position.has_orders() {
+        return Ok(());
+    }
     if !a.magic_program.executable {
         msg!("liq task: skipped (no magic program)");
         return Ok(());
@@ -227,6 +233,83 @@ fn seed_mark(market: &mut Market, index: u64, slot: u64) {
         market.mark = index;
         market.mark_slot = slot;
     }
+}
+
+/// The state change of opening a position, shared by `open_position` and the
+/// scheduled execution of entry orders (`liquidation::run_orders`).
+///
+/// Every check that can fail runs BEFORE the first write, so a caller that
+/// swallows the error (the order executor drops the failing order and carries
+/// on) never leaves a half-applied open behind.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn open_core(
+    market: &Market,
+    risk_acc: &mut MarketRisk,
+    pool: &mut PoolLive,
+    user: &mut UserAccount,
+    pos: &mut Position,
+    side: Side,
+    size: u64,
+    margin: u64,
+    price: u64,
+    slot: u64,
+) -> Result<()> {
+    let chk = risk::check_open(market, risk_acc, pool, side, size, margin, price)?;
+    let cost = margin
+        .checked_add(chk.open_fee)
+        .ok_or(DexxerError::MathOverflow)?;
+    require!(user.free_margin >= cost, DexxerError::InsufficientMargin);
+    let u = &mut *user;
+    u.free_margin = u
+        .free_margin
+        .checked_sub(cost)
+        .ok_or(DexxerError::MathOverflow)?;
+    u.locked_margin = u
+        .locked_margin
+        .checked_add(margin)
+        .ok_or(DexxerError::MathOverflow)?;
+    let pool = &mut *pool;
+    pool.locked_total = pool
+        .locked_total
+        .checked_add(margin)
+        .ok_or(DexxerError::MathOverflow)?;
+    pool.fees_accrued = pool
+        .fees_accrued
+        .checked_add(chk.open_fee)
+        .ok_or(DexxerError::MathOverflow)?;
+    let entry_notional = math::notional(size, price)?;
+    let r = &mut *risk_acc;
+    match side {
+        Side::Long => {
+            r.oi_long = r
+                .oi_long
+                .checked_add(entry_notional)
+                .ok_or(DexxerError::MathOverflow)?
+        }
+        Side::Short => {
+            r.oi_short = r
+                .oi_short
+                .checked_add(entry_notional)
+                .ok_or(DexxerError::MathOverflow)?
+        }
+    }
+    r.open_positions = r
+        .open_positions
+        .checked_add(1)
+        .ok_or(DexxerError::MathOverflow)?;
+    let p = &mut *pos;
+    p.state = PositionState::Open;
+    p.side = side;
+    p.size = size;
+    p.entry = price;
+    p.margin = margin;
+    p.liq_price = chk.liq_price;
+    p.opened_slot = slot;
+    p.liq_ticks = 0;
+    p.closed = None;
+    // Exact at open: entry == price, so notional(size, entry) == entry_notional.
+    p.oi_notional = entry_notional;
+    Ok(())
 }
 
 pub fn open_position<'info>(
@@ -252,72 +335,18 @@ pub fn open_position<'info>(
         Side::Long => require!(px.price <= limit_price, DexxerError::SlippageExceeded),
         Side::Short => require!(px.price >= limit_price, DexxerError::SlippageExceeded),
     }
-    let chk = risk::check_open(
+    open_core(
         &a.market,
-        &a.market_risk,
-        &a.pool_live,
+        &mut a.market_risk,
+        &mut a.pool_live,
+        &mut a.user_account,
+        &mut a.position,
         side,
         size,
         margin,
         px.price,
+        clock.slot,
     )?;
-    let cost = margin
-        .checked_add(chk.open_fee)
-        .ok_or(DexxerError::MathOverflow)?;
-    require!(
-        a.user_account.free_margin >= cost,
-        DexxerError::InsufficientMargin
-    );
-    let u = &mut a.user_account;
-    u.free_margin = u
-        .free_margin
-        .checked_sub(cost)
-        .ok_or(DexxerError::MathOverflow)?;
-    u.locked_margin = u
-        .locked_margin
-        .checked_add(margin)
-        .ok_or(DexxerError::MathOverflow)?;
-    let pool = &mut a.pool_live;
-    pool.locked_total = pool
-        .locked_total
-        .checked_add(margin)
-        .ok_or(DexxerError::MathOverflow)?;
-    pool.fees_accrued = pool
-        .fees_accrued
-        .checked_add(chk.open_fee)
-        .ok_or(DexxerError::MathOverflow)?;
-    let entry_notional = math::notional(size, px.price)?;
-    let r = &mut a.market_risk;
-    match side {
-        Side::Long => {
-            r.oi_long = r
-                .oi_long
-                .checked_add(entry_notional)
-                .ok_or(DexxerError::MathOverflow)?
-        }
-        Side::Short => {
-            r.oi_short = r
-                .oi_short
-                .checked_add(entry_notional)
-                .ok_or(DexxerError::MathOverflow)?
-        }
-    }
-    r.open_positions = r
-        .open_positions
-        .checked_add(1)
-        .ok_or(DexxerError::MathOverflow)?;
-    let p = &mut a.position;
-    p.state = PositionState::Open;
-    p.side = side;
-    p.size = size;
-    p.entry = px.price;
-    p.margin = margin;
-    p.liq_price = chk.liq_price;
-    p.opened_slot = clock.slot;
-    p.liq_ticks = 0;
-    p.closed = None;
-    // Exact at open: entry == px.price, so notional(size, entry) == entry_notional.
-    p.oi_notional = entry_notional;
     seed_mark(&mut a.market, px.price, clock.slot);
     // Every mutation above is done: hand the accounts over as a shared,
     // `'info`-scoped reference so the scheduler CPI can borrow them (see
@@ -750,6 +779,9 @@ pub fn finalize_close(
     // leaving any of them set in between would show a phantom trade to the
     // owner's client, so nothing is left behind. `closed` stays in the layout
     // (no account migration) and is now always `None`.
+    // Reduce-only orders protect THIS position; they die with it. Entry orders
+    // stay — they are about the next one.
+    pos.clear_reduce_only();
     pos.state = PositionState::Empty;
     pos.closed = None;
     pos.side = Side::Long;
@@ -760,4 +792,141 @@ pub fn finalize_close(
     pos.opened_slot = 0;
     pos.liq_ticks = 0;
     Ok(s)
+}
+
+// ------------------------------------------------------------ conditional orders
+
+/// Place (or, for reduce-only kinds, replace) a conditional order.
+///
+/// * Entry orders (`Limit`, `Stop`) need an `Empty` position; `size`/`margin`
+///   are what will be opened, `tp`/`sl` (0 = none) are attached on fill.
+/// * Reduce-only orders (`TakeProfit`, `StopLoss`, `TrailingStop`) need an
+///   `Open` position, always close all of it, and live one per kind — placing
+///   another replaces the old one. `side`, `size` and `margin` are ignored.
+///
+/// No margin is reserved at placement: the order is checked against the
+/// owner's free margin and the risk limits when it fires, and dropped if it
+/// no longer fits. Any placement (re-)registers the position's scheduled task,
+/// which is also what executes the orders; registering an existing task id is
+/// an update, not an error (week-5 Task 0).
+#[allow(clippy::too_many_arguments)]
+pub fn place_order<'info>(
+    mut ctx: Context<'info, Trade<'info>>,
+    kind: OrderKind,
+    side: Side,
+    size: u64,
+    margin: u64,
+    trigger: u64,
+    trail_bps: u16,
+    tp: u64,
+    sl: u64,
+) -> Result<()> {
+    let clock = Clock::get()?;
+    let a = &mut ctx.accounts;
+    require!(!a.config.paused, DexxerError::Paused);
+    assert_trader(&a.signer.key(), &mut a.user_account, clock.unix_timestamp)?;
+    require!(kind != OrderKind::None, DexxerError::InvalidOrder);
+    let mark = a.market.mark;
+    let order = if kind.is_entry() {
+        require!(
+            a.position.state == PositionState::Empty,
+            DexxerError::PositionNotEmpty
+        );
+        require!(
+            trigger > 0 && size >= a.market.min_size && margin > 0,
+            DexxerError::InvalidOrder
+        );
+        // Attached exits must sit on the correct side of the entry trigger.
+        match side {
+            Side::Long => require!(
+                (tp == 0 || tp > trigger) && (sl == 0 || sl < trigger),
+                DexxerError::InvalidOrder
+            ),
+            Side::Short => require!(
+                (tp == 0 || tp < trigger) && (sl == 0 || sl > trigger),
+                DexxerError::InvalidOrder
+            ),
+        }
+        Order {
+            kind,
+            side,
+            trigger,
+            size,
+            margin,
+            trail_bps: 0,
+            extreme: 0,
+            tp,
+            sl,
+        }
+    } else {
+        require!(
+            a.position.state == PositionState::Open,
+            DexxerError::PositionNotOpen
+        );
+        let pside = a.position.side;
+        let mut o = Order {
+            kind,
+            side: pside,
+            trigger: 0,
+            size: 0,
+            margin: 0,
+            trail_bps: 0,
+            extreme: 0,
+            tp: 0,
+            sl: 0,
+        };
+        if kind == OrderKind::TrailingStop {
+            require!(
+                (MIN_TRAIL_BPS..=MAX_TRAIL_BPS).contains(&trail_bps) && mark > 0,
+                DexxerError::InvalidOrder
+            );
+            o.trail_bps = trail_bps;
+            o.extreme = mark;
+        } else {
+            require!(trigger > 0, DexxerError::InvalidOrder);
+            // A TP/SL that is already past the mark would fire on the next tick
+            // — almost certainly a fat-fingered price, so refuse it.
+            if mark > 0 {
+                require!(
+                    !is_triggered(kind, pside, trigger, mark),
+                    DexxerError::InvalidOrder
+                );
+            }
+            o.trigger = trigger;
+        }
+        o
+    };
+    let slots = &mut a.position.orders;
+    let idx = if kind.is_reduce_only() {
+        slots
+            .iter()
+            .position(|o| o.kind == kind)
+            .or_else(|| slots.iter().position(|o| o.is_empty()))
+    } else {
+        slots.iter().position(|o| o.is_empty())
+    }
+    .ok_or(DexxerError::OrderBookFull)?;
+    slots[idx] = order;
+    register_liq_task(ctx.accounts)
+}
+
+/// Cancel the order in `slot`. When the last order of an idle (`Empty`)
+/// position goes, the position's scheduled task is cancelled with it.
+pub fn cancel_order<'info>(mut ctx: Context<'info, Trade<'info>>, slot: u8) -> Result<()> {
+    let clock = Clock::get()?;
+    let a = &mut ctx.accounts;
+    assert_trader(&a.signer.key(), &mut a.user_account, clock.unix_timestamp)?;
+    let o = a
+        .position
+        .orders
+        .get_mut(slot as usize)
+        .ok_or(DexxerError::OrderNotFound)?;
+    require!(!o.is_empty(), DexxerError::OrderNotFound);
+    *o = Order::default();
+    if a.position.state == PositionState::Empty {
+        // `cancel_liq_task` keeps the task alive while any order remains; an
+        // `Open` position keeps it for liquidation regardless.
+        return cancel_liq_task(ctx.accounts);
+    }
+    Ok(())
 }

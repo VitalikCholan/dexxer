@@ -1,3 +1,4 @@
+use super::order::{Order, ORDER_SLOTS};
 use anchor_lang::prelude::*;
 
 #[derive(AnchorSerialize, AnchorDeserialize, Clone, Copy, Debug, PartialEq, Eq, InitSpace)]
@@ -89,4 +90,29 @@ pub struct Position {
     /// `Position` accounts need no migration.
     pub closed: Option<ClosedRecord>,
     pub bump: u8,
+    /// Conditional orders (see `state/order.rs`). Appended at the END of the
+    /// layout; Positions created before this field are shorter and must be
+    /// re-onboarded, same as the week-5 `UserAccount` v2 bump.
+    pub orders: [Order; ORDER_SLOTS],
+}
+
+impl Position {
+    pub fn has_orders(&self) -> bool {
+        self.orders.iter().any(|o| !o.is_empty())
+    }
+    /// Drop every reduce-only order — called when the position they protect is gone.
+    pub fn clear_reduce_only(&mut self) {
+        for o in self.orders.iter_mut() {
+            if o.kind.is_reduce_only() {
+                *o = Order::default();
+            }
+        }
+    }
+    pub fn clear_entry_orders(&mut self) {
+        for o in self.orders.iter_mut() {
+            if o.kind.is_entry() {
+                *o = Order::default();
+            }
+        }
+    }
 }

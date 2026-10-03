@@ -20,8 +20,8 @@
 //!     apart.
 use crate::{
     errors::DexxerError,
-    instructions::trade::finalize_close,
-    oracle::{check_deviation, read_price},
+    instructions::trade::{finalize_close, open_core},
+    oracle::{check_deviation, check_open_quality, read_price},
     risk,
     state::*,
 };
@@ -213,7 +213,9 @@ pub fn liquidation_check(mut ctx: Context<LiquidationCheck>) -> Result<()> {
     // A task keeps ticking after its position closes (nothing cancels it from
     // inside a scheduled tick) — measured safe, and this is where it becomes a
     // no-op (week-5 Task 0, "Тік по «закритій позиції»").
-    if a.position.state != PositionState::Open {
+    // With conditional orders pending the task has work to do on an idle
+    // (`Empty`) position too: its entry orders.
+    if a.position.state != PositionState::Open && !a.position.has_orders() {
         return Ok(());
     }
 
@@ -243,7 +245,7 @@ pub fn liquidation_check(mut ctx: Context<LiquidationCheck>) -> Result<()> {
     let market_key = a.market.key();
     let fee_bps = a.market.liq_fee_bps as u32;
     let delay = a.config.disclosure_delay_slots;
-    if liq_due(&mut a.position, &a.market, mark)? {
+    if a.position.state == PositionState::Open && liq_due(&mut a.position, &a.market, mark)? {
         let done = liquidate_now(
             market_key,
             &mut a.market_risk,
@@ -262,7 +264,133 @@ pub fn liquidation_check(mut ctx: Context<LiquidationCheck>) -> Result<()> {
             msg!("liq check: queue full {}", a.position.key());
         }
     }
+    // Liquidation always goes first: a position that is liquidatable this tick
+    // must not be rescued by a stop that happens to share the tick.
+    run_orders(a, &px, mark, &clock)
+}
+
+/// Execute this position's triggered conditional orders against `mark`.
+///
+/// Runs on every scheduled tick after the liquidation check, and never fails
+/// the tick: an order that can no longer be filled (no margin, risk limit hit)
+/// is dropped rather than retried forever, and transient conditions (paused,
+/// poor oracle quality, full disclosure ring) leave the order in place.
+fn run_orders(
+    a: &mut LiquidationCheck,
+    px: &crate::oracle::OraclePrice,
+    mark: u64,
+    clock: &Clock,
+) -> Result<()> {
+    match a.position.state {
+        PositionState::Open => {
+            let side = a.position.side;
+            // Trailing orders chase the best price first, so a single tick that
+            // both makes a new high and reverses uses the new high.
+            for o in a.position.orders.iter_mut() {
+                if o.kind == OrderKind::TrailingStop {
+                    o.extreme = trail_extreme(side, o.extreme, mark);
+                }
+            }
+            let hit = a.position.orders.iter().any(|o| {
+                let trigger = match o.kind {
+                    OrderKind::TrailingStop => {
+                        match trailing_stop_price(side, o.extreme, o.trail_bps) {
+                            Ok(t) => t,
+                            Err(_) => return false,
+                        }
+                    }
+                    _ => o.trigger,
+                };
+                o.kind.is_reduce_only() && is_triggered(o.kind, side, trigger, mark)
+            });
+            if !hit {
+                return Ok(());
+            }
+            if a.disclosure_queue.len as usize >= DQ_CAPACITY {
+                msg!("orders: queue full {}", a.position.key());
+                return Ok(());
+            }
+            let market_key = a.market.key();
+            let fee_bps = a.market.close_fee_bps as u32;
+            let delay = a.config.disclosure_delay_slots;
+            // Reported as a user close on purpose: the public disclosure must
+            // not reveal that this exit was a resting order.
+            finalize_close(
+                market_key,
+                &mut a.market_risk,
+                &mut a.pool_live,
+                &mut a.user_account,
+                &mut a.position,
+                &mut a.disclosure_queue,
+                mark,
+                fee_bps,
+                CloseReason::User,
+                clock,
+                delay,
+            )?;
+            msg!("orders: closed {}", a.position.key());
+        }
+        PositionState::Empty => {
+            if a.config.paused || a.market.paused_open || check_open_quality(px, &a.market).is_err()
+            {
+                return Ok(());
+            }
+            for i in 0..ORDER_SLOTS {
+                let o = a.position.orders[i];
+                if !o.kind.is_entry() || !is_triggered(o.kind, o.side, o.trigger, mark) {
+                    continue;
+                }
+                let opened = open_core(
+                    &a.market,
+                    &mut a.market_risk,
+                    &mut a.pool_live,
+                    &mut a.user_account,
+                    &mut a.position,
+                    o.side,
+                    o.size,
+                    o.margin,
+                    mark,
+                    clock.slot,
+                );
+                match opened {
+                    Ok(()) => {
+                        // One position per market: the sibling entries are moot.
+                        a.position.clear_entry_orders();
+                        attach_exits(&mut a.position, &o);
+                        msg!("orders: opened {}", a.position.key());
+                        return Ok(());
+                    }
+                    Err(_) => {
+                        a.position.orders[i] = Order::default();
+                        msg!("orders: dropped slot {}", i);
+                    }
+                }
+            }
+        }
+        PositionState::Closed => {}
+    }
     Ok(())
+}
+
+/// Turn an entry order's `tp`/`sl` into live reduce-only orders on the
+/// position it just opened.
+fn attach_exits(pos: &mut Position, entry: &Order) {
+    for (kind, trigger) in [
+        (OrderKind::TakeProfit, entry.tp),
+        (OrderKind::StopLoss, entry.sl),
+    ] {
+        if trigger == 0 {
+            continue;
+        }
+        if let Some(slot) = pos.orders.iter_mut().find(|o| o.is_empty()) {
+            *slot = Order {
+                kind,
+                side: entry.side,
+                trigger,
+                ..Order::default()
+            };
+        }
+    }
 }
 
 // ------------------------------------------------------------ task lifecycle

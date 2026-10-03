@@ -116,6 +116,12 @@ pub enum DexxerError {
     NotExited,
     #[msg("disclosure queue still has pending records")]
     QueueStillPending,
+    #[msg("all order slots are in use")]
+    OrderBookFull,
+    #[msg("invalid order parameters")]
+    InvalidOrder,
+    #[msg("order slot is empty")]
+    OrderNotFound,
 }
 
 impl From<MathError> for anchor_lang::error::Error {

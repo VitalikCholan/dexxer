@@ -16,11 +16,23 @@ import { showToast } from '@/src/ui/Toast'
 import { useLiveAccount } from '@/src/lib/live'
 import { decodeMarket, decodePosition } from '@/src/lib/codecs'
 import { describeTxError } from '@/src/lib/errors'
-import { closePosition, decreasePosition, increasePosition, solSize, U64_MAX, usdAmount } from '@/src/lib/trade'
+import {
+  cancelOrder,
+  closePosition,
+  decreasePosition,
+  increasePosition,
+  placeOrder,
+  solSize,
+  U64_MAX,
+  usdAmount,
+  type OrderParams,
+} from '@/src/lib/trade'
 import * as math from '@/src/lib/math'
 import { PositionCard } from './PositionCard'
 import { IncreaseSheet } from './IncreaseSheet'
 import { DecreaseSheet } from './DecreaseSheet'
+import { OrderSheet } from './OrderSheet'
+import { OrdersCard } from './OrdersCard'
 import { useTradeSession } from '../trade/useTradeSession'
 import { useOnboardingGate } from '../onboard/useOnboardingGate'
 
@@ -33,7 +45,7 @@ export function PositionsScreen() {
   const marketLive = useLiveAccount(conn, accounts?.market ?? null, decodeMarket)
 
   const [busy, setBusy] = useState(false)
-  const [sheet, setSheet] = useState<'increase' | 'decrease' | null>(null)
+  const [sheet, setSheet] = useState<'increase' | 'decrease' | 'order' | null>(null)
 
   const position = positionLive.value
   const mark = marketLive.value?.mark ?? null
@@ -79,6 +91,24 @@ export function PositionsScreen() {
     [conn, session, accounts, position, mark, run],
   )
 
+  const handlePlaceOrder = useCallback(
+    (p: OrderParams) => {
+      if (!conn || !session || !accounts) return Promise.resolve()
+      return run('Order', () => placeOrder(conn, session, accounts, p))
+    },
+    [conn, session, accounts, run],
+  )
+
+  const handleCancelOrder = useCallback(
+    (slot: number) => {
+      if (!conn || !session || !accounts) return
+      void run('Cancel', () => cancelOrder(conn, session, accounts, slot))
+    },
+    [conn, session, accounts, run],
+  )
+
+  const orders = position?.orders ?? []
+
   return (
     <Page>
       <ScrollView contentContainerStyle={{ gap: space.lg, paddingVertical: space.lg }}>
@@ -92,7 +122,12 @@ export function PositionsScreen() {
         ) : sessionError ? (
           <EmptyState text={sessionError} />
         ) : !position || position.state !== 'Open' ? (
-          <EmptyState text="No open position" action={{ label: 'Go to Trade', onPress: () => router.push('/trade') }} />
+          orders.length === 0 ? (
+            <EmptyState
+              text="No open position"
+              action={{ label: 'Go to Trade', onPress: () => router.push('/trade') }}
+            />
+          ) : null
         ) : (
           <PositionCard
             position={position}
@@ -104,8 +139,25 @@ export function PositionsScreen() {
           />
         )}
 
+        {gate.status !== 'needs_setup' && !sessionError && (orders.length > 0 || position?.state === 'Open') ? (
+          <OrdersCard
+            orders={orders}
+            busy={busy}
+            onAdd={position?.state === 'Open' ? () => setSheet('order') : undefined}
+            onCancel={handleCancelOrder}
+          />
+        ) : null}
+
         {position && position.state === 'Open' ? (
           <>
+            <OrderSheet
+              open={sheet === 'order'}
+              onClose={() => setSheet(null)}
+              position={position}
+              markUsd={mark}
+              busy={busy}
+              onSubmit={handlePlaceOrder}
+            />
             <IncreaseSheet
               open={sheet === 'increase'}
               onClose={() => setSheet(null)}

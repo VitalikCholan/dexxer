@@ -8,7 +8,7 @@
 import { BN } from '@coral-xyz/anchor'
 import { Connection, Keypair, PublicKey, Transaction, type TransactionInstruction } from '@solana/web3.js'
 import { dexxerCoreProgram } from './anchor'
-import { readPosition, type SideName } from './codecs'
+import { ORDER_KIND_ARG, readPosition, type OrderKindName, type SideName } from './codecs'
 import { confirmOnConn } from './confirm'
 
 /** u64::MAX — the permissive ("no slippage protection") limit for a Short close (mirrors `tests/er/lib/trader.ts`'s `U64_MAX`). */
@@ -172,6 +172,66 @@ export async function decreasePosition(
   const core = dexxerCoreProgram(conn, session.publicKey)
   const ix = await core.methods
     .decreasePosition(new BN(closeSize.toString()), new BN(limitPrice.toString()))
+    .accounts({ signer: session.publicKey, ...accounts })
+    .instruction()
+  return sendSessionTx(conn, session, [ix])
+}
+
+/** Fields of a conditional order, in raw program units (price 1e6, size 1e9, margin 1e6). Unused ones stay 0. */
+export interface OrderParams {
+  kind: Exclude<OrderKindName, 'None'>
+  /** Entry orders only (`Limit`/`Stop`): the side to open. Exit orders take the position's side on-chain. */
+  side?: 'long' | 'short'
+  size?: bigint
+  margin?: bigint
+  /** Trigger price; unused for `TrailingStop`. */
+  trigger?: bigint
+  /** `TrailingStop` only: trail distance in basis points. */
+  trailBps?: number
+  /** Entry orders only: take-profit / stop-loss to attach on fill. */
+  tp?: bigint
+  sl?: bigint
+}
+
+/**
+ * `place_order` on the ER, signed ONLY by `session`. Entry orders (`Limit`,
+ * `Stop`) need an empty position, exit orders (`TakeProfit`, `StopLoss`,
+ * `TrailingStop`) an open one; the per-position scheduler executes them when
+ * the mark crosses the trigger (`state/order.rs`, `liquidation_check`).
+ */
+export async function placeOrder(
+  conn: Connection,
+  session: Keypair,
+  accounts: TradeAccounts,
+  p: OrderParams,
+): Promise<string> {
+  const core = dexxerCoreProgram(conn, session.publicKey)
+  const ix = await core.methods
+    .placeOrder(
+      ORDER_KIND_ARG[p.kind],
+      (p.side ?? 'long') === 'long' ? { long: {} } : { short: {} },
+      new BN((p.size ?? 0n).toString()),
+      new BN((p.margin ?? 0n).toString()),
+      new BN((p.trigger ?? 0n).toString()),
+      p.trailBps ?? 0,
+      new BN((p.tp ?? 0n).toString()),
+      new BN((p.sl ?? 0n).toString()),
+    )
+    .accounts({ signer: session.publicKey, ...accounts })
+    .instruction()
+  return sendSessionTx(conn, session, [ix])
+}
+
+/** `cancel_order` on the ER, signed ONLY by `session`. `slot` is `DecodedOrder.slot`. */
+export async function cancelOrder(
+  conn: Connection,
+  session: Keypair,
+  accounts: TradeAccounts,
+  slot: number,
+): Promise<string> {
+  const core = dexxerCoreProgram(conn, session.publicKey)
+  const ix = await core.methods
+    .cancelOrder(slot)
     .accounts({ signer: session.publicKey, ...accounts })
     .instruction()
   return sendSessionTx(conn, session, [ix])

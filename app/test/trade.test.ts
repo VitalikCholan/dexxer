@@ -8,7 +8,15 @@ import assert from 'node:assert/strict'
 import { BN, BorshInstructionCoder } from '@coral-xyz/anchor'
 import { Keypair, PublicKey, Transaction } from '@solana/web3.js'
 import { DEXXER_CORE_IDL } from '../src/lib/anchor'
-import { decreasePosition, increasePosition, openPosition, U64_MAX, type TradeAccounts } from '../src/lib/trade'
+import {
+  cancelOrder,
+  decreasePosition,
+  increasePosition,
+  openPosition,
+  placeOrder,
+  U64_MAX,
+  type TradeAccounts,
+} from '../src/lib/trade'
 
 const ixCoder = new BorshInstructionCoder(DEXXER_CORE_IDL)
 
@@ -90,4 +98,44 @@ test('decreasePosition with the permissive Short limit encodes U64_MAX itself, n
   assert.equal(ix.name, 'decrease_position')
   assert.equal(ix.args.close_size, 100_000_000n)
   assert.equal(ix.args.limit_price, U64_MAX)
+})
+
+test('placeOrder encodes an entry order with attached TP/SL', async () => {
+  const { conn, sent } = fakeConn()
+  await placeOrder(conn as never, Keypair.generate(), accounts, {
+    kind: 'Limit',
+    side: 'short',
+    size: 1_250_000_000n,
+    margin: 25_000_000n,
+    trigger: 152_500_000n,
+    tp: 140_000_000n,
+    sl: 160_000_000n,
+  })
+  const ix = lastIx(sent)
+  assert.equal(ix.name, 'place_order')
+  assert.deepEqual(ix.args.kind, { Limit: {} })
+  assert.deepEqual(ix.args.side, { Short: {} })
+  assert.equal(ix.args.size, 1_250_000_000n)
+  assert.equal(ix.args.margin, 25_000_000n)
+  assert.equal(ix.args.trigger, 152_500_000n)
+  assert.equal(ix.args.trail_bps, 0)
+  assert.equal(ix.args.tp, 140_000_000n)
+  assert.equal(ix.args.sl, 160_000_000n)
+})
+
+test('placeOrder encodes a trailing stop by distance, not price', async () => {
+  const { conn, sent } = fakeConn()
+  await placeOrder(conn as never, Keypair.generate(), accounts, { kind: 'TrailingStop', trailBps: 300 })
+  const ix = lastIx(sent)
+  assert.deepEqual(ix.args.kind, { TrailingStop: {} })
+  assert.equal(ix.args.trail_bps, 300)
+  assert.equal(ix.args.trigger, 0n)
+})
+
+test('cancelOrder encodes the slot', async () => {
+  const { conn, sent } = fakeConn()
+  await cancelOrder(conn as never, Keypair.generate(), accounts, 2)
+  const ix = lastIx(sent)
+  assert.equal(ix.name, 'cancel_order')
+  assert.equal(ix.args.slot, 2)
 })

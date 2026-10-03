@@ -20,10 +20,10 @@ import { useLiveAccount } from '@/src/lib/live'
 import { useCandles, useIndexerConnected, useMark } from '@/src/lib/indexer'
 import { decodeMarket, decodePosition, decodeUserAccount, readMarket, type SideName } from '@/src/lib/codecs'
 import { describeTxError } from '@/src/lib/errors'
-import { openPosition } from '@/src/lib/trade'
+import { openPosition, placeOrder, type OrderParams } from '@/src/lib/trade'
 import { PriceChart } from './PriceChart'
 import { TradeHeader } from './TradeHeader'
-import { TradeTicket, type MarketParams } from './TradeTicket'
+import { TradeTicket, type Exits, type MarketParams } from './TradeTicket'
 import { useTradeSession } from './useTradeSession'
 import { LOW_SESSION_ACTIONS } from '@/src/lib/session'
 import { useOnboardingGate } from '../onboard/useOnboardingGate'
@@ -99,7 +99,7 @@ export function TradeScreen() {
     : null
 
   const handleOpen = useCallback(
-    async (side: SideName, size: bigint, margin: bigint, limitPrice: bigint) => {
+    async (side: SideName, size: bigint, margin: bigint, limitPrice: bigint, exits: Exits) => {
       if (!conn || !session || !accounts) return
       setBusy(true)
       try {
@@ -107,6 +107,35 @@ export function TradeScreen() {
         if (!mkt || mkt.mark === 0n) throw new Error('Market has no mark price yet')
         await openPosition(conn, session, accounts, side === 'Long' ? 'long' : 'short', size, margin, limitPrice)
         showToast({ tone: 'success', text: `Opened ${side} ${Number(size) / 1_000_000_000} SOL` })
+        // TP/SL ride along as separate session-signed orders right after the
+        // open lands. A failure here must not look like a failed open.
+        for (const [kind, trigger] of [
+          ['TakeProfit', exits.tp],
+          ['StopLoss', exits.sl],
+        ] as const) {
+          if (trigger === 0n) continue
+          try {
+            await placeOrder(conn, session, accounts, { kind, trigger })
+          } catch (e) {
+            showToast({ tone: 'danger', text: `Position opened, but ${kind} was not set: ${describeTxError(e)}` })
+          }
+        }
+      } catch (e) {
+        showToast({ tone: 'danger', text: describeTxError(e) })
+      } finally {
+        setBusy(false)
+      }
+    },
+    [conn, session, accounts],
+  )
+
+  const handlePlace = useCallback(
+    async (p: OrderParams) => {
+      if (!conn || !session || !accounts) return
+      setBusy(true)
+      try {
+        await placeOrder(conn, session, accounts, p)
+        showToast({ tone: 'success', text: `${p.kind} order placed` })
       } catch (e) {
         showToast({ tone: 'danger', text: describeTxError(e) })
       } finally {
@@ -181,6 +210,7 @@ export function TradeScreen() {
             busy={busy}
             disabled={tradingPaused || sessionExpired || sessionUsedUp || !session}
             onOpen={handleOpen}
+            onPlace={handlePlace}
           />
         )}
       </ScrollView>

@@ -950,6 +950,8 @@ pub fn undelegate_user<'info>(ctx: Context<'info, UndelegateUser<'info>>) -> Res
     // `BalanceNotZero` guard above); everything else is zeroed below,
     // including `last_withdraw_slot` (a withdraw-cooldown timestamp — leaks
     // recent activity if left on the committed account).
+    // Pending orders are private trading intent — nothing of them may reach L1.
+    a.position.orders = Default::default();
     let u = &mut a.user_account;
     u.session_key = Pubkey::default();
     u.session_expiry = 0;

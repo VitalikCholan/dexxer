@@ -126,6 +126,47 @@ export type SideName = (typeof SIDES)[number]
  * carries no `closed` field — History's only sources are `DisclosureQueue`
  * and the L1 `Disclosure` feed (see `HistoryScreen.tsx`/`useHistoryRows.ts`).
  */
+/** `OrderKind` discriminants, in the Rust enum's declaration order (`state/order.rs`). `None` marks an empty slot. */
+export const ORDER_KINDS = ['None', 'Limit', 'Stop', 'TakeProfit', 'StopLoss', 'TrailingStop'] as const
+export type OrderKindName = (typeof ORDER_KINDS)[number]
+/** Anchor enum argument for each non-empty kind — what `placeOrder` hands to the IDL coder. */
+export const ORDER_KIND_ARG: Record<Exclude<OrderKindName, 'None'>, Record<string, object>> = {
+  Limit: { limit: {} },
+  Stop: { stop: {} },
+  TakeProfit: { takeProfit: {} },
+  StopLoss: { stopLoss: {} },
+  TrailingStop: { trailingStop: {} },
+}
+/** `ORDER_SLOTS` in `state/order.rs`. */
+export const ORDER_SLOTS = 4
+/** Borsh size of one `Order`: kind(1) side(1) trigger(8) size(8) margin(8) trail_bps(2) extreme(8) tp(8) sl(8). */
+const ORDER_BYTES = 52
+
+/**
+ * `Position.orders` starts after `oi_notional`, the `closed: Option<ClosedRecord>`
+ * tag and `bump`. `closed` has been `None` (a single 0 byte under Borsh) since
+ * week-5 Task 1, so the offset is fixed; a non-zero tag means a legacy account
+ * and the orders are not decodable.
+ */
+const POSITION_OPENED_SLOT_OFFSET = POSITION_LIQ_PRICE_OFFSET + 8
+const POSITION_OI_NOTIONAL_OFFSET = POSITION_OPENED_SLOT_OFFSET + 8 + 1
+const POSITION_CLOSED_TAG_OFFSET = POSITION_OI_NOTIONAL_OFFSET + 8
+const POSITION_ORDERS_OFFSET = POSITION_CLOSED_TAG_OFFSET + 1 + 1
+
+export interface DecodedOrder {
+  /** Slot index — what `cancel_order` takes. */
+  slot: number
+  kind: Exclude<OrderKindName, 'None'>
+  side: SideName
+  trigger: bigint
+  size: bigint
+  margin: bigint
+  trailBps: number
+  extreme: bigint
+  tp: bigint
+  sl: bigint
+}
+
 export interface DecodedPosition {
   state: PositionStateName
   side: SideName
@@ -133,6 +174,32 @@ export interface DecodedPosition {
   entry: bigint
   margin: bigint
   liqPrice: bigint
+  /** Pending conditional orders, empty slots omitted. */
+  orders: DecodedOrder[]
+}
+
+export function decodeOrders(data: Buffer): DecodedOrder[] {
+  if (data.length < POSITION_ORDERS_OFFSET + ORDER_SLOTS * ORDER_BYTES) return []
+  if (data.readUInt8(POSITION_CLOSED_TAG_OFFSET) !== 0) return []
+  const out: DecodedOrder[] = []
+  for (let slot = 0; slot < ORDER_SLOTS; slot++) {
+    const o = POSITION_ORDERS_OFFSET + slot * ORDER_BYTES
+    const kind = ORDER_KINDS[data.readUInt8(o)]
+    if (!kind || kind === 'None') continue
+    out.push({
+      slot,
+      kind,
+      side: SIDES[data.readUInt8(o + 1)],
+      trigger: data.readBigUInt64LE(o + 2),
+      size: data.readBigUInt64LE(o + 10),
+      margin: data.readBigUInt64LE(o + 18),
+      trailBps: data.readUInt16LE(o + 26),
+      extreme: data.readBigUInt64LE(o + 28),
+      tp: data.readBigUInt64LE(o + 36),
+      sl: data.readBigUInt64LE(o + 44),
+    })
+  }
+  return out
 }
 
 export function decodePosition(data: Buffer): DecodedPosition {
@@ -143,6 +210,7 @@ export function decodePosition(data: Buffer): DecodedPosition {
     entry: data.readBigUInt64LE(POSITION_ENTRY_OFFSET),
     margin: data.readBigUInt64LE(POSITION_MARGIN_OFFSET),
     liqPrice: data.readBigUInt64LE(POSITION_LIQ_PRICE_OFFSET),
+    orders: decodeOrders(data),
   }
 }
 

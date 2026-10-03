@@ -7,6 +7,7 @@ pub mod faucet;
 pub mod fee_escrow;
 pub mod market;
 pub mod market_risk;
+pub mod order;
 pub mod permissions;
 pub mod pool;
 pub mod pool_live;
@@ -19,6 +20,7 @@ pub use faucet::*;
 pub use fee_escrow::*;
 pub use market::*;
 pub use market_risk::*;
+pub use order::*;
 pub use permissions::*;
 pub use pool::*;
 pub use pool_live::*;
@@ -166,7 +168,10 @@ mod size_tests {
         let perm = rent(EphemeralPermission::size_of(PERMISSION_MEMBERS) as u32);
         println!("UserAccount {u} B, Position {p} B, DisclosureQueue {d} B; L1 rent total {} lamports; ER permission prefund {perm} lamports x3",
             l1_rent(u) + l1_rent(p) + l1_rent(d));
-        assert!(p < 400, "Position must stay under 400 B (spec §8 Q3)");
+        assert!(
+            p < 700,
+            "Position must stay under 700 B (spec §8 Q3, grown by ORDER_SLOTS orders)"
+        );
         assert!(d < 1300, "DisclosureQueue must stay under 1300 B");
         // Bound through a `let` (not the bare const expression) so clippy's
         // `assertions_on_constants` lint doesn't fire on a compile-time-true assert.

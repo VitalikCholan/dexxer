@@ -24,7 +24,8 @@ import * as math from '@/src/lib/math'
 import { formatUsd2 } from '@/src/lib/status'
 import { deriveTicket, impliedLeverage, safeLiq } from './ticketMath'
 import { type SideName } from '@/src/lib/codecs'
-import { solSize, usdAmount } from '@/src/lib/trade'
+import { solSize, usdAmount, type OrderParams } from '@/src/lib/trade'
+import { validateAttached } from '@/src/lib/orders'
 
 export interface MarketParams {
   imrBps: bigint
@@ -40,8 +41,18 @@ export interface TradeTicketProps {
   busy: boolean
   disabled?: boolean
   /** Raw program units: size 1e9, margin/limit 1e6 — no number round trip on the way to `openPosition`. */
-  onOpen: (side: SideName, size: bigint, margin: bigint, limitPrice: bigint) => Promise<void>
+  onOpen: (side: SideName, size: bigint, margin: bigint, limitPrice: bigint, exits: Exits) => Promise<void>
+  /** Limit/Stop entry: parked as a conditional order and executed when the mark reaches the trigger. */
+  onPlace: (p: OrderParams) => Promise<void>
 }
+
+/** Optional TP/SL (raw 1e6 prices, 0 = none) that ride along with an entry. */
+export interface Exits {
+  tp: bigint
+  sl: bigint
+}
+
+type OrderType = 'market' | 'limit' | 'stop'
 
 export function TradeTicket({
   markUsd,
@@ -51,6 +62,7 @@ export function TradeTicket({
   busy,
   disabled,
   onOpen,
+  onPlace,
 }: TradeTicketProps) {
   const { colors, space } = useTheme()
   const caption = useTextStyle('caption')
@@ -59,12 +71,25 @@ export function TradeTicket({
   const [sizeSol, setSizeSol] = useState('0.1')
   const [marginUsd, setMarginUsd] = useState('20')
   const [leverage, setLeverage] = useState(2)
+  const [orderType, setOrderType] = useState<OrderType>('market')
+  const [triggerUsd, setTriggerUsd] = useState('')
+  const [tpUsd, setTpUsd] = useState('')
+  const [slUsd, setSlUsd] = useState('')
 
   const sideName: SideName = side === 'long' ? 'Long' : 'Short'
   const sizeNum = Number(sizeSol) || 0
   const sizeBig = sizeNum > 0 ? solSize(sizeNum) : 0n
-  const ntl = markUsd !== null && sizeBig > 0n ? math.notional(sizeBig, markUsd) : null
-  const derived = deriveTicket({ sizeSol: sizeNum, leverage, markUsd, available: freeMarginUsd })
+  const triggerNum = Number(triggerUsd) || 0
+  const triggerBig = triggerNum > 0 ? usdAmount(triggerNum) : 0n
+  const isEntryOrder = orderType !== 'market'
+  // Price the position is expected to open at: the trigger for a resting
+  // order, the current mark for a market order.
+  const refPrice = isEntryOrder ? (triggerBig > 0n ? triggerBig : null) : markUsd
+  const tpBig = Number(tpUsd) > 0 ? usdAmount(Number(tpUsd)) : 0n
+  const slBig = Number(slUsd) > 0 ? usdAmount(Number(slUsd)) : 0n
+  const exitProblem = refPrice !== null ? validateAttached(sideName, refPrice, tpBig, slBig) : null
+  const ntl = refPrice !== null && sizeBig > 0n ? math.notional(sizeBig, refPrice) : null
+  const derived = deriveTicket({ sizeSol: sizeNum, leverage, markUsd: refPrice, available: freeMarginUsd })
 
   // Recompute Margin from (size, leverage) whenever EITHER changes — the
   // React-docs "adjust state when [something] changes" pattern (during
@@ -89,8 +114,8 @@ export function TradeTicket({
   const marginBig = marginNum > 0 ? usdAmount(marginNum) : 0n
   const feeUsd = ntl !== null && market ? math.fee(ntl, market.openFeeBps) : null
   const liq =
-    ntl !== null && markUsd !== null && market && marginBig > 0n && sizeBig > 0n
-      ? safeLiq(sideName, markUsd, sizeBig, marginBig, market.mmrBps)
+    ntl !== null && refPrice !== null && market && marginBig > 0n && sizeBig > 0n
+      ? safeLiq(sideName, refPrice, sizeBig, marginBig, market.mmrBps)
       : null
   const limit = markUsd !== null ? math.openSlippageLimit(sideName, markUsd) : null
 
@@ -129,8 +154,38 @@ export function TradeTicket({
     )
   }
 
+  const canSubmit =
+    !(disabled || busy || markUsd === null || derived.insufficient || exitProblem !== null) &&
+    (!isEntryOrder || triggerBig > 0n)
+
+  function submit() {
+    if (!isEntryOrder) {
+      void onOpen(sideName, sizeBig, marginBig, limit ?? 0n, { tp: tpBig, sl: slBig })
+      return
+    }
+    void onPlace({
+      kind: orderType === 'limit' ? 'Limit' : 'Stop',
+      side,
+      size: sizeBig,
+      margin: marginBig,
+      trigger: triggerBig,
+      tp: tpBig,
+      sl: slBig,
+    })
+  }
+
   return (
     <Card>
+      <Segment
+        compact
+        value={orderType}
+        onChange={setOrderType}
+        options={[
+          { value: 'market', label: 'Market' },
+          { value: 'limit', label: 'Limit' },
+          { value: 'stop', label: 'Stop' },
+        ]}
+      />
       <Segment
         tone="long-short"
         value={side}
@@ -140,6 +195,20 @@ export function TradeTicket({
           { value: 'short', label: 'Short' },
         ]}
       />
+      {isEntryOrder ? (
+        <Input
+          label={orderType === 'limit' ? 'Limit price' : 'Trigger price'}
+          value={triggerUsd}
+          onChangeText={setTriggerUsd}
+          suffix="USD"
+          keyboardType="decimal-pad"
+          hint={
+            orderType === 'limit'
+              ? 'Opens when the mark reaches this price from the better side'
+              : 'Opens when the mark breaks through this price'
+          }
+        />
+      ) : null}
       <View style={{ flexDirection: 'row', gap: space.md }}>
         <View style={{ flex: 1 }}>
           <Input label="Size" value={sizeSol} onChangeText={setSizeSol} suffix="SOL" keyboardType="decimal-pad" />
@@ -161,17 +230,45 @@ export function TradeTicket({
       ) : null}
       <LeverageSlider value={leverage} onChange={setLeverage} />
       <View style={{ gap: space.xs }}>
-        <Row label="Entry ≈" value={markUsd !== null ? `$${formatUsd2(markUsd)}` : '—'} />
+        <Row
+          label={isEntryOrder ? 'Entry at' : 'Entry ≈'}
+          value={refPrice !== null ? `$${formatUsd2(refPrice)}` : '—'}
+        />
         <Row label="Liq. price" value={liq !== null ? `$${formatUsd2(liq)}` : '—'} />
         <Row label="Fee" value={feeUsd !== null ? `${formatUsd2(feeUsd)} dUSDC` : '—'} />
-        <Row label="Slippage limit" value={limit !== null ? `$${formatUsd2(limit)}` : '—'} />
+        {isEntryOrder ? null : <Row label="Slippage limit" value={limit !== null ? `$${formatUsd2(limit)}` : '—'} />}
       </View>
-      <Button
-        variant={side === 'long' ? 'primary' : 'destructive'}
-        disabled={disabled || busy || markUsd === null || derived.insufficient}
-        onPress={() => void onOpen(sideName, sizeBig, marginBig, limit ?? 0n)}
-      >
-        {busy ? 'Signing with session key…' : side === 'long' ? 'Open Long' : 'Open Short'}
+      <View style={{ flexDirection: 'row', gap: space.md }}>
+        <View style={{ flex: 1 }}>
+          <Input
+            label="Take profit"
+            value={tpUsd}
+            onChangeText={setTpUsd}
+            suffix="USD"
+            keyboardType="decimal-pad"
+            placeholder="optional"
+          />
+        </View>
+        <View style={{ flex: 1 }}>
+          <Input
+            label="Stop loss"
+            value={slUsd}
+            onChangeText={setSlUsd}
+            suffix="USD"
+            keyboardType="decimal-pad"
+            placeholder="optional"
+          />
+        </View>
+      </View>
+      {exitProblem ? <Text style={[caption, { color: colors.short }]}>{exitProblem}</Text> : null}
+      <Button variant={side === 'long' ? 'primary' : 'destructive'} disabled={!canSubmit} onPress={submit}>
+        {busy
+          ? 'Signing with session key…'
+          : isEntryOrder
+            ? `Place ${orderType === 'limit' ? 'Limit' : 'Stop'} ${side === 'long' ? 'Long' : 'Short'}`
+            : side === 'long'
+              ? 'Open Long'
+              : 'Open Short'}
       </Button>
       <Text style={[caption, { color: colors.textSecondary, textAlign: 'center' }]}>
         No wallet prompt — signed by your session key

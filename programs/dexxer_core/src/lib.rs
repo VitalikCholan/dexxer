@@ -14,7 +14,7 @@ pub mod risk;
 pub mod state;
 pub mod token;
 use instructions::*;
-use state::{DisclosureArgs, MarketParams, Side};
+use state::{DisclosureArgs, MarketParams, OrderKind, Side};
 declare_id!("G2okX5Bae4CxfK8vzso1Ecc96QUv7E3P4YvxaZnaYXoV");
 
 #[ephemeral]
@@ -135,6 +135,24 @@ pub mod dexxer_core {
         limit_price: u64,
     ) -> Result<()> {
         trade::decrease_position(ctx, close_size, limit_price)
+    }
+    /// Conditional orders (Limit / Stop / TP / SL / Trailing). See `state/order.rs`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn place_order<'info>(
+        ctx: Context<'info, Trade<'info>>,
+        kind: OrderKind,
+        side: Side,
+        size: u64,
+        margin: u64,
+        trigger: u64,
+        trail_bps: u16,
+        tp: u64,
+        sl: u64,
+    ) -> Result<()> {
+        trade::place_order(ctx, kind, side, size, margin, trigger, trail_bps, tp, sl)
+    }
+    pub fn cancel_order<'info>(ctx: Context<'info, Trade<'info>>, slot: u8) -> Result<()> {
+        trade::cancel_order(ctx, slot)
     }
     /// Week-5 Task 3: the per-position scheduled liquidation task's
     /// instruction. Registered by `open_position`, signed by
