@@ -17,6 +17,7 @@ import { Button } from '@/src/ui/Button'
 import { type PositionSlot } from '@/src/lib/positions'
 import { solSize, usdAmount, type OrderParams } from '@/src/lib/trade'
 import { type ExitKind, validateExit, validatePartialSize, validateTrail } from '@/src/lib/orders'
+import { parseAmount } from '@/src/lib/decimal'
 
 export interface OrderSheetProps {
   open: boolean
@@ -38,17 +39,29 @@ export function OrderSheet({ open, onClose, position, symbol, markUsd, minSize, 
   const [trailPct, setTrailPct] = useState('2')
   const [partSol, setPartSol] = useState('')
 
-  const priceNum = Number(price) || 0
-  const trailBps = Math.round((Number(trailPct) || 0) * 100)
-  const partNum = Number(partSol) || 0
-  const part = partNum > 0 ? solSize(partNum) : 0n
-  const sizeProblem = partSol === '' ? null : validatePartialSize(part, position.size, minSize)
+  // A filled field is a positive number or an error — never a silent zero:
+  // 0 in `size` means "the whole position" to the program.
+  const priceIn = parseAmount(price)
+  const trailIn = parseAmount(trailPct)
+  const partIn = parseAmount(partSol)
+  const priceNum = priceIn.value
+  const trailBps = Math.round(trailIn.value * 100)
+  const part = partIn.value > 0 ? solSize(partIn.value) : 0n
+  const sizeProblem = partIn.invalid
+    ? 'Part to close must be a number above 0 — or leave it empty'
+    : part === 0n
+      ? null
+      : validatePartialSize(part, position.size, minSize)
   const priceProblem =
     kind === 'TrailingStop'
-      ? validateTrail(trailBps)
-      : price === ''
+      ? trailIn.invalid
+        ? 'Enter the trail distance as a number'
+        : validateTrail(trailBps)
+      : price.trim() === ''
         ? 'Enter a price'
-        : validateExit(kind, position.side, usdAmount(priceNum), markUsd)
+        : priceIn.invalid
+          ? 'Enter the price as a number'
+          : validateExit(kind, position.side, usdAmount(priceNum), markUsd)
   const problem = priceProblem ?? sizeProblem
 
   function submit() {

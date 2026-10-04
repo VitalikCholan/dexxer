@@ -55,27 +55,32 @@ impl UserAccount {
             self.free_margin >= amount,
             crate::errors::DexxerError::InsufficientMargin
         );
-        self.free_margin = self
+        // Both sides computed before either is written (all-or-nothing).
+        let free_margin = self
             .free_margin
             .checked_sub(amount)
             .ok_or(crate::errors::DexxerError::MathOverflow)?;
-        self.order_reserved = self
+        let order_reserved = self
             .order_reserved
             .checked_add(amount)
             .ok_or(crate::errors::DexxerError::MathOverflow)?;
+        self.free_margin = free_margin;
+        self.order_reserved = order_reserved;
         Ok(())
     }
 
     /// Give a reservation back to `free_margin` (cancel, fill, dropped order).
     pub fn release(&mut self, amount: u64) -> Result<()> {
-        self.order_reserved = self
+        let order_reserved = self
             .order_reserved
             .checked_sub(amount)
             .ok_or(crate::errors::DexxerError::MathOverflow)?;
-        self.free_margin = self
+        let free_margin = self
             .free_margin
             .checked_add(amount)
             .ok_or(crate::errors::DexxerError::MathOverflow)?;
+        self.order_reserved = order_reserved;
+        self.free_margin = free_margin;
         Ok(())
     }
 }

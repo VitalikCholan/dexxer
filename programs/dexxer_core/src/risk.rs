@@ -148,8 +148,10 @@ pub fn settle_into_pool(
     s: &Settlement,
     liquidation: bool,
 ) -> Result<()> {
-    // Release locked margin
-    pool.locked_total = pool
+    // Check before write: every new value is computed first and the pool is
+    // written only once nothing can fail any more. Callers that tolerate a
+    // failed settlement (conditional orders) rely on it leaving `pool` as is.
+    let locked_total = pool
         .locked_total
         .checked_sub(margin)
         .ok_or(DexxerError::MathOverflow)?;
@@ -164,40 +166,47 @@ pub fn settle_into_pool(
         .checked_sub(s.fee_taken as i128)
         .ok_or(DexxerError::MathOverflow)?;
 
-    if delta_received >= 0 {
-        pool.protocol_liquidity = pool
-            .protocol_liquidity
+    let protocol_liquidity = if delta_received >= 0 {
+        pool.protocol_liquidity
             .checked_add(u64::try_from(delta_received).map_err(|_| DexxerError::MathOverflow)?)
-            .ok_or(DexxerError::MathOverflow)?;
+            .ok_or(DexxerError::MathOverflow)?
     } else {
         // Pool loss: reduce protocol_liquidity
         let loss =
             u64::try_from(delta_received.unsigned_abs()).map_err(|_| DexxerError::MathOverflow)?;
-        pool.protocol_liquidity = pool
-            .protocol_liquidity
+        pool.protocol_liquidity
             .checked_sub(loss)
-            .ok_or(DexxerError::PoolInsolvent)?;
-    }
+            .ok_or(DexxerError::PoolInsolvent)?
+    };
 
     // Fee handling: liquidation fee goes to insurance, otherwise to fees_accrued
-    if liquidation {
-        pool.insurance = pool
-            .insurance
-            .checked_add(s.fee_taken)
-            .ok_or(DexxerError::MathOverflow)?;
+    let (insurance, fees_accrued) = if liquidation {
+        (
+            pool.insurance
+                .checked_add(s.fee_taken)
+                .ok_or(DexxerError::MathOverflow)?,
+            pool.fees_accrued,
+        )
     } else {
-        pool.fees_accrued = pool
-            .fees_accrued
-            .checked_add(s.fee_taken)
-            .ok_or(DexxerError::MathOverflow)?;
-    }
+        (
+            pool.insurance,
+            pool.fees_accrued
+                .checked_add(s.fee_taken)
+                .ok_or(DexxerError::MathOverflow)?,
+        )
+    };
 
     // Track bad debt
-    pool.bad_debt_total = pool
+    let bad_debt_total = pool
         .bad_debt_total
         .checked_add(s.bad_debt)
         .ok_or(DexxerError::MathOverflow)?;
 
+    pool.locked_total = locked_total;
+    pool.protocol_liquidity = protocol_liquidity;
+    pool.insurance = insurance;
+    pool.fees_accrued = fees_accrued;
+    pool.bad_debt_total = bad_debt_total;
     Ok(())
 }
 

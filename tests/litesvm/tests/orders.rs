@@ -1568,3 +1568,110 @@ fn an_account_with_the_previous_704_byte_tail_is_treated_as_having_no_tail() {
         .unwrap();
     assert_invariant(&h, &w, &[&t]);
 }
+
+// ------------------------------------------------ review fixes (PR #19, 04.10.2026)
+
+/// Leave the pool unable to pay any profit: the next settlement that owes the
+/// trader money fails with `PoolInsolvent`.
+fn drain_pool(h: &mut Harness, w: &World) {
+    use anchor_lang::AccountSerialize;
+    let mut pool = h.account::<PoolLive>(&w.pool_live);
+    pool.protocol_liquidity = 0;
+    let mut bytes = Vec::new();
+    pool.try_serialize(&mut bytes).unwrap();
+    let mut acc = h.svm.get_account(&w.pool_live).expect("pool_live");
+    acc.data[..bytes.len()].copy_from_slice(&bytes);
+    h.svm.set_account(w.pool_live, acc).unwrap();
+}
+
+#[test]
+fn a_partial_exit_the_pool_cannot_settle_changes_nothing() {
+    let mut h = Harness::new();
+    let (w, t) = world(&mut h);
+    open_long(&mut h, &w, &t);
+    place_exit(&mut h, &w, &t, OrderKind::TakeProfit, 3 * (SOL10 / 10), 160).unwrap();
+    mark(&mut h, &w, 160);
+    drain_pool(&mut h, &w);
+    let pool_before = h.account::<PoolLive>(&w.pool_live);
+    let risk_before = h.account::<MarketRisk>(&w.risk);
+    let (free_before, locked_before) = (free(&h, &t), locked(&h, &t));
+
+    // The tick itself succeeds: the order is dropped, not the transaction.
+    tick(&mut h, &w, &t);
+
+    let pool = h.account::<PoolLive>(&w.pool_live);
+    assert_eq!(
+        pool.locked_total, pool_before.locked_total,
+        "a failed settlement must not release locked margin"
+    );
+    assert_eq!(pool.fees_accrued, pool_before.fees_accrued);
+    assert_eq!(pool.protocol_liquidity, 0);
+    let risk = h.account::<MarketRisk>(&w.risk);
+    assert_eq!(risk.oi_long, risk_before.oi_long);
+    let pos = slot(&h, &w, &t).expect("still open");
+    assert_eq!((pos.size, pos.margin), (SOL10, M150));
+    assert_eq!((free(&h, &t), locked(&h, &t)), (free_before, locked_before));
+}
+
+#[test]
+fn an_exit_the_pool_cannot_settle_does_not_fail_the_crank_batch() {
+    let mut h = Harness::new();
+    let (w, t) = world(&mut h);
+    let other = w.new_trader(&mut h, 1_000_000_000);
+    open_long(&mut h, &w, &t);
+    open_long(&mut h, &w, &other);
+    exit_tp_sl(&mut h, &w, &t, OrderKind::TakeProfit, 160);
+    mark(&mut h, &w, 160);
+    drain_pool(&mut h, &w);
+    let pool_before = h.account::<PoolLive>(&w.pool_live);
+
+    // One trader's order that cannot settle must not abort the tick for the
+    // whole batch (nor the scheduler's check for that trader).
+    h.warp(200, NOW);
+    h.send(
+        &[ixs::crank_tick(&w.crank.pubkey(), &w, &[&t, &other])],
+        &[&w.crank],
+    )
+    .expect("crank batch survives a failing order");
+    h.warp(201, NOW);
+    h.send(
+        &[ixs::liquidation_check(&w.crank.pubkey(), &w, &t)],
+        &[&w.crank],
+    )
+    .expect("scheduled check survives a failing order");
+
+    // Nothing half-applied; the whole-position order stays armed and fills
+    // once the pool can pay.
+    let pool = h.account::<PoolLive>(&w.pool_live);
+    assert_eq!(pool.locked_total, pool_before.locked_total);
+    assert!(is_open(&h, &w, &t));
+    assert_eq!(orders(&h, &t), vec![OrderKind::TakeProfit]);
+}
+
+#[test]
+fn exit_scrubs_a_previous_layout_order_tail() {
+    // An account allocated for the previous 704-byte tail may still hold old
+    // order bytes. The program no longer reads them (so the owner cannot cancel
+    // them either) — the exit must still zero them before the commit to L1.
+    let mut h = Harness::new();
+    let (w, t) = world(&mut h);
+    let mut acc = h.svm.get_account(&t.positions).expect("positions");
+    acc.data.truncate(Positions::SPACE + 704);
+    acc.data[Positions::SPACE..].fill(0xAB);
+    h.svm.set_account(t.positions, acc).unwrap();
+
+    h.warp(1_000, NOW);
+    let bal = free(&h, &t);
+    h.send(&[ixs::withdraw(&t.kp.pubkey(), &t, &w, bal)], &[&t.kp])
+        .unwrap();
+    h.send(
+        &[ixs::undelegate_user(&t.kp.pubkey(), &t, &w, &[w.market])],
+        &[&t.kp],
+    )
+    .unwrap();
+    let acc = h.svm.get_account(&t.positions).expect("positions");
+    assert!(
+        acc.data[Positions::SPACE..].iter().all(|b| *b == 0),
+        "old order bytes must not reach L1"
+    );
+}
