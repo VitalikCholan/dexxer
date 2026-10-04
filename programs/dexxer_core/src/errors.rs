@@ -161,6 +161,11 @@ pub enum DexxerError {
     InvalidOrder,
     #[msg("order slot is empty")]
     OrderNotFound,
+    /// The account predates conditional orders (no order tail, see
+    /// `state/order.rs`): everything else still works; exit and re-onboard to
+    /// get orders.
+    #[msg("account predates conditional orders: exit and set it up again")]
+    OrdersUnsupported,
 }
 
 impl From<MathError> for anchor_lang::error::Error {

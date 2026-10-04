@@ -46,6 +46,7 @@ test('positionRows: every open slot in index order, symbol from the registry, un
     slots: [slot(2, stray), slot(5, btc.market)],
     history: [],
     orders: [],
+    ordersSupported: true,
     version: 1,
     bump: 1,
   }
@@ -62,7 +63,15 @@ test('positionRows: every open slot in index order, symbol from the registry, un
 })
 
 test('positionRows: a registry market without a slot never appears', () => {
-  const p: DecodedPositions = { owner: k(), slots: [], history: [], orders: [], version: 1, bump: 1 }
+  const p: DecodedPositions = {
+    owner: k(),
+    slots: [],
+    history: [],
+    orders: [],
+    ordersSupported: true,
+    version: 1,
+    bump: 1,
+  }
   assert.deepEqual(positionRows(p, [mi('SOL'), mi('BTC')]), [])
 })
 

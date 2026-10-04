@@ -15,9 +15,12 @@ const RECORD = 96;
 const SLOTS_AT = DISC + 32;
 const HISTORY_AT = DISC + 1568;
 const HEAD_AT = DISC + 3104;
-// 3176 B of slots + history, then the 8 conditional-order slots (88 B each,
-// state/order.rs) appended at the end.
-export const POSITIONS_SIZE = DISC + 3176 + 704;
+// 3176 B of slots + history (`POSITIONS_SIZE_LEGACY`), then the OPTIONAL 8
+// conditional-order slots (88 B each, state/order.rs). An account onboarded
+// before orders is exactly the legacy length and still decodes — the program
+// treats the tail the same way.
+export const POSITIONS_SIZE_LEGACY = DISC + 3176;
+export const POSITIONS_SIZE = POSITIONS_SIZE_LEGACY + 704;
 
 export interface PositionSlot {
   index: number;
@@ -52,6 +55,8 @@ export interface Positions {
   history: HistoryRecord[];
   version: number;
   bump: number;
+  /** `false` for a pre-orders account (no order tail): `place_order` on it fails with `OrdersUnsupported`. */
+  ordersSupported: boolean;
 }
 
 const side = (b: number): "long" | "short" => (b === 1 ? "short" : "long");
@@ -59,7 +64,9 @@ const REASONS = ["user", "liquidated", "decrease"] as const;
 const key = (data: Buffer, at: number) => new PublicKey(data.subarray(at, at + 32));
 
 export function decodePositions(data: Buffer): Positions {
-  if (data.length !== POSITIONS_SIZE) throw new Error(`Positions: length ${data.length}, expected ${POSITIONS_SIZE}`);
+  if (data.length !== POSITIONS_SIZE && data.length !== POSITIONS_SIZE_LEGACY) {
+    throw new Error(`Positions: length ${data.length}, expected ${POSITIONS_SIZE} or ${POSITIONS_SIZE_LEGACY}`);
+  }
   if (!data.subarray(0, DISC).equals(POSITIONS_DISC_BYTES)) throw new Error("Positions: discriminator mismatch");
 
   const slots: PositionSlot[] = [];
@@ -100,7 +107,14 @@ export function decodePositions(data: Buffer): Positions {
     });
   }
 
-  return { owner: key(data, DISC), slots, history, version: data.readUInt8(DISC + 3106), bump: data.readUInt8(DISC + 3107) };
+  return {
+    owner: key(data, DISC),
+    slots,
+    history,
+    version: data.readUInt8(DISC + 3106),
+    bump: data.readUInt8(DISC + 3107),
+    ordersSupported: data.length === POSITIONS_SIZE,
+  };
 }
 
 export function slotFor(p: Positions, market: PublicKey): PositionSlot | null {

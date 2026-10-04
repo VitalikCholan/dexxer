@@ -18,7 +18,10 @@ const HEAD_AT = DISC + 3104
 const ORDERS_AT = DISC + 3176
 export const ORDER_SLOTS = 8
 const ORDER_RECORD = 88
-// 3176 B of slots + history, then the conditional-order slots appended at the end (state/order.rs).
+// 3176 B of slots + history, then the OPTIONAL conditional-order tail (state/order.rs).
+// An account onboarded before orders is exactly `POSITIONS_SIZE_LEGACY` and still
+// decodes, with no orders; the program refuses `place_order` on it (`OrdersUnsupported`).
+export const POSITIONS_SIZE_LEGACY = ORDERS_AT
 export const POSITIONS_SIZE = ORDERS_AT + ORDER_SLOTS * ORDER_RECORD
 /** `Positions`' Anchor discriminator — pinned against the IDL by test/positions.test.ts. */
 export const POSITIONS_DISC = Uint8Array.from([197, 153, 71, 203, 133, 176, 119, 182])
@@ -86,6 +89,8 @@ export interface DecodedPositions {
   history: HistoryRecord[]
   /** Pending conditional orders of every market, empty slots omitted. */
   orders: DecodedOrder[]
+  /** `false` for a pre-orders account (no order tail) — orders cannot be placed until the owner re-onboards. */
+  ordersSupported: boolean
   version: number
   bump: number
 }
@@ -94,7 +99,10 @@ const side = (b: number): SideName => (b === 1 ? 'Short' : 'Long')
 const key = (data: Buffer, at: number) => new PublicKey(data.subarray(at, at + 32))
 
 export function decodePositions(data: Buffer): DecodedPositions {
-  if (data.length !== POSITIONS_SIZE) throw new Error(`Positions: length ${data.length}, expected ${POSITIONS_SIZE}`)
+  if (data.length !== POSITIONS_SIZE && data.length !== POSITIONS_SIZE_LEGACY) {
+    throw new Error(`Positions: length ${data.length}, expected ${POSITIONS_SIZE} or ${POSITIONS_SIZE_LEGACY}`)
+  }
+  const ordersSupported = data.length === POSITIONS_SIZE
   for (let i = 0; i < DISC; i++) if (data[i] !== POSITIONS_DISC[i]) throw new Error('Positions: discriminator mismatch')
 
   const slots: PositionSlot[] = []
@@ -135,7 +143,7 @@ export function decodePositions(data: Buffer): DecodedPositions {
     })
   }
   const orders: DecodedOrder[] = []
-  for (let i = 0; i < ORDER_SLOTS; i++) {
+  for (let i = 0; ordersSupported && i < ORDER_SLOTS; i++) {
     const at = ORDERS_AT + i * ORDER_RECORD
     const kind = ORDER_KINDS[data.readUInt8(at + 80)]
     if (!kind || kind === 'None') continue
@@ -158,6 +166,7 @@ export function decodePositions(data: Buffer): DecodedPositions {
     slots,
     history,
     orders,
+    ordersSupported,
     version: data.readUInt8(DISC + 3106),
     bump: data.readUInt8(DISC + 3107),
   }

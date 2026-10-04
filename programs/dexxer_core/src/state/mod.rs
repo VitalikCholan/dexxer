@@ -153,11 +153,13 @@ mod size_tests {
             l1_rent(p),
             l1_rent(u) + l1_rent(p)
         );
+        assert_eq!(p, 3184, "Positions::SPACE is pinned by spec §2.9.1");
         assert_eq!(
-            p, 3888,
-            "Positions::SPACE is pinned by spec §2.9.1 (+704 B of conditional orders)"
+            Positions::SPACE_WITH_ORDERS,
+            3888,
+            "new accounts carry the optional 704 B order tail"
         );
-        // `Positions` is pinned to exactly 3888 B by `positions.rs`'s layout
+        // `Positions` is pinned to exactly 3184 B by `positions.rs`'s layout
         // test (spec §2.9.1); the old per-market `Position` < 400 B bound
         // (spec §8 Q3) no longer applies to one account holding 16 slots.
         // Bound through a `let` (not the bare const expression) so clippy's

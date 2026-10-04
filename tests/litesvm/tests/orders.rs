@@ -1,5 +1,5 @@
-// Conditional orders (Limit / Stop / TP / SL / Trailing). Orders live in
-// `Positions.orders` and are executed by the per-position scheduled task, i.e.
+// Conditional orders (Limit / Stop / TP / SL / Trailing). Orders live in the
+// optional order tail of `Positions` (`state/order.rs`) and are executed by the per-position scheduled task, i.e.
 // by `liquidation_check` — every test here drives that very instruction.
 use dexxer_core::{errors::DexxerError, state::*};
 use dexxer_litesvm::{
@@ -108,8 +108,7 @@ fn exit_tp_sl(h: &mut Harness, w: &World, t: &Trader, kind: OrderKind, trigger: 
 }
 
 fn orders(h: &Harness, t: &Trader) -> Vec<OrderKind> {
-    h.positions(&t.positions)
-        .orders
+    h.orders(&t.positions)
         .iter()
         .filter(|o| !o.is_empty())
         .map(|o| o.kind())
@@ -127,8 +126,7 @@ fn is_open(h: &Harness, w: &World, t: &Trader) -> bool {
 
 /// The `n`th non-empty order slot.
 fn order_at(h: &Harness, t: &Trader, n: usize) -> OrderSlot {
-    *h.positions(&t.positions)
-        .orders
+    *h.orders(&t.positions)
         .iter()
         .filter(|o| !o.is_empty())
         .nth(n)
@@ -828,4 +826,80 @@ fn place_order_with_a_foreign_feed_is_rejected() {
     let r = h.send(&[ix], &[&t.kp]);
     assert_custom_error(&r, err(DexxerError::WrongFeed));
     assert!(orders(&h, &t).is_empty());
+}
+
+/// Shrink a trader's `Positions` to the pre-orders footprint (3184 B): an
+/// account onboarded before the order tail existed.
+fn make_legacy(h: &mut Harness, t: &Trader) {
+    let mut acc = h.svm.get_account(&t.positions).expect("positions");
+    acc.data.truncate(Positions::SPACE);
+    h.svm.set_account(t.positions, acc).unwrap();
+}
+
+#[test]
+fn legacy_positions_without_order_tail_still_trades_and_refuses_orders() {
+    // Blocker 3 of the PR review: the order tail is OPTIONAL. An account
+    // created before it must keep trading, ticking and closing; only
+    // `place_order`/`cancel_order` refuse it, with a dedicated error, until the
+    // owner re-onboards.
+    let mut h = Harness::new();
+    let (w, t) = world(&mut h);
+    make_legacy(&mut h, &t);
+    assert_eq!(
+        h.svm.get_account(&t.positions).unwrap().data.len(),
+        Positions::SPACE
+    );
+
+    open_long(&mut h, &w, &t);
+    assert!(is_open(&h, &w, &t));
+    mark(&mut h, &w, 151);
+    tick(&mut h, &w, &t); // liquidation_check on a legacy account is a no-op, not an error
+    assert!(is_open(&h, &w, &t));
+
+    let r = place(
+        &mut h,
+        &w,
+        &t,
+        OrderKind::TakeProfit,
+        Side::Long,
+        0,
+        0,
+        160 * P,
+        0,
+        0,
+        0,
+    );
+    assert!(r.is_err());
+    let r = h.send(
+        &[ixs::place_order(
+            &t.kp.pubkey(),
+            &t,
+            &w,
+            OrderKind::TakeProfit,
+            Side::Long,
+            0,
+            0,
+            160 * P,
+            0,
+            0,
+            0,
+        )],
+        &[&t.kp],
+    );
+    assert_custom_error(&r, err(DexxerError::OrdersUnsupported));
+    let r = h.send(&[ixs::cancel_order(&t.kp.pubkey(), &t, &w, 0)], &[&t.kp]);
+    assert_custom_error(&r, err(DexxerError::OrdersUnsupported));
+
+    // The relayer path liquidates/ticks legacy accounts too.
+    h.send(
+        &[ixs::crank_tick(&w.crank.pubkey(), &w, &[&t])],
+        &[&w.crank],
+    )
+    .unwrap();
+
+    h.send(&[ixs::close_position(&t.kp.pubkey(), &t, &w, 0)], &[&t.kp])
+        .unwrap();
+    assert!(!is_open(&h, &w, &t));
+    assert_eq!(h.positions(&t.positions).history_len, 1);
+    assert_invariant(&h, &w, &[&t]);
 }

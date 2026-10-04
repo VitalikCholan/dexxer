@@ -7068,6 +7068,11 @@
       "code": 6053,
       "name": "OrderNotFound",
       "msg": "order slot is empty"
+    },
+    {
+      "code": 6054,
+      "name": "OrdersUnsupported",
+      "msg": "account predates conditional orders: exit and set it up again"
     }
   ],
   "types": [
@@ -7603,97 +7608,6 @@
       }
     },
     {
-      "name": "OrderSlot",
-      "docs": [
-        "One order slot. `zero_copy` like the rest of `Positions` (an all-zero slot",
-        "is an empty one: `kind == 0`)."
-      ],
-      "serialization": "bytemuck",
-      "repr": {
-        "kind": "c"
-      },
-      "type": {
-        "kind": "struct",
-        "fields": [
-          {
-            "name": "market",
-            "docs": [
-              "The market this order trades. Part of the data, not the address."
-            ],
-            "type": "pubkey"
-          },
-          {
-            "name": "trigger",
-            "docs": [
-              "Trigger price (mark units). Unused (0) for `TrailingStop`."
-            ],
-            "type": "u64"
-          },
-          {
-            "name": "size",
-            "docs": [
-              "Entry orders only."
-            ],
-            "type": "u64"
-          },
-          {
-            "name": "margin",
-            "type": "u64"
-          },
-          {
-            "name": "extreme",
-            "docs": [
-              "`TrailingStop` only: best mark seen since placement (highest for a",
-              "long, lowest for a short)."
-            ],
-            "type": "u64"
-          },
-          {
-            "name": "tp",
-            "docs": [
-              "Entry orders only: take-profit / stop-loss to attach on fill (0 = none)."
-            ],
-            "type": "u64"
-          },
-          {
-            "name": "sl",
-            "type": "u64"
-          },
-          {
-            "name": "kind",
-            "docs": [
-              "`OrderKind::as_u8`."
-            ],
-            "type": "u8"
-          },
-          {
-            "name": "side",
-            "docs": [
-              "Entry orders: the side to open. Reduce-only orders: the side of the",
-              "position they protect (copied from it at placement). `Side::as_u8`."
-            ],
-            "type": "u8"
-          },
-          {
-            "name": "trail_bps",
-            "docs": [
-              "`TrailingStop` only: distance from `extreme`, in bps."
-            ],
-            "type": "u16"
-          },
-          {
-            "name": "_pad",
-            "type": {
-              "array": [
-                "u8",
-                4
-              ]
-            }
-          }
-        ]
-      }
-    },
-    {
       "name": "Pool",
       "type": {
         "kind": "struct",
@@ -7940,24 +7854,6 @@
               "array": [
                 "u8",
                 64
-              ]
-            }
-          },
-          {
-            "name": "orders",
-            "docs": [
-              "Conditional orders of every market (`state/order.rs`). Appended after",
-              "`_reserved`, so every earlier offset is unchanged; an account created",
-              "before this field is shorter and must be re-onboarded."
-            ],
-            "type": {
-              "array": [
-                {
-                  "defined": {
-                    "name": "OrderSlot"
-                  }
-                },
-                8
               ]
             }
           }

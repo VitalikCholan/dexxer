@@ -51,6 +51,7 @@ test('exitMarkets: SOL always, history and open-slot markets once each, at most 
     slots: [slot(eth)],
     history: [rec(btc), rec(btc), rec(sol)],
     orders: [],
+    ordersSupported: true,
     version: 1,
     bump: 1,
   }
@@ -66,6 +67,7 @@ test('exitMarkets: SOL always, history and open-slot markets once each, at most 
     slots: [],
     history: Array.from({ length: 16 }, () => rec(k())),
     orders: [],
+    ordersSupported: true,
     version: 1,
     bump: 1,
   }
@@ -83,6 +85,7 @@ test('exitMarkets: open slots first, then history newest first', () => {
     slots: [slot(open)],
     history: [rec(oldM), rec(newM)],
     orders: [],
+    ordersSupported: true,
     version: 1,
     bump: 1,
   }
@@ -171,6 +174,7 @@ test('exitMarkets also names markets that only hold a pending order', () => {
         sl: 0n,
       },
     ],
+    ordersSupported: true,
     version: 1,
     bump: 1,
   }

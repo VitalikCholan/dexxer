@@ -195,7 +195,7 @@ pub struct InitUser<'info> {
     #[account(
         init,
         payer = payer,
-        space = Positions::SPACE,
+        space = Positions::SPACE_WITH_ORDERS,
         seeds = [POSITIONS_SEED, owner.key().as_ref()],
         bump
     )]
@@ -871,10 +871,14 @@ pub fn undelegate_user<'info>(ctx: Context<'info, UndelegateUser<'info>>) -> Res
         // `version`, `bump`, `_pad` and `_reserved` are kept: `owner` is the
         // PDA seed, the rest are structural and hold no trade data.
         p.scrub_slots();
-        p.scrub_orders();
         p.scrub_history();
         [p.bump]
     }; // RefMut dropped here — before every CPI below that takes `positions`
+       // Pending orders are private trading intent: nothing of them may reach
+       // L1. Optional tail — a pre-orders account has none to scrub.
+    if let Some(mut orders) = orders_mut(a.positions.as_ref())? {
+        orders.scrub();
+    }
     require!(
         a.user_account.free_margin == 0 && a.user_account.locked_margin == 0,
         DexxerError::BalanceNotZero

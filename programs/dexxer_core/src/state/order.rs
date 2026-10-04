@@ -12,13 +12,26 @@
 //! runs `liquidation_check` — see `instructions/liquidation.rs::run_orders`.
 //! Every trigger is evaluated against `Market.mark`, the same price
 //! liquidations use.
-use super::positions::Side;
+use super::positions::{Positions, Side};
 use crate::errors::MathError;
 use anchor_lang::prelude::*;
+use std::cell::RefMut;
 
 /// Order slots per trader, shared by all markets. Small on purpose: an order
 /// costs account space in the ER and a few thousand CU on every scheduled tick.
 pub const ORDER_SLOTS: usize = 8;
+/// The order tail is OPTIONAL and sits right after the fixed `Positions`
+/// struct (discriminator + 3176 B): an account onboarded before conditional
+/// orders is exactly `Positions::SPACE` long and carries no tail; `init_user`
+/// now allocates `Positions::SPACE_WITH_ORDERS`. The program reads the tail
+/// only when the account is long enough (`orders_mut`/`load_positions_mut`),
+/// so a legacy account keeps trading, ticking, liquidating and exiting — only
+/// `place_order`/`cancel_order` refuse it (`OrdersUnsupported`) until the owner
+/// re-onboards. No realloc: a delegated account is owned by the Delegation
+/// Program on L1 and whether the ER can resize one is unmeasured.
+pub const ORDERS_AT: usize = Positions::SPACE;
+pub const ORDERS_LEN: usize = ORDER_SLOTS * core::mem::size_of::<OrderSlot>();
+pub type Orders = [OrderSlot; ORDER_SLOTS];
 /// Trailing distance bounds, in basis points of the extreme price.
 pub const MIN_TRAIL_BPS: u16 = 10;
 pub const MAX_TRAIL_BPS: u16 = 5_000;
@@ -119,6 +132,91 @@ impl OrderSlot {
     pub fn is_empty(&self) -> bool {
         self.kind() == OrderKind::None
     }
+}
+
+/// Queries and edits over the order tail. A trait so the plain array can be
+/// handed around as `&mut Orders` with no wrapper allocation.
+pub trait OrdersExt {
+    fn has_on(&self, market: &Pubkey) -> bool;
+    /// Index of this market's order of `kind`, if any.
+    fn find(&self, market: &Pubkey, kind: OrderKind) -> Option<usize>;
+    fn free_slot(&self) -> Option<usize>;
+    /// Reduce-only orders protect THIS market's position; they die with it
+    /// (called from `finalize_close`). Entry orders stay — they are about the
+    /// next one.
+    fn clear_reduce_only(&mut self, market: &Pubkey);
+    /// One position per market: once an entry order on `market` fills, its
+    /// sibling entries are moot.
+    fn clear_entry(&mut self, market: &Pubkey);
+    /// Pending orders are private trading intent: nothing of them may reach L1.
+    fn scrub(&mut self);
+}
+
+impl OrdersExt for Orders {
+    fn has_on(&self, market: &Pubkey) -> bool {
+        self.iter().any(|o| !o.is_empty() && o.market == *market)
+    }
+    fn find(&self, market: &Pubkey, kind: OrderKind) -> Option<usize> {
+        self.iter()
+            .position(|o| o.kind() == kind && o.market == *market)
+    }
+    fn free_slot(&self) -> Option<usize> {
+        self.iter().position(|o| o.is_empty())
+    }
+    fn clear_reduce_only(&mut self, market: &Pubkey) {
+        for o in self.iter_mut() {
+            if o.market == *market && o.kind().is_reduce_only() {
+                *o = bytemuck::Zeroable::zeroed();
+            }
+        }
+    }
+    fn clear_entry(&mut self, market: &Pubkey) {
+        for o in self.iter_mut() {
+            if o.market == *market && o.kind().is_entry() {
+                *o = bytemuck::Zeroable::zeroed();
+            }
+        }
+    }
+    fn scrub(&mut self) {
+        *self = bytemuck::Zeroable::zeroed();
+    }
+}
+
+/// The order tail of a `Positions` account, if it carries one. Borrows the
+/// account data mutably: never call while a `load()`/`load_mut()` guard on the
+/// same account is alive — use `load_positions_mut` for both at once.
+pub fn orders_mut<'a>(info: &'a AccountInfo<'_>) -> Result<Option<RefMut<'a, Orders>>> {
+    let data = info.try_borrow_mut_data()?;
+    if data.len() < ORDERS_AT + ORDERS_LEN {
+        return Ok(None);
+    }
+    Ok(Some(RefMut::map(data, |d| {
+        bytemuck::from_bytes_mut(&mut d[ORDERS_AT..ORDERS_AT + ORDERS_LEN])
+    })))
+}
+
+/// `load_mut()` and the optional order tail from ONE borrow of the account
+/// data (two separate borrows of the same `RefCell` would panic at runtime).
+/// The writability/discriminator checks are Anchor's own: `load_mut` runs
+/// first and its guard is dropped before the raw split.
+pub fn load_positions_mut<'a, 'info>(
+    loader: &'a AccountLoader<'info, Positions>,
+) -> Result<(RefMut<'a, Positions>, Option<RefMut<'a, Orders>>)> {
+    drop(loader.load_mut()?);
+    let info: &'a AccountInfo<'info> = loader.as_ref();
+    let data = info.try_borrow_mut_data()?;
+    let has_tail = data.len() >= ORDERS_AT + ORDERS_LEN;
+    let data: RefMut<'a, [u8]> = RefMut::map(data, |d| &mut **d);
+    let (head, tail) = RefMut::map_split(data, |d| d.split_at_mut(ORDERS_AT));
+    let positions = RefMut::map(head, |h| bytemuck::from_bytes_mut::<Positions>(&mut h[8..]));
+    let orders = if has_tail {
+        Some(RefMut::map(tail, |t| {
+            bytemuck::from_bytes_mut::<Orders>(&mut t[..ORDERS_LEN])
+        }))
+    } else {
+        None
+    };
+    Ok((positions, orders))
 }
 
 /// Current stop level of a trailing order, rounded so the trader is never

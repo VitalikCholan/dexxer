@@ -11,6 +11,7 @@ import {
   MAX_SLOTS,
   POSITIONS_DISC,
   POSITIONS_SIZE,
+  POSITIONS_SIZE_LEGACY,
   decodePositions,
   historyKey,
   ordersFor,
@@ -126,9 +127,23 @@ test('history is oldest-first, signed pnl and all three reasons decode, and the 
   assert.equal(q.history[HISTORY_LEN - 1].closedSlot, 300n)
 })
 
+test('decodePositions reads a pre-orders account (3184 B) with no order tail', () => {
+  const m = Keypair.generate().publicKey
+  const b = blank(Keypair.generate().publicKey)
+  putSlot(b, 0, m, { size: 5n, margin: 7n, side: 0 })
+  const legacy = b.subarray(0, POSITIONS_SIZE_LEGACY)
+  const p = decodePositions(legacy)
+  assert.equal(POSITIONS_SIZE_LEGACY, 8 + 3176)
+  assert.equal(p.slots.length, 1)
+  assert.deepEqual(p.orders, [])
+  assert.equal(p.ordersSupported, false)
+  assert.equal(decodePositions(b).ordersSupported, true)
+})
+
 test('decodePositions refuses a wrong length and a foreign discriminator; MAX_SLOTS is 16', () => {
   const b = blank(Keypair.generate().publicKey)
   assert.throws(() => decodePositions(b.subarray(0, POSITIONS_SIZE - 1)), /length/)
+  assert.throws(() => decodePositions(b.subarray(0, POSITIONS_SIZE_LEGACY - 1)), /length/)
   const foreign = Buffer.from(b)
   foreign.writeUInt8(foreign[0] ^ 0xff, 0)
   assert.throws(() => decodePositions(foreign), /discriminator/)

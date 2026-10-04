@@ -221,7 +221,7 @@ fn cancel_liq_task<'info>(a: &'info Trade<'info>) -> Result<()> {
     // The same task also drives this market's conditional orders: while any is
     // pending (an entry order waiting on a market with no position, say) it
     // must keep ticking.
-    if a.positions.load()?.has_orders_on(&a.market.key()) {
+    if orders_mut(a.positions.as_ref())?.is_some_and(|o| o.has_on(&a.market.key())) {
         return Ok(());
     }
     if !a.magic_program.executable {
@@ -432,13 +432,14 @@ pub fn close_position<'info>(
     }
     let fee_bps = a.market.close_fee_bps as u32;
     {
-        let mut positions = a.positions.load_mut()?;
+        let (mut positions, mut orders) = load_positions_mut(&a.positions)?;
         finalize_close(
             market_key,
             &mut a.market_risk,
             &mut a.pool_live,
             &mut a.user_account,
             &mut positions,
+            orders.as_deref_mut(),
             idx,
             px.price,
             fee_bps,
@@ -635,13 +636,14 @@ pub fn decrease_position<'info>(
     if close_size == pos.size {
         let fee_bps = a.market.close_fee_bps as u32;
         {
-            let mut positions = a.positions.load_mut()?;
+            let (mut positions, mut orders) = load_positions_mut(&a.positions)?;
             finalize_close(
                 market_key,
                 &mut a.market_risk,
                 &mut a.pool_live,
                 &mut a.user_account,
                 &mut positions,
+                orders.as_deref_mut(),
                 idx,
                 px.price,
                 fee_bps,
@@ -765,6 +767,7 @@ pub fn finalize_close(
     pool: &mut PoolLive,
     user: &mut UserAccount,
     positions: &mut Positions,
+    orders: Option<&mut Orders>,
     idx: usize,
     exit: u64,
     fee_bps: u32,
@@ -834,8 +837,11 @@ pub fn finalize_close(
     // Every byte back to zero, `market` included: leaving any field set would
     // show a phantom trade to the owner's client.
     positions.clear_slot(idx);
-    // Reduce-only orders protect THIS position; they die with it (OCO).
-    positions.clear_reduce_only(&market_key);
+    // Reduce-only orders protect THIS position; they die with it (OCO). A
+    // pre-orders account has no tail and nothing to clear.
+    if let Some(orders) = orders {
+        orders.clear_reduce_only(&market_key);
+    }
     Ok(s)
 }
 
@@ -877,7 +883,8 @@ pub fn place_order<'info>(
     let market_key = a.market.key();
     let mark = a.market.mark;
     {
-        let mut positions = a.positions.load_mut()?;
+        let (positions, orders) = load_positions_mut(&a.positions)?;
+        let mut orders = orders.ok_or(DexxerError::OrdersUnsupported)?;
         let open = positions.find_open(&market_key);
         let order = if kind.is_entry() {
             require!(open.is_none(), DexxerError::PositionNotEmpty);
@@ -947,15 +954,15 @@ pub fn place_order<'info>(
             o
         };
         let idx = if kind.is_reduce_only() {
-            positions
-                .find_order(&market_key, kind)
-                .or_else(|| positions.free_order_slot())
+            orders
+                .find(&market_key, kind)
+                .or_else(|| orders.free_slot())
         } else {
-            positions.free_order_slot()
+            orders.free_slot()
         }
         .ok_or(DexxerError::OrderBookFull)?;
-        positions.orders[idx] = order;
-    } // RefMut dropped before the scheduler CPI borrows the account
+        orders[idx] = order;
+    } // RefMuts dropped before the scheduler CPI borrows the account
     register_liq_task(ctx.accounts)
 }
 
@@ -967,9 +974,9 @@ pub fn cancel_order<'info>(mut ctx: Context<'info, Trade<'info>>, slot: u8) -> R
     assert_trader(&a.signer.key(), &mut a.user_account, clock.unix_timestamp)?;
     let market_key = a.market.key();
     let idle = {
-        let mut positions = a.positions.load_mut()?;
-        let o = positions
-            .orders
+        let (positions, orders) = load_positions_mut(&a.positions)?;
+        let mut orders = orders.ok_or(DexxerError::OrdersUnsupported)?;
+        let o = orders
             .get_mut(slot as usize)
             .ok_or(DexxerError::OrderNotFound)?;
         // Only this market's orders: the account is shared by every market.

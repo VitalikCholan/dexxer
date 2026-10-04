@@ -104,6 +104,7 @@ pub(crate) fn liquidate_now(
     pool: &mut PoolLive,
     user: &mut UserAccount,
     positions: &mut Positions,
+    orders: Option<&mut Orders>,
     idx: usize,
     mark: u64,
     fee_bps: u32,
@@ -115,6 +116,7 @@ pub(crate) fn liquidate_now(
         pool,
         user,
         positions,
+        orders,
         idx,
         mark,
         fee_bps,
@@ -202,10 +204,9 @@ pub fn liquidation_check(mut ctx: Context<LiquidationCheck>) -> Result<()> {
     let market_key = a.market.key();
     // With conditional orders pending the task has work to do on a market with
     // no open slot too: its entry orders.
-    let (open_idx, has_orders) = {
-        let p = a.positions.load()?;
-        (p.find_open(&market_key), p.has_orders_on(&market_key))
-    };
+    let open_idx = a.positions.load()?.find_open(&market_key);
+    // Optional tail: a pre-orders account never has orders.
+    let has_orders = orders_mut(a.positions.as_ref())?.is_some_and(|o| o.has_on(&market_key));
     if open_idx.is_none() && !has_orders {
         return Ok(());
     }
@@ -234,7 +235,7 @@ pub fn liquidation_check(mut ctx: Context<LiquidationCheck>) -> Result<()> {
     }
 
     let fee_bps = a.market.liq_fee_bps as u32;
-    let mut positions = a.positions.load_mut()?;
+    let (mut positions, mut orders) = load_positions_mut(&a.positions)?;
     if let Some(idx) = open_idx {
         if liq_due(&mut positions.slots[idx], &a.market, mark)? {
             liquidate_now(
@@ -243,6 +244,7 @@ pub fn liquidation_check(mut ctx: Context<LiquidationCheck>) -> Result<()> {
                 &mut a.pool_live,
                 &mut a.user_account,
                 &mut positions,
+                orders.as_deref_mut(),
                 idx,
                 mark,
                 fee_bps,
@@ -252,7 +254,7 @@ pub fn liquidation_check(mut ctx: Context<LiquidationCheck>) -> Result<()> {
     }
     // Liquidation always goes first: a position that is liquidatable this tick
     // must not be rescued by a stop that happens to share the tick.
-    if has_orders {
+    if let (true, Some(orders)) = (has_orders, orders.as_deref_mut()) {
         run_orders(
             a.config.paused,
             &a.market,
@@ -261,6 +263,7 @@ pub fn liquidation_check(mut ctx: Context<LiquidationCheck>) -> Result<()> {
             &mut a.pool_live,
             &mut a.user_account,
             &mut positions,
+            orders,
             &px,
             mark,
             &clock,
@@ -284,6 +287,7 @@ fn run_orders(
     pool: &mut PoolLive,
     user: &mut UserAccount,
     positions: &mut Positions,
+    orders: &mut Orders,
     px: &OraclePrice,
     mark: u64,
     clock: &Clock,
@@ -293,7 +297,7 @@ fn run_orders(
         // Trailing orders chase the best price first, so a single tick that
         // both makes a new high and reverses uses the new high.
         let mut hit = false;
-        for o in positions.orders.iter_mut() {
+        for o in orders.iter_mut() {
             if o.market != market_key || !o.kind().is_reduce_only() {
                 continue;
             }
@@ -321,6 +325,7 @@ fn run_orders(
             pool,
             user,
             positions,
+            Some(orders),
             idx,
             mark,
             market.close_fee_bps as u32,
@@ -335,7 +340,7 @@ fn run_orders(
         return Ok(());
     }
     for i in 0..ORDER_SLOTS {
-        let o = positions.orders[i];
+        let o = orders[i];
         if o.market != market_key
             || !o.kind().is_entry()
             || !is_triggered(o.kind(), o.side(), o.trigger, mark)
@@ -358,13 +363,13 @@ fn run_orders(
         match opened {
             Ok(()) => {
                 // One position per market: the sibling entries are moot.
-                positions.clear_entry_orders(&market_key);
-                attach_exits(positions, &o);
+                orders.clear_entry(&market_key);
+                attach_exits(orders, &o);
                 msg!("orders: opened");
                 return Ok(());
             }
             Err(_) => {
-                positions.orders[i] = bytemuck::Zeroable::zeroed();
+                orders[i] = bytemuck::Zeroable::zeroed();
                 msg!("orders: dropped slot {}", i);
             }
         }
@@ -375,7 +380,7 @@ fn run_orders(
 /// Turn an entry order's `tp`/`sl` into live reduce-only orders on the
 /// position it just opened (a free slot is needed; without one the exit is
 /// simply not attached).
-fn attach_exits(positions: &mut Positions, entry: &OrderSlot) {
+fn attach_exits(orders: &mut Orders, entry: &OrderSlot) {
     for (kind, trigger) in [
         (OrderKind::TakeProfit, entry.tp),
         (OrderKind::StopLoss, entry.sl),
@@ -383,8 +388,8 @@ fn attach_exits(positions: &mut Positions, entry: &OrderSlot) {
         if trigger == 0 {
             continue;
         }
-        if let Some(i) = positions.free_order_slot() {
-            positions.orders[i] = OrderSlot {
+        if let Some(i) = orders.free_slot() {
+            orders[i] = OrderSlot {
                 market: entry.market,
                 trigger,
                 size: 0,
