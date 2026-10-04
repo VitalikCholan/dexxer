@@ -10,7 +10,9 @@
 (гілка `chart-timeframes`, PR #12, план `docs/superpowers/plans/2026-10-01-week6-chart-timeframes.md`).
 **Розділ «Умовні ордери» (04.10.2026)** — ревʼю PR #13 колеги, перероблене злиття (PR #14) і два фікси блокерів;
 лише локальні тести, на devnet не міряно. **Розділ «Token information» (04.10.2026)** — ревʼю PR #15 колеги.
-Обидва PR змерджено в `main` 04.10 (`c459847`, `2bfe24a`); на devnet нова збірка програми й relayer ще не деплоєні.
+Обидва PR змерджено в `main` 04.10 (`c459847`, `2bfe24a`). **Розділ «Деплой на devnet і smoke, 04.10.2026»** — апгрейд
+програми на той самий id, редеплой relayer-а, перший smoke на AVD: `OrdersUnsupported` на легасі-акаунті і Token info
+підтверджено на живій мережі; новий гаманець з Limit-ордером — відкладено.
 
 ## Підсумок плану 4
 
@@ -506,9 +508,9 @@ PR #11 оновлено на «plans 1–4 of 4».
   лише з деплою); `bootstrap()` на mb-stack (немає mb-stack); локальний `bootstrap()` не створює `BalancesRoot`.
 - **Sybil #27** — без змін.
 - **Документи:** рента в spec/CLAUDE.md — LiteSVM-формула; на devnet на ≈27 % менше (вище).
-- **Умовні ордери (PR #14) і Token information (PR #15), 04.10.2026:** змерджено в `main`, **не деплоєно** — програма на
-  devnet досі збірка плану 4, relayer — деплоймент `0968a8e6` (C.5). Що міряти після деплою — розділи «Умовні ордери» і
-  «Token information» нижче.
+- **Умовні ордери (PR #14) і Token information (PR #15), 04.10.2026:** змерджено в `main` і **задеплоєно на devnet того ж
+  дня** (програма — слот `507294602`, relayer — деплоймент `58089680`); що виміряно й що лишилось — розділ «Деплой на devnet
+  і smoke, 04.10.2026» нижче.
 
 ## Графік C.5, частина 2: деплой relayer-а з 16 таймфреймами і бекфілом Hyperliquid (02.10.2026)
 
@@ -644,6 +646,62 @@ CoinGecko — 6 запитів на 10 хв на всі пʼять ринків.
 `solana-mobile playground`; `gh release create` з `#` не перейменовує файл; `eas.json` уже існує; редагування згенерованого
 `build.gradle` не переживе `prebuild`; рядок 7 таблиці про Metro; `minSdkVersion` не в `app.json`; «втрата ключа = інший package»
 неточно) — окремий список для правок документа, не частина ревʼю PR #15.
+
+## Деплой на devnet і smoke, 04.10.2026 (програма + relayer з `main` `7a31959`; AVD `local_phone`, fakewallet)
+
+**Програма — апгрейд на той самий id `Fyg2…UfCY`, не новий keypair** (legacy-акаунти переживають завдяки опційному хвосту).
+Збірка `anchor build --ignore-keys` з коду `main`: `.so` **1 136 328 Б**, sha256 `ea07c58c…53150e`; IDL з цієї збірки
+побайтово = `idl/dexxer_core.json`. Деплой запускав власник через `!` (класифікатор блокує агенту і `solana program deploy`,
+і — вперше — `railway up`).
+
+| Крок | Факт |
+|---|---|
+| `solana program extend … 32768` | потрібен: новий `.so` на 28 888 Б більший за виділені 1 107 440 Б; ProgramData 1 107 485 → **1 140 253 Б**, рента 5 626 674 040 → 5 793 135 480 лам. (**+0.1665 SOL, незворотно**) |
+| `solana program deploy … --program-id Fyg2…` | sig `212XaX63…e9Hu`, слот **507294602**, `err: null`, комісія 5 000 лам.; payer `4P1WD9…` 7.3056 → **7.1335 SOL** (разом з extend ≈0.172 SOL; буфер ≈5.77 SOL повернувся) |
+| Звірка байтів | `solana program dump` у файл; sha256 перших 1 136 328 Б == локальний `.so`, хвіст розширення нульовий |
+| Живий relayer (ще C.5) на оновленій програмі | тікає далі без помилок (`tickAge` 1.2 с) — `crank_tick` сумісний з обома збірками |
+
+**Relayer — `railway up --service relayer --ci` з `main`** → деплоймент **`58089680` SUCCESS** (≈07:58 UTC; healthcheck: 404, 404,
+503, далі OK — процес ще піднімався). `/healthz` ok, `db ok`, 5 ринків; перший тік SOL n=1 одразу після старту.
+
+| Що | Виміряно |
+|---|---|
+| `GET /assets/{SOL,BTC,ETH,HYPE,ZEC}` | 200 (`sol` теж 200 — регістр не важливий), `DOGE` 404; `Cache-Control: public, max-age=60` |
+| Перший сплеск: 5 символів поспіль за ≈2 с | CoinGecko **HTTP 429** ×3 у лозі (`assets: refresh failed`); SOL отримав числа, BTC/ETH/HYPE/ZEC віддали `market: null` (текст є) — після 60-с бекофу всі чотири підтягнули rank/mcap на наступному запиті. Поведінка «ніколи не помилка» підтверджена; на спільному egress-IP Railway без ключа ліміт нижчий за 6 запитів/хв |
+| `/assets/SOL` | rank 7, market cap 71.16 B, dominance 2.47 %, ATH 293.31 (2025-01-19), circulating rate 92.6 %, `stale: false` |
+| `crank_tick` з 1 кандидатом на новій збірці | **24 478…24 492 CU**, 449 B (на збірці плану 4 — 21 428…21 445): ≈+3 050 CU на кандидата за split-лоадер і хвіст ордерів; без кандидатів 15 535 (без змін) |
+
+**Smoke на AVD `local_phone` (агент; fakewallet, owner `2TQe…FgWi` — легасі-акаунт плану 4, `Positions` 3184 Б).** Проксі +
+Metro + емулятор за runbook §1; boot 18 с; dev-client бере бандл з Metro (гілка `main`), APK той самий (01.10).
+
+| Крок | Результат |
+|---|---|
+| Запуск на легасі-акаунті | ✅ Trade відкрився, Positions (1 на HYPE) / Open Orders (0) з нового декодера, без крешу; бейдж `SESSION EXPIRED` |
+| Token info · HYPE | ✅ назва, ранг #11, запуск Nov 29 2024, три тексти зі «Show more», ATH $97.96 / ATL $3.81, таблиця (mcap $20B, FDV $85.9B, 24h vol $465.99M, dominance 0.69 %, supply 222.45M/1B/955.31M, rate 23.29 %), Website/Explorer/GitHub (Whitepaper відсутній у `assets.json` — кнопки нема), дисклеймер «Updated 1 min ago» |
+| Website | ✅ відкрився `hyperliquid.xyz` у системному Chrome (натиснуто випадково свайпом), повернення без втрати стану |
+| Перемикання ринку з відкритою вкладкою | ✅ SOL: «Solana (SOL)», ранг #7, Mar 16 2020, Max. supply «—», Whitepaper є; вкладка Token info лишилась активною, панель перемонтувалась |
+| Positions на легасі-акаунті | ✅ три картки (SOL long 3×, HYPE short 3×, ZEC long 5×), Mark/uPnL «—» до активації картки (за дизайном: live `Market` читається лише для активної) |
+| Re-authorize session | ✅ Onboarding у режимі reauth → SIWS `sign_messages` → лег `permissions+session` 486 B → `/trade`; `SESSION ACTIVE · 23H LEFT · 20 ACTIONS` |
+| Активна картка SOL | ✅ Mark $120.95, uPnL +$0.23, «30 % away from liquidation», картка **Orders · No pending orders · Add TP / SL** |
+| **`place_order` TP 130 на легасі-акаунті** | ✅ **tx `5uPqnH9f…HCBD` відхилена `Custom 6054`**, апка показала «This account predates conditional orders — exit and set it up again to use them (6054)» — фікс блокера 3 підтверджено на живій мережі; позиції й сесія не зачеплені |
+| Новий гаманець: онбординг, Limit без позиції, TP/SL, виконання планувальником | ⏸ **відкладено власником** (потребує Disconnect → fakewallet створить новий акаунт) |
+
+**Знахідки smoke.**
+1. **Тост з помилкою не видно під шітом.** `ToastHost` живе в root layout, а `Sheet` — це RN `Modal`, що малюється поверх усього:
+   відмова `place_order` (і будь-якої дії з Increase/Decrease/Margin/Order-шіта) показується тостом ПІД модалкою, шіт лишається
+   відкритим, користувач не бачить нічого. Виявлено лише тимчасовим логом у `run()`. Фікс — рендерити тост усередині `Sheet`
+   або закривати шіт перед тостом (пункт у 6.B/C.4).
+2. **`adb shell input tap` не спрацьовує на `Pressable` всередині `Modal`-шіта** (поля вводу й сегменти працюють); press-hold
+   `input swipe x y x+1 y+1 120` спрацьовує. `uiautomator` при цьому показує `enabled=false` на кнопці, хоча вона активна —
+   не вірити цьому полю для RN-кнопок у модалці.
+3. Fast Refresh з Metro не доносив правки в `src/features/*` (жодного нового бандла в лозі) — повний reload через той самий
+   `am start … expo-development-client` intent, що й у runbook §1 п. 7.
+4. Horizontal swipe-інерція по екрану Trade зсуває вертикальний скрол — скріншоти робити через ≥1.5 с після жесту.
+
+**Не виміряно / далі:** новий гаманець і Limit без позиції (реєстрація задачі з `place_order`, виконання планувальником — міряти за
+фактом відкритої позиції, не за успіхом tx); TP/SL/Trailing на акаунті з хвостом; CU `run_orders` на тік; smoke 8–9 плану 4;
+`docs/deployments.md` (нові env `ASSETS_*`/`COINGECKO_API_KEY`, деплоймент `58089680`, слот апгрейду) і маркери в CLAUDE.md
+«лише тести — на devnet НЕ виміряно» для ордерів і Token info — оновити.
 
 ## Уроки процесу
 
