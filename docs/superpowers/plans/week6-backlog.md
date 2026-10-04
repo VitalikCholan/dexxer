@@ -11,14 +11,22 @@ Phantom (24.09), доки MagicBlock (fees, runtime limits, magic actions), дж
 локально. Поза бек-логом: ✅ ретеншн `ticks` (7 діб); ✅ стейл-тіки оракула більше не пишуться в БД. Виміри —
 `week6-results.md` «Графік C.5, частина 2»; правила — CLAUDE.md «Правила тижня 6: графік…». Решта зведення — як на 01.10.
 
-**Статус (04.10.2026, після ревʼю PR #13 «умовні ордери» колеги → PR #14):** C.5 ✅ змерджено (PR #12, 02.10).
-Пункт 6.B «умовні ордери» 🟡 — Limit/Stop-market/TP/SL/Trailing у PR #14 (гілка `feat/conditional-orders-rebased`,
-не змерджено, на devnet не деплоєно); два блокери ревʼю виправлено 04.10 (невалідований `feed` у `place_order`;
-опційний хвіст ордерів замість зростання `Positions`, legacy-акаунти не цегляться); 6.B Margin mode Isolated/Cross ⬜,
-6.B Borrow Rate ⬜; stop-limit і виконання ордерів кранком relayer-а — не зроблено. Коміти #14: `564c10f` злиття,
-`8093519` feed, `732928b` опційний хвіст, `15faede`/`266146f` документи; CI на #14 — див. PR. Перший вимір на devnet —
-smoke-гаманець `2TQe…` (3184 Б) після апгрейду: ордери мають дати `OrdersUnsupported`, решта працювати. Виміри/ревʼю —
-`week6-results.md` «Умовні ордери»; правила — CLAUDE.md «Правила умовних ордерів».
+**Статус (04.10.2026, вечір; два PR колеги змерджено в `main`, нічого з них ще не деплоєно):**
+- **PR #14 «умовні ордери» — змерджено 06:43 UTC (`c459847`).** Пункт 6.B 🟡: Limit/Stop-market/TP/SL/Trailing у `main`;
+  два блокери ревʼю виправлено до злиття (невалідований `feed` у `place_order` → перевірка в `register_liq_task`, `8093519`;
+  опційний хвіст ордерів замість зростання `Positions`, legacy-акаунти не цегляться, `732928b`). 6.B Margin mode Isolated/Cross ⬜,
+  6.B Borrow Rate ⬜; stop-limit і виконання ордерів кранком relayer-а — не зроблено. Середні зауваження ревʼю відкриті
+  (список у пункті 6.B нижче).
+- **PR #15 «Token information» — змерджено 07:40 UTC (`2bfe24a`).** Пункт 7 ✅ у коді: relayer `GET /assets/:symbol`
+  (CoinGecko без ключа, кеш 10 хв), вкладка Token info під графіком. Ревʼю 04.10 без блокерів (`week6-results.md`
+  «Token information»); дрібниці відкриті: повідомлення «not available» і на мережеву помилку, env `ASSETS_*`/`COINGECKO_API_KEY`
+  не внесено в `docs/deployments.md`.
+- **Наступний крок — розкатка на devnet (гейти власника):** `anchor build` → `solana program deploy` нової збірки на
+  `Fyg2…UfCY` (апгрейд, не новий id — legacy-акаунти переживають завдяки опційному хвосту) → `railway up` relayer-а тим самим
+  заходом (новий декодер, `/assets`) → виміри з `week6-results.md` «Не виміряно на devnet»: smoke-гаманець `2TQe…` (3184 Б)
+  має отримати `OrdersUnsupported` на ордер і далі торгувати; новий гаманець — Limit без позиції, виконання планувальником
+  за фактом, не за успіхом tx; CU `run_orders`; `/assets/SOL` з живого relayer-а. Правила — CLAUDE.md «Правила умовних
+  ордерів» і «Правила Token information».
 
 **Статус (01.10.2026, після PR #11 «позиції-слоти», плани 1–4; PR відкритий, CI зелений, не змерджений):**
 ✅ — зроблено (у `main` або в PR #11); 🟡 — частково; ⬜ — не почато; ⛔ — знято редизайном.
@@ -245,7 +253,7 @@ C.1 🟡 програма (PR #10), C.2 🟡 відео, C.3 ⬜, C.4 🟡 / C.5
    (список активів BTC/ETH/HYPE/ZEC), для SOL можна зробити одразу.
    **🟡 PR #9:** вкладка Trading rules (перемикач Chart / Trading rules; параметри публічного `Market`
    за фіксованими офсетами, OI cap за замовчуванням — 30 % знімка пулу).
-   **✅ Token information (04.10.2026, гілка `feat/token-information`, лише тести — на devnet/пристрої НЕ виміряно):**
+   **✅ Token information (04.10.2026, PR #15, змерджено `2bfe24a`; лише тести — на devnet/пристрої НЕ виміряно):**
    relayer `GET /assets/:symbol` (`services/relayer/src/assets/`: `staticAssets.ts` + `assets/assets.json` — текст і https-посилання
    в репо для SOL/BTC/ETH/HYPE/ZEC; `coingecko.ts` — `coins/{id}` + `global`; `service.ts` — кеш у памʼяті `ASSETS_CACHE_MS`
    (10 хв), single flight, при збої — останні числа з `stale: true` або `market: null` з текстом; `http.ts`). CoinGecko без ключа
