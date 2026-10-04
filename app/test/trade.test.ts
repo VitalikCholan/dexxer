@@ -228,3 +228,29 @@ test('cancelOrder encodes the slot', async () => {
   assert.equal(ix.name, 'cancel_order')
   assert.equal(ix.args.slot, 2)
 })
+
+test('placeOrder encodes the stop-limit bound and a partial exit size', async () => {
+  const { conn, sent } = fakeConn()
+  await placeOrder(conn as never, Keypair.generate(), accounts, {
+    kind: 'Stop',
+    side: 'long',
+    size: 1_000_000_000n,
+    margin: 200_000_000n,
+    trigger: 155_000_000n,
+    limit: 158_000_000n,
+  })
+  let ix = lastIx(sent)
+  assert.deepEqual(ix.args.kind, { Stop: {} })
+  assert.equal(ix.args.limit, 158_000_000n)
+  assert.equal(ix.args.trigger, 155_000_000n)
+
+  await placeOrder(conn as never, Keypair.generate(), accounts, {
+    kind: 'TakeProfit',
+    size: 3_000_000_000n,
+    trigger: 160_000_000n,
+  })
+  ix = lastIx(sent)
+  assert.deepEqual(ix.args.kind, { TakeProfit: {} })
+  assert.equal(ix.args.size, 3_000_000_000n, 'a partial exit carries its size')
+  assert.equal(ix.args.limit, 0n, 'no bound unless asked')
+})

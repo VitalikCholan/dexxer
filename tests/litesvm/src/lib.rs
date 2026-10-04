@@ -170,8 +170,8 @@ pub fn assert_invariant_markets(
     assert_invariant_markets_ctx(h, w, traders, markets, "");
 }
 
-/// protocol_liquidity + fees + insurance + Σ free + Σ open margins (every
-/// market) == capital_total == vault balance.
+/// protocol_liquidity + fees + insurance + Σ free + Σ order reservations + Σ open
+/// margins (every market) == capital_total == vault balance.
 pub fn assert_invariant_markets_ctx(
     h: &Harness,
     w: &setup::World,
@@ -200,7 +200,9 @@ pub fn assert_invariant_markets_ctx(
                 }
             }
         }
-        sum += u.free_margin + open_margin;
+        // Margin held by pending entry orders is still the owner's money in
+        // the vault: it counts like free margin, just cannot be withdrawn.
+        sum += u.free_margin + u.order_reserved + open_margin;
         locked_sum += open_margin;
         assert_eq!(
             u.locked_margin, open_margin,

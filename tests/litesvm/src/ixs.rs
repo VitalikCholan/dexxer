@@ -468,7 +468,8 @@ pub fn decrease_position_on(
         .data(),
     }
 }
-/// Conditional order placement (same 12-account `Trade` list).
+/// Conditional order placement (same 12-account `Trade` list), no stop-limit
+/// bound (`limit = 0`).
 #[allow(clippy::too_many_arguments)]
 pub fn place_order(
     signer: &Pubkey,
@@ -483,6 +484,26 @@ pub fn place_order(
     tp: u64,
     sl: u64,
 ) -> Instruction {
+    place_order_limit(
+        signer, t, w, kind, side, size, margin, trigger, trail_bps, tp, sl, 0,
+    )
+}
+/// `place_order` with a stop-limit price bound.
+#[allow(clippy::too_many_arguments)]
+pub fn place_order_limit(
+    signer: &Pubkey,
+    t: &Trader,
+    w: &World,
+    kind: OrderKind,
+    side: Side,
+    size: u64,
+    margin: u64,
+    trigger: u64,
+    trail_bps: u16,
+    tp: u64,
+    sl: u64,
+    limit: u64,
+) -> Instruction {
     Instruction {
         program_id: prog(),
         accounts: t.trade_accounts(w, signer),
@@ -495,6 +516,7 @@ pub fn place_order(
             trail_bps,
             tp,
             sl,
+            limit,
         }
         .data(),
     }
@@ -526,6 +548,7 @@ pub fn place_order_on(
             trail_bps,
             tp,
             sl,
+            limit: 0,
         }
         .data(),
     }

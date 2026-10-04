@@ -2,7 +2,8 @@
 //
 // Task 10 (week 5, Task 6): `undelegate_user` confirmation. The checklist
 // mirrors the program's hard preconditions — no open position (`Positions`
-// has no open slot), `free_margin == 0 && locked_margin == 0` — so the user
+// has no open slot), `free_margin == 0 && locked_margin == 0 && order_reserved
+// == 0` (margin held by pending entry orders) — so the user
 // sees why the button is disabled before tapping it. Nothing is revealed on
 // exit: trades are never disclosed (spec §2.9).
 import { Text, View } from 'react-native'
@@ -13,6 +14,8 @@ import { Button } from '@/src/ui/Button'
 
 export interface ExitChecklist {
   noOpenPosition: boolean
+  /** No margin held by pending Limit / Stop orders (`order_reserved == 0`): cancel them first. */
+  noPendingOrders: boolean
   balanceWithdrawn: boolean
 }
 
@@ -38,11 +41,12 @@ function ChecklistRow({ ok, label }: { ok: boolean; label: string }) {
 export function ExitSheet({ open, onClose, checklist, busy, onConfirm }: ExitSheetProps) {
   const { colors } = useTheme()
   const caption = useTextStyle('caption')
-  const ready = checklist.noOpenPosition && checklist.balanceWithdrawn
+  const ready = checklist.noOpenPosition && checklist.noPendingOrders && checklist.balanceWithdrawn
 
   return (
     <Sheet open={open} onClose={onClose} title="Exit private account">
       <ChecklistRow ok={checklist.noOpenPosition} label="No open position" />
+      <ChecklistRow ok={checklist.noPendingOrders} label="No pending entry orders (cancel them to free their margin)" />
       <ChecklistRow ok={checklist.balanceWithdrawn} label="Balance withdrawn" />
       <Text style={[caption, { color: colors.textSecondary }]}>
         Your accounts return to L1 with private fields erased.

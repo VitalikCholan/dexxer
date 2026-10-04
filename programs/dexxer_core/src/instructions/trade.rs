@@ -656,36 +656,76 @@ pub fn decrease_position<'info>(
         // teardown as `close_position`.
         return cancel_liq_task(ctx.accounts);
     }
+    let (mut positions, _) = load_positions_mut(&a.positions)?;
+    decrease_core(
+        &a.market,
+        market_key,
+        &mut a.market_risk,
+        &mut a.pool_live,
+        &mut a.user_account,
+        &mut positions,
+        idx,
+        close_size,
+        px.price,
+        &clock,
+    )
+}
+
+/// The partial-close state change, shared by `decrease_position` and the
+/// scheduled execution of partial reduce-only orders (`liquidation::run_orders`).
+///
+/// Every check that can fail (`PositionTooSmall`, the initial-margin test of
+/// the remainder, the arithmetic) runs BEFORE the first write, so a caller that
+/// swallows the error (the order executor drops the failing order) never
+/// leaves a half-applied decrease behind. `close_size` must be below the
+/// slot's size — a full close is `finalize_close`.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn decrease_core(
+    market: &Market,
+    market_key: Pubkey,
+    risk_acc: &mut MarketRisk,
+    pool: &mut PoolLive,
+    user: &mut UserAccount,
+    positions: &mut Positions,
+    idx: usize,
+    close_size: u64,
+    price: u64,
+    clock: &Clock,
+) -> Result<()> {
+    let pos = positions.slots[idx];
+    let side = pos.side();
+    require!(
+        pos.is_open() && pos.market == market_key && close_size > 0 && close_size < pos.size,
+        DexxerError::InvalidInput
+    );
     let remaining = pos
         .size
         .checked_sub(close_size)
         .ok_or(DexxerError::MathOverflow)?;
-    require!(
-        remaining >= a.market.min_size,
-        DexxerError::PositionTooSmall
-    );
+    require!(remaining >= market.min_size, DexxerError::PositionTooSmall);
     // Floor: the remainder keeps the rounding, in the pool's favour.
     let released = ((pos.margin as u128)
         .checked_mul(close_size as u128)
         .ok_or(DexxerError::MathOverflow)?)
     .checked_div(pos.size as u128)
     .ok_or(DexxerError::MathOverflow)? as u64;
-    let pnl = math::decrease_pnl(side, pos.size, close_size, pos.entry, px.price)?;
-    let fee = math::fee(
-        math::notional(close_size, px.price)?,
-        a.market.close_fee_bps as u32,
-    )?;
-    let s = risk::settle(released, pnl, fee)?;
-    risk::settle_into_pool(&mut a.pool_live, released, &s, false)?;
-    let u = &mut a.user_account;
-    u.free_margin = u
-        .free_margin
-        .checked_add(s.to_user)
-        .ok_or(DexxerError::MathOverflow)?;
-    u.locked_margin = u
-        .locked_margin
+    let new_margin = pos
+        .margin
         .checked_sub(released)
         .ok_or(DexxerError::MathOverflow)?;
+    // IMR is an *initial* margin requirement: check the remainder at entry, so a
+    // pro-rata release keeps leverage unchanged; mark-based health is crank_tick's job (MMR).
+    let rem_notional = math::notional(remaining, pos.entry)?;
+    require!(
+        new_margin >= math::required_margin(rem_notional, market.imr_bps)?,
+        DexxerError::InsufficientMargin
+    );
+    let pnl = math::decrease_pnl(side, pos.size, close_size, pos.entry, price)?;
+    let fee = math::fee(
+        math::notional(close_size, price)?,
+        market.close_fee_bps as u32,
+    )?;
+    let s = risk::settle(released, pnl, fee)?;
     // Pro-rata share of the position's own tracked OI contribution (floor,
     // pool-favouring, same direction as `released` margin above) — not a
     // recompute off the stored entry, which would suffer the same VWAP
@@ -696,49 +736,46 @@ pub fn decrease_position<'info>(
         .ok_or(DexxerError::MathOverflow)?)
     .checked_div(pos.size as u128)
     .ok_or(DexxerError::MathOverflow)? as u64;
-    let r = &mut a.market_risk;
+    let new_oi = pos
+        .oi_notional
+        .checked_sub(closed_oi)
+        .ok_or(DexxerError::MathOverflow)?;
+    risk::settle_into_pool(pool, released, &s, false)?;
+    user.free_margin = user
+        .free_margin
+        .checked_add(s.to_user)
+        .ok_or(DexxerError::MathOverflow)?;
+    user.locked_margin = user
+        .locked_margin
+        .checked_sub(released)
+        .ok_or(DexxerError::MathOverflow)?;
     match side {
         Side::Long => {
-            r.oi_long = r
+            risk_acc.oi_long = risk_acc
                 .oi_long
                 .checked_sub(closed_oi)
                 .ok_or(DexxerError::MathOverflow)?
         }
         Side::Short => {
-            r.oi_short = r
+            risk_acc.oi_short = risk_acc
                 .oi_short
                 .checked_sub(closed_oi)
                 .ok_or(DexxerError::MathOverflow)?
         }
     }
-    let mut positions = a.positions.load_mut()?;
     let p = &mut positions.slots[idx];
     p.size = remaining;
-    p.margin = p
-        .margin
-        .checked_sub(released)
-        .ok_or(DexxerError::MathOverflow)?;
-    p.oi_notional = p
-        .oi_notional
-        .checked_sub(closed_oi)
-        .ok_or(DexxerError::MathOverflow)?;
-    // IMR is an *initial* margin requirement: check the remainder at entry, so a
-    // pro-rata release keeps leverage unchanged; mark-based health is crank_tick's job (MMR).
-    let rem_notional = math::notional(p.size, p.entry)?;
-    require!(
-        p.margin >= math::required_margin(rem_notional, a.market.imr_bps)?,
-        DexxerError::InsufficientMargin
-    );
-    p.liq_price = math::liq_price(side, p.entry, p.size, p.margin, a.market.mmr_bps).unwrap_or(0);
+    p.margin = new_margin;
+    p.oi_notional = new_oi;
+    p.liq_price = math::liq_price(side, p.entry, p.size, p.margin, market.mmr_bps).unwrap_or(0);
     // Final review I3: the realised part goes into the owner's history, like
     // a close — otherwise its PnL would never show. The slot stays open, so
     // this is its own kind, `HISTORY_REASON_DECREASE`, not a `CloseReason`.
-    // No CPI follows on this path; the `RefMut` ends with the function.
     positions.push_history(HistoryRecord {
         market: market_key,
         size: close_size,
         entry: pos.entry,
-        exit: px.price,
+        exit: price,
         pnl,
         fees: s.fee_taken,
         opened_slot: pos.opened_slot,
@@ -847,22 +884,29 @@ pub fn finalize_close(
 
 // ------------------------------------------------------------ conditional orders
 
-/// Place (or, for reduce-only kinds, replace) a conditional order on this
+/// Place (or, for whole-position exits, replace) a conditional order on this
 /// market.
 ///
-/// * Entry orders (`Limit`, `Stop`) need NO open position on the market;
-///   `size`/`margin` are what will be opened, `tp`/`sl` (0 = none) are
-///   attached on fill.
-/// * Reduce-only orders (`TakeProfit`, `StopLoss`, `TrailingStop`) need an
-///   open position on the market, always close all of it, and live one per
-///   kind and market — placing another replaces the old one. `side`, `size`
-///   and `margin` are ignored.
+/// * **Entry orders** (`Limit`, `Stop`) need NO open position on the market;
+///   `size`/`margin` are what will be opened, `tp`/`sl` (0 = none) are attached
+///   on fill. `limit` (0 = none; `Stop` only) turns a stop into a stop-limit:
+///   the entry fills only while the mark is within `limit` of the trigger's far
+///   side, otherwise it waits. **The margin is reserved at placement**: it moves
+///   out of `free_margin` into `UserAccount.order_reserved` and comes back on
+///   cancel, on a fill (where it becomes the position's locked margin), or if
+///   the order is dropped. The open fee is NOT reserved — it is taken from free
+///   margin when the order fills, and an order that cannot pay it is dropped
+///   (its margin returns).
+/// * **Reduce-only orders** (`TakeProfit`, `StopLoss`, `TrailingStop`) need an
+///   open position on the market. `size == 0` closes the whole position and
+///   lives one per kind and market (placing another replaces it); `size > 0`
+///   closes that part, several may coexist (replaced only by the same kind,
+///   trigger and size), and the remainder must stay at least `min_size`.
+///   `side`/`margin`/`limit` are ignored.
 ///
-/// No margin is reserved at placement: the order is checked against the
-/// owner's free margin and the risk limits when it fires, and dropped if it
-/// no longer fits. Any placement (re-)registers the (trader, market)
-/// scheduled task, which is also what executes the orders; registering an
-/// existing task id is an update, not an error (week-5 Task 0).
+/// Any placement (re-)registers the (trader, market) scheduled task, which is
+/// also what executes the orders; registering an existing task id is an update,
+/// not an error (week-5 Task 0).
 #[allow(clippy::too_many_arguments)]
 pub fn place_order<'info>(
     mut ctx: Context<'info, Trade<'info>>,
@@ -874,6 +918,7 @@ pub fn place_order<'info>(
     trail_bps: u16,
     tp: u64,
     sl: u64,
+    limit: u64,
 ) -> Result<()> {
     let clock = Clock::get()?;
     let a = &mut ctx.accounts;
@@ -886,10 +931,16 @@ pub fn place_order<'info>(
         let (positions, orders) = load_positions_mut(&a.positions)?;
         let mut orders = orders.ok_or(DexxerError::OrdersUnsupported)?;
         let open = positions.find_open(&market_key);
-        let order = if kind.is_entry() {
+        let (order, idx) = if kind.is_entry() {
             require!(open.is_none(), DexxerError::PositionNotEmpty);
             require!(
                 trigger > 0 && size >= a.market.min_size && margin > 0,
+                DexxerError::InvalidOrder
+            );
+            // A stop-limit's bound belongs to `Stop` and must lie beyond the
+            // trigger; a `Limit` is already bounded by its own trigger.
+            require!(
+                limit == 0 || (kind == OrderKind::Stop && limit_is_valid(side, trigger, limit)),
                 DexxerError::InvalidOrder
             );
             // Attached exits must sit on the correct side of the entry trigger.
@@ -903,30 +954,44 @@ pub fn place_order<'info>(
                     DexxerError::InvalidOrder
                 ),
             }
-            OrderSlot {
-                market: market_key,
-                trigger,
-                size,
-                margin,
-                extreme: 0,
-                tp,
-                sl,
-                kind: kind.as_u8(),
-                side: side.as_u8(),
-                trail_bps: 0,
-                _pad: [0; 4],
-            }
+            let idx = orders.free_slot().ok_or(DexxerError::OrderBookFull)?;
+            (
+                OrderSlot {
+                    market: market_key,
+                    trigger,
+                    size,
+                    margin,
+                    extreme: 0,
+                    tp,
+                    sl,
+                    limit,
+                    kind: kind.as_u8(),
+                    side: side.as_u8(),
+                    trail_bps: 0,
+                    _pad: [0; 4],
+                },
+                idx,
+            )
         } else {
-            let idx = open.ok_or(DexxerError::PositionNotOpen)?;
-            let pside = positions.slots[idx].side();
+            let pidx = open.ok_or(DexxerError::PositionNotOpen)?;
+            let pos = positions.slots[pidx];
+            let pside = pos.side();
+            // A partial exit must leave a position worth keeping.
+            if size > 0 {
+                require!(
+                    size < pos.size && pos.size - size >= a.market.min_size,
+                    DexxerError::InvalidOrder
+                );
+            }
             let mut o = OrderSlot {
                 market: market_key,
                 trigger: 0,
-                size: 0,
+                size,
                 margin: 0,
                 extreme: 0,
                 tp: 0,
                 sl: 0,
+                limit: 0,
                 kind: kind.as_u8(),
                 side: pside.as_u8(),
                 trail_bps: 0,
@@ -951,23 +1016,28 @@ pub fn place_order<'info>(
                 }
                 o.trigger = trigger;
             }
-            o
-        };
-        let idx = if kind.is_reduce_only() {
-            orders
-                .find(&market_key, kind)
+            // Whole-position orders are one per kind; a partial one is replaced
+            // only by an identical (kind, trigger, size) order.
+            let existing = if size == 0 {
+                orders.find_whole(&market_key, kind)
+            } else {
+                orders.find_partial(&market_key, kind, o.trigger, size)
+            };
+            let idx = existing
                 .or_else(|| orders.free_slot())
-        } else {
-            orders.free_slot()
-        }
-        .ok_or(DexxerError::OrderBookFull)?;
+                .ok_or(DexxerError::OrderBookFull)?;
+            (o, idx)
+        };
+        // Hold the entry margin: nothing is written before every check passed.
+        a.user_account.reserve(order.reserved())?;
         orders[idx] = order;
     } // RefMuts dropped before the scheduler CPI borrows the account
     register_liq_task(ctx.accounts)
 }
 
-/// Cancel the order in `slot`. When the last order on a market with no open
-/// position goes, that market's scheduled task is cancelled with it.
+/// Cancel the order in `slot`; an entry order gives its reserved margin back.
+/// When the last order on a market with no open position goes, that market's
+/// scheduled task is cancelled with it.
 pub fn cancel_order<'info>(mut ctx: Context<'info, Trade<'info>>, slot: u8) -> Result<()> {
     let clock = Clock::get()?;
     let a = &mut ctx.accounts;
@@ -984,6 +1054,7 @@ pub fn cancel_order<'info>(mut ctx: Context<'info, Trade<'info>>, slot: u8) -> R
             !o.is_empty() && o.market == market_key,
             DexxerError::OrderNotFound
         );
+        a.user_account.release(o.reserved())?;
         *o = bytemuck::Zeroable::zeroed();
         positions.find_open(&market_key).is_none()
     }; // RefMut dropped before the cancel CPI borrows the account

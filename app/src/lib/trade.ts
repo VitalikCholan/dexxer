@@ -213,7 +213,11 @@ export async function decreasePosition(
   return sendSessionTx(conn, session, [ix])
 }
 
-/** Fields of a conditional order, in raw program units (price 1e6, size 1e9, margin 1e6). Unused ones stay 0. */
+/**
+ * Fields of a conditional order, in raw program units (price 1e6, size 1e9, margin 1e6). Unused ones stay 0.
+ * Exit orders: `size` = the part to close (omitted/0 = the whole position; several partial ones may coexist).
+ * Entry orders reserve their `margin` out of free margin until they fill or are cancelled.
+ */
 export interface OrderParams {
   kind: Exclude<OrderKindName, 'None'>
   /** Entry orders only (`Limit`/`Stop`): the side to open. Exit orders take the position's side on-chain. */
@@ -227,6 +231,8 @@ export interface OrderParams {
   /** Entry orders only: take-profit / stop-loss to attach on fill. */
   tp?: bigint
   sl?: bigint
+  /** `Stop` entry orders only: the worst price the stop may fill at (a stop-limit); omitted/0 = no bound. */
+  limit?: bigint
 }
 
 /**
@@ -253,6 +259,7 @@ export async function placeOrder(
       p.trailBps ?? 0,
       new BN((p.tp ?? 0n).toString()),
       new BN((p.sl ?? 0n).toString()),
+      new BN((p.limit ?? 0n).toString()),
     )
     .accounts({ signer: session.publicKey, ...accounts })
     .instruction()

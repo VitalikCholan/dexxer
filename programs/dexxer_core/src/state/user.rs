@@ -38,5 +38,44 @@ pub struct UserAccount {
     /// sponsored onboarding, the owner for a self-funded one. `close_exited_user`
     /// returns the lamports here, not to whoever signs the close (risk #39).
     pub rent_payer: Pubkey,
-    pub _reserved: [u8; 32],
+    /// Margin held by pending ENTRY orders (`Limit`/`Stop`): moved out of
+    /// `free_margin` by `place_order`, back by `cancel_order`, a fill, or an
+    /// order that is dropped. It is still the owner's money in the vault (the
+    /// pool invariant counts it) but cannot be withdrawn, and it blocks exit
+    /// like a locked margin. Carved from the old `_reserved` bytes, so the
+    /// account keeps its size and an existing account reads 0.
+    pub order_reserved: u64,
+    pub _reserved: [u8; 24],
+}
+
+impl UserAccount {
+    /// `place_order`: hold `amount` of free margin for a pending entry order.
+    pub fn reserve(&mut self, amount: u64) -> Result<()> {
+        require!(
+            self.free_margin >= amount,
+            crate::errors::DexxerError::InsufficientMargin
+        );
+        self.free_margin = self
+            .free_margin
+            .checked_sub(amount)
+            .ok_or(crate::errors::DexxerError::MathOverflow)?;
+        self.order_reserved = self
+            .order_reserved
+            .checked_add(amount)
+            .ok_or(crate::errors::DexxerError::MathOverflow)?;
+        Ok(())
+    }
+
+    /// Give a reservation back to `free_margin` (cancel, fill, dropped order).
+    pub fn release(&mut self, amount: u64) -> Result<()> {
+        self.order_reserved = self
+            .order_reserved
+            .checked_sub(amount)
+            .ok_or(crate::errors::DexxerError::MathOverflow)?;
+        self.free_margin = self
+            .free_margin
+            .checked_add(amount)
+            .ok_or(crate::errors::DexxerError::MathOverflow)?;
+        Ok(())
+    }
 }

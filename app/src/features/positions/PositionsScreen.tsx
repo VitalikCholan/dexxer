@@ -142,6 +142,7 @@ export function PositionsScreen() {
               position={active.slot}
               symbol={displaySymbol(active, liveMarket)}
               markUsd={mark}
+              minSize={active.market?.params.minSize ?? 0n}
               busy={actions.busy}
               onSubmit={submit(actions.place)}
             />

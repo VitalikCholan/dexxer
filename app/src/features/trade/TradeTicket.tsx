@@ -31,7 +31,7 @@ import { clampLeverage, deriveTicket, impliedLeverage, safeLiq } from './ticketM
 import { type SideName } from '@/src/lib/codecs'
 import { type PositionSlot } from '@/src/lib/positions'
 import { solSize, usdAmount, type OrderParams } from '@/src/lib/trade'
-import { validateAttached } from '@/src/lib/orders'
+import { validateAttached, validateStopLimit } from '@/src/lib/orders'
 
 export interface MarketParams {
   imrBps: bigint
@@ -141,6 +141,7 @@ function OpenForm({
   const [leverage, setLeverage] = useState(2)
   const [orderType, setOrderType] = useState<OrderType>('market')
   const [triggerUsd, setTriggerUsd] = useState('')
+  const [limitUsd, setLimitUsd] = useState('')
   const [tpUsd, setTpUsd] = useState('')
   const [slUsd, setSlUsd] = useState('')
 
@@ -150,12 +151,15 @@ function OpenForm({
   const triggerNum = Number(triggerUsd) || 0
   const triggerBig = triggerNum > 0 ? usdAmount(triggerNum) : 0n
   const isEntryOrder = orderType !== 'market'
+  const limitBig = orderType === 'stop' && Number(limitUsd) > 0 ? usdAmount(Number(limitUsd)) : 0n
   // Price the position is expected to open at: the trigger for a resting
   // order, the current mark for a market order.
   const refPrice = isEntryOrder ? (triggerBig > 0n ? triggerBig : null) : markUsd
   const tpBig = Number(tpUsd) > 0 ? usdAmount(Number(tpUsd)) : 0n
   const slBig = Number(slUsd) > 0 ? usdAmount(Number(slUsd)) : 0n
-  const exitProblem = refPrice !== null ? validateAttached(sideName, refPrice, tpBig, slBig) : null
+  const exitProblem =
+    (refPrice !== null ? validateAttached(sideName, refPrice, tpBig, slBig) : null) ??
+    (orderType === 'stop' && triggerBig > 0n ? validateStopLimit(sideName, triggerBig, limitBig) : null)
   const ntl = refPrice !== null && sizeBig > 0n ? math.notional(sizeBig, refPrice) : null
   const derived = deriveTicket({ sizeSol: sizeNum, leverage, markUsd: refPrice, available: freeMarginUsd })
 
@@ -247,6 +251,7 @@ function OpenForm({
       trigger: triggerBig,
       tp: tpBig,
       sl: slBig,
+      limit: limitBig,
     })
   }
 
@@ -283,6 +288,17 @@ function OpenForm({
               ? 'Opens when the mark reaches this price from the better side'
               : 'Opens when the mark breaks through this price'
           }
+        />
+      ) : null}
+      {orderType === 'stop' ? (
+        <Input
+          label="Limit price (optional)"
+          value={limitUsd}
+          onChangeText={setLimitUsd}
+          suffix="USD"
+          keyboardType="decimal-pad"
+          placeholder="no limit"
+          hint="Stop-limit: if the price gaps past this, the order waits instead of filling far from the trigger"
         />
       ) : null}
       <View style={{ flexDirection: 'row', gap: space.md }}>
@@ -338,6 +354,12 @@ function OpenForm({
         </View>
       </View>
       {exitProblem ? <Text style={[caption, { color: colors.short }]}>{exitProblem}</Text> : null}
+      {isEntryOrder ? (
+        <Text style={[caption, { color: colors.textTertiary }]}>
+          The margin is held while the order is open and comes back if you cancel it. The open fee is taken when it
+          fills.
+        </Text>
+      ) : null}
       <Button variant={side === 'long' ? 'primary' : 'destructive'} disabled={!canSubmit} onPress={submit}>
         {busy
           ? 'Signing with session key…'

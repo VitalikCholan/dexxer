@@ -156,8 +156,8 @@ mod size_tests {
         assert_eq!(p, 3184, "Positions::SPACE is pinned by spec §2.9.1");
         assert_eq!(
             Positions::SPACE_WITH_ORDERS,
-            3888,
-            "new accounts carry the optional 704 B order tail"
+            3952,
+            "new accounts carry the optional 768 B order tail"
         );
         // `Positions` is pinned to exactly 3184 B by `positions.rs`'s layout
         // test (spec §2.9.1); the old per-market `Position` < 400 B bound

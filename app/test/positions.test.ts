@@ -152,13 +152,23 @@ test('decodePositions refuses a wrong length and a foreign discriminator; MAX_SL
 
 // `OrderSlot` offsets, pinned by the Rust test `offsets_match_the_off_chain_decoders`.
 const ORDERS = 8 + 3176
+const ORDER_BYTES = 96
 function putOrder(
   b: Buffer,
   i: number,
   market: PublicKey,
-  o: { kind: number; side: 0 | 1; trigger?: bigint; size?: bigint; margin?: bigint; trail?: number; extreme?: bigint },
+  o: {
+    kind: number
+    side: 0 | 1
+    trigger?: bigint
+    size?: bigint
+    margin?: bigint
+    trail?: number
+    extreme?: bigint
+    limit?: bigint
+  },
 ) {
-  const at = ORDERS + i * 88
+  const at = ORDERS + i * ORDER_BYTES
   market.toBuffer().copy(b, at)
   b.writeBigUInt64LE(o.trigger ?? 0n, at + 32)
   b.writeBigUInt64LE(o.size ?? 0n, at + 40)
@@ -166,9 +176,10 @@ function putOrder(
   b.writeBigUInt64LE(o.extreme ?? 0n, at + 56)
   b.writeBigUInt64LE(11n, at + 64)
   b.writeBigUInt64LE(22n, at + 72)
-  b.writeUInt8(o.kind, at + 80)
-  b.writeUInt8(o.side, at + 81)
-  b.writeUInt16LE(o.trail ?? 0, at + 82)
+  b.writeBigUInt64LE(o.limit ?? 0n, at + 80)
+  b.writeUInt8(o.kind, at + 88)
+  b.writeUInt8(o.side, at + 89)
+  b.writeUInt16LE(o.trail ?? 0, at + 90)
 }
 
 test('decodePositions reads conditional orders, per market, skipping empty slots', () => {
@@ -176,14 +187,21 @@ test('decodePositions reads conditional orders, per market, skipping empty slots
   const sol = Keypair.generate().publicKey
   const btc = Keypair.generate().publicKey
   const b = blank(owner)
-  putOrder(b, 1, sol, { kind: 1, side: 1, trigger: 151_000_000n, size: 2_000_000_000n, margin: 30_000_000n })
+  putOrder(b, 1, sol, {
+    kind: 2,
+    side: 1,
+    trigger: 151_000_000n,
+    size: 2_000_000_000n,
+    margin: 30_000_000n,
+    limit: 148_000_000n,
+  })
   putOrder(b, 4, btc, { kind: 5, side: 0, trail: 250, extreme: 155_000_000n })
   putOrder(b, 6, sol, { kind: 3, side: 0, trigger: 170_000_000n })
   const d = decodePositions(b)
   assert.deepEqual(
     d.orders.map((o) => [o.slot, o.kind]),
     [
-      [1, 'Limit'],
+      [1, 'Stop'],
       [4, 'TrailingStop'],
       [6, 'TakeProfit'],
     ],
@@ -193,6 +211,8 @@ test('decodePositions reads conditional orders, per market, skipping empty slots
   assert.equal(limit.trigger, 151_000_000n)
   assert.equal(limit.size, 2_000_000_000n)
   assert.equal(limit.margin, 30_000_000n)
+  assert.equal(limit.limit, 148_000_000n, 'the stop-limit bound')
+  assert.equal(d.orders[2].limit, 0n)
   assert.equal(limit.tp, 11n)
   assert.equal(limit.sl, 22n)
   assert.equal(d.orders[1].trailBps, 250)

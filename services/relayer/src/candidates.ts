@@ -1,10 +1,12 @@
 // services/relayer/src/candidates.ts
 //
-// Liquidation candidates (spec §2.9.2): a trader's positions on every market
-// live in ONE `Positions` account, so the crank reads those accounts (it is a
+// Crank candidates (spec §2.9.2): a trader's positions on every market live in
+// ONE `Positions` account, so the crank reads those accounts (it is a
 // permission member of each) and turns every OPEN slot into a candidate for
-// that slot's market. `crank_tick` takes them as pairs
-// `[Positions, UserAccount]`.
+// that slot's market — and every market with a pending conditional order too,
+// since `crank_tick` runs the orders (state/order.rs) right after the
+// liquidation check, which keeps them working while the scheduler is down.
+// `crank_tick` takes the candidates as pairs `[Positions, UserAccount]`.
 import { AccountMeta, PublicKey } from "@solana/web3.js";
 import { decodePositions, slotFor } from "../../../tests/er/lib/positions.js";
 import { envNum } from "./env.js";
@@ -24,8 +26,12 @@ export const CRANK_BAD_PAIR_COOLDOWN_MS = envNum("CRANK_BAD_PAIR_COOLDOWN_MS", 6
 export interface Candidate {
   positions: PublicKey;
   owner: PublicKey;
-  /** The slot's market, base58 — the grouping key. */
+  /** The slot's (or order's) market, base58 — the grouping key. */
   market: string;
+  /** The trader has an open slot on `market`. */
+  hasOpen: boolean;
+  /** The trader has a pending order on `market`. */
+  hasOrders: boolean;
 }
 
 /**
@@ -44,12 +50,15 @@ export function candidatesFrom(rows: { pubkey: PublicKey; data: Buffer }[], onSk
   for (const r of rows) {
     try {
       const p = decodePositions(r.data);
-      for (const s of p.slots) {
-        const market = s.market.toBase58();
+      const ordered = new Set(p.orders.map((o) => o.market.toBase58()));
+      const markets = new Map<string, boolean>(); // market -> has an open slot
+      for (const s of p.slots) markets.set(s.market.toBase58(), true);
+      for (const m of ordered) if (!markets.has(m)) markets.set(m, false);
+      for (const [market, hasOpen] of markets) {
         const id = `${r.pubkey.toBase58()}:${market}`;
         if (seen.has(id)) continue;
         seen.add(id);
-        out.push({ positions: r.pubkey, owner: p.owner, market });
+        out.push({ positions: r.pubkey, owner: p.owner, market, hasOpen, hasOrders: ordered.has(market) });
       }
     } catch (e) {
       onSkip?.(r.pubkey, String(e instanceof Error ? e.message : e));
@@ -65,19 +74,24 @@ export function pairAccounts(chunk: Candidate[], userAccountOf: (owner: PublicKe
   ]);
 }
 
-/** At least one (possibly empty) chunk: a market with no open position still needs its mark and price sample advanced. */
+/** At least one (possibly empty) chunk: a market with no candidate still needs its mark and price sample advanced. */
 export function chunkCandidates(open: Candidate[], size = CRANK_TX_MAX_CANDIDATES): Candidate[][] {
   const out: Candidate[][] = [];
   for (let i = 0; i < Math.max(1, open.length); i += size) out.push(open.slice(i, i + size));
   return out;
 }
 
-/** `after[i]` = the candidate's `Positions` bytes read after the tick (null if unreadable). */
+/**
+ * `after[i]` = the candidate's `Positions` bytes read after the tick (null if
+ * unreadable). Only a candidate that had an open slot and NO pending order can
+ * be counted: with orders pending, a slot that disappeared may just as well be
+ * a take-profit or stop, which is not a liquidation.
+ */
 export function liquidatedIn(chunk: Candidate[], after: (Buffer | null)[]): string[] {
   const out: string[] = [];
   chunk.forEach((c, i) => {
     const data = after[i];
-    if (!data) return;
+    if (!data || !c.hasOpen || c.hasOrders) return;
     try {
       if (slotFor(decodePositions(data), new PublicKey(c.market)) === null) out.push(c.positions.toBase58());
     } catch {

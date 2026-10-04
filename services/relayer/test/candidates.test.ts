@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { ComputeBudgetProgram, Keypair, PublicKey, Transaction, TransactionInstruction } from "@solana/web3.js";
 import { POSITIONS_DISC_BYTES, pdas } from "../../../tests/er/lib/program.js";
-import { POSITIONS_SIZE } from "../../../tests/er/lib/positions.js";
+import { POSITIONS_SIZE, POSITIONS_SIZE_PREV_TAIL } from "../../../tests/er/lib/positions.js";
 import {
   CRANK_TX_MAX_CANDIDATES,
   applyQuarantine,
@@ -43,6 +43,49 @@ test("one Positions account yields one candidate per open slot, keyed by market"
   assert.ok(c.every((x) => x.positions.equals(key) && x.owner.equals(owner)));
 });
 
+/** Put an order of `kind` (1 = limit … 5 = trailing stop) on `market` into order slot `i` (state/order.rs: 96 B slots, kind at +88). */
+function withOrder(b: Buffer, i: number, market: PublicKey, kind: number): Buffer {
+  const at = 8 + 3176 + i * 96;
+  market.toBuffer().copy(b, at);
+  b.writeUInt8(kind, at + 88);
+  return b;
+}
+
+test("a market with a pending order is a candidate even with no open slot, and one with both is a single candidate", () => {
+  const owner = k();
+  const sol = k();
+  const btc = k();
+  const eth = k();
+  const key = k();
+  const b = positionsBytes(owner, [sol, btc]);
+  withOrder(b, 0, btc, 3); // take-profit on a market that is also open
+  withOrder(b, 1, eth, 1); // limit entry on a market with no position
+  const c = candidatesFrom([{ pubkey: key, data: b }]);
+  const by = Object.fromEntries(c.map((x) => [x.market, [x.hasOpen, x.hasOrders]]));
+  assert.equal(c.length, 3, "one candidate per (account, market)");
+  assert.deepEqual(by[sol.toBase58()], [true, false]);
+  assert.deepEqual(by[btc.toBase58()], [true, true]);
+  assert.deepEqual(by[eth.toBase58()], [false, true]);
+});
+
+test("an account whose order tail is the previous 88-byte one shows no orders, like the program sees it", () => {
+  const owner = k();
+  const eth = k();
+  const b = withOrder(positionsBytes(owner, []), 0, eth, 1);
+  const prev = b.subarray(0, POSITIONS_SIZE_PREV_TAIL);
+  assert.deepEqual(candidatesFrom([{ pubkey: k(), data: prev }]), []);
+});
+
+test("liquidatedIn does not call a vanished slot a liquidation when orders were pending or there was no slot", () => {
+  const market = k();
+  const owner = k();
+  const gone = positionsBytes(owner, []);
+  const base = { positions: k(), owner, market: market.toBase58() };
+  assert.deepEqual(liquidatedIn([{ ...base, hasOpen: true, hasOrders: false }], [gone]), [base.positions.toBase58()]);
+  assert.deepEqual(liquidatedIn([{ ...base, hasOpen: true, hasOrders: true }], [gone]), [], "could be a take-profit");
+  assert.deepEqual(liquidatedIn([{ ...base, hasOpen: false, hasOrders: true }], [gone]), [], "never had a slot");
+});
+
 test("an account with no open slot yields nothing", () => {
   assert.deepEqual(candidatesFrom([{ pubkey: k(), data: positionsBytes(k(), []) }]), []);
 });
@@ -67,7 +110,7 @@ test("garbage among the accounts is skipped and reported, the rest survive", () 
 });
 
 test("pairAccounts emits [Positions, UserAccount] per candidate, both writable", () => {
-  const a: Candidate = { positions: k(), owner: k(), market: k().toBase58() };
+  const a: Candidate = { positions: k(), owner: k(), market: k().toBase58(), hasOpen: true, hasOrders: false };
   const metas = pairAccounts([a], (o) => pdas.userAccount(o));
   assert.deepEqual(metas.map((m) => m.pubkey.toBase58()), [a.positions.toBase58(), pdas.userAccount(a.owner).toBase58()]);
   assert.ok(metas.every((m) => m.isWritable && !m.isSigner));
@@ -75,7 +118,7 @@ test("pairAccounts emits [Positions, UserAccount] per candidate, both writable",
 
 test("chunkCandidates: at least one chunk, none above the limit, none lost, no pair twice in a chunk", () => {
   assert.deepEqual(chunkCandidates([]), [[]]);
-  const many = Array.from({ length: CRANK_TX_MAX_CANDIDATES * 2 + 1 }, () => ({ positions: k(), owner: k(), market: "m" }));
+  const many = Array.from({ length: CRANK_TX_MAX_CANDIDATES * 2 + 1 }, () => ({ positions: k(), owner: k(), market: "m", hasOpen: true, hasOrders: false }));
   const chunks = chunkCandidates(many);
   assert.equal(chunks.length, 3);
   assert.ok(chunks.every((c) => c.length <= CRANK_TX_MAX_CANDIDATES));
@@ -86,7 +129,7 @@ test("chunkCandidates: at least one chunk, none above the limit, none lost, no p
 test("liquidatedIn reports a candidate whose slot on the market is gone (the tick line logs only the count, I5)", () => {
   const market = k();
   const owner = k();
-  const c: Candidate = { positions: k(), owner, market: market.toBase58() };
+  const c: Candidate = { positions: k(), owner, market: market.toBase58(), hasOpen: true, hasOrders: false };
   assert.deepEqual(liquidatedIn([c], [positionsBytes(owner, [market])]), []);
   assert.deepEqual(liquidatedIn([c], [positionsBytes(owner, [k()])]), [c.positions.toBase58()], "open elsewhere only");
   assert.deepEqual(liquidatedIn([c], [null]), [], "an unreadable account is not reported as liquidated");
@@ -95,7 +138,7 @@ test("liquidatedIn reports a candidate whose slot on the market is gone (the tic
 test("a full chunk fits a transaction and one more candidate does not", () => {
   const size = (n: number): number => {
     const keys = [k(), k(), k(), k(), k(), k()].map((pubkey, i) => ({ pubkey, isWritable: i > 1, isSigner: i === 0 }));
-    const rem = pairAccounts(Array.from({ length: n }, () => ({ positions: k(), owner: k(), market: "m" })), () => k());
+    const rem = pairAccounts(Array.from({ length: n }, () => ({ positions: k(), owner: k(), market: "m", hasOpen: true, hasOrders: false })), () => k());
     const ix = new TransactionInstruction({ programId: k(), keys: [...keys, ...rem], data: Buffer.alloc(8) });
     const tx = new Transaction({ feePayer: keys[0].pubkey, recentBlockhash: "11111111111111111111111111111111" })
       .add(ComputeBudgetProgram.setComputeUnitLimit({ units: 1_400_000 }))
@@ -125,7 +168,7 @@ test("the same market twice in one account (or the same account listed twice) yi
 // singles only after an ON-CHAIN chunk failure, and only once a
 // zero-candidate probe proved the market itself is fine.
 
-const cand = (): Candidate => ({ positions: k(), owner: k(), market: "m" });
+const cand = (): Candidate => ({ positions: k(), owner: k(), market: "m", hasOpen: true, hasOrders: false });
 
 test("applyQuarantine: hides a quarantined pair until its time is up, then releases it once", () => {
   const a = cand();
@@ -148,7 +191,7 @@ test("pairKey is positions:market", () => {
 
 test("splitPairKey gives back the positions and the market of a quarantine key (m3)", () => {
   const market = k().toBase58();
-  const a: Candidate = { positions: k(), owner: k(), market };
+  const a: Candidate = { positions: k(), owner: k(), market, hasOpen: true, hasOrders: false };
   assert.deepEqual(splitPairKey(pairKey(a)), { positions: a.positions.toBase58(), market });
 });
 

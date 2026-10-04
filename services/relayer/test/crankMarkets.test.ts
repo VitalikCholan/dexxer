@@ -131,7 +131,7 @@ test("shouldRecordError: new message or window elapsed records, a repeat within 
 
 test("planTick: discovery ok -> candidates grouped by market, the loop counts for health", () => {
   const owner = Keypair.generate().publicKey;
-  const c = (market: string) => ({ positions: Keypair.generate().publicKey, owner, market });
+  const c = (market: string) => ({ positions: Keypair.generate().publicKey, owner, market, hasOpen: true, hasOrders: false });
   const p = planTick({ ok: true, candidates: [c("a"), c("b"), c("a")] });
   assert.equal(p.countsForHealth, true);
   assert.deepEqual([...p.byMarket.keys()].sort(), ["a", "b"]);

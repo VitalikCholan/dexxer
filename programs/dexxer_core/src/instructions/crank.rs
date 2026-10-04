@@ -1,6 +1,6 @@
 use crate::{
     errors::DexxerError,
-    instructions::liquidation::{liq_due, liquidate_now},
+    instructions::liquidation::{liq_due, liquidate_now, run_orders},
     math,
     oracle::read_price,
     state::*,
@@ -174,25 +174,49 @@ pub fn crank_tick<'info>(mut ctx: Context<'info, CrankTick<'info>>) -> Result<()
             positions.owner == user.owner && pos_ai.key() == exp_pos && user_ai.key() == exp_user,
             DexxerError::InvalidCandidate
         );
-        // No open slot on this market: nothing to check here — a candidate
-        // list is built per trader, not per (trader, market).
-        let Some(idx) = positions.find_open(&market_key) else {
+        // Neither an open slot nor an order on this market: nothing to do
+        // here — a candidate list is built per trader, not per (trader,
+        // market).
+        let open_idx = positions.find_open(&market_key);
+        let has_orders = orders.as_deref().is_some_and(|o| o.has_on(&market_key));
+        if open_idx.is_none() && !has_orders {
             continue;
-        };
+        }
         // Hysteresis is shared with `liquidation_check` (week-5 Task 3) — the
         // one place `liq_ticks` advances, on either path.
-        if liq_due(&mut positions.slots[idx], &a.market, mark)? {
-            let fee_bps = a.market.liq_fee_bps as u32;
-            liquidate_now(
+        if let Some(idx) = open_idx {
+            if liq_due(&mut positions.slots[idx], &a.market, mark)? {
+                let fee_bps = a.market.liq_fee_bps as u32;
+                liquidate_now(
+                    market_key,
+                    &mut a.market_risk,
+                    &mut a.pool_live,
+                    &mut user,
+                    &mut positions,
+                    orders.as_deref_mut(),
+                    idx,
+                    mark,
+                    fee_bps,
+                    &clock,
+                )?;
+            }
+        }
+        // Conditional orders run here too, after the liquidation check: the
+        // scheduler's `liquidation_check` is the primary executor, this keeps
+        // them working while the scheduler is down. An order the other path
+        // already executed is simply gone — running twice is harmless.
+        if let (true, Some(orders)) = (has_orders, orders.as_deref_mut()) {
+            run_orders(
+                a.config.paused,
+                &a.market,
                 market_key,
                 &mut a.market_risk,
                 &mut a.pool_live,
                 &mut user,
                 &mut positions,
-                orders.as_deref_mut(),
-                idx,
+                orders,
+                &px,
                 mark,
-                fee_bps,
                 &clock,
             )?;
         }

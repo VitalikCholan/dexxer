@@ -5418,6 +5418,10 @@
         {
           "name": "sl",
           "type": "u64"
+        },
+        {
+          "name": "limit",
+          "type": "u64"
         }
       ]
     },
@@ -7950,11 +7954,23 @@
             "type": "pubkey"
           },
           {
+            "name": "order_reserved",
+            "docs": [
+              "Margin held by pending ENTRY orders (`Limit`/`Stop`): moved out of",
+              "`free_margin` by `place_order`, back by `cancel_order`, a fill, or an",
+              "order that is dropped. It is still the owner's money in the vault (the",
+              "pool invariant counts it) but cannot be withdrawn, and it blocks exit",
+              "like a locked margin. Carved from the old `_reserved` bytes, so the",
+              "account keeps its size and an existing account reads 0."
+            ],
+            "type": "u64"
+          },
+          {
             "name": "_reserved",
             "type": {
               "array": [
                 "u8",
-                32
+                24
               ]
             }
           }

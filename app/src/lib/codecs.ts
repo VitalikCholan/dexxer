@@ -206,6 +206,17 @@ const USER_ACCOUNT_EXITED_OFFSET = USER_ACCOUNT_EXIT_SALT_OFFSET + 32 + 1
 /** `UserAccount.rent_payer` offset: right after `exited`(1) = 143. Who gets the rent back on `close_exited_user`. */
 const USER_ACCOUNT_RENT_PAYER_OFFSET = USER_ACCOUNT_EXITED_OFFSET + 1
 
+/**
+ * `UserAccount.order_reserved` (u64): margin held by pending entry orders,
+ * carved from the old `_reserved` bytes — right after `rent_payer`(32) = 175.
+ * An account created before it reads 0.
+ */
+const USER_ACCOUNT_ORDER_RESERVED_OFFSET = USER_ACCOUNT_RENT_PAYER_OFFSET + 32
+
+export function readUserAccountOrderReserved(data: Buffer): bigint {
+  return data.readBigUInt64LE(USER_ACCOUNT_ORDER_RESERVED_OFFSET)
+}
+
 export function readUserAccountExited(data: Buffer): boolean {
   return data.readUInt8(USER_ACCOUNT_EXITED_OFFSET) !== 0
 }
@@ -222,6 +233,8 @@ export interface DecodedUserAccount {
   actionsLeft: number
   freeMargin: bigint
   lockedMargin: bigint
+  /** Margin held by pending entry orders (Limit / Stop): out of `freeMargin`, not withdrawable, blocks exit until the orders are cancelled or filled. */
+  orderReserved: bigint
   exitSalt: Uint8Array
   exited: boolean
   rentPayer: PublicKey
@@ -234,6 +247,7 @@ export function decodeUserAccount(data: Buffer): DecodedUserAccount {
     actionsLeft: readUserAccountActionsLeft(data),
     freeMargin: readUserAccountFreeMargin(data),
     lockedMargin: readUserAccountLockedMargin(data),
+    orderReserved: readUserAccountOrderReserved(data),
     exitSalt: readUserAccountExitSalt(data),
     exited: readUserAccountExited(data),
     rentPayer: readUserAccountRentPayer(data),

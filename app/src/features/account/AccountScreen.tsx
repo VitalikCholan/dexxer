@@ -126,6 +126,7 @@ export function AccountScreen() {
 
   const checklist: ExitChecklist = {
     noOpenPosition: positionsLive.value === null || positionsLive.value.slots.length === 0,
+    noPendingOrders: user.value === null || user.value.orderReserved === 0n,
     balanceWithdrawn: user.value === null || (user.value.freeMargin === 0n && user.value.lockedMargin === 0n),
   }
 
@@ -155,6 +156,9 @@ export function AccountScreen() {
             <Card title="Balances">
               <Row label="Available" value={user.value ? `${formatUsd2(user.value.freeMargin)} dUSDC` : '—'} mono />
               <Row label="Locked" value={user.value ? `${formatUsd2(user.value.lockedMargin)} dUSDC` : '—'} mono />
+              {user.value && user.value.orderReserved > 0n ? (
+                <Row label="Held by orders" value={`${formatUsd2(user.value.orderReserved)} dUSDC`} mono />
+              ) : null}
               <View style={{ flexDirection: 'row', gap: space.sm }}>
                 <View style={{ flex: 1 }}>
                   <Button variant="primary" onPress={() => setSheet('deposit')}>

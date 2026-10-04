@@ -112,6 +112,12 @@ pub struct OrderSlot {
     /// Entry orders only: take-profit / stop-loss to attach on fill (0 = none).
     pub tp: u64,
     pub sl: u64,
+    /// `Stop` entry orders only (0 = none): the worst price the stop may fill
+    /// at — a stop-limit. Long: fill only while `mark <= limit`; short: only
+    /// while `mark >= limit`. Outside the bound the order WAITS (it stays
+    /// armed and fills if the price comes back), so a gap through the trigger
+    /// cannot fill far from it.
+    pub limit: u64,
     /// `OrderKind::as_u8`.
     pub kind: u8,
     /// Entry orders: the side to open. Reduce-only orders: the side of the
@@ -132,22 +138,63 @@ impl OrderSlot {
     pub fn is_empty(&self) -> bool {
         self.kind() == OrderKind::None
     }
+    /// Margin this order holds in `UserAccount.order_reserved`: only entry
+    /// orders reserve (their `margin`); reduce-only orders hold nothing.
+    pub fn reserved(&self) -> u64 {
+        if self.kind().is_entry() {
+            self.margin
+        } else {
+            0
+        }
+    }
+}
+
+/// A stop-limit's price bound (`OrderSlot.limit`): may an entry on `side` fill
+/// at `mark`? `limit == 0` means no bound.
+pub fn within_limit(side: Side, limit: u64, mark: u64) -> bool {
+    limit == 0
+        || match side {
+            Side::Long => mark <= limit,
+            Side::Short => mark >= limit,
+        }
+}
+
+/// Validate a stop-limit's `limit` against its trigger: the bound must lie on
+/// the far side of the trigger (long: `limit >= trigger`, short: `limit <=
+/// trigger`), else the order could never fill.
+pub fn limit_is_valid(side: Side, trigger: u64, limit: u64) -> bool {
+    limit == 0
+        || match side {
+            Side::Long => limit >= trigger,
+            Side::Short => limit <= trigger,
+        }
 }
 
 /// Queries and edits over the order tail. A trait so the plain array can be
 /// handed around as `&mut Orders` with no wrapper allocation.
 pub trait OrdersExt {
     fn has_on(&self, market: &Pubkey) -> bool;
-    /// Index of this market's order of `kind`, if any.
-    fn find(&self, market: &Pubkey, kind: OrderKind) -> Option<usize>;
+    /// Index of this market's WHOLE-position order of `kind` (`size == 0`), if
+    /// any: the one a new whole-position order of that kind replaces.
+    fn find_whole(&self, market: &Pubkey, kind: OrderKind) -> Option<usize>;
+    /// Index of this market's PARTIAL order (`size > 0`) of `kind` at exactly
+    /// `trigger` (and `size`), if any: placing it again replaces it.
+    fn find_partial(
+        &self,
+        market: &Pubkey,
+        kind: OrderKind,
+        trigger: u64,
+        size: u64,
+    ) -> Option<usize>;
     fn free_slot(&self) -> Option<usize>;
     /// Reduce-only orders protect THIS market's position; they die with it
     /// (called from `finalize_close`). Entry orders stay — they are about the
     /// next one.
     fn clear_reduce_only(&mut self, market: &Pubkey);
     /// One position per market: once an entry order on `market` fills, its
-    /// sibling entries are moot.
-    fn clear_entry(&mut self, market: &Pubkey);
+    /// sibling entries are moot. Returns the margin they had reserved — the
+    /// caller must hand it back to the owner (`UserAccount::release`).
+    fn clear_entry(&mut self, market: &Pubkey) -> u64;
     /// Pending orders are private trading intent: nothing of them may reach L1.
     fn scrub(&mut self);
 }
@@ -156,9 +203,24 @@ impl OrdersExt for Orders {
     fn has_on(&self, market: &Pubkey) -> bool {
         self.iter().any(|o| !o.is_empty() && o.market == *market)
     }
-    fn find(&self, market: &Pubkey, kind: OrderKind) -> Option<usize> {
+    fn find_whole(&self, market: &Pubkey, kind: OrderKind) -> Option<usize> {
         self.iter()
-            .position(|o| o.kind() == kind && o.market == *market)
+            .position(|o| o.kind() == kind && o.market == *market && o.size == 0)
+    }
+    fn find_partial(
+        &self,
+        market: &Pubkey,
+        kind: OrderKind,
+        trigger: u64,
+        size: u64,
+    ) -> Option<usize> {
+        self.iter().position(|o| {
+            o.kind() == kind
+                && o.market == *market
+                && o.size == size
+                && o.size > 0
+                && o.trigger == trigger
+        })
     }
     fn free_slot(&self) -> Option<usize> {
         self.iter().position(|o| o.is_empty())
@@ -170,12 +232,15 @@ impl OrdersExt for Orders {
             }
         }
     }
-    fn clear_entry(&mut self, market: &Pubkey) {
+    fn clear_entry(&mut self, market: &Pubkey) -> u64 {
+        let mut released = 0u64;
         for o in self.iter_mut() {
             if o.market == *market && o.kind().is_entry() {
+                released = released.saturating_add(o.reserved());
                 *o = bytemuck::Zeroable::zeroed();
             }
         }
+        released
     }
     fn scrub(&mut self) {
         *self = bytemuck::Zeroable::zeroed();
@@ -288,6 +353,83 @@ mod tests {
         assert!(is_triggered(OrderKind::TakeProfit, Side::Short, 90, 90));
         assert!(is_triggered(OrderKind::StopLoss, Side::Short, 110, 110));
         assert!(!is_triggered(OrderKind::None, Side::Long, 0, 0));
+    }
+
+    #[test]
+    fn stop_limit_bound() {
+        // no bound
+        assert!(within_limit(Side::Long, 0, 1_000));
+        // long fills only while mark <= limit; short while mark >= limit
+        assert!(within_limit(Side::Long, 105, 105));
+        assert!(!within_limit(Side::Long, 105, 106));
+        assert!(within_limit(Side::Short, 95, 95));
+        assert!(!within_limit(Side::Short, 95, 94));
+        // the bound must lie beyond the trigger
+        assert!(limit_is_valid(Side::Long, 100, 0));
+        assert!(limit_is_valid(Side::Long, 100, 100));
+        assert!(limit_is_valid(Side::Long, 100, 105));
+        assert!(!limit_is_valid(Side::Long, 100, 99));
+        assert!(limit_is_valid(Side::Short, 100, 95));
+        assert!(!limit_is_valid(Side::Short, 100, 101));
+    }
+
+    #[test]
+    fn only_entry_orders_reserve_margin() {
+        let mut o: OrderSlot = bytemuck::Zeroable::zeroed();
+        o.margin = 7;
+        o.kind = OrderKind::Limit.as_u8();
+        assert_eq!(o.reserved(), 7);
+        o.kind = OrderKind::Stop.as_u8();
+        assert_eq!(o.reserved(), 7);
+        o.kind = OrderKind::TakeProfit.as_u8();
+        assert_eq!(o.reserved(), 0);
+        o.kind = OrderKind::None.as_u8();
+        assert_eq!(o.reserved(), 0);
+    }
+
+    #[test]
+    fn clear_entry_returns_the_reservations_and_leaves_exits() {
+        let m = Pubkey::new_from_array([1; 32]);
+        let other = Pubkey::new_from_array([2; 32]);
+        let mut orders: Orders = bytemuck::Zeroable::zeroed();
+        let mk = |market: Pubkey, kind: OrderKind, margin: u64| {
+            let mut o: OrderSlot = bytemuck::Zeroable::zeroed();
+            o.market = market;
+            o.kind = kind.as_u8();
+            o.margin = margin;
+            o
+        };
+        orders[0] = mk(m, OrderKind::Limit, 10);
+        orders[1] = mk(m, OrderKind::Stop, 20);
+        orders[2] = mk(other, OrderKind::Limit, 40);
+        orders[3] = mk(m, OrderKind::TakeProfit, 0);
+        assert_eq!(orders.clear_entry(&m), 30);
+        assert!(orders[0].is_empty() && orders[1].is_empty());
+        assert!(!orders[2].is_empty(), "another market's entry stays");
+        assert!(!orders[3].is_empty(), "exits stay");
+    }
+
+    #[test]
+    fn whole_and_partial_lookup() {
+        let m = Pubkey::new_from_array([1; 32]);
+        let mut orders: Orders = bytemuck::Zeroable::zeroed();
+        let mut whole: OrderSlot = bytemuck::Zeroable::zeroed();
+        whole.market = m;
+        whole.kind = OrderKind::TakeProfit.as_u8();
+        whole.trigger = 170;
+        let mut part = whole;
+        part.size = 5;
+        part.trigger = 160;
+        orders[0] = whole;
+        orders[1] = part;
+        assert_eq!(orders.find_whole(&m, OrderKind::TakeProfit), Some(0));
+        assert_eq!(
+            orders.find_partial(&m, OrderKind::TakeProfit, 160, 5),
+            Some(1)
+        );
+        assert_eq!(orders.find_partial(&m, OrderKind::TakeProfit, 160, 6), None);
+        assert_eq!(orders.find_partial(&m, OrderKind::TakeProfit, 170, 0), None);
+        assert_eq!(orders.find_whole(&m, OrderKind::StopLoss), None);
     }
 
     #[test]

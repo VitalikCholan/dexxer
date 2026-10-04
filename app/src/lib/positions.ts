@@ -17,12 +17,18 @@ const HISTORY_AT = DISC + 1568
 const HEAD_AT = DISC + 3104
 const ORDERS_AT = DISC + 3176
 export const ORDER_SLOTS = 8
-const ORDER_RECORD = 88
+const ORDER_RECORD = 96
 // 3176 B of slots + history, then the OPTIONAL conditional-order tail (state/order.rs).
 // An account onboarded before orders is exactly `POSITIONS_SIZE_LEGACY` and still
 // decodes, with no orders; the program refuses `place_order` on it (`OrdersUnsupported`).
 export const POSITIONS_SIZE_LEGACY = ORDERS_AT
 export const POSITIONS_SIZE = ORDERS_AT + ORDER_SLOTS * ORDER_RECORD
+/**
+ * The order tail was 8 × 88 B before stop-limit added `limit` (8 × 96 B now). An
+ * account allocated for the old tail still decodes, with no orders: the program
+ * treats it like a pre-orders account (`place_order` → `OrdersUnsupported`).
+ */
+export const POSITIONS_SIZE_PREV_TAIL = ORDERS_AT + ORDER_SLOTS * 88
 /** `Positions`' Anchor discriminator — pinned against the IDL by test/positions.test.ts. */
 export const POSITIONS_DISC = Uint8Array.from([197, 153, 71, 203, 133, 176, 119, 182])
 
@@ -80,6 +86,8 @@ export interface DecodedOrder {
   extreme: bigint
   tp: bigint
   sl: bigint
+  /** `Stop` entry orders: the worst fill price (0 = no bound). */
+  limit: bigint
 }
 export interface DecodedPositions {
   owner: PublicKey
@@ -99,8 +107,14 @@ const side = (b: number): SideName => (b === 1 ? 'Short' : 'Long')
 const key = (data: Buffer, at: number) => new PublicKey(data.subarray(at, at + 32))
 
 export function decodePositions(data: Buffer): DecodedPositions {
-  if (data.length !== POSITIONS_SIZE && data.length !== POSITIONS_SIZE_LEGACY) {
-    throw new Error(`Positions: length ${data.length}, expected ${POSITIONS_SIZE} or ${POSITIONS_SIZE_LEGACY}`)
+  if (
+    data.length !== POSITIONS_SIZE &&
+    data.length !== POSITIONS_SIZE_LEGACY &&
+    data.length !== POSITIONS_SIZE_PREV_TAIL
+  ) {
+    throw new Error(
+      `Positions: length ${data.length}, expected ${POSITIONS_SIZE}, ${POSITIONS_SIZE_PREV_TAIL} or ${POSITIONS_SIZE_LEGACY}`,
+    )
   }
   const ordersSupported = data.length === POSITIONS_SIZE
   for (let i = 0; i < DISC; i++) if (data[i] !== POSITIONS_DISC[i]) throw new Error('Positions: discriminator mismatch')
@@ -145,20 +159,21 @@ export function decodePositions(data: Buffer): DecodedPositions {
   const orders: DecodedOrder[] = []
   for (let i = 0; ordersSupported && i < ORDER_SLOTS; i++) {
     const at = ORDERS_AT + i * ORDER_RECORD
-    const kind = ORDER_KINDS[data.readUInt8(at + 80)]
+    const kind = ORDER_KINDS[data.readUInt8(at + 88)]
     if (!kind || kind === 'None') continue
     orders.push({
       slot: i,
       market: key(data, at),
       kind,
-      side: side(data.readUInt8(at + 81)),
+      side: side(data.readUInt8(at + 89)),
       trigger: data.readBigUInt64LE(at + 32),
       size: data.readBigUInt64LE(at + 40),
       margin: data.readBigUInt64LE(at + 48),
       extreme: data.readBigUInt64LE(at + 56),
       tp: data.readBigUInt64LE(at + 64),
       sl: data.readBigUInt64LE(at + 72),
-      trailBps: data.readUInt16LE(at + 82),
+      limit: data.readBigUInt64LE(at + 80),
+      trailBps: data.readUInt16LE(at + 90),
     })
   }
   return {

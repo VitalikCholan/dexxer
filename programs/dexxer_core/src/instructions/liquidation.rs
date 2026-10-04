@@ -21,7 +21,7 @@
 //!     apart.
 use crate::{
     errors::DexxerError,
-    instructions::trade::{finalize_close, open_core},
+    instructions::trade::{decrease_core, finalize_close, open_core},
     oracle::{check_deviation, check_open_quality, read_price, OraclePrice},
     risk,
     state::*,
@@ -274,12 +274,15 @@ pub fn liquidation_check(mut ctx: Context<LiquidationCheck>) -> Result<()> {
 
 /// Execute this market's triggered conditional orders against `mark`.
 ///
-/// Runs on every scheduled tick after the liquidation check, and never fails
-/// the tick on a bad order: one that can no longer be filled (no margin, risk
-/// limit hit) is dropped rather than retried forever, and transient conditions
-/// (paused, poor oracle quality) leave the order in place.
+/// Runs after the liquidation check on every scheduled tick AND on every
+/// `crank_tick` candidate (so the relayer keeps orders working if the
+/// scheduler stops), and never fails the tick on a bad order: one that can no
+/// longer be filled (no margin for the fee, risk limit hit) is dropped rather
+/// than retried forever — an entry order's reserved margin goes back to the
+/// owner — and transient conditions (paused, poor oracle quality, a stop-limit
+/// outside its bound) leave the order in place.
 #[allow(clippy::too_many_arguments)]
-fn run_orders(
+pub(crate) fn run_orders(
     paused: bool,
     market: &Market,
     market_key: Pubkey,
@@ -296,43 +299,55 @@ fn run_orders(
         let side = positions.slots[idx].side();
         // Trailing orders chase the best price first, so a single tick that
         // both makes a new high and reverses uses the new high.
-        let mut hit = false;
         for o in orders.iter_mut() {
-            if o.market != market_key || !o.kind().is_reduce_only() {
-                continue;
-            }
-            let trigger = if o.kind() == OrderKind::TrailingStop {
+            if o.market == market_key && o.kind() == OrderKind::TrailingStop {
                 o.extreme = trail_extreme(side, o.extreme, mark);
-                match trailing_stop_price(side, o.extreme, o.trail_bps) {
-                    Ok(t) => t,
-                    Err(_) => continue,
-                }
-            } else {
-                o.trigger
-            };
-            if is_triggered(o.kind(), side, trigger, mark) {
-                hit = true;
             }
         }
-        if !hit {
-            return Ok(());
+        // Each pass executes the first triggered order. A whole-position exit
+        // (or a partial one that is really the whole thing) ends the loop — it
+        // closed the position and cleared the other exits; a partial one
+        // shrinks the position and the rest are re-evaluated against it.
+        for _ in 0..ORDER_SLOTS {
+            let Some(pos) = positions.slots.get(idx).copied().filter(|p| p.is_open()) else {
+                break;
+            };
+            let Some(i) = triggered_exit(orders, &market_key, side, mark) else {
+                break;
+            };
+            let o = orders[i];
+            let whole = o.size == 0
+                || o.size >= pos.size
+                || pos.size.saturating_sub(o.size) < market.min_size;
+            if whole {
+                // Reported as a user close on purpose: nothing about this exit
+                // says it was a resting order.
+                finalize_close(
+                    market_key,
+                    risk_acc,
+                    pool,
+                    user,
+                    positions,
+                    Some(orders),
+                    idx,
+                    mark,
+                    market.close_fee_bps as u32,
+                    CloseReason::User,
+                    clock,
+                )?;
+                msg!("orders: closed");
+                break;
+            }
+            // Partial: consumed whether or not it could fill — retrying a part
+            // the position can no longer afford would block the rest forever.
+            orders[i] = bytemuck::Zeroable::zeroed();
+            match decrease_core(
+                market, market_key, risk_acc, pool, user, positions, idx, o.size, mark, clock,
+            ) {
+                Ok(()) => msg!("orders: reduced"),
+                Err(_) => msg!("orders: dropped partial exit"),
+            }
         }
-        // Reported as a user close on purpose: nothing about this exit says it
-        // was a resting order.
-        finalize_close(
-            market_key,
-            risk_acc,
-            pool,
-            user,
-            positions,
-            Some(orders),
-            idx,
-            mark,
-            market.close_fee_bps as u32,
-            CloseReason::User,
-            clock,
-        )?;
-        msg!("orders: closed");
         return Ok(());
     }
     // No open position: entry orders.
@@ -347,6 +362,16 @@ fn run_orders(
         {
             continue;
         }
+        // Stop-limit: a gap past the bound must not fill. The order stays
+        // armed (and keeps its reservation) and fills if the price comes back.
+        if !within_limit(o.side(), o.limit, mark) {
+            continue;
+        }
+        // The reservation goes back to free margin first: the open below takes
+        // its margin and fee from there, and an order that fails it is dropped
+        // with the money already returned.
+        orders[i] = bytemuck::Zeroable::zeroed();
+        user.release(o.reserved())?;
         let opened = open_core(
             market,
             market_key,
@@ -362,19 +387,37 @@ fn run_orders(
         );
         match opened {
             Ok(()) => {
-                // One position per market: the sibling entries are moot.
-                orders.clear_entry(&market_key);
+                // One position per market: the sibling entries are moot, and
+                // their reservations go back to the owner.
+                let freed = orders.clear_entry(&market_key);
+                user.release(freed)?;
                 attach_exits(orders, &o);
                 msg!("orders: opened");
                 return Ok(());
             }
-            Err(_) => {
-                orders[i] = bytemuck::Zeroable::zeroed();
-                msg!("orders: dropped slot {}", i);
-            }
+            Err(_) => msg!("orders: dropped slot {}", i),
         }
     }
     Ok(())
+}
+
+/// Index of the first reduce-only order of this market whose trigger `mark`
+/// meets (a trailing order against its current stop level).
+fn triggered_exit(orders: &Orders, market_key: &Pubkey, side: Side, mark: u64) -> Option<usize> {
+    orders.iter().position(|o| {
+        if o.market != *market_key || !o.kind().is_reduce_only() {
+            return false;
+        }
+        let trigger = if o.kind() == OrderKind::TrailingStop {
+            match trailing_stop_price(side, o.extreme, o.trail_bps) {
+                Ok(t) => t,
+                Err(_) => return false,
+            }
+        } else {
+            o.trigger
+        };
+        is_triggered(o.kind(), side, trigger, mark)
+    })
 }
 
 /// Turn an entry order's `tp`/`sl` into live reduce-only orders on the
@@ -397,6 +440,7 @@ fn attach_exits(orders: &mut Orders, entry: &OrderSlot) {
                 extreme: 0,
                 tp: 0,
                 sl: 0,
+                limit: 0,
                 kind: kind.as_u8(),
                 side: entry.side,
                 trail_bps: 0,

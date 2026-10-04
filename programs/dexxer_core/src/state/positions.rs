@@ -221,14 +221,14 @@ mod tests {
     fn layout_is_exactly_the_spec() {
         assert_eq!(core::mem::size_of::<PositionSlot>(), 96);
         assert_eq!(core::mem::size_of::<HistoryRecord>(), 96);
-        assert_eq!(core::mem::size_of::<OrderSlot>(), 88);
+        assert_eq!(core::mem::size_of::<OrderSlot>(), 96);
         assert_eq!(core::mem::size_of::<Positions>(), 3176);
         assert_eq!(Positions::SPACE, 3184);
         // The conditional-order tail is OPTIONAL and lives right after the
-        // struct: a pre-orders account (3184 B) still loads, a new one is 3888.
+        // struct: a pre-orders account (3184 B) still loads, a new one is 3952.
         assert_eq!(ORDERS_AT, 3184);
-        assert_eq!(ORDERS_LEN, 704);
-        assert_eq!(Positions::SPACE_WITH_ORDERS, 3888);
+        assert_eq!(ORDERS_LEN, 768);
+        assert_eq!(Positions::SPACE_WITH_ORDERS, 3952);
     }
 
     #[test]
@@ -391,9 +391,10 @@ mod tests {
         assert_eq!(offset_of!(OrderSlot, extreme), 56);
         assert_eq!(offset_of!(OrderSlot, tp), 64);
         assert_eq!(offset_of!(OrderSlot, sl), 72);
-        assert_eq!(offset_of!(OrderSlot, kind), 80);
-        assert_eq!(offset_of!(OrderSlot, side), 81);
-        assert_eq!(offset_of!(OrderSlot, trail_bps), 82);
+        assert_eq!(offset_of!(OrderSlot, limit), 80);
+        assert_eq!(offset_of!(OrderSlot, kind), 88);
+        assert_eq!(offset_of!(OrderSlot, side), 89);
+        assert_eq!(offset_of!(OrderSlot, trail_bps), 90);
         assert_eq!(offset_of!(PositionSlot, market), 0);
         assert_eq!(offset_of!(PositionSlot, size), 32);
         assert_eq!(offset_of!(PositionSlot, entry), 40);
