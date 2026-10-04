@@ -37,6 +37,7 @@ type PublicKeyT = InstanceType<typeof PublicKey>;
 import { createPool, getMeta, migrate, setMeta } from "./db.js";
 import { buildMarketsHealth, computeSchedulerActive, healthRouter } from "./health.js";
 import { shutdown } from "./shutdown.js";
+import { envNum } from "./env.js";
 import type { RelayerConfig, RelayerState } from "./crank.js";
 import { attachWs, indexerRouter } from "./indexer/http.js";
 import type { IndexerStats } from "./indexer/accounts.js";
@@ -139,6 +140,22 @@ app.use(
     fingerprints: parseFingerprintsEnv(process.env.ASSETLINKS_SHA256_FINGERPRINTS),
   }),
 );
+
+// Token information (`/assets/:symbol`): public market data from CoinGecko plus
+// static text from the repo; no keys, no Postgres, no trader data — mounted
+// unconditionally (ASSETS_ENABLED=false turns it off).
+if (process.env.ASSETS_ENABLED !== "false") {
+  const { loadStaticAssets } = await import("./assets/staticAssets.js");
+  const { createAssetService } = await import("./assets/service.js");
+  const { assetsRouter } = await import("./assets/http.js");
+  const assets = createAssetService({
+    assets: loadStaticAssets(),
+    ttlMs: envNum("ASSETS_CACHE_MS", 10 * 60_000, 60_000),
+    apiKey: process.env.COINGECKO_API_KEY || undefined,
+  });
+  app.use(assetsRouter(assets));
+  console.log(`assets: /assets/:symbol for ${assets.symbols().join(", ")}`);
+}
 
 const server = app.listen(cfg.port, () => {
   console.log(`relayer: listening on :${cfg.port} net=${cfg.net}`);

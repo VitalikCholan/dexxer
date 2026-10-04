@@ -244,8 +244,15 @@ C.1 🟡 програма (PR #10), C.2 🟡 відео, C.3 ⬜, C.4 🟡 / C.5
    Long/Short знизу. Дані ринкові й публічні, приватності не торкаються. Залежить від C.1
    (список активів BTC/ETH/HYPE/ZEC), для SOL можна зробити одразу.
    **🟡 PR #9:** вкладка Trading rules (перемикач Chart / Trading rules; параметри публічного `Market`
-   за фіксованими офсетами, OI cap за замовчуванням — 30 % знімка пулу). Не зроблено: Token
-   information, `/assets/:symbol`, `AssetInfoScreen`.
+   за фіксованими офсетами, OI cap за замовчуванням — 30 % знімка пулу).
+   **✅ Token information (04.10.2026, гілка `feat/token-information`, лише тести — на devnet/пристрої НЕ виміряно):**
+   relayer `GET /assets/:symbol` (`services/relayer/src/assets/`: `staticAssets.ts` + `assets/assets.json` — текст і https-посилання
+   в репо для SOL/BTC/ETH/HYPE/ZEC; `coingecko.ts` — `coins/{id}` + `global`; `service.ts` — кеш у памʼяті `ASSETS_CACHE_MS`
+   (10 хв), single flight, при збої — останні числа з `stale: true` або `market: null` з текстом; `http.ts`). CoinGecko без ключа
+   (`COINGECKO_API_KEY` — лише demo-ключ для ліміту). Апка: третя вкладка **Token info** у `ChartSection` (`TokenInfoPanel`,
+   `lib/assets.ts`, `assetFormat.ts`) замість окремого `AssetInfoScreen` з Long/Short знизу — тікет уже під графіком на тому ж
+   екрані. Не зроблено: share / alert / favorite у хедері, значок активу, CoinMarketCap, ранг/ринкові числа для ринків поза
+   п'ятьма в `assets.json` (вкладка показує «not available»).
 
 ## Не робимо (без нової причини)
 Seeker Connect (web-only), ZK-знімок, iOS.
