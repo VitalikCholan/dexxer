@@ -503,6 +503,7 @@ PR #11 оновлено на «plans 1–4 of 4».
   лише з деплою); `bootstrap()` на mb-stack (немає mb-stack); локальний `bootstrap()` не створює `BalancesRoot`.
 - **Sybil #27** — без змін.
 - **Документи:** рента в spec/CLAUDE.md — LiteSVM-формула; на devnet на ≈27 % менше (вище).
+- **Умовні ордери (PR #14, 04.10.2026):** не змерджено, не деплоєно; що лишилось — розділ «Умовні ордери» нижче.
 
 ## Графік C.5, частина 2: деплой relayer-а з 16 таймфреймами і бекфілом Hyperliquid (02.10.2026)
 
@@ -543,7 +544,60 @@ PR #11 оновлено на «plans 1–4 of 4».
 
 Пастка прогону: горизонтальний **швидкий** свайп по рядку таймфреймів перемикає ринок (жест екрана), повільний драг (≥1 с) скролить ряд. Автопрокрутка анімована — скріншот одразу після тапу ловить проміжний кадр; чекати ≥2 с перед наступним тапом за координатами.
 
+## Умовні ордери: ревʼю PR #13 → PR #14 і два фікси (04.10.2026, лише локальні тести — на devnet НЕ виміряно)
+
+PR #13 (колега, гілка `feat/conditional-orders`, база 27.09 + merge main 03.10) додає Limit / Stop-market / TP / SL /
+Trailing як 8 `OrderSlot` по 88 Б у `Positions`, виконувані тим самим per-(трейдер, ринок) `liquidation_check`
+(`run_orders` після перевірки ліквідації); `place_order`/`cancel_order` на 12-акаунтному `Trade`; у апці — тикет
+Market/Limit/Stop з TP/SL, Open Orders, «Add TP / SL» на картці. Дизайн — `docs/superpowers/specs/2026-10-03-conditional-orders-design.md`.
+Проти беклогу 6.B: зроблено Limit, Stop-market, TP/SL, Trailing; не зроблено stop-limit, виконання ордерів `crank_tick`-ом
+relayer-а, частковий TP/SL, резервування маржі, Margin mode, Borrow Rate.
+
+**Ревʼю (04.10, власне + `/code-review`):**
+- Блокер 1 — merge-коміт `142f1ee` видалив `docs/android-install-options.md` (253 рядки) і посилання на нього в
+  CLAUDE.md та `docs/emulator-runbook.md`. Злиття перероблено: PR #14 (`feat/conditional-orders-rebased`, коміт
+  `564c10f` поверх `main`), 31 файл PR побайтово = `142f1ee`, решта = `main`. Коментар-вказівник у #13.
+- Блокер 2 — `place_order` закінчувався `register_liq_task` без валідації `Trade.feed` (лише `open_position` робив це
+  через `read_price`): трейдер міг перереєструвати власну задачу зі сміттєвим `feed`, і кожен плановий
+  `liquidation_check` скіпав би на `WrongFeed` назавжди (ліквідує лише relayer). **Фікс `8093519`:** перевірка в самому
+  `register_liq_task` (`feed.key() == Market.feed`, власник == `Config.oracle_program`). TDD: LiteSVM
+  `place_order_with_a_foreign_feed_is_rejected` — червоний до фіксу («expected failure», ордер приймався), зелений після.
+- Блокер 3 — `Positions` 3184 → 3888 Б без міграції: `AccountLoader` ріже дані рівно до `size_of + 8`, тож кожен
+  делегований акаунт падав би в кожній інструкції (ні закрити, ні вийти, ні ліквідувати); relayer з `main` скіпав би нову
+  довжину. Realloc неможливий (на L1 власник — Delegation Program; resize у ER не виміряно). **Фікс (цей коміт):**
+  хвіст ордерів опційний — `Positions` знову 3176 Б, `Orders = [OrderSlot; 8]` одразу після (`ORDERS_AT` 3184),
+  `init_user` виділяє `SPACE_WITH_ORDERS` 3888; `orders_mut`/`load_positions_mut` читають хвіст лише при довжині ≥ 3888
+  (один borrow даних — `load_mut()` + окремий borrow хвоста падали б на `RefCell`). Legacy-акаунт торгує, тікає,
+  ліквідується обома шляхами й виходить; `place_order`/`cancel_order` → `OrdersUnsupported` (6054). Декодери TS приймають
+  обидві довжини (`ordersSupported`). TDD: LiteSVM `legacy_positions_without_order_tail_still_trades_and_refuses_orders`
+  (акаунт обрізано до 3184 через `set_account`), decoder-тести в app і relayer — червоні до фіксу (відсутні константи /
+  експорти), зелені після.
+- Середні (відкриті): повторне відкриття на тіку ліквідації через resting entry (`has_orders` читається до ліквідації);
+  `attach_exits` ставить TP перед SL і мовчки губить той, якому не вистачило слота; вхідні ордери приймаються вже
+  спрацьованими; прикріплені TP/SL не перевіряються проти ціни виконання, Stop без межі прослизання; `open_core` пише
+  `free_margin` до чотирьох `checked_add`, а `run_orders` ковтає помилку; `describeOrder` хардкодить «SOL»/1e9; рядок
+  ордера продубльовано в `TradeActivity`/`OrdersCard`.
+- Дрібниці: `trailing_stop_price` поза `math.rs`, нечекані `u128`-операції, округлення на користь трейдера (суперечить
+  правилу CLAUDE.md, якщо не задокументувати як виняток); правило CLAUDE.md про platform-tools v1.57 — особливість
+  середовища автора (CI пройшов звичайним `anchor build`); spec §2.11 і ER/адмін TS-білдери `place_order` відсутні.
+- `program_autofixer` по `order.rs`, `liquidation.rs`, зміненим частинам `trade.rs` (включно з обома фіксами) — 0 зауважень.
+
+**Тести після фіксів (04.10.2026, Node 24.18.0):** LiteSVM **110** (108 у PR + 2), unit **73**, app **171** (170 + 1),
+relayer **292** (278 + 14 Postgres skipped; 291 на `main`, +1). `tsc` ×3, `expo lint`, `prettier`, `cargo fmt`, clippy
+як у CI — чисто. IDL перегенеровано (`OrdersUnsupported`; тип `OrderSlot` зник з IDL, бо більше не поле `Positions`).
+
+**Не виміряно на devnet:** реєстрація задачі з `place_order` на ринку без позиції; планове виконання вхідного ордера;
+CU `run_orders` на тік; legacy-акаунт на живій програмі (smoke-гаманець `2TQe…` — саме такий, 3184 Б) після апгрейду;
+`realloc` делегованого акаунта в ER (не пробували). Рента нового `Positions` зростає на 704 Б
+(≈ +3.7 M лам. на devnet за формулою плану 4) — спонсорований онбординг дорожчає для `fee_payer`.
+
 ## Уроки процесу
+
+- Гілка колеги, відрізана до серії docs-комітів у `main`, при злитті мовчки видалила новий документ. Перевіряти злиття
+  не лише стат-ом PR, а `git diff main <гілка> -- . ':!<файли PR>'` — має бути порожнім.
+- Zero-copy акаунт не можна «просто дописати в кінець»: `AccountLoader` вимагає довжину ≥ `size_of + 8`, і коротші
+  акаунти цегляться в усіх інструкціях. Опційний хвіст (структура незмінна, читання за довжиною) — безпечна альтернатива
+  realloc, якого для делегованих акаунтів немає.
 
 - Агенти не можуть запустити `solana program deploy`: класифікатор дозволів («Production Deploy»)
   блокує і виконавця, і контролера. Деплой — через `!` власника в сесії.

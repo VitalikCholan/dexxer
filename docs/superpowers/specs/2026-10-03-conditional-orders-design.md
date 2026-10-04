@@ -22,11 +22,13 @@ Limit, Stop (вхід), Take-profit, Stop-loss, Trailing stop. Один меха
 
 ## Інструкції
 
-`place_order(kind, side, size, margin, trigger, trail_bps, tp, sl)`, `cancel_order(slot)` — контекст `Trade` (13 акаунтів), підпис session/owner, споживають по одній дії сесії.
+`place_order(kind, side, size, margin, trigger, trail_bps, tp, sl)`, `cancel_order(slot)` — контекст `Trade` (12 акаунтів), підпис session/owner, споживають по одній дії сесії. `place_order` (ре)реєструє задачу планувальника, тож `register_liq_task` сам перевіряє `feed` (== `Market.feed`, власник == `Config.oracle_program`, інакше `WrongFeed`) — список акаунтів задачі заморожується при реєстрації, а `place_order` ціну не читає (ревʼю PR #13, блокер 2, 04.10.2026).
 
 ## Міграція
 
-`Positions` виріс з 3184 до 3888 Б (+704). Уже делеговані devnet-акаунти коротші й не десеріалізуються — потрібен ре-онбординг (`undelegate_user` зі старого білда → `close_exited_user`, або новий гаманець). Декодери (`app/src/lib/positions.ts`, `tests/er/lib/positions.ts`) строго перевіряють довжину, як і раніше.
+~~`Positions` виріс з 3184 до 3888 Б (+704). Уже делеговані devnet-акаунти коротші й не десеріалізуються — потрібен ре-онбординг.~~ **Переглянуто 04.10.2026 (ревʼю PR #13, блокер 3):** такий апгрейд «цеглив» би кожен делегований акаунт — `AccountLoader` ріже дані рівно до `size_of::<Positions>() + 8`, тож коротший акаунт падав би в кожній інструкції, включно з `close_position`, `undelegate_user` і `liquidation_check`. Realloc неможливий: на L1 акаунтом володіє Delegation Program, а resize делегованого акаунта всередині ER не виміряно.
+
+Тому хвіст ордерів **опційний**. `Positions` лишається 3176 Б (`SPACE` 3184); `Orders = [OrderSlot; 8]` (704 Б) лежить одразу після структури (`ORDERS_AT = 3184`); `init_user` виділяє `Positions::SPACE_WITH_ORDERS = 3888`. Програма читає хвіст лише коли акаунт ≥ 3888 Б — `orders_mut(info)` і `load_positions_mut(loader)` (один borrow даних на структуру й хвіст). Акаунт до ордерів торгує, тікає, ліквідується (обома шляхами) і виходить як раніше; `place_order`/`cancel_order` на ньому дають `OrdersUnsupported` (6054), доки власник не вийде й не онбордиться знову. Декодери TS приймають обидві довжини (`POSITIONS_SIZE_LEGACY` 3184 / `POSITIONS_SIZE` 3888, поле `ordersSupported`), тож relayer бачить кандидатів на ліквідацію і серед legacy-акаунтів, а апка може сховати ордери. Деплой на той самий program id без узгодженого виходу користувачів тепер безпечний; relayer усе одно редеплоїти разом (новий декодер).
 
 ## Не виміряно (потребує devnet-tee)
 
