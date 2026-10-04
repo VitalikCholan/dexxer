@@ -49,7 +49,7 @@ Anchor 1.0.2 + `ephemeral-rollups-sdk` 0.16.2 (features `anchor`, `access-contro
 
 - **Ринок:** один, SOL-PERP. BTC/ETH — акаунти `Market` у конфігу, вимкнені.
 - **Колатераль:** власний devnet-мінт `dUSDC` (6 decimals), фаусет у застосунку. Кастоді через Ephemeral SPL Token: токени в Global Vault на L1, у ER — лише pool eATA.
-- **Маржа:** isolated; одна позиція на `(user, market)`, лонг **або** шорт; переворот = close + open. Плече 1–10x.
+- **Маржа:** isolated; одна позиція на `(user, market)`, лонг **або** шорт; переворот = close + open. Плече 1–10x. **Рішення 04.10.2026: лише Isolated, без перемикача Isolated/Cross.** Маржа закріплена за `PositionSlot.margin`, ліквідацію рахують на один слот (`liquidatable_now`), задача `liquidation_check` — на пару (трейдер, ринок). Cross (одна застава на акаунт, ліквідація за equity всього акаунта) потрібен стаканним біржам зі спільним заставним пулом (Drift — cross за замовчуванням із субакаунтами для ізоляції; Zeta — `CrossMarginAccount`); перпи з пулом-контрагентом і оракульною ціною, як наш, працюють на Isolated без перемикача (Jupiter Perps — застава й ціна ліквідації на позицію, до 6 позицій; Flash Trade — ізольована застава). Перемикач з референсу CEX-типу (бек-лог 6.B) не реалізуємо; у тикеті — статична мітка «Isolated». Переглянути лише після мейннету, окремим дизайном (формула equity акаунта з кількох фідів, задача планувальника на трейдера, правило закриття слотів).
 - **Дії:** `open`, `increase`, `decrease`, `close`, `add_margin`. Тільки market-ордери за mark; slippage-параметр перевіряє програма.
 - **Ціна:** Pricing Oracle (Pyth Lazer SOL/USD) у TEE. Mark = EMA(index), рахує crank. Перевірки на кожне читання: feed id, `posted_slot > 0`, staleness ≤ 2 с, confidence, deviation index/mark.
 - **Пул:** один `Pool`, контрагент усіх трейдів. OI cap, max position, utilization cap. Коміт на L1 фіксовано кожні 5 хв: сумарний колатераль + coverage-бакет, без розбиття на сторони.
@@ -65,7 +65,7 @@ Anchor 1.0.2 + `ephemeral-rollups-sdk` 0.16.2 (features `anchor`, `access-contro
 
 ### 1.2 Свідомо ні (v1+)
 
-Hedge mode / кілька позицій на ринок · limit/TP/SL · funding, borrow · часткова ліквідація · нетинг · зовнішній venue-адаптер · compliance gate · бекенд, індексер, WS-сервер · allowlist MRTD · iOS · токен, реферали · Surfpool.
+Hedge mode / кілька позицій на ринок · ~~limit/TP/SL~~ (зроблено 04.10.2026, PR #14 — умовні ордери) · funding, borrow · **Cross margin / перемикач Isolated/Cross (рішення 04.10.2026, див. §1.1 «Маржа»)** · часткова ліквідація · нетинг · зовнішній venue-адаптер · compliance gate · бекенд, індексер, WS-сервер · allowlist MRTD · iOS · токен, реферали · Surfpool.
 
 ---
 
