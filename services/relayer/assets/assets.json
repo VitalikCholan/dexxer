@@ -1,0 +1,77 @@
+{
+  "SOL": {
+    "name": "Solana",
+    "ticker": "SOL",
+    "coingeckoId": "solana",
+    "launchDate": "2020-03-16",
+    "overview": "Solana is a high-throughput layer-1 blockchain built for fast, low-cost applications. It combines proof of stake with Proof of History, a cryptographic clock that lets validators agree on the order of transactions without waiting on each other.",
+    "utility": "SOL pays transaction fees and rent for on-chain accounts, and is staked with validators to secure the network and earn rewards. It is also the base asset most Solana applications are priced in.",
+    "ecosystem": "Solana hosts a large ecosystem of decentralised exchanges, lending markets, payments, NFTs and consumer apps, and has its own mobile line with the Seeker phone and the Solana Mobile Stack.",
+    "links": {
+      "website": "https://solana.com",
+      "whitepaper": "https://solana.com/solana-whitepaper.pdf",
+      "explorer": "https://explorer.solana.com",
+      "github": "https://github.com/anza-xyz/agave"
+    }
+  },
+  "BTC": {
+    "name": "Bitcoin",
+    "ticker": "BTC",
+    "coingeckoId": "bitcoin",
+    "launchDate": "2009-01-03",
+    "overview": "Bitcoin is the first decentralised digital currency: a peer-to-peer network that records transfers on a public proof-of-work blockchain without any central issuer.",
+    "utility": "BTC is the native unit of the Bitcoin network, used to transfer value and to pay miners' transaction fees. Its supply is capped at 21 million coins and new coins are issued on a fixed schedule that halves roughly every four years.",
+    "ecosystem": "Bitcoin is the largest crypto asset by market capitalisation and is widely held as a store of value. Layers such as the Lightning Network add faster, cheaper payments on top of the base chain.",
+    "links": {
+      "website": "https://bitcoin.org",
+      "whitepaper": "https://bitcoin.org/bitcoin.pdf",
+      "explorer": "https://mempool.space",
+      "github": "https://github.com/bitcoin/bitcoin"
+    }
+  },
+  "ETH": {
+    "name": "Ethereum",
+    "ticker": "ETH",
+    "coingeckoId": "ethereum",
+    "launchDate": "2015-07-30",
+    "overview": "Ethereum is a programmable blockchain that runs smart contracts: code that executes on-chain exactly as written. Since 2022 it is secured by proof of stake.",
+    "utility": "ETH pays for computation (gas) on the network and is staked by validators to secure it. It is also widely used as collateral and as a quote asset across decentralised finance.",
+    "ecosystem": "Ethereum has the largest smart-contract ecosystem: stablecoins, decentralised exchanges, lending, NFTs, and a family of layer-2 networks that settle back to it.",
+    "links": {
+      "website": "https://ethereum.org",
+      "whitepaper": "https://ethereum.org/en/whitepaper/",
+      "explorer": "https://etherscan.io",
+      "github": "https://github.com/ethereum"
+    }
+  },
+  "HYPE": {
+    "name": "Hyperliquid",
+    "ticker": "HYPE",
+    "coingeckoId": "hyperliquid",
+    "launchDate": "2024-11-29",
+    "overview": "Hyperliquid is a layer-1 blockchain built around a fully on-chain order book for spot and perpetual futures trading, with its own consensus designed for low-latency trading.",
+    "utility": "HYPE is the native token of the Hyperliquid chain. It pays gas on HyperEVM, is staked to secure the network, and is used in the protocol's fee and buyback mechanics.",
+    "ecosystem": "The Hyperliquid chain combines HyperCore (the trading engine) with HyperEVM (general smart contracts), and hosts a growing set of trading, lending and liquid-staking applications.",
+    "links": {
+      "website": "https://hyperliquid.xyz",
+      "whitepaper": null,
+      "explorer": "https://app.hyperliquid.xyz/explorer",
+      "github": "https://github.com/hyperliquid-dex"
+    }
+  },
+  "ZEC": {
+    "name": "Zcash",
+    "ticker": "ZEC",
+    "coingeckoId": "zcash",
+    "launchDate": "2016-10-28",
+    "overview": "Zcash is a proof-of-work cryptocurrency, forked from Bitcoin's codebase, that adds optional shielded transactions built on zero-knowledge proofs (zk-SNARKs).",
+    "utility": "ZEC is the native coin of the Zcash network. It can be sent transparently or into the shielded pool, where sender, receiver and amount are hidden from the public ledger. Supply is capped at 21 million coins.",
+    "ecosystem": "Zcash is developed by several independent teams and is supported by a range of shielded wallets and exchanges, and is one of the best-known privacy-focused assets.",
+    "links": {
+      "website": "https://z.cash",
+      "whitepaper": "https://zips.z.cash/protocol/protocol.pdf",
+      "explorer": "https://zcashblockexplorer.com",
+      "github": "https://github.com/zcash/zcash"
+    }
+  }
+}

@@ -4,8 +4,8 @@
 // its own timeframe / type toolbar) behind a one-line toggle, so the ticket
 // can sit higher on the screen when the chart is not needed. Open by
 // default — the screen looked like that before; collapsing is per visit
-// (plain state, not persisted). C.7: a Chart / Trading rules switch in the
-// same row; Token information joins it once the relayer serves `/assets`.
+// (plain state, not persisted). C.7: a Chart / Token information / Trading
+// rules switch in the same row (`/assets/:symbol` feeds the middle tab).
 import { useState } from 'react'
 import { Pressable, Text, View } from 'react-native'
 import { useTheme } from '@/src/theme'
@@ -13,6 +13,7 @@ import { useTextStyle } from '@/src/ui/styles'
 import { Segment } from '@/src/ui/Segment'
 import { type PositionSlot } from '@/src/lib/positions'
 import { type TicketMarket } from './marketLimits'
+import { TokenInfoPanel } from './TokenInfoPanel'
 import { TradingRulesPanel } from './TradingRulesPanel'
 import { TradingChart } from '../chart/TradingChart'
 import { type Tf } from '../chart/chartData'
@@ -35,7 +36,7 @@ export function ChartSection({ symbol, tf, onTfChange, position, market, poolCap
   const { colors, space } = useTheme()
   const micro = useTextStyle('micro')
   const [open, setOpen] = useState(true)
-  const [tab, setTab] = useState<'chart' | 'rules'>('chart')
+  const [tab, setTab] = useState<'chart' | 'token' | 'rules'>('chart')
 
   return (
     <View style={{ gap: space.sm }}>
@@ -49,6 +50,7 @@ export function ChartSection({ symbol, tf, onTfChange, position, market, poolCap
           }}
           options={[
             { value: 'chart', label: 'Chart' },
+            { value: 'token', label: 'Token info' },
             { value: 'rules', label: 'Trading rules' },
           ]}
         />
@@ -63,6 +65,9 @@ export function ChartSection({ symbol, tf, onTfChange, position, market, poolCap
       </View>
       {!open ? null : tab === 'chart' ? (
         <TradingChart symbol={symbol} tf={tf} onTfChange={onTfChange} position={position} />
+      ) : tab === 'token' ? (
+        // Re-keyed per market: a switch never shows the previous asset's text.
+        <TokenInfoPanel key={symbol} symbol={symbol} />
       ) : (
         <TradingRulesPanel market={market} poolCapital={poolCapital} />
       )}
