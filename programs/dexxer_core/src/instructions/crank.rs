@@ -161,7 +161,9 @@ pub fn crank_tick<'info>(mut ctx: Context<'info, CrankTick<'info>>) -> Result<()
                 continue;
             }
         };
-        let mut positions = loader.load_mut()?;
+        // One borrow for the struct and the OPTIONAL order tail (a pre-orders
+        // account has none; its liquidation then clears no orders).
+        let (mut positions, mut orders) = load_positions_mut(&loader)?;
         let (exp_pos, _) =
             Pubkey::find_program_address(&[POSITIONS_SEED, positions.owner.as_ref()], &crate::ID);
         let (exp_user, _) =
@@ -187,6 +189,7 @@ pub fn crank_tick<'info>(mut ctx: Context<'info, CrankTick<'info>>) -> Result<()
                 &mut a.pool_live,
                 &mut user,
                 &mut positions,
+                orders.as_deref_mut(),
                 idx,
                 mark,
                 fee_bps,
@@ -194,8 +197,9 @@ pub fn crank_tick<'info>(mut ctx: Context<'info, CrankTick<'info>>) -> Result<()
             )?;
         }
         // `positions` is zero-copy: its bytes were written in place and the
-        // `RefMut` is dropped at the end of this iteration. Only the Borsh
+        // `RefMut`s are dropped at the end of this iteration. Only the Borsh
         // `UserAccount` needs serializing back.
+        drop(orders);
         drop(positions);
         user.try_serialize(&mut &mut user_ai.try_borrow_mut_data()?[..])?;
     }

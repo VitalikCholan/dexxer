@@ -78,6 +78,19 @@ impl Harness {
         )
     }
 
+    /// The optional conditional-order tail (`state/order.rs`); all-empty when
+    /// the account has none.
+    pub fn orders(&self, key: &Pubkey) -> dexxer_core::state::Orders {
+        use dexxer_core::state::{ORDERS_AT, ORDERS_LEN};
+        let acc = self.svm.get_account(key).expect("account missing");
+        if acc.data.len() < ORDERS_AT + ORDERS_LEN {
+            return anchor_lang::__private::bytemuck::Zeroable::zeroed();
+        }
+        anchor_lang::__private::bytemuck::pod_read_unaligned(
+            &acc.data[ORDERS_AT..ORDERS_AT + ORDERS_LEN],
+        )
+    }
+
     /// The trader's OPEN slot on `market`, if any.
     pub fn slot(
         &self,

@@ -4,6 +4,8 @@
 або Phantom, і як його коректно вимкнути. Усе виміряно на macOS + Android SDK
 (`~/Library/Android/sdk`), Node 24 через nvm.
 
+Усі варіанти встановлення (емулятор, USB, Wi-Fi, EAS, sideload, release) — `docs/android-install-options.md`.
+
 ## 0. Що є на машині
 
 | Що | Де | Примітка |

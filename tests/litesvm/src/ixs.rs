@@ -6,7 +6,7 @@ use crate::{
 use anchor_lang::InstructionData;
 use dexxer_core::{
     instruction as ix,
-    state::{MarketParams, Side},
+    state::{MarketParams, OrderKind, Side},
 };
 use solana_instruction::{AccountMeta, Instruction};
 use solana_pubkey::Pubkey;
@@ -466,6 +466,82 @@ pub fn decrease_position_on(
             limit_price,
         }
         .data(),
+    }
+}
+/// Conditional order placement (same 12-account `Trade` list).
+#[allow(clippy::too_many_arguments)]
+pub fn place_order(
+    signer: &Pubkey,
+    t: &Trader,
+    w: &World,
+    kind: OrderKind,
+    side: Side,
+    size: u64,
+    margin: u64,
+    trigger: u64,
+    trail_bps: u16,
+    tp: u64,
+    sl: u64,
+) -> Instruction {
+    Instruction {
+        program_id: prog(),
+        accounts: t.trade_accounts(w, signer),
+        data: ix::PlaceOrder {
+            kind,
+            side,
+            size,
+            margin,
+            trigger,
+            trail_bps,
+            tp,
+            sl,
+        }
+        .data(),
+    }
+}
+#[allow(clippy::too_many_arguments)]
+pub fn place_order_on(
+    signer: &Pubkey,
+    t: &Trader,
+    w: &World,
+    m: &Mkt,
+    kind: OrderKind,
+    side: Side,
+    size: u64,
+    margin: u64,
+    trigger: u64,
+    trail_bps: u16,
+    tp: u64,
+    sl: u64,
+) -> Instruction {
+    Instruction {
+        program_id: prog(),
+        accounts: t.trade_accounts_on(w, m, signer),
+        data: ix::PlaceOrder {
+            kind,
+            side,
+            size,
+            margin,
+            trigger,
+            trail_bps,
+            tp,
+            sl,
+        }
+        .data(),
+    }
+}
+pub fn cancel_order_on(signer: &Pubkey, t: &Trader, w: &World, m: &Mkt, slot: u8) -> Instruction {
+    Instruction {
+        program_id: prog(),
+        accounts: t.trade_accounts_on(w, m, signer),
+        data: ix::CancelOrder { slot }.data(),
+    }
+}
+pub fn cancel_order(signer: &Pubkey, t: &Trader, w: &World, slot: u8) -> Instruction {
+    Instruction {
+        program_id: prog(),
+        accounts: t.trade_accounts(w, signer),
+        data: ix::CancelOrder { slot }.data(),
     }
 }
 /// `candidates` become `remaining_accounts` pairs `[Positions, UserAccount]`.

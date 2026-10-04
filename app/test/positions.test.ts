@@ -11,8 +11,10 @@ import {
   MAX_SLOTS,
   POSITIONS_DISC,
   POSITIONS_SIZE,
+  POSITIONS_SIZE_LEGACY,
   decodePositions,
   historyKey,
+  ordersFor,
   slotFor,
 } from '../src/lib/positions'
 
@@ -125,11 +127,83 @@ test('history is oldest-first, signed pnl and all three reasons decode, and the 
   assert.equal(q.history[HISTORY_LEN - 1].closedSlot, 300n)
 })
 
+test('decodePositions reads a pre-orders account (3184 B) with no order tail', () => {
+  const m = Keypair.generate().publicKey
+  const b = blank(Keypair.generate().publicKey)
+  putSlot(b, 0, m, { size: 5n, margin: 7n, side: 0 })
+  const legacy = b.subarray(0, POSITIONS_SIZE_LEGACY)
+  const p = decodePositions(legacy)
+  assert.equal(POSITIONS_SIZE_LEGACY, 8 + 3176)
+  assert.equal(p.slots.length, 1)
+  assert.deepEqual(p.orders, [])
+  assert.equal(p.ordersSupported, false)
+  assert.equal(decodePositions(b).ordersSupported, true)
+})
+
 test('decodePositions refuses a wrong length and a foreign discriminator; MAX_SLOTS is 16', () => {
   const b = blank(Keypair.generate().publicKey)
   assert.throws(() => decodePositions(b.subarray(0, POSITIONS_SIZE - 1)), /length/)
+  assert.throws(() => decodePositions(b.subarray(0, POSITIONS_SIZE_LEGACY - 1)), /length/)
   const foreign = Buffer.from(b)
   foreign.writeUInt8(foreign[0] ^ 0xff, 0)
   assert.throws(() => decodePositions(foreign), /discriminator/)
   assert.equal(MAX_SLOTS, 16)
+})
+
+// `OrderSlot` offsets, pinned by the Rust test `offsets_match_the_off_chain_decoders`.
+const ORDERS = 8 + 3176
+function putOrder(
+  b: Buffer,
+  i: number,
+  market: PublicKey,
+  o: { kind: number; side: 0 | 1; trigger?: bigint; size?: bigint; margin?: bigint; trail?: number; extreme?: bigint },
+) {
+  const at = ORDERS + i * 88
+  market.toBuffer().copy(b, at)
+  b.writeBigUInt64LE(o.trigger ?? 0n, at + 32)
+  b.writeBigUInt64LE(o.size ?? 0n, at + 40)
+  b.writeBigUInt64LE(o.margin ?? 0n, at + 48)
+  b.writeBigUInt64LE(o.extreme ?? 0n, at + 56)
+  b.writeBigUInt64LE(11n, at + 64)
+  b.writeBigUInt64LE(22n, at + 72)
+  b.writeUInt8(o.kind, at + 80)
+  b.writeUInt8(o.side, at + 81)
+  b.writeUInt16LE(o.trail ?? 0, at + 82)
+}
+
+test('decodePositions reads conditional orders, per market, skipping empty slots', () => {
+  const owner = Keypair.generate().publicKey
+  const sol = Keypair.generate().publicKey
+  const btc = Keypair.generate().publicKey
+  const b = blank(owner)
+  putOrder(b, 1, sol, { kind: 1, side: 1, trigger: 151_000_000n, size: 2_000_000_000n, margin: 30_000_000n })
+  putOrder(b, 4, btc, { kind: 5, side: 0, trail: 250, extreme: 155_000_000n })
+  putOrder(b, 6, sol, { kind: 3, side: 0, trigger: 170_000_000n })
+  const d = decodePositions(b)
+  assert.deepEqual(
+    d.orders.map((o) => [o.slot, o.kind]),
+    [
+      [1, 'Limit'],
+      [4, 'TrailingStop'],
+      [6, 'TakeProfit'],
+    ],
+  )
+  const limit = d.orders[0]
+  assert.equal(limit.side, 'Short')
+  assert.equal(limit.trigger, 151_000_000n)
+  assert.equal(limit.size, 2_000_000_000n)
+  assert.equal(limit.margin, 30_000_000n)
+  assert.equal(limit.tp, 11n)
+  assert.equal(limit.sl, 22n)
+  assert.equal(d.orders[1].trailBps, 250)
+  assert.equal(d.orders[1].extreme, 155_000_000n)
+  assert.deepEqual(
+    ordersFor(d, sol).map((o) => o.slot),
+    [1, 6],
+  )
+  assert.deepEqual(
+    ordersFor(d, btc).map((o) => o.slot),
+    [4],
+  )
+  assert.deepEqual(ordersFor(null, sol), [])
 })

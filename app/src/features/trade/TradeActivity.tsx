@@ -2,9 +2,9 @@
 //
 // C.6-A "Positions (n) / Open Orders (n)" under the ticket: the selected
 // market's open position (its `Positions` slot) at a glance without leaving Trade, with a jump to the Positions
-// tab for Increase / Decrease / Add margin. Open Orders is always 0 — the
-// program has no conditional orders yet (limit / TP / SL are backlog B);
-// the tab is here so the layout does not change when they land.
+// tab for Increase / Decrease / Add margin. Open Orders lists the market's
+// pending conditional orders (limit / stop / TP / SL / trailing), each with a
+// Cancel.
 import { useState } from 'react'
 import { router } from 'expo-router'
 import { Pressable, Text, View } from 'react-native'
@@ -14,7 +14,9 @@ import { Segment } from '@/src/ui/Segment'
 import { Card } from '@/src/ui/Card'
 import { Row } from '@/src/ui/Row'
 import { formatUsd2 } from '@/src/lib/status'
-import { type PositionSlot } from '@/src/lib/positions'
+import { type DecodedOrder, type PositionSlot } from '@/src/lib/positions'
+import { describeOrder } from '@/src/lib/orders'
+import { Button } from '@/src/ui/Button'
 import { computeUpnl } from '@/src/lib/trade'
 
 function sol(raw: bigint): string {
@@ -28,10 +30,16 @@ export function TradeActivity({
   symbol,
   position: open,
   markUsd,
+  orders,
+  busy,
+  onCancel,
 }: {
   symbol: string
   position: PositionSlot | null
   markUsd: bigint | null
+  orders: DecodedOrder[]
+  busy: boolean
+  onCancel: (slot: number) => void
 }) {
   const { colors, space } = useTheme()
   const caption = useTextStyle('caption')
@@ -48,14 +56,32 @@ export function TradeActivity({
         onChange={setTab}
         options={[
           { value: 'positions', label: `Positions (${open ? 1 : 0})` },
-          { value: 'orders', label: 'Open Orders (0)' },
+          { value: 'orders', label: `Open Orders (${orders.length})` },
         ]}
       />
       {tab === 'orders' ? (
-        <Text style={[caption, { color: colors.textSecondary }]}>
-          No open orders. Limit, take-profit and stop-loss orders are coming — today every trade executes at the oracle
-          price right away.
-        </Text>
+        orders.length === 0 ? (
+          <Text style={[caption, { color: colors.textSecondary }]}>
+            No open orders. Place a Limit or Stop in the ticket, or add a take-profit / stop-loss to a position.
+          </Text>
+        ) : (
+          <View style={{ gap: space.sm }}>
+            {orders.map((o) => {
+              const d = describeOrder(o)
+              return (
+                <View key={o.slot} style={{ flexDirection: 'row', alignItems: 'center', gap: space.md }}>
+                  <View style={{ flex: 1 }}>
+                    <Text style={[link, { color: colors.textPrimary }]}>{d.title}</Text>
+                    <Text style={[caption, { color: colors.textSecondary }]}>{d.detail}</Text>
+                  </View>
+                  <Button variant="ghost" disabled={busy} onPress={() => onCancel(o.slot)}>
+                    Cancel
+                  </Button>
+                </View>
+              )
+            })}
+          </View>
+        )
       ) : !open ? (
         <Text style={[caption, { color: colors.textSecondary }]}>No open position.</Text>
       ) : (

@@ -80,6 +80,8 @@ const positionsWith = (slots: PositionSlot[]): DecodedPositions => ({
   owner: key(),
   slots,
   history: [],
+  orders: [],
+  ordersSupported: true,
   version: 1,
   bump: 1,
 })

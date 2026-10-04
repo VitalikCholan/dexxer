@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { Keypair, PublicKey } from "@solana/web3.js";
 import { DEXXER_CORE_PROGRAM_ID, POSITIONS_DISC_BYTES, pdas } from "../../../tests/er/lib/program.js";
-import { HISTORY_LEN, MAX_SLOTS, POSITIONS_SIZE, decodePositions, liqTaskId, slotFor } from "../../../tests/er/lib/positions.js";
+import { HISTORY_LEN, MAX_SLOTS, POSITIONS_SIZE, POSITIONS_SIZE_LEGACY, decodePositions, liqTaskId, slotFor } from "../../../tests/er/lib/positions.js";
 
 const SLOTS = 8 + 32;
 const HISTORY = 8 + 1568;
@@ -85,9 +85,21 @@ test("history comes back oldest first, before and after the ring wraps", () => {
   assert.equal(q.history[HISTORY_LEN - 1].closedSlot, 300n, "newest record last");
 });
 
+test("decodePositions reads a pre-orders account (3184 B): the order tail is optional", () => {
+  const m = Keypair.generate().publicKey;
+  const b = blank(Keypair.generate().publicKey);
+  putSlot(b, 0, m, { size: 5n, margin: 7n, side: 0 });
+  const p = decodePositions(b.subarray(0, POSITIONS_SIZE_LEGACY));
+  assert.equal(POSITIONS_SIZE_LEGACY, 8 + 3176);
+  assert.equal(p.slots.length, 1, "candidates still come from legacy accounts");
+  assert.equal(p.ordersSupported, false);
+  assert.equal(decodePositions(b).ordersSupported, true);
+});
+
 test("decodePositions refuses a wrong length and a foreign discriminator", () => {
   const b = blank(Keypair.generate().publicKey);
   assert.throws(() => decodePositions(b.subarray(0, POSITIONS_SIZE - 1)), /length/);
+  assert.throws(() => decodePositions(b.subarray(0, POSITIONS_SIZE_LEGACY - 1)), /length/);
   const foreign = Buffer.from(b);
   foreign.writeUInt8(foreign[0] ^ 0xff, 0);
   assert.throws(() => decodePositions(foreign), /discriminator/);

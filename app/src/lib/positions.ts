@@ -15,7 +15,14 @@ const RECORD = 96
 const SLOTS_AT = DISC + 32
 const HISTORY_AT = DISC + 1568
 const HEAD_AT = DISC + 3104
-export const POSITIONS_SIZE = DISC + 3176
+const ORDERS_AT = DISC + 3176
+export const ORDER_SLOTS = 8
+const ORDER_RECORD = 88
+// 3176 B of slots + history, then the OPTIONAL conditional-order tail (state/order.rs).
+// An account onboarded before orders is exactly `POSITIONS_SIZE_LEGACY` and still
+// decodes, with no orders; the program refuses `place_order` on it (`OrdersUnsupported`).
+export const POSITIONS_SIZE_LEGACY = ORDERS_AT
+export const POSITIONS_SIZE = ORDERS_AT + ORDER_SLOTS * ORDER_RECORD
 /** `Positions`' Anchor discriminator — pinned against the IDL by test/positions.test.ts. */
 export const POSITIONS_DISC = Uint8Array.from([197, 153, 71, 203, 133, 176, 119, 182])
 
@@ -49,12 +56,41 @@ export interface HistoryRecord {
   side: SideName
   reason: HistoryReason
 }
+/** `OrderKind` discriminants (`OrderKind::as_u8`); 0 is an empty slot. */
+export const ORDER_KINDS = ['None', 'Limit', 'Stop', 'TakeProfit', 'StopLoss', 'TrailingStop'] as const
+export type OrderKindName = (typeof ORDER_KINDS)[number]
+/** Anchor enum argument for each non-empty kind — what `placeOrder` hands to the IDL coder. */
+export const ORDER_KIND_ARG: Record<Exclude<OrderKindName, 'None'>, Record<string, object>> = {
+  Limit: { limit: {} },
+  Stop: { stop: {} },
+  TakeProfit: { takeProfit: {} },
+  StopLoss: { stopLoss: {} },
+  TrailingStop: { trailingStop: {} },
+}
+export interface DecodedOrder {
+  /** Slot index in `Positions.orders` — what `cancel_order` takes. */
+  slot: number
+  market: PublicKey
+  kind: Exclude<OrderKindName, 'None'>
+  side: SideName
+  trigger: bigint
+  size: bigint
+  margin: bigint
+  trailBps: number
+  extreme: bigint
+  tp: bigint
+  sl: bigint
+}
 export interface DecodedPositions {
   owner: PublicKey
   /** Open slots only, in slot-index order. */
   slots: PositionSlot[]
   /** Oldest record first. */
   history: HistoryRecord[]
+  /** Pending conditional orders of every market, empty slots omitted. */
+  orders: DecodedOrder[]
+  /** `false` for a pre-orders account (no order tail) — orders cannot be placed until the owner re-onboards. */
+  ordersSupported: boolean
   version: number
   bump: number
 }
@@ -63,7 +99,10 @@ const side = (b: number): SideName => (b === 1 ? 'Short' : 'Long')
 const key = (data: Buffer, at: number) => new PublicKey(data.subarray(at, at + 32))
 
 export function decodePositions(data: Buffer): DecodedPositions {
-  if (data.length !== POSITIONS_SIZE) throw new Error(`Positions: length ${data.length}, expected ${POSITIONS_SIZE}`)
+  if (data.length !== POSITIONS_SIZE && data.length !== POSITIONS_SIZE_LEGACY) {
+    throw new Error(`Positions: length ${data.length}, expected ${POSITIONS_SIZE} or ${POSITIONS_SIZE_LEGACY}`)
+  }
+  const ordersSupported = data.length === POSITIONS_SIZE
   for (let i = 0; i < DISC; i++) if (data[i] !== POSITIONS_DISC[i]) throw new Error('Positions: discriminator mismatch')
 
   const slots: PositionSlot[] = []
@@ -103,13 +142,39 @@ export function decodePositions(data: Buffer): DecodedPositions {
       reason: HISTORY_REASONS[data.readUInt8(at + 89)] ?? 'User',
     })
   }
+  const orders: DecodedOrder[] = []
+  for (let i = 0; ordersSupported && i < ORDER_SLOTS; i++) {
+    const at = ORDERS_AT + i * ORDER_RECORD
+    const kind = ORDER_KINDS[data.readUInt8(at + 80)]
+    if (!kind || kind === 'None') continue
+    orders.push({
+      slot: i,
+      market: key(data, at),
+      kind,
+      side: side(data.readUInt8(at + 81)),
+      trigger: data.readBigUInt64LE(at + 32),
+      size: data.readBigUInt64LE(at + 40),
+      margin: data.readBigUInt64LE(at + 48),
+      extreme: data.readBigUInt64LE(at + 56),
+      tp: data.readBigUInt64LE(at + 64),
+      sl: data.readBigUInt64LE(at + 72),
+      trailBps: data.readUInt16LE(at + 82),
+    })
+  }
   return {
     owner: key(data, DISC),
     slots,
     history,
+    orders,
+    ordersSupported,
     version: data.readUInt8(DISC + 3106),
     bump: data.readUInt8(DISC + 3107),
   }
+}
+
+/** Pending orders on one market (the account holds every market's). */
+export function ordersFor(p: DecodedPositions | null, market: PublicKey): DecodedOrder[] {
+  return p?.orders.filter((o) => o.market.equals(market)) ?? []
 }
 
 export function slotFor(p: DecodedPositions | null, market: PublicKey): PositionSlot | null {

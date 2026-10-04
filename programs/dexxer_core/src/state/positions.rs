@@ -13,6 +13,7 @@
 use anchor_lang::prelude::*;
 
 use crate::errors::DexxerError;
+use crate::state::order::ORDERS_LEN;
 
 #[derive(AnchorSerialize, AnchorDeserialize, Clone, Copy, Debug, PartialEq, Eq, InitSpace)]
 pub enum Side {
@@ -131,7 +132,11 @@ pub struct Positions {
 }
 
 impl Positions {
+    /// The fixed struct: what a pre-orders account is exactly as long as.
     pub const SPACE: usize = 8 + core::mem::size_of::<Positions>();
+    /// What `init_user` allocates: the struct plus the OPTIONAL conditional-
+    /// order tail (`state/order.rs`). Every earlier offset is unchanged.
+    pub const SPACE_WITH_ORDERS: usize = Self::SPACE + ORDERS_LEN;
 
     /// The open position on `market`, if any. `state` is checked first, so an
     /// all-zero slot can never match the zero key.
@@ -200,6 +205,7 @@ mod tests {
     use super::*;
     use crate::errors::DexxerError;
     use crate::state::liq_task_id;
+    use crate::state::order::{OrderSlot, ORDERS_AT, ORDERS_LEN};
 
     fn key(b: u8) -> Pubkey {
         Pubkey::new_from_array([b; 32])
@@ -215,8 +221,14 @@ mod tests {
     fn layout_is_exactly_the_spec() {
         assert_eq!(core::mem::size_of::<PositionSlot>(), 96);
         assert_eq!(core::mem::size_of::<HistoryRecord>(), 96);
+        assert_eq!(core::mem::size_of::<OrderSlot>(), 88);
         assert_eq!(core::mem::size_of::<Positions>(), 3176);
         assert_eq!(Positions::SPACE, 3184);
+        // The conditional-order tail is OPTIONAL and lives right after the
+        // struct: a pre-orders account (3184 B) still loads, a new one is 3888.
+        assert_eq!(ORDERS_AT, 3184);
+        assert_eq!(ORDERS_LEN, 704);
+        assert_eq!(Positions::SPACE_WITH_ORDERS, 3888);
     }
 
     #[test]
@@ -372,6 +384,16 @@ mod tests {
         assert_eq!(offset_of!(Positions, history_len), 3105);
         assert_eq!(offset_of!(Positions, version), 3106);
         assert_eq!(offset_of!(Positions, bump), 3107);
+        assert_eq!(offset_of!(OrderSlot, market), 0);
+        assert_eq!(offset_of!(OrderSlot, trigger), 32);
+        assert_eq!(offset_of!(OrderSlot, size), 40);
+        assert_eq!(offset_of!(OrderSlot, margin), 48);
+        assert_eq!(offset_of!(OrderSlot, extreme), 56);
+        assert_eq!(offset_of!(OrderSlot, tp), 64);
+        assert_eq!(offset_of!(OrderSlot, sl), 72);
+        assert_eq!(offset_of!(OrderSlot, kind), 80);
+        assert_eq!(offset_of!(OrderSlot, side), 81);
+        assert_eq!(offset_of!(OrderSlot, trail_bps), 82);
         assert_eq!(offset_of!(PositionSlot, market), 0);
         assert_eq!(offset_of!(PositionSlot, size), 32);
         assert_eq!(offset_of!(PositionSlot, entry), 40);

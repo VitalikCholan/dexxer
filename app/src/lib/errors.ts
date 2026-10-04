@@ -23,6 +23,10 @@ const ERROR_MESSAGE_OVERRIDES: Record<number, string> = {
   6046: 'This account has exited — set it up again from the Onboarding screen',
   6049: 'All 16 position slots are in use — close a position first',
   6050: 'Position is at its liquidation price — add margin before increasing it',
+  6051: 'All 8 order slots are in use — cancel an order first',
+  6052: 'Invalid order parameters',
+  6053: 'Order not found — it may have filled or been cancelled',
+  6054: 'This account predates conditional orders — exit and set it up again to use them',
 }
 
 export const DEXXER_ERROR_MESSAGES: Record<number, string> = Object.fromEntries(
