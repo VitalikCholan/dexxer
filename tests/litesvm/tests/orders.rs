@@ -798,3 +798,34 @@ fn orders_are_scoped_to_their_market() {
     assert!(orders(&h, &t).is_empty());
     assert_invariant_markets(&h, &w, &[&t], &[w.market, btc.market]);
 }
+
+#[test]
+fn place_order_with_a_foreign_feed_is_rejected() {
+    // `place_order` re-registers the (trader, market) scheduled task, whose
+    // account list is frozen at registration. A `feed` that is not
+    // `Market.feed` must be refused here exactly as `open_position` refuses
+    // it — otherwise the task would be re-registered with a junk feed and
+    // every later `liquidation_check` would skip on `read_price`.
+    let mut h = Harness::new();
+    let (w, t) = world(&mut h);
+    open_long(&mut h, &w, &t);
+    let mut ix = ixs::place_order(
+        &t.kp.pubkey(),
+        &t,
+        &w,
+        OrderKind::TakeProfit,
+        Side::Long,
+        0,
+        0,
+        160 * P,
+        0,
+        0,
+        0,
+    );
+    // `feed` is index 7 of `Trader::trade_accounts` (same as trade.rs's
+    // `wrong_feed_account_rejected`).
+    ix.accounts[7].pubkey = w.market;
+    let r = h.send(&[ix], &[&t.kp]);
+    assert_custom_error(&r, err(DexxerError::WrongFeed));
+    assert!(orders(&h, &t).is_empty());
+}

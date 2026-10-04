@@ -157,6 +157,18 @@ fn liq_task_accounts<'info>(a: &'info Trade<'info>) -> &'info [AccountInfo<'info
 /// The task registry is invisible from L1 and from an un-tokened TEE RPC
 /// (Task 0, measurement 4), so registering one leaks nothing about the owner.
 fn register_liq_task<'info>(a: &'info Trade<'info>) -> Result<()> {
+    // The task's account list is frozen at registration, `feed` included, and
+    // not every caller has already validated it through `read_price`
+    // (`place_order` never reads a price). An unchecked `feed` here would let
+    // a trader re-register their own task with a junk account and make every
+    // later scheduled `liquidation_check` skip on `WrongFeed` — the scheduler
+    // would never liquidate them again. Same two checks `read_price` makes.
+    require_keys_eq!(a.feed.key(), a.market.feed, DexxerError::WrongFeed);
+    require_keys_eq!(
+        *a.feed.owner,
+        a.config.oracle_program,
+        DexxerError::WrongFeed
+    );
     if !a.magic_program.executable {
         msg!("liq task: skipped (no magic program)");
         return Ok(());
