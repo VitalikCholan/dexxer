@@ -34,7 +34,6 @@ import { useTradeSession } from '../trade/useTradeSession'
 import { useOnboardingGate } from '../onboard/useOnboardingGate'
 import { SetupAccountCard } from '../onboard/SetupAccountCard'
 import { ReceiptSection } from '../receipt/ReceiptSection'
-import { PoolSnapshotCard } from '../receipt/PoolSnapshotCard'
 import { DepositSheet } from './DepositSheet'
 import { WithdrawSheet } from './WithdrawSheet'
 import { ExitSheet, type ExitChecklist } from './ExitSheet'
@@ -176,8 +175,6 @@ export function AccountScreen() {
 
             {/* Receipt and Exit are temporarily hidden — `src/lib/features.ts`. */}
             {FEATURES.receipt ? <ReceiptSection /> : null}
-
-            <PoolSnapshotCard />
 
             {FEATURES.exit ? (
               <Card title="Exit">

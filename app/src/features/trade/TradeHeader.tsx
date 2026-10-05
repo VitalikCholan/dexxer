@@ -6,16 +6,15 @@
 // max-leverage badge on top (oracle freshness is shown only when it matters:
 // TradeScreen's stale/disconnected warning), the big
 // mark price with its 24h change, then a stats row — High / Low over the
-// fetched candles and the pool's liquidity from the public 5-min `Pool`
-// snapshot (rounded to 100 dUSDC). Open interest is deliberately absent: it
-// lives in the private `MarketRisk` and servers never serve it.
+// fetched candles. Pool liquidity was removed from the UI (05.10.2026); open
+// interest is deliberately absent: it lives in the private `MarketRisk`.
 import { Pressable, Text, View } from 'react-native'
 import { router } from 'expo-router'
 import { useTheme } from '@/src/theme'
 import { useTextStyle } from '@/src/ui/styles'
 import { Badge } from '@/src/ui/Badge'
 import { AssetIcon } from '@/src/ui/AssetIcon'
-import { formatCompactUsd, type RangeStats } from './headerStats'
+import { type RangeStats } from './headerStats'
 import { useMarkets } from '@/src/lib/markets'
 
 function fmtUsd(n: number): string {
@@ -30,11 +29,9 @@ export interface TradeHeaderProps {
   /** Integer max leverage for the badge; null while the market loads. */
   maxLeverage: number | null
   range: RangeStats | null
-  /** `Pool.capital_total` from the latest public snapshot, raw 1e6. */
-  poolLiquidity: bigint | null
 }
 
-export function TradeHeader({ symbol, markUsdNum, pctChange, maxLeverage, range, poolLiquidity }: TradeHeaderProps) {
+export function TradeHeader({ symbol, markUsdNum, pctChange, maxLeverage, range }: TradeHeaderProps) {
   const { colors, space } = useTheme()
   const display = useTextStyle('display', { mono: true })
   const heading = useTextStyle('heading')
@@ -47,7 +44,6 @@ export function TradeHeader({ symbol, markUsdNum, pctChange, maxLeverage, range,
   const stats: { label: string; value: string }[] = [
     { label: `${range?.label ?? '24H'} High`, value: range ? `$${fmtUsd(range.high / 1e6)}` : '—' },
     { label: `${range?.label ?? '24H'} Low`, value: range ? `$${fmtUsd(range.low / 1e6)}` : '—' },
-    { label: 'Pool liq.', value: poolLiquidity !== null ? formatCompactUsd(poolLiquidity) : '—' },
   ]
 
   return (

@@ -227,7 +227,6 @@ export function TradeScreen() {
           pctChange={pctChange}
           maxLeverage={market ? maxLeverage(market.maxLevBps, market.imrBps) : null}
           range={rangeStats(change24h.data, now * 1000)}
-          poolLiquidity={pool.data?.length ? pool.data[pool.data.length - 1].capitalTotal : null}
         />
 
         <ChartSection
