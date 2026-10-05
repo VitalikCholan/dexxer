@@ -39,6 +39,28 @@ export function formatSignedDusdc(raw1e6: bigint): string {
 }
 
 /**
+ * Week 6: a session key is considered (nearly) spent at this many remaining
+ * `actions_left`. One threshold for both sides of the UX: Trade/Account warn
+ * from here down (`sessionLowWarning`), and a re-authorize run re-issues
+ * `set_session` from here down (`onboardState.ts`'s `sessionFresh`) — so the
+ * "Re-authorize" button shown with the warning actually does something.
+ * Lives here (not in `session.ts`, which re-exports it) so it runs under `npm test`.
+ */
+export const LOW_SESSION_ACTIONS = 3
+
+/**
+ * The warning shown once the session key's action budget runs low, or null.
+ * Above the threshold the count is not shown at all (05.10.2026): "20 actions"
+ * read like a balance and asked for no action. Every trade the session key
+ * signs spends one; 0 is "Session used up" (`formatSessionLeft`), not a warning.
+ */
+export function sessionLowWarning(actionsLeft: number | null | undefined): string | null {
+  if (actionsLeft === null || actionsLeft === undefined) return null
+  if (actionsLeft <= 0 || actionsLeft > LOW_SESSION_ACTIONS) return null
+  return `${actionsLeft} trade${actionsLeft === 1 ? '' : 's'} left — re-authorize soon`
+}
+
+/**
  * `UserAccount.sessionExpiry` (unix seconds) vs current wall-clock time,
  * formatted for the session badge (`AccountScreen.tsx`). Bug fixed here
  * (observed live, CLAUDE.md week-4 report): the old inline logic derived
@@ -54,12 +76,12 @@ export function formatSessionLeft(expirySec: number, nowSec: number, actionsLeft
   if (expirySec === 0) return 'No session'
   if (expirySec <= nowSec) return 'Session expired'
   // Week 6: the action budget is as hard a limit as the expiry (error 6021 past it).
+  // The count itself is not shown — `sessionLowWarning` speaks up when it runs low.
   if (actionsLeft === 0) return 'Session used up'
-  const actions = actionsLeft === undefined ? '' : ` · ${actionsLeft} action${actionsLeft === 1 ? '' : 's'}`
   const secsLeft = expirySec - nowSec
   const hoursLeft = Math.floor(secsLeft / 3600)
-  if (hoursLeft >= 1) return `Session active · ${hoursLeft}h left${actions}`
+  if (hoursLeft >= 1) return `Session active · ${hoursLeft}h left`
   // floor + min 1 so 3599s reads "59m" (not "60m") and 30s still reads "1m"
   const minsLeft = Math.max(1, Math.floor(secsLeft / 60))
-  return `Session active · ${minsLeft}m left${actions}`
+  return `Session active · ${minsLeft}m left`
 }

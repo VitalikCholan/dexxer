@@ -27,7 +27,7 @@ import { useLiveAccount } from '@/src/lib/live'
 import { decodeUserAccount } from '@/src/lib/codecs'
 import { decodePositions } from '@/src/lib/positions'
 import { describeTxError } from '@/src/lib/errors'
-import { formatSessionLeft, formatUsd2 } from '@/src/lib/status'
+import { formatSessionLeft, formatUsd2, sessionLowWarning } from '@/src/lib/status'
 import { pdas } from '@/src/lib/pdas'
 import { FEATURES } from '@/src/lib/features'
 import { useTradeSession } from '../trade/useTradeSession'
@@ -122,7 +122,9 @@ export function AccountScreen() {
   const expirySec = user.value ? Number(user.value.sessionExpiry) : 0
   const actionsLeft = user.value?.actionsLeft
   const sessionActive = expirySec > now && actionsLeft !== 0
-  const sessionLabel = formatSessionLeft(expirySec, now, actionsLeft)
+  // Running low replaces the time with a warning; otherwise only the time is shown.
+  const lowWarning = expirySec > now ? sessionLowWarning(actionsLeft) : null
+  const sessionLabel = lowWarning ?? formatSessionLeft(expirySec, now, actionsLeft)
 
   const checklist: ExitChecklist = {
     noOpenPosition: positionsLive.value === null || positionsLive.value.slots.length === 0,
@@ -140,7 +142,7 @@ export function AccountScreen() {
               Copy
             </Button>
           </View>
-          <Badge tone={sessionActive ? 'success' : 'danger'}>{sessionLabel}</Badge>
+          <Badge tone={lowWarning ? 'warning' : sessionActive ? 'success' : 'danger'}>{sessionLabel}</Badge>
         </View>
 
         {gate.status === 'needs_setup' ? null : error || user.error || positionsLive.error ? (

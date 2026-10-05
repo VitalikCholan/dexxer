@@ -48,6 +48,7 @@ import { decodeTicketMarket } from './marketLimits'
 import { slotGate } from './tradingRules'
 import { useTradeSession } from './useTradeSession'
 import { LOW_SESSION_ACTIONS } from '@/src/lib/session'
+import { sessionLowWarning } from '@/src/lib/status'
 import { useOnboardingGate } from '../onboard/useOnboardingGate'
 
 export function TradeScreen() {
@@ -253,7 +254,7 @@ export function TradeScreen() {
           </View>
         ) : sessionLow ? (
           <View style={{ gap: space.sm }}>
-            <Badge tone="warning">{`Session key: ${actionsLeft} action${actionsLeft === 1 ? '' : 's'} left`}</Badge>
+            <Badge tone="warning">{sessionLowWarning(actionsLeft) ?? ''}</Badge>
             <Button variant="secondary" onPress={() => router.push({ pathname: '/onboard', params: { reauth: '1' } })}>
               Re-authorize session
             </Button>
