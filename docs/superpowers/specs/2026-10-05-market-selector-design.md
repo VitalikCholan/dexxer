@@ -110,7 +110,7 @@ Route `app/app/markets.tsx` (root `Stack`, `presentation: 'modal'`, slides from 
 - **Search:** the existing `Input`, label "Search", hint "Ticker or name".
 - **Tabs** (`Segment`): All · ★ Favorites · With positions.
 - **Sort** (compact `Segment`): A–Z · 24h ▲ · 24h ▼. The choice is remembered on the device (`dexxer.marketsSort`).
-- **Slot counter:** "Open positions: 3 / 16". At 16/16: "All 16 position slots are in use. Close a position to open on another market." (warning tone).
+- **Slot counter:** "Open positions: 3 / 16". At 16/16: "All 16 position slots are in use. Close a position to open on another market." (warning tone). **Changed 05.10.2026:** the "n / 16" counter is removed; only the 16/16 warning is shown (the limit itself — backlog B.6).
 - **List** (`FlatList`), one `MarketRow` per market:
   ```
   [icon]  ETH          $2,725.88    ☆
