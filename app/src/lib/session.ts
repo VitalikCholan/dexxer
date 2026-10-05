@@ -17,6 +17,7 @@ import * as SecureStore from 'expo-secure-store'
 import nacl from 'tweetnacl'
 import { getAuthToken } from '@magicblock-labs/ephemeral-rollups-sdk'
 import { TEE_RPC, TEE_WS } from './solana'
+import { notifySessionKeySaved } from './sessionEvents'
 
 /** The low-budget threshold; defined in `status.ts` so the warning copy and its tests share it. */
 export { LOW_SESSION_ACTIONS } from './status'
@@ -58,6 +59,7 @@ export async function getOrCreateSessionKeypair(owner: PublicKey): Promise<Keypa
   }
   const kp = Keypair.generate()
   await SecureStore.setItemAsync(key, JSON.stringify(Array.from(kp.secretKey)))
+  notifySessionKeySaved(owner.toBase58())
   return kp
 }
 
