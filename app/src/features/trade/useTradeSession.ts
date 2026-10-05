@@ -25,6 +25,7 @@ import { readConfigDusdcMint } from '@/src/lib/codecs'
 import { type BaseTradeAccounts } from '@/src/lib/trade'
 import { pdas } from '@/src/lib/pdas'
 import { getSessionKeypair, teeConnectionForSession } from '@/src/lib/session'
+import { onSessionKeySaved } from '@/src/lib/sessionEvents'
 
 export type { BaseTradeAccounts }
 
@@ -48,6 +49,18 @@ export function useTradeSession(): TradeSession {
   const [base, setBase] = useState<BaseTradeAccounts | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  // Bumped when onboarding saves this owner's session key after this hook
+  // already looked for it (`sessionEvents.ts`) — re-reads instead of keeping
+  // a stale "No session key" until the app restarts.
+  const [keyVersion, setKeyVersion] = useState(0)
+  const ownerKey = owner?.toBase58() ?? null
+
+  useEffect(() => {
+    if (!ownerKey) return
+    return onSessionKeySaved((saved) => {
+      if (saved === ownerKey) setKeyVersion((v) => v + 1)
+    })
+  }, [ownerKey])
 
   useEffect(() => {
     let cancelled = false
@@ -99,9 +112,9 @@ export function useTradeSession(): TradeSession {
     return () => {
       cancelled = true
     }
-    // Only re-derive when the connected owner changes.
+    // Re-derive when the connected owner changes or its session key is saved.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [owner?.toBase58()])
+  }, [ownerKey, keyVersion])
 
   return { owner, session, conn, base, loading, error }
 }

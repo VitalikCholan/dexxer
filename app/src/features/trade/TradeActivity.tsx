@@ -4,7 +4,8 @@
 // market's open position (its `Positions` slot) at a glance without leaving Trade, with a jump to the Positions
 // tab for Increase / Decrease / Add margin. Open Orders lists the market's
 // pending conditional orders (limit / stop / TP / SL / trailing), each with a
-// Cancel.
+// Cancel. Shown only once the private account is ready (`activity.ts`); with
+// no position on this market but some on others, it links to them.
 import { useState } from 'react'
 import { router } from 'expo-router'
 import { Pressable, Text, View } from 'react-native'
@@ -18,6 +19,7 @@ import { type DecodedOrder, type PositionSlot } from '@/src/lib/positions'
 import { describeOrder } from '@/src/lib/orders'
 import { Button } from '@/src/ui/Button'
 import { computeUpnl } from '@/src/lib/trade'
+import { positionsLink } from './activity'
 
 function sol(raw: bigint): string {
   return (Number(raw) / 1e9).toFixed(4)
@@ -26,6 +28,7 @@ function sol(raw: bigint): string {
 export function TradeActivity({
   symbol,
   position: open,
+  openCount,
   markUsd,
   orders,
   busy,
@@ -33,6 +36,8 @@ export function TradeActivity({
 }: {
   symbol: string
   position: PositionSlot | null
+  /** Open slots across all markets, this one included. */
+  openCount: number
   markUsd: bigint | null
   orders: DecodedOrder[]
   busy: boolean
@@ -43,6 +48,22 @@ export function TradeActivity({
   const link = useTextStyle('bodyStrong')
   const [tab, setTab] = useState<'positions' | 'orders'>('positions')
 
+  const linkLabel = positionsLink(openCount, open !== null)
+  const toPositions = linkLabel ? (
+    <Pressable
+      accessibilityRole="link"
+      onPress={() => router.push('/positions')}
+      style={({ pressed }) => ({
+        flexDirection: 'row',
+        justifyContent: 'space-between',
+        paddingTop: space.sm,
+        opacity: pressed ? 0.7 : 1,
+      })}
+    >
+      <Text style={[link, { color: colors.accentText }]}>{linkLabel}</Text>
+      <Text style={[link, { color: colors.accentText }]}>›</Text>
+    </Pressable>
+  ) : null
   const upnl = open && markUsd !== null ? computeUpnl(open.side, open.size, open.entry, markUsd) : null
 
   return (
@@ -80,7 +101,10 @@ export function TradeActivity({
           </View>
         )
       ) : !open ? (
-        <Text style={[caption, { color: colors.textSecondary }]}>No open position.</Text>
+        <View style={{ gap: space.xs }}>
+          <Text style={[caption, { color: colors.textSecondary }]}>{`No open position on ${symbol}-PERP.`}</Text>
+          {toPositions}
+        </View>
       ) : (
         <View style={{ gap: space.xs }}>
           <Row
@@ -97,19 +121,7 @@ export function TradeActivity({
             mono
           />
           <Row label="Liq. price" value={`$${formatUsd2(open.liqPrice)}`} mono />
-          <Pressable
-            accessibilityRole="link"
-            onPress={() => router.push('/positions')}
-            style={({ pressed }) => ({
-              flexDirection: 'row',
-              justifyContent: 'space-between',
-              paddingTop: space.sm,
-              opacity: pressed ? 0.7 : 1,
-            })}
-          >
-            <Text style={[link, { color: colors.accentText }]}>Manage in Positions</Text>
-            <Text style={[link, { color: colors.accentText }]}>›</Text>
-          </Pressable>
+          {toPositions}
         </View>
       )}
     </Card>

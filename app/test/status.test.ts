@@ -1,15 +1,31 @@
 // test/status.test.ts — `formatSessionLeft` with the session's remaining action budget.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { formatDusdc, formatSessionLeft, formatSignedDusdc } from '../src/lib/status'
+import {
+  LOW_SESSION_ACTIONS,
+  formatDusdc,
+  formatSessionLeft,
+  formatSignedDusdc,
+  sessionLowWarning,
+} from '../src/lib/status'
 
 const now = 1_000_000
 test('formatSessionLeft without actions is unchanged', () => {
   assert.equal(formatSessionLeft(now + 7200, now), 'Session active · 2h left')
 })
-test('formatSessionLeft appends the remaining actions', () => {
-  assert.equal(formatSessionLeft(now + 7200, now, 5), 'Session active · 2h left · 5 actions')
-  assert.equal(formatSessionLeft(now + 7200, now, 1), 'Session active · 2h left · 1 action')
+test('formatSessionLeft never shows the action count: only time while the session is usable', () => {
+  assert.equal(formatSessionLeft(now + 7200, now, 20), 'Session active · 2h left')
+  assert.equal(formatSessionLeft(now + 7200, now, 1), 'Session active · 2h left')
+})
+test('sessionLowWarning: silent above the threshold, a trades-left warning at or below it', () => {
+  assert.equal(LOW_SESSION_ACTIONS, 3)
+  assert.equal(sessionLowWarning(20), null)
+  assert.equal(sessionLowWarning(4), null)
+  assert.equal(sessionLowWarning(3), '3 trades left — re-authorize soon')
+  assert.equal(sessionLowWarning(1), '1 trade left — re-authorize soon')
+  assert.equal(sessionLowWarning(0), null, '0 is "Session used up", a block, not a warning')
+  assert.equal(sessionLowWarning(undefined), null)
+  assert.equal(sessionLowWarning(null), null)
 })
 test('a session with no actions left is used up even before it expires', () => {
   assert.equal(formatSessionLeft(now + 7200, now, 0), 'Session used up')

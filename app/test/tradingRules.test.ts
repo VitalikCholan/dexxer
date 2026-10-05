@@ -33,31 +33,38 @@ function flat(groups: ReturnType<typeof tradingRules>): Record<string, string> {
   return Object.fromEntries(groups.flatMap((g) => g.rows.map((r) => [r.label, r.value])))
 }
 
-test('tradingRules: devnet SOL-PERP parameters', () => {
-  const r = flat(tradingRules(DEVNET, 38_700_000_000n))
+test('tradingRules: devnet SOL-PERP parameters a trader needs', () => {
+  const r = flat(tradingRules(DEVNET))
   assert.equal(r['Max leverage'], '10×')
   assert.equal(r['Initial margin (IMR)'], '10%')
   assert.equal(r['Maintenance margin (MMR)'], '5%')
+  assert.equal(r['Margin mode'], 'Isolated')
+  assert.equal(r['Collateral'], 'dUSDC')
   assert.equal(r['Min position size'], '0.01 SOL')
   assert.equal(r['Max position size'], '$100,000 notional')
-  assert.equal(r['OI cap, per side'], '30% of pool ≈ $11.6K')
   assert.equal(r['Open fee'], '0.06%')
+  assert.equal(r['Close fee'], '0.06%')
   assert.equal(r['Liquidation fee'], '1%')
-  assert.equal(r['Mark price'], 'EMA of index, α 30%')
-  assert.equal(r['Liquidation'], 'At mark, 2 checks in a row')
-  assert.equal(r['Max oracle staleness'], '2 s')
-  assert.equal(r['Max oracle confidence'], '0.5%')
-  assert.equal(r['Max mark–index deviation'], '2%')
-  assert.equal(r['Opening'], 'Open')
-  assert.equal(r['Pool snapshot rounding'], '100 dUSDC')
+  assert.equal(r['Funding / borrow rate'], 'None')
+  assert.equal(r['Liquidation'], 'At mark price')
 })
 
-test('tradingRules: explicit OI cap, no snapshot yet, paused, confidence off', () => {
-  const r = flat(tradingRules({ ...DEVNET, oiCap: 5_000_000_000n, pausedOpen: true, maxConfBps: 0 }, null))
-  assert.equal(r['OI cap, per side'], '$5,000')
-  assert.equal(r['Opening'], 'Paused')
-  assert.equal(r['Max oracle confidence'], 'Not checked')
-  assert.equal(flat(tradingRules(DEVNET, null))['OI cap, per side'], '30% of pool')
+test('tradingRules: no pool, oracle or protocol internals reach the trader', () => {
+  const labels = tradingRules({ ...DEVNET, oiCap: 5_000_000_000n }).flatMap((g) => g.rows.map((r) => r.label))
+  for (const hidden of [
+    'OI cap, per side',
+    'Positions per market',
+    'Index',
+    'Mark price',
+    'Max oracle staleness',
+    'Max oracle confidence',
+    'Max mark–index deviation',
+    'Opening',
+    'Pool snapshot rounding',
+  ])
+    assert.ok(!labels.includes(hidden), `${hidden} must not be shown`)
+  const values = tradingRules(DEVNET).flatMap((g) => g.rows.map((r) => r.value))
+  assert.ok(!values.some((v) => /pool|Pyth/i.test(v)), 'no pool or oracle vendor in values')
 })
 
 // --- the selected market's slot and the 16-slot gate (Review Focus 2 and 3) ---
@@ -115,7 +122,7 @@ test('slotGate: all 16 slots open blocks a new market before sending, with the 6
 })
 
 test('tradingRules: the size row uses the market symbol and the 16-market cap is listed', () => {
-  const r = flat(tradingRules({ ...DEVNET, symbol: 'BTC', minSize: 100_000n }, null))
+  const r = flat(tradingRules({ ...DEVNET, symbol: 'BTC', minSize: 100_000n }))
   assert.equal(r['Min position size'], '0.0001 BTC')
   assert.equal(r['Open markets at once'], '16')
 })

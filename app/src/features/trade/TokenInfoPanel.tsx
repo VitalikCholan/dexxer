@@ -1,11 +1,12 @@
 // app/src/features/trade/TokenInfoPanel.tsx
 //
-// C.7 «Token information» tab: name / ticker / rank / launch date, the
-// Overview · Utility and Mechanics · Ecosystem texts (collapsible), All-time
-// high / low cards, the market-data table and Website / Whitepaper / Explorer /
-// GitHub links. Everything comes from the relayer's `/assets/:symbol`; it is
-// public market data and says nothing about the trader. The text and links are
-// the repo's own, the numbers CoinGecko's — the tab keeps working with the
+// C.7 «Token information» (the Info tab's first section): name / ticker
+// (rank and launch date removed 05.10.2026), the Overview · Utility and
+// Mechanics · Ecosystem texts (collapsible), All-time high / low cards, the
+// market-data table and Website / Whitepaper / Explorer / GitHub links.
+// Everything comes from the relayer's `/assets/:symbol`; it is public market
+// data and says nothing about the trader. The text and links are the repo's
+// own, the numbers CoinGecko's — the tab keeps working with the
 // text alone when the numbers are unavailable.
 import { useState } from 'react'
 import { Linking, Pressable, Text, View } from 'react-native'
@@ -20,7 +21,6 @@ import {
   formatDate,
   formatPercent,
   formatPrice,
-  formatRank,
   formatSupply,
   truncateText,
   updatedAgo,
@@ -102,11 +102,7 @@ export function TokenInfoBody({ asset, nowMs }: { asset: AssetInfo; nowMs: numbe
 
   return (
     <View style={{ gap: space.lg }}>
-      <View style={{ gap: space.xs }}>
-        <Text style={[title, { color: colors.textPrimary }]}>{`${asset.name} (${t})`}</Text>
-        <Row label="Rank" value={formatRank(m?.rank ?? null)} mono />
-        <Row label="Launched" value={formatDate(asset.launchDate)} />
-      </View>
+      <Text style={[title, { color: colors.textPrimary }]}>{`${asset.name} (${t})`}</Text>
 
       <Section title="Overview" body={asset.overview} />
       <Section title="Utility and Mechanics" body={asset.utility} />

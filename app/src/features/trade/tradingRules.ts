@@ -1,19 +1,16 @@
 // app/src/features/trade/tradingRules.ts
 //
-// C.7 "Trading rules": the rules of this market as the program enforces
-// them, read from the public `Market` (plus the public `Pool` snapshot for
-// the default OI cap). Grouped rows, pure so they run under `npm test`.
-// Current open interest is not here — it lives in the private `MarketRisk`.
+// C.7 "Trading rules": the rules of this market a trader acts on, read from
+// the public `Market`. Grouped rows, pure so they run under `npm test`.
+// Trimmed 05.10.2026: no pool figures (OI cap as a share of the pool), no
+// oracle vendor or tuning (EMA α, staleness, confidence, deviation) — the
+// program still enforces them, the trader does not act on them. Current open
+// interest is not here either — it lives in the private `MarketRisk`.
 import { type PublicKey } from '@solana/web3.js'
 import { DEXXER_ERROR_MESSAGES } from '@/src/lib/errors'
 import { MAX_SLOTS, slotFor, type DecodedPositions, type PositionSlot } from '@/src/lib/positions'
-import { formatBps, formatCompactUsd, maxLeverage } from './headerStats'
+import { formatBps, maxLeverage } from './headerStats'
 import { type TicketMarket } from './marketLimits'
-
-/** `state/mod.rs::SNAPSHOT_STEP` — the public `Pool` snapshot is rounded to this (100 dUSDC). */
-export const SNAPSHOT_STEP = 100_000_000n
-/** `risk::effective_oi_cap` when `Market.oi_cap == 0`: 30% of pool capital, per side. */
-const DEFAULT_OI_CAP_BPS = 3_000n
 
 export interface RuleRow {
   label: string
@@ -53,14 +50,8 @@ export function slotGate(p: DecodedPositions | null, market: PublicKey): SlotGat
   return { slot, openCount, openBlocked: full ? SLOTS_FULL_TEXT : null }
 }
 
-export function tradingRules(m: TicketMarket, poolCapital: bigint | null): RuleGroup[] {
+export function tradingRules(m: TicketMarket): RuleGroup[] {
   const lev = maxLeverage(m.maxLevBps, m.imrBps)
-  const oiCap =
-    m.oiCap > 0n
-      ? usd(m.oiCap)
-      : poolCapital !== null
-        ? `30% of pool ≈ ${formatCompactUsd((poolCapital * DEFAULT_OI_CAP_BPS) / 10_000n)}`
-        : '30% of pool'
   return [
     {
       title: 'Leverage and margin',
@@ -69,6 +60,7 @@ export function tradingRules(m: TicketMarket, poolCapital: bigint | null): RuleG
         { label: 'Initial margin (IMR)', value: formatBps(m.imrBps) },
         { label: 'Maintenance margin (MMR)', value: formatBps(m.mmrBps) },
         { label: 'Margin mode', value: 'Isolated' },
+        { label: 'Collateral', value: 'dUSDC' },
       ],
     },
     {
@@ -76,37 +68,17 @@ export function tradingRules(m: TicketMarket, poolCapital: bigint | null): RuleG
       rows: [
         { label: 'Min position size', value: size(m.minSize, m.symbol) },
         { label: 'Max position size', value: `${usd(m.maxPosition)} notional` },
-        { label: 'OI cap, per side', value: oiCap },
-        { label: 'Positions per market', value: '1' },
         { label: 'Open markets at once', value: String(MAX_SLOTS) },
       ],
     },
     {
-      title: 'Fees',
+      title: 'Fees and liquidation',
       rows: [
         { label: 'Open fee', value: formatBps(m.openFeeBps) },
         { label: 'Close fee', value: formatBps(m.closeFeeBps) },
         { label: 'Liquidation fee', value: formatBps(m.liqFeeBps) },
         { label: 'Funding / borrow rate', value: 'None' },
-      ],
-    },
-    {
-      title: 'Price and liquidation',
-      rows: [
-        { label: 'Index', value: 'Pyth Lazer' },
-        { label: 'Mark price', value: `EMA of index, α ${formatBps(m.emaAlphaBps)}` },
-        { label: 'Liquidation', value: `At mark, ${m.liqHysteresisTicks} checks in a row` },
-        { label: 'Max oracle staleness', value: `${m.maxStalenessSecs} s` },
-        { label: 'Max oracle confidence', value: m.maxConfBps > 0 ? formatBps(m.maxConfBps) : 'Not checked' },
-        { label: 'Max mark–index deviation', value: formatBps(m.maxDeviationBps) },
-      ],
-    },
-    {
-      title: 'Market',
-      rows: [
-        { label: 'Opening', value: m.pausedOpen ? 'Paused' : 'Open' },
-        { label: 'Settlement', value: 'dUSDC' },
-        { label: 'Pool snapshot rounding', value: `${usd(SNAPSHOT_STEP).slice(1)} dUSDC` },
+        { label: 'Liquidation', value: 'At mark price' },
       ],
     },
   ]

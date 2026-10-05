@@ -13,7 +13,6 @@ import {
   isChartType,
   isWhitespace,
   liveUpdateKind,
-  scrollTargetFor,
   secondsVisibleFor,
   seriesFor,
   tailForKey,
@@ -227,20 +226,6 @@ test('fillWhitespace: a gap of exactly maxGap steps is filled, one more is not',
     )
   assert.equal(at(1000).length, 1001) // 2 real + 999 inserted
   assert.equal(at(1001).length, 2)
-})
-
-test('scrollTargetFor: fully visible pill needs no scroll, the mount case included', () => {
-  assert.equal(scrollTargetFor({ x: 70, width: 40 }, { x: 0, width: 300 }, 8), null)
-  assert.equal(scrollTargetFor({ x: 0, width: 36 }, { x: 0, width: 300 }, 8), 0)
-})
-
-test('scrollTargetFor: pill cut off on the left scrolls the minimum, clamped at 0', () => {
-  assert.equal(scrollTargetFor({ x: 100, width: 40 }, { x: 120, width: 300 }, 8), 92)
-  assert.equal(scrollTargetFor({ x: 4, width: 40 }, { x: 20, width: 300 }, 8), 0)
-})
-
-test('scrollTargetFor: pill cut off on the right scrolls just enough', () => {
-  assert.equal(scrollTargetFor({ x: 380, width: 40 }, { x: 0, width: 300 }, 8), 128)
 })
 
 test('secondsVisibleFor: only 1s', () => {

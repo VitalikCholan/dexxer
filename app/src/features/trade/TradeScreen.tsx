@@ -23,7 +23,7 @@ import { Button } from '@/src/ui/Button'
 import { Skeleton } from '@/src/ui/Skeleton'
 import { showToast } from '@/src/ui/Toast'
 import { useLiveAccount } from '@/src/lib/live'
-import { useCandles, useIndexerConnected, useMark, usePoolHistory } from '@/src/lib/indexer'
+import { useCandles, useIndexerConnected, useMark } from '@/src/lib/indexer'
 import { decodeUserAccount, readMarket, type SideName } from '@/src/lib/codecs'
 import { describeTxError } from '@/src/lib/errors'
 import { useSelectedMarket } from '@/src/lib/markets'
@@ -40,14 +40,15 @@ import {
 import * as math from '@/src/lib/math'
 import { ChartSection, type Tf } from './ChartSection'
 import { TradeActivity } from './TradeActivity'
+import { activityVisible } from './activity'
 import { TradeHeader } from './TradeHeader'
-import { MarketInfoCard } from './MarketInfoCard'
 import { maxLeverage, rangeStats } from './headerStats'
 import { TradeTicket, type Exits, type MarketParams } from './TradeTicket'
 import { decodeTicketMarket } from './marketLimits'
 import { slotGate } from './tradingRules'
 import { useTradeSession } from './useTradeSession'
 import { LOW_SESSION_ACTIONS } from '@/src/lib/session'
+import { sessionLowWarning } from '@/src/lib/status'
 import { useOnboardingGate } from '../onboard/useOnboardingGate'
 
 export function TradeScreen() {
@@ -66,7 +67,6 @@ export function TradeScreen() {
   const userLive = useLiveAccount(conn, base?.userAccount ?? null, decodeUserAccount)
   const mark = useMark(symbol)
   const change24h = useCandles(symbol, '15m', 96)
-  const pool = usePoolHistory(1)
   const indexerConnected = useIndexerConnected()
 
   // Right after a switch the subscription still holds the previous market for
@@ -76,7 +76,7 @@ export function TradeScreen() {
     () => (base && market ? tradeAccountsFor(base, { market: marketPda, feed: market.feed }) : null),
     [base, market, marketPda],
   )
-  const { slot: position, openBlocked } = slotGate(positionsLive.value, marketPda)
+  const { slot: position, openCount, openBlocked } = slotGate(positionsLive.value, marketPda)
   const marketMark = market?.mark ?? null
   const markUsd = mark.data?.price ?? marketMark
   const markUsdNum = markUsd !== null ? Number(markUsd) / 1e6 : null
@@ -229,14 +229,7 @@ export function TradeScreen() {
           range={rangeStats(change24h.data, now * 1000)}
         />
 
-        <ChartSection
-          symbol={symbol}
-          tf={tf}
-          onTfChange={setTf}
-          position={position}
-          market={market}
-          poolCapital={pool.data?.length ? pool.data[pool.data.length - 1].capitalTotal : null}
-        />
+        <ChartSection symbol={symbol} tf={tf} onTfChange={setTf} position={position} market={market} />
 
         {oracle.reason === 'loading' ? (
           <Skeleton lines={1} />
@@ -261,7 +254,7 @@ export function TradeScreen() {
           </View>
         ) : sessionLow ? (
           <View style={{ gap: space.sm }}>
-            <Badge tone="warning">{`Session key: ${actionsLeft} action${actionsLeft === 1 ? '' : 's'} left`}</Badge>
+            <Badge tone="warning">{sessionLowWarning(actionsLeft) ?? ''}</Badge>
             <Button variant="secondary" onPress={() => router.push({ pathname: '/onboard', params: { reauth: '1' } })}>
               Re-authorize session
             </Button>
@@ -294,16 +287,17 @@ export function TradeScreen() {
           />
         )}
 
-        <TradeActivity
-          symbol={symbol}
-          position={position}
-          markUsd={markUsd}
-          orders={ordersFor(positionsLive.value, marketPda)}
-          busy={busy}
-          onCancel={(slot) => void handleCancel(slot)}
-        />
-
-        <MarketInfoCard symbol={symbol} market={market} />
+        {activityVisible(gate.status, positionsLive.value !== null) ? (
+          <TradeActivity
+            symbol={symbol}
+            position={position}
+            openCount={openCount}
+            markUsd={markUsd}
+            orders={ordersFor(positionsLive.value, marketPda)}
+            busy={busy}
+            onCancel={(slot) => void handleCancel(slot)}
+          />
+        ) : null}
       </ScrollView>
     </Page>
   )

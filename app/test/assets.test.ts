@@ -10,7 +10,6 @@ import {
   formatDate,
   formatPercent,
   formatPrice,
-  formatRank,
   formatSupply,
   truncateText,
   updatedAgo,
@@ -98,7 +97,7 @@ test('compact: units, rounding carry, negatives', () => {
   assert.equal(compact(3.2e12), '3.2T')
 })
 
-test('money, supply, percent, rank', () => {
+test('money, supply, percent', () => {
   assert.equal(formatCompactUsd(80e9), '$80B')
   assert.equal(formatCompactUsd(null), '—')
   assert.equal(formatSupply(500e6, 'SOL'), '500M SOL')
@@ -107,8 +106,6 @@ test('money, supply, percent, rank', () => {
   assert.equal(formatPercent(0.004), '<0.01%')
   assert.equal(formatPercent(0), '0.00%')
   assert.equal(formatPercent(null), '—')
-  assert.equal(formatRank(1), '#1')
-  assert.equal(formatRank(null), '—')
 })
 
 test('formatPrice scales precision with magnitude and groups thousands', () => {

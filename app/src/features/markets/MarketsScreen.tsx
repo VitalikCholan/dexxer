@@ -1,9 +1,10 @@
 // app/src/features/markets/MarketsScreen.tsx
 //
 // "Select market" (spec 2026-10-05 market selector, §5.2): search, tabs,
-// A–Z / 24h sort, favourites, position markers, the 16-slot counter. Prices
-// come from the WS mark cache (observed, never fetched per market) and
-// /tickers; selection is the global `useSelectedMarket`.
+// A–Z / 24h sort, favourites, position markers, and a warning once all 16
+// position slots are taken. Prices come from the WS mark cache (observed,
+// never fetched per market) and /tickers; selection is the global
+// `useSelectedMarket`.
 import { useCallback, useState } from 'react'
 import { FlatList, Pressable, Text, View } from 'react-native'
 import { router } from 'expo-router'
@@ -117,11 +118,10 @@ export function MarketsScreen() {
         {!markets.data?.length && !markets.isLoading ? (
           <Text style={[caption, { color: colors.warning }]}>Market list unavailable — showing SOL</Text>
         ) : null}
-        {slots ? (
-          <Text style={[caption, { color: slots.used >= slots.max ? colors.warning : colors.textSecondary }]}>
-            {slots.used >= slots.max
-              ? `All ${slots.max} position slots are in use. Close a position to open on another market.`
-              : `Open positions: ${slots.used} / ${slots.max}`}
+        {/* The "n / 16" counter is gone (05.10.2026, backlog B.6); only the blocking case is said. */}
+        {slots && slots.used >= slots.max ? (
+          <Text style={[caption, { color: colors.warning }]}>
+            {`All ${slots.max} position slots are in use. Close a position to open on another market.`}
           </Text>
         ) : null}
       </View>

@@ -6,11 +6,13 @@
 // OHLC row, High/Low of the visible range and the mark's last-price line are
 // the library's (driven from the page), plus −/+/↺ zoom buttons for one-hand
 // use; the toolbar here picks the
-// timeframe, the chart type (starred types get a quick-access chip, the rest
-// are in a sheet), auto/log scale, EMA(20) and entry / liq lines of the open
-// position. All 16 timeframes; live marks fold in via `useMarkTail`.
+// timeframe (one row that fits the screen: up to five pinned timeframes and
+// More, which opens all 16 — `tfToolbar.ts`), the chart type (one button,
+// the full list in a sheet), auto/log scale, EMA(20) and entry / liq lines of
+// the open position. Live marks fold in via `useMarkTail`.
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { Linking, Pressable, ScrollView, Text, View } from 'react-native'
+import { Linking, Pressable, Text, View } from 'react-native'
+import Svg, { Path, Rect } from 'react-native-svg'
 import { WebView, type WebViewMessageEvent } from 'react-native-webview'
 import { useTheme } from '@/src/theme'
 import { useTextStyle } from '@/src/ui/styles'
@@ -24,15 +26,13 @@ import {
   fillWhitespace,
   foldMarks,
   liveUpdateKind,
-  scrollTargetFor,
   secondsVisibleFor,
   seriesFor,
-  type Rect1D,
-  type ChartType,
   type Tf,
 } from './chartData'
 import { chartHtml, type ChartColors } from './chartHtml'
 import { useChartPrefs } from './useChartPrefs'
+import { MAX_PINNED_TFS, chartTypeGlyph, tfRow, togglePinnedTf, type ChartTypeGlyph } from './tfToolbar'
 import { useMarkTail } from './useMarkTail'
 
 const HEIGHT = 300
@@ -47,7 +47,19 @@ export interface TradingChartProps {
   position: PositionSlot | null
 }
 
-function Pill({ label, active, onPress }: { label: string; active?: boolean; onPress: () => void }) {
+function Pill({
+  label,
+  active,
+  onPress,
+  accessibilityLabel,
+  icon,
+}: {
+  label: string
+  active?: boolean
+  onPress: () => void
+  accessibilityLabel?: string
+  icon?: React.ReactNode
+}) {
   const { colors, space, radius, border, control } = useTheme()
   const style = useTextStyle('caption', { mono: true })
   // The pill is drawn 28 dp tall; the touch area reaches control.minHitTarget vertically only,
@@ -57,10 +69,14 @@ function Pill({ label, active, onPress }: { label: string; active?: boolean; onP
   return (
     <Pressable
       accessibilityRole="button"
+      accessibilityLabel={accessibilityLabel}
       accessibilityState={{ selected: !!active }}
       onPress={onPress}
       hitSlop={{ top: slop, bottom: slop }}
       style={({ pressed }) => ({
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: space.xs,
         paddingHorizontal: space.sm,
         paddingVertical: space.xs,
         borderRadius: radius.sm,
@@ -69,35 +85,45 @@ function Pill({ label, active, onPress }: { label: string; active?: boolean; onP
         backgroundColor: active ? colors.accentSubtle : pressed ? colors.surfaceAlt : colors.bgElevated,
       })}
     >
+      {icon}
       <Text style={[style, { color: active ? colors.textPrimary : colors.textSecondary }]}>{label}</Text>
     </Pressable>
   )
 }
 
+/** The chart-type button's icon, drawn in the button's text colour; decorative (the button has a label). */
+function TypeGlyph({ glyph, color, size }: { glyph: ChartTypeGlyph; color: string; size: number }) {
+  return (
+    <Svg width={size} height={size} viewBox="0 0 16 16" accessibilityElementsHidden importantForAccessibility="no">
+      {glyph === 'candles' ? (
+        <>
+          <Path d="M4 2v12M11 1v13" stroke={color} strokeWidth={1.5} />
+          <Rect x={2.5} y={5} width={3} height={6} fill={color} />
+          <Rect x={9.5} y={3.5} width={3} height={7} fill={color} />
+        </>
+      ) : glyph === 'line' ? (
+        <Path d="M1 12l4-5 3 3 6-7" stroke={color} strokeWidth={1.5} fill="none" strokeLinejoin="round" />
+      ) : (
+        <>
+          <Path d="M1 12l4-5 3 3 6-7v12H1z" fill={color} opacity={0.35} />
+          <Path d="M1 12l4-5 3 3 6-7" stroke={color} strokeWidth={1.5} fill="none" strokeLinejoin="round" />
+        </>
+      )}
+    </Svg>
+  )
+}
+
 export function TradingChart({ symbol, tf, onTfChange, position }: TradingChartProps) {
-  const { colors, space } = useTheme()
+  const { colors, space, control } = useTheme()
   const caption = useTextStyle('caption')
   const body = useTextStyle('body')
+  const mono = useTextStyle('body', { mono: true })
   const candles = useCandles(symbol, tf)
   const [prefs, setPrefs] = useChartPrefs()
   const [picker, setPicker] = useState(false)
+  const [tfPicker, setTfPicker] = useState(false)
   const [ready, setReady] = useState(false)
   const web = useRef<WebView>(null)
-  const tfScroll = useRef<ScrollView>(null)
-  const tfRect = useRef<Partial<Record<Tf, Rect1D>>>({})
-  const scrollX = useRef(0)
-  const viewportW = useRef(0)
-  // Scroll only when the selected pill is not fully visible, and by the minimum.
-  const scrollToTf = (t: Tf, animated: boolean) => {
-    const pill = tfRect.current[t]
-    if (!pill || viewportW.current === 0) return
-    const x = scrollTargetFor(pill, { x: scrollX.current, width: viewportW.current }, space.sm)
-    if (x !== null) tfScroll.current?.scrollTo({ x, animated })
-  }
-  useEffect(() => {
-    scrollToTf(tf, true)
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- scrollToTf only closes over space.sm
-  }, [tf, space.sm])
 
   const chartColors: ChartColors = useMemo(
     () => ({
@@ -229,52 +255,31 @@ export function TradingChart({ symbol, tf, onTfChange, position }: TradingChartP
     }
   }
 
-  const favorites = CHART_TYPES.filter((t) => prefs.favorites.includes(t.id))
   const current = CHART_TYPES.find((t) => t.id === prefs.type)
-  function toggleFavorite(id: ChartType) {
-    setPrefs({
-      favorites: prefs.favorites.includes(id) ? prefs.favorites.filter((f) => f !== id) : [...prefs.favorites, id],
-    })
-  }
+  const row = tfRow(prefs.pinnedTfs, tf)
+  const pinsFull = prefs.pinnedTfs.length >= MAX_PINNED_TFS
 
   return (
     <View style={{ gap: space.sm }}>
-      <ScrollView
-        ref={tfScroll}
-        horizontal
-        showsHorizontalScrollIndicator={false}
-        contentContainerStyle={{ gap: space.xs }}
-        scrollEventThrottle={16}
-        onScroll={(e) => {
-          scrollX.current = e.nativeEvent.contentOffset.x
-        }}
-        onLayout={(e) => {
-          viewportW.current = e.nativeEvent.layout.width
-          scrollToTf(tf, false)
-        }}
-      >
-        {TIMEFRAMES.map((t) => (
-          <View
-            key={t}
-            onLayout={(e) => {
-              const { x, width } = e.nativeEvent.layout
-              tfRect.current[t] = { x, width }
-              if (t === tf) scrollToTf(t, false)
-            }}
-          >
-            <Pill label={t} active={t === tf} onPress={() => onTfChange(t)} />
-          </View>
+      {/* One row that fits the screen: pinned timeframes, More (all 16), the chart type. */}
+      <View style={{ flexDirection: 'row', alignItems: 'center', gap: space.xs }}>
+        {row.pills.map((t) => (
+          <Pill key={t} label={t} active={t === tf} onPress={() => onTfChange(t)} />
         ))}
-        <View style={{ width: space.sm }} />
-        {/* First, so it never scrolls out of reach behind the starred types. */}
-        <Pill label="⋯ Types" onPress={() => setPicker(true)} />
-        {favorites.map((t) => (
-          <Pill key={t.id} label={t.label} active={t.id === prefs.type} onPress={() => setPrefs({ type: t.id })} />
-        ))}
-        {!favorites.some((t) => t.id === prefs.type) && current ? (
-          <Pill label={current.label} active onPress={() => setPicker(true)} />
-        ) : null}
-      </ScrollView>
+        <Pill
+          label={`${row.more.label} ▾`}
+          active={row.more.active}
+          accessibilityLabel={row.more.active ? `Timeframe ${tf}, more timeframes` : 'More timeframes'}
+          onPress={() => setTfPicker(true)}
+        />
+        <View style={{ flex: 1 }} />
+        <Pill
+          label="▾"
+          accessibilityLabel={`Chart type: ${current?.label ?? ''}`}
+          icon={<TypeGlyph glyph={chartTypeGlyph(prefs.type)} color={colors.textSecondary} size={14} />}
+          onPress={() => setPicker(true)}
+        />
+      </View>
 
       <View style={{ height: HEIGHT }}>
         <WebView
@@ -321,34 +326,83 @@ export function TradingChart({ symbol, tf, onTfChange, position }: TradingChartP
         <Pill label="↺" onPress={() => send({ type: 'zoom', dir: 0 })} />
       </View>
 
+      <Sheet open={tfPicker} onClose={() => setTfPicker(false)} title="Timeframe">
+        <Text style={[caption, { color: colors.textSecondary }]}>
+          {`Tap ★ to pin up to ${MAX_PINNED_TFS} to the toolbar · ${prefs.pinnedTfs.length} / ${MAX_PINNED_TFS} pinned`}
+        </Text>
+        <View style={{ flexDirection: 'row', flexWrap: 'wrap', rowGap: space.xs }}>
+          {TIMEFRAMES.map((t) => {
+            const pinned = prefs.pinnedTfs.includes(t)
+            const canPin = pinned || !pinsFull
+            return (
+              // Two sibling buttons (choose, pin): a nested button inside an accessible one is invisible to TalkBack.
+              <View key={t} style={{ width: '25%', flexDirection: 'row', alignItems: 'center' }}>
+                <Pressable
+                  accessibilityRole="button"
+                  accessibilityLabel={`Timeframe ${t}`}
+                  accessibilityState={{ selected: t === tf }}
+                  onPress={() => {
+                    onTfChange(t)
+                    setTfPicker(false)
+                  }}
+                  style={({ pressed }) => ({
+                    flex: 1,
+                    minHeight: control.minHitTarget,
+                    justifyContent: 'center',
+                    paddingLeft: space.sm,
+                    opacity: pressed ? 0.6 : 1,
+                  })}
+                >
+                  <Text style={[mono, { color: t === tf ? colors.accentText : colors.textPrimary }]}>{t}</Text>
+                </Pressable>
+                <Pressable
+                  accessibilityRole="button"
+                  accessibilityLabel={pinned ? `Unpin ${t} from the toolbar` : `Pin ${t} to the toolbar`}
+                  accessibilityState={{ disabled: !canPin }}
+                  disabled={!canPin}
+                  hitSlop={space.xs}
+                  onPress={() => setPrefs({ pinnedTfs: togglePinnedTf(prefs.pinnedTfs, t) })}
+                  style={({ pressed }) => ({
+                    minHeight: control.minHitTarget,
+                    justifyContent: 'center',
+                    paddingHorizontal: space.sm,
+                    opacity: !canPin ? 0.35 : pressed ? 0.6 : 1,
+                  })}
+                >
+                  <Text style={[body, { color: pinned ? colors.warning : colors.textTertiary }]}>
+                    {pinned ? '★' : '☆'}
+                  </Text>
+                </Pressable>
+              </View>
+            )
+          })}
+        </View>
+      </Sheet>
+
       <Sheet open={picker} onClose={() => setPicker(false)} title="Chart type">
         {CHART_TYPES.map((t) => {
-          const starred = prefs.favorites.includes(t.id)
+          const selected = t.id === prefs.type
+          const color = selected ? colors.accentText : colors.textPrimary
           return (
-            <View key={t.id} style={{ flexDirection: 'row', alignItems: 'center' }}>
-              <Pressable
-                accessibilityRole="button"
-                onPress={() => {
-                  setPrefs({ type: t.id })
-                  setPicker(false)
-                }}
-                style={{ flex: 1, paddingVertical: space.sm }}
-              >
-                <Text style={[body, { color: t.id === prefs.type ? colors.accentText : colors.textPrimary }]}>
-                  {t.label}
-                </Text>
-              </Pressable>
-              <Pressable
-                accessibilityRole="button"
-                accessibilityLabel={starred ? `Remove ${t.label} from quick access` : `Add ${t.label} to quick access`}
-                hitSlop={space.sm}
-                onPress={() => toggleFavorite(t.id)}
-              >
-                <Text style={[body, { color: starred ? colors.warning : colors.textTertiary }]}>
-                  {starred ? '★' : '☆'}
-                </Text>
-              </Pressable>
-            </View>
+            <Pressable
+              key={t.id}
+              accessibilityRole="button"
+              accessibilityState={{ selected }}
+              onPress={() => {
+                setPrefs({ type: t.id })
+                setPicker(false)
+              }}
+              style={({ pressed }) => ({
+                flexDirection: 'row',
+                alignItems: 'center',
+                gap: space.md,
+                minHeight: control.minHitTarget,
+                opacity: pressed ? 0.6 : 1,
+              })}
+            >
+              <TypeGlyph glyph={chartTypeGlyph(t.id)} color={color} size={16} />
+              <Text style={[body, { color }]}>{t.label}</Text>
+            </Pressable>
           )
         })}
       </Sheet>

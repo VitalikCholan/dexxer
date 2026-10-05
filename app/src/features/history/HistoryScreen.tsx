@@ -1,8 +1,9 @@
 // app/src/features/history/HistoryScreen.tsx
 //
 // Closed trades from the private `Positions` ring plus this device's archive
-// (`useHistoryRows.ts`). Render only. ER slots carry no unix time, so the
-// time shown is when this device first saw the record.
+// (`useHistoryRows.ts`). Render only. ER slots carry no unix time; the time
+// this device first saw a record (`seenAt`) still orders the list, but is not
+// shown since 05.10.2026 — it read as the trade time and was not.
 import { RefreshControl, ScrollView, Text, View } from 'react-native'
 import { Page } from '@/src/ui/Page'
 import { useTheme } from '@/src/theme'
@@ -62,9 +63,6 @@ export function HistoryScreen() {
                 <UiRow label="Entry → Exit" value={`$${formatUsd2(r.entry)} → $${formatUsd2(r.exit)}`} mono />
                 <UiRow label="PnL" value={formatSignedDusdc(r.pnl)} tone={r.pnl >= 0n ? 'success' : 'danger'} mono />
                 <UiRow label="Fees" value={formatDusdc(r.fees)} mono />
-                <Text style={[caption, { color: colors.textTertiary }]}>
-                  seen {new Date(r.seenAt).toLocaleString()}
-                </Text>
               </Card>
             ))}
           </View>
