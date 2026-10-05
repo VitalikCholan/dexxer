@@ -88,8 +88,9 @@ export function Sheet({ open, onClose, title, children }: SheetProps) {
             right: 0,
             bottom: 0,
             backgroundColor: colors.surface,
-            borderTopLeftRadius: radius.lg,
-            borderTopRightRadius: radius.lg,
+            // Concentric with the controls inside: radius.md (10) + padding space.lg (16).
+            borderTopLeftRadius: radius.xl,
+            borderTopRightRadius: radius.xl,
             borderTopWidth: border.hairline,
             borderColor: colors.border,
             padding: space.lg,

@@ -62,7 +62,7 @@ export function Segment<T extends string | number>({ options, value, onChange, t
               // Instant press feedback on an unselected option; the selected one already stands out.
               opacity: pressed && !selected ? 0.6 : 1,
               flex: compact ? undefined : 1,
-              borderRadius: compact ? radius.sm : radius.sm - 2,
+              borderRadius: compact ? radius.md - 3 : radius.sm - 2,
               alignItems: 'center',
               justifyContent: 'center',
               backgroundColor: selected ? selectedBg : 'transparent',

@@ -17,7 +17,8 @@ export function Card({ title, children }: CardProps) {
     <View
       style={{
         backgroundColor: colors.surface,
-        borderRadius: radius.lg,
+        // Concentric with the controls inside: radius.md (10) + padding space.lg (16).
+        borderRadius: radius.xl,
         borderWidth: border.hairline,
         borderColor: colors.border,
         padding: space.lg,

@@ -1,7 +1,7 @@
 // app/src/ui/Input.tsx
 import { Pressable, Text, TextInput, View } from 'react-native'
 import { useTheme } from '@/src/theme'
-import { useTextStyle } from './styles'
+import { linkPressStyle, useTextLinkHitSlop, useTextStyle } from './styles'
 
 export interface InputProps {
   label: string
@@ -23,6 +23,7 @@ export function Input({ label, value, onChangeText, suffix, hint, onMax, placeho
   // TextInput overflowed and Android scrolled the leading digits out of view.
   const suffixStyle = useTextStyle('caption')
   const hintStyle = useTextStyle('caption')
+  const maxHitSlop = useTextLinkHitSlop(labelStyle)
 
   return (
     <View style={{ gap: space.xs }}>
@@ -51,7 +52,7 @@ export function Input({ label, value, onChangeText, suffix, hint, onMax, placeho
         />
         {suffix ? <Text style={[suffixStyle, { color: colors.textSecondary }]}>{suffix}</Text> : null}
         {onMax ? (
-          <Pressable onPress={onMax} hitSlop={space.sm}>
+          <Pressable onPress={onMax} hitSlop={maxHitSlop} style={linkPressStyle}>
             <Text style={[labelStyle, { color: colors.accent }]}>MAX</Text>
           </Pressable>
         ) : null}

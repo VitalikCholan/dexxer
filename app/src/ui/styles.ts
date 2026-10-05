@@ -42,3 +42,16 @@ export function useToneColors(): Record<Tone, { fg: string; bg: string }> {
     danger: { fg: colors.short, bg: colors.shortSubtle },
   }
 }
+
+/**
+ * `hitSlop` that grows a one-line text link (MAX, Hide, Show more) to `control.minHitTarget`
+ * vertically, plus `space.sm` on each side — the text itself stays small.
+ */
+export function useTextLinkHitSlop(text: TextStyle): { top: number; bottom: number; left: number; right: number } {
+  const { control, space } = useTheme()
+  const v = Math.max(0, (control.minHitTarget - (text.lineHeight ?? 0)) / 2)
+  return { top: v, bottom: v, left: space.sm, right: space.sm }
+}
+
+/** Instant press feedback for a text link: dim while held. */
+export const linkPressStyle = ({ pressed }: { pressed: boolean }) => ({ opacity: pressed ? 0.6 : 1 })

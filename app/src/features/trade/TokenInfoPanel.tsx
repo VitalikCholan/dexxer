@@ -10,7 +10,7 @@
 import { useState } from 'react'
 import { Linking, Pressable, Text, View } from 'react-native'
 import { useTheme } from '@/src/theme'
-import { useTextStyle } from '@/src/ui/styles'
+import { linkPressStyle, useTextLinkHitSlop, useTextStyle } from '@/src/ui/styles'
 import { Row } from '@/src/ui/Row'
 import { Skeleton } from '@/src/ui/Skeleton'
 import { Button } from '@/src/ui/Button'
@@ -41,6 +41,7 @@ function Section({ title, body }: { title: string; body: string }) {
   const heading = useTextStyle('bodyStrong')
   const text = useTextStyle('body')
   const link = useTextStyle('caption')
+  const linkHitSlop = useTextLinkHitSlop(link)
   const [open, setOpen] = useState(false)
   const short = truncateText(body, COLLAPSED_CHARS)
 
@@ -53,7 +54,8 @@ function Section({ title, body }: { title: string; body: string }) {
           accessibilityRole="button"
           accessibilityState={{ expanded: open }}
           onPress={() => setOpen((o) => !o)}
-          hitSlop={space.sm}
+          hitSlop={linkHitSlop}
+          style={linkPressStyle}
         >
           <Text style={[link, { color: colors.accent }]}>{open ? 'Show less' : 'Show more'}</Text>
         </Pressable>
