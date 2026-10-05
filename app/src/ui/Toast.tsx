@@ -5,6 +5,7 @@
 // context provider around it.
 import { useEffect, useState } from 'react'
 import { Animated, Easing, Text, View } from 'react-native'
+import { useSafeAreaInsets } from 'react-native-safe-area-context'
 import { useTheme } from '@/src/theme'
 import { useTextStyle, useToneColors, type Tone } from './styles'
 
@@ -26,6 +27,9 @@ export function showToast({ tone, text }: { tone: Tone; text: string }) {
 }
 
 // Enter and exit: a short fade plus an 8 px rise, ease-out both ways (better-ui).
+// It comes up from below but settles above the tab bar (and the system
+// navigation inset): sitting at the screen edge, it was half-covered by the
+// tab bar (05.10.2026).
 const TOAST_MS = 180
 const TOAST_RISE = 8
 const EASE_OUT = Easing.bezier(0.2, 0, 0, 1)
@@ -36,7 +40,8 @@ export function ToastHost() {
   const [shown, setShown] = useState<ToastState | null>(null)
   const [progress] = useState(() => new Animated.Value(0))
   if (toast && toast !== shown) setShown(toast)
-  const { space, radius } = useTheme()
+  const { colors, space, radius, layout } = useTheme()
+  const insets = useSafeAreaInsets()
   const textStyle = useTextStyle('bodyStrong')
   const toneColors = useToneColors()
 
@@ -70,16 +75,17 @@ export function ToastHost() {
         position: 'absolute',
         left: space.lg,
         right: space.lg,
-        bottom: space.xxl,
+        bottom: insets.bottom + layout.tabBar + space.md,
         alignItems: 'center',
         opacity: progress,
         transform: [{ translateY: progress.interpolate({ inputRange: [0, 1], outputRange: [TOAST_RISE, 0] }) }],
       }}
     >
-      <View
-        style={{ backgroundColor: bg, borderRadius: radius.md, paddingHorizontal: space.lg, paddingVertical: space.md }}
-      >
-        <Text style={[textStyle, { color: fg }]}>{shown.text}</Text>
+      {/* The tone tints are 14 % alpha: an opaque base keeps the screen from showing through. */}
+      <View style={{ backgroundColor: colors.bgElevated, borderRadius: radius.md, overflow: 'hidden' }}>
+        <View style={{ backgroundColor: bg, paddingHorizontal: space.lg, paddingVertical: space.md }}>
+          <Text style={[textStyle, { color: fg }]}>{shown.text}</Text>
+        </View>
       </View>
     </Animated.View>
   )
