@@ -18,7 +18,7 @@ A private perpetual DEX for Solana Seeker. A position is visible only to its own
 ## Documents
 - docs/superpowers/specs/2026-09-18-dexxer-mvp-design.md — the **source of truth** for the MVP (scope, accounts, math, program, client, tests, risks, calendar)
 - docs/dexxer-architecture.md — rationale, leak model, competitive frame (§2.1 is outdated where it differs from the spec)
-- docs/dexxer-plan.md — §2–3 are outdated, replaced by spec §1 and §7.3
+- ~~docs/dexxer-plan.md~~ — removed 05.10.2026 (superseded by the MVP spec); last version in git at `b4bef23`
 - docs/dexxer-mobile-stack.md — RN/Expo stack
 - CONTEXT.md — project glossary (the Dexxer language: roles, accounts, price/liquidation, trader journey); terms only, no rules or implementation
 - docs/solana-perp-privacy-landscape.md, docs/glossary-perp-privacy.md — market and general terms
@@ -26,7 +26,7 @@ A private perpetual DEX for Solana Seeker. A position is visible only to its own
 - docs/android-install-options.md — every way to install the app on Android for testing and demos (AVD, USB, adb wireless, `expo start --dev-client`, EAS, sideload, release APK; what is measured and what is only documented)
 - docs/emulator-runbook.md — how to start/stop the AVD + proxy (`scripts/emu-proxy.cjs`) + Metro + fakewallet/Phantom, what to look for in the logs, known pitfalls
 - docs/superpowers/plans/week6-backlog.md — week-6 backlog (agreed 24.09: risks #37–39, liquidation with a full ring, commit/action economics, #27 SIWS gate, layout migration, MWA identity verification for Phantom)
-- docs/superpowers/specs/2026-10-03-conditional-orders-design.md — conditional orders (Limit/Stop/TP/SL/Trailing): model, execution, migration, what is not measured
+- ~~docs/superpowers/specs/2026-10-03-conditional-orders-design.md~~ — conditional orders spec, removed 05.10.2026; the rules below ("Conditional orders rules", "Orders v2 rules") are the reference now; the full spec is in git at `b4bef23`
 - docs/superpowers/plans/week6-history.md — condensed history of week 6 in place of 7 plans and the results file (anchors `#siws-sessions`, `#multi-market`, `#slots-program`, `#slots-relayer`, `#slots-app`, `#slots-deploy`, `#chart-timeframes`, `#orders-review`, `#token-info`, `#devnet-04-10`, `#lessons`; measurements, M-slots-A…F, Chart C.5, App smoke, process lessons; the full originals are in git, commit `7243d39`)
 
 ## Rules
