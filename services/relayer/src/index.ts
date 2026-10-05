@@ -212,7 +212,14 @@ if (cfg.indexerEnabled && !pool) {
   console.warn("indexer: INDEXER_ENABLED=true but no DATABASE_URL — indexer disabled (needs Postgres)");
 } else if (cfg.indexerEnabled && pool) {
   wsHub = attachWs(server);
-  app.use(indexerRouter(pool, { markets: () => markets.list() }));
+  let assetNames = new Map<string, string>();
+  try {
+    const { loadStaticAssets } = await import("./assets/staticAssets.js");
+    assetNames = new Map([...loadStaticAssets()].map(([sym, a]) => [sym, a.name]));
+  } catch (e) {
+    console.warn(`indexer: assets.json unreadable, /markets names are null: ${(e as Error).message}`);
+  }
+  app.use(indexerRouter(pool, { markets: () => markets.list(), names: (s) => assetNames.get(s) ?? null }));
   try {
     const { startIndexer } = await import("./indexer/accounts.js");
     const hub = wsHub;

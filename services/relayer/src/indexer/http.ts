@@ -56,6 +56,8 @@ export function knownSymbols(list: { symbol: string }[]): string[] {
 export interface IndexerRouterOpts {
   /** The market registry's current list (markets.ts) — `/markets` and the `?market=` whitelist. */
   markets: () => MarketInfo[];
+  /** Display name per symbol (`assets/assets.json`); `null` when unknown. Absent → every name is `null`. */
+  names?: (symbol: string) => string | null;
 }
 
 export function indexerRouter(pool: DbPool, opts: IndexerRouterOpts): Router {
@@ -66,7 +68,16 @@ export function indexerRouter(pool: DbPool, opts: IndexerRouterOpts): Router {
   // (MarketRisk is private, risk #24; its address alone says nothing, but the
   // contract stays "only what the program itself publishes").
   router.get("/markets", (_req, res) => {
-    res.json(opts.markets().map((m) => ({ symbol: m.symbol, market: m.market.toBase58(), feed: m.feed.toBase58(), params: m.params })));
+    const nameOf = opts.names ?? (() => null);
+    res.json(
+      opts.markets().map((m) => ({
+        symbol: m.symbol,
+        name: nameOf(m.symbol),
+        market: m.market.toBase58(),
+        feed: m.feed.toBase58(),
+        params: m.params,
+      })),
+    );
   });
 
   router.get("/prices", async (req, res) => {
