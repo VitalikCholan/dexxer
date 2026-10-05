@@ -69,7 +69,7 @@ export function IncreaseSheet({
         suffix="dUSDC"
         keyboardType="decimal-pad"
       />
-      <Row label="New liq. price ≈" value={newLiq !== null ? `$${(Number(newLiq) / 1e6).toFixed(2)}` : '—'} />
+      <Row label="New liq. price ≈" value={newLiq !== null ? `$${(Number(newLiq) / 1e6).toFixed(2)}` : '—'} mono />
       {markUsd === null ? (
         <Text style={[caption, { color: colors.textSecondary, textAlign: 'center' }]}>Waiting for market price…</Text>
       ) : null}

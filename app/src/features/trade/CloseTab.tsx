@@ -12,7 +12,7 @@ import { useTextStyle } from '@/src/ui/styles'
 import { Input } from '@/src/ui/Input'
 import { Row } from '@/src/ui/Row'
 import { Button } from '@/src/ui/Button'
-import { formatUsd2 } from '@/src/lib/status'
+import { formatDusdc, formatSignedDusdc, formatUsd2 } from '@/src/lib/status'
 import { type PositionSlot } from '@/src/lib/positions'
 import { computeUpnl, solSize } from '@/src/lib/trade'
 import { closeBlock, closePreview } from './ticketMath'
@@ -34,9 +34,6 @@ export interface CloseTabProps {
 
 function sol(raw: bigint): string {
   return (Number(raw) / 1e9).toFixed(4)
-}
-function signedUsd(raw: bigint): string {
-  return `${raw >= 0n ? '+' : '−'}$${formatUsd2(raw >= 0n ? raw : -raw)}`
 }
 
 export function CloseTab({ position, symbol, markUsd, closeFeeBps, minSize, busy, disabled, onClose }: CloseTabProps) {
@@ -85,8 +82,9 @@ export function CloseTab({ position, symbol, markUsd, closeFeeBps, minSize, busy
         />
         <Row
           label="Unrealized PnL"
-          value={upnl !== null ? signedUsd(upnl) : '—'}
+          value={upnl !== null ? formatSignedDusdc(upnl) : '—'}
           tone={upnl === null ? undefined : upnl >= 0n ? 'success' : 'danger'}
+          mono
         />
       </View>
 
@@ -111,11 +109,12 @@ export function CloseTab({ position, symbol, markUsd, closeFeeBps, minSize, busy
         <Row label="Exit ≈" value={markUsd !== null ? `$${formatUsd2(markUsd)}` : '—'} mono />
         <Row
           label="Realized PnL ≈"
-          value={preview !== null ? signedUsd(preview.pnl) : '—'}
+          value={preview !== null ? formatSignedDusdc(preview.pnl) : '—'}
           tone={preview === null ? undefined : preview.pnl >= 0n ? 'success' : 'danger'}
+          mono
         />
-        <Row label="Close fee" value={preview !== null ? `${formatUsd2(preview.fee)} dUSDC` : '—'} />
-        <Row label="Margin released" value={preview !== null ? `${formatUsd2(preview.released)} dUSDC` : '—'} />
+        <Row label="Close fee" value={preview !== null ? formatDusdc(preview.fee) : '—'} mono />
+        <Row label="Margin released" value={preview !== null ? formatDusdc(preview.released) : '—'} mono />
       </View>
 
       <Button

@@ -31,9 +31,9 @@ export function PoolSnapshotCard() {
         <EmptyState text="No pool snapshot yet — first commit lands within 5 min of protocol bootstrap." />
       ) : (
         <>
-          <Row label="Liquidity" value={`${usd(latest.capitalTotal)} dUSDC`} />
-          <Row label="Locked" value={`${usd(latest.lockedTotal)} dUSDC`} />
-          <Row label="Fees" value={`${usd(latest.feesAccrued)} dUSDC`} />
+          <Row label="Liquidity" value={`${usd(latest.capitalTotal)} dUSDC`} mono />
+          <Row label="Locked" value={`${usd(latest.lockedTotal)} dUSDC`} mono />
+          <Row label="Fees" value={`${usd(latest.feesAccrued)} dUSDC`} mono />
           <Text style={[caption, { color: colors.textTertiary }]}>Updated at slot {latest.slot} · every 5 min</Text>
           <Text style={[caption, { color: colors.textTertiary }]}>Values rounded to 100 dUSDC</Text>
         </>

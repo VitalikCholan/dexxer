@@ -13,7 +13,7 @@ import { useTextStyle } from '@/src/ui/styles'
 import { Segment } from '@/src/ui/Segment'
 import { Card } from '@/src/ui/Card'
 import { Row } from '@/src/ui/Row'
-import { formatUsd2 } from '@/src/lib/status'
+import { formatSignedDusdc, formatUsd2 } from '@/src/lib/status'
 import { type DecodedOrder, type PositionSlot } from '@/src/lib/positions'
 import { describeOrder } from '@/src/lib/orders'
 import { Button } from '@/src/ui/Button'
@@ -21,9 +21,6 @@ import { computeUpnl } from '@/src/lib/trade'
 
 function sol(raw: bigint): string {
   return (Number(raw) / 1e9).toFixed(4)
-}
-function signedUsd(raw: bigint): string {
-  return `${raw >= 0n ? '+' : '−'}$${formatUsd2(raw >= 0n ? raw : -raw)}`
 }
 
 export function TradeActivity({
@@ -95,10 +92,11 @@ export function TradeActivity({
           <Row label="Mark" value={markUsd !== null ? `$${formatUsd2(markUsd)}` : '—'} mono />
           <Row
             label="Unrealized PnL"
-            value={upnl !== null ? signedUsd(upnl) : '—'}
+            value={upnl !== null ? formatSignedDusdc(upnl) : '—'}
             tone={upnl === null ? undefined : upnl >= 0n ? 'success' : 'danger'}
+            mono
           />
-          <Row label="Liq. price" value={`$${formatUsd2(open.liqPrice)}`} />
+          <Row label="Liq. price" value={`$${formatUsd2(open.liqPrice)}`} mono />
           <Pressable
             accessibilityRole="link"
             onPress={() => router.push('/positions')}

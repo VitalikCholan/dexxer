@@ -4,7 +4,7 @@ import { ActivityIndicator, Pressable, Text, View } from 'react-native'
 import { useTheme } from '@/src/theme'
 import { useTextStyle } from './styles'
 
-export type ButtonVariant = 'primary' | 'secondary' | 'destructive' | 'ghost'
+export type ButtonVariant = 'primary' | 'secondary' | 'destructive' | 'ghost' | 'long'
 
 export interface ButtonProps {
   variant: ButtonVariant
@@ -70,6 +70,9 @@ function variantColors(
       return { bg: pressed ? colors.surface : colors.surfaceAlt, fg: colors.textPrimary, borderColor: colors.border }
     case 'destructive':
       return { bg: colors.short, fg: colors.textPrimary }
+    // Opens a Long: the side's own color, like the Long/Short toggle (Short opens with `destructive`).
+    case 'long':
+      return { bg: colors.long, fg: colors.textInverse }
     case 'ghost':
       return { bg: pressed ? colors.accentSubtle : 'transparent', fg: colors.accent }
   }

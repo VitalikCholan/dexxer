@@ -25,6 +25,7 @@ import {
   type DecodedBalancesRoot,
 } from '@/src/lib/codecs'
 import { leafHex } from '@/src/lib/hashes'
+import { formatDusdc } from '@/src/lib/status'
 import { pdas } from '@/src/lib/pdas'
 import { baseConn } from '@/src/lib/solana'
 import { useLiveAccount, type LiveAccount } from '@/src/lib/live'
@@ -37,10 +38,6 @@ interface UserForReceipt {
 
 function decodeUserForReceipt(data: Buffer): UserForReceipt {
   return { freeMargin: readUserAccountFreeMargin(data), exitSalt: readUserAccountExitSalt(data) }
-}
-
-function fmtUsd(raw: bigint): string {
-  return (Number(raw) / 1_000_000).toFixed(2)
 }
 
 /** Stable PDA (no seeds beyond the constant) — computed once at module load, not per render. */
@@ -94,7 +91,7 @@ function ReceiptBody({
 
   return (
     <>
-      <Row label="Free margin" value={user ? `$${fmtUsd(user.freeMargin)}` : '—'} mono />
+      <Row label="Free margin" value={user ? formatDusdc(user.freeMargin) : '—'} mono />
       <Badge tone={badge.tone}>{badge.text}</Badge>
       <Text style={[caption, { color: colors.textSecondary }]}>
         Proof that the protocol owes you — without revealing how much.

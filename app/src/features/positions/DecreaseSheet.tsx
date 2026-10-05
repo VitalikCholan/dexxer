@@ -14,6 +14,7 @@ import { Row } from '@/src/ui/Row'
 import { Button } from '@/src/ui/Button'
 import { type PositionSlot } from '@/src/lib/positions'
 import { computeUpnl, solSize } from '@/src/lib/trade'
+import { formatSignedDusdc } from '@/src/lib/status'
 
 export interface DecreaseSheetProps {
   open: boolean
@@ -55,8 +56,9 @@ export function DecreaseSheet({ open, onClose, position, symbol, markUsd, busy, 
       />
       <Row
         label="Realized PnL ≈"
-        value={realizedPnl !== null ? `${realizedPnl >= 0n ? '+' : ''}$${(Number(realizedPnl) / 1e6).toFixed(2)}` : '—'}
+        value={realizedPnl !== null ? formatSignedDusdc(realizedPnl) : '—'}
         tone={realizedPnl === null ? undefined : realizedPnl >= 0n ? 'success' : 'danger'}
+        mono
       />
       {markUsd === null ? (
         <Text style={[caption, { color: colors.textSecondary, textAlign: 'center' }]}>Waiting for market price…</Text>

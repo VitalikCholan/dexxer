@@ -45,7 +45,7 @@ export function TradeHeader({
   const { colors, space, radius, border } = useTheme()
   const display = useTextStyle('display', { mono: true })
   const heading = useTextStyle('heading')
-  const body = useTextStyle('body')
+  const change = useTextStyle('body', { mono: true })
   const caption = useTextStyle('caption')
   const micro = useTextStyle('micro')
   const statValue = useTextStyle('caption', { mono: true })
@@ -92,7 +92,7 @@ export function TradeHeader({
           {markUsdNum !== null ? `$${fmtUsd(markUsdNum)}` : '—'}
         </Text>
         {pctChange !== null ? (
-          <Text style={[body, { color: pctChange >= 0 ? colors.long : colors.short }]}>
+          <Text style={[change, { color: pctChange >= 0 ? colors.long : colors.short }]}>
             {pctChange >= 0 ? '+' : ''}
             {pctChange.toFixed(1)}%
           </Text>

@@ -11,7 +11,7 @@ import { Card } from '@/src/ui/Card'
 import { Row as UiRow } from '@/src/ui/Row'
 import { EmptyState } from '@/src/ui/EmptyState'
 import { Skeleton } from '@/src/ui/Skeleton'
-import { formatUsd2 } from '@/src/lib/status'
+import { formatDusdc, formatSignedDusdc, formatUsd2 } from '@/src/lib/status'
 import { pdas } from '@/src/lib/pdas'
 import { useTradeSession } from '../trade/useTradeSession'
 import { useHistoryRows } from './useHistoryRows'
@@ -28,7 +28,7 @@ export function HistoryScreen() {
 
   const { colors, space } = useTheme()
   const heading = useTextStyle('title')
-  const body = useTextStyle('body')
+  const cardTitle = useTextStyle('bodyStrong')
   const caption = useTextStyle('caption')
   const error = sessionError ?? live.error ?? archiveError
 
@@ -41,7 +41,7 @@ export function HistoryScreen() {
         <Text style={[heading, { color: colors.textPrimary }]}>History</Text>
 
         {error ? (
-          <Text selectable style={{ color: colors.short }}>
+          <Text selectable style={[caption, { color: colors.short }]}>
             {error}
           </Text>
         ) : null}
@@ -56,16 +56,12 @@ export function HistoryScreen() {
           <View style={{ gap: space.md }}>
             {rows.map((r) => (
               <Card key={r.key}>
-                <Text style={[body, { color: colors.textPrimary, fontWeight: '600' }]}>
+                <Text style={[cardTitle, { color: colors.textPrimary }]}>
                   {`${reasonLabel(r.reason)} · ${r.side} ${fmtSize(r.size)} ${r.symbol}`}
                 </Text>
                 <UiRow label="Entry → Exit" value={`$${formatUsd2(r.entry)} → $${formatUsd2(r.exit)}`} mono />
-                <UiRow
-                  label="PnL"
-                  value={`${r.pnl >= 0n ? '+' : ''}$${formatUsd2(r.pnl)}`}
-                  tone={r.pnl >= 0n ? 'success' : 'danger'}
-                />
-                <UiRow label="Fees" value={`$${formatUsd2(r.fees)}`} mono />
+                <UiRow label="PnL" value={formatSignedDusdc(r.pnl)} tone={r.pnl >= 0n ? 'success' : 'danger'} mono />
+                <UiRow label="Fees" value={formatDusdc(r.fees)} mono />
                 <Text style={[caption, { color: colors.textTertiary }]}>
                   seen {new Date(r.seenAt).toLocaleString()}
                 </Text>

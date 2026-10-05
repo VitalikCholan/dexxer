@@ -66,6 +66,9 @@ export default function UiGalleryScreen() {
           <Button variant="ghost" onPress={() => {}}>
             Ghost
           </Button>
+          <Button variant="long" onPress={() => {}}>
+            Long
+          </Button>
         </View>
         <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: space.sm }}>
           <Button variant="primary" loading onPress={() => {}}>

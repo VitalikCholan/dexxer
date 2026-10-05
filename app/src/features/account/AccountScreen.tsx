@@ -45,6 +45,7 @@ type OpenSheet = 'deposit' | 'withdraw' | 'exit' | null
 export function AccountScreen() {
   const { colors, space } = useTheme()
   const heading = useTextStyle('heading')
+  const caption = useTextStyle('caption')
 
   const { account } = useMobileWallet()
   // Retry-wrapped `signTransactions` — a wallet's `reauthorize` rejection
@@ -144,7 +145,7 @@ export function AccountScreen() {
         </View>
 
         {gate.status === 'needs_setup' ? null : error || user.error || positionsLive.error ? (
-          <Text style={{ color: colors.short }}>{error ?? user.error ?? positionsLive.error}</Text>
+          <Text style={[caption, { color: colors.short }]}>{error ?? user.error ?? positionsLive.error}</Text>
         ) : null}
 
         {gate.status === 'needs_setup' ? (
@@ -180,7 +181,9 @@ export function AccountScreen() {
 
             {FEATURES.exit ? (
               <Card title="Exit">
-                <Text style={{ color: colors.textSecondary }}>Return your private accounts to L1, fields erased.</Text>
+                <Text style={[caption, { color: colors.textSecondary }]}>
+                  Return your private accounts to L1, fields erased.
+                </Text>
                 <Button variant="destructive" onPress={() => setSheet('exit')}>
                   Exit private account
                 </Button>
