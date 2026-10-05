@@ -6,6 +6,7 @@ import { AuthProvider } from '@/src/shell/AuthProvider'
 import { config } from '@/src/lib/config'
 import { AppTheme } from '@/src/shell/AppTheme'
 import { SelectedMarketProvider } from '@/src/lib/marketStore'
+import { FavoritesProvider } from '@/src/lib/favoritesStore'
 
 // MWA `AppIdentity` (solana-mobile-wallet skill, § provider / AppIdentity):
 // `uri` must be a real https URL — wallets display it during authorization
@@ -29,9 +30,11 @@ export function AppProviders({ children }: PropsWithChildren) {
     <AppTheme>
       <QueryClientProvider client={queryClient}>
         <SelectedMarketProvider>
-          <SolanaProvider>
-            <AuthProvider>{children}</AuthProvider>
-          </SolanaProvider>
+          <FavoritesProvider>
+            <SolanaProvider>
+              <AuthProvider>{children}</AuthProvider>
+            </SolanaProvider>
+          </FavoritesProvider>
         </SelectedMarketProvider>
       </QueryClientProvider>
     </AppTheme>
