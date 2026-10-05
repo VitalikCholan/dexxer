@@ -12,7 +12,7 @@ import { Text, View } from 'react-native'
 import { useTheme } from '@/src/theme'
 import { useTextStyle } from '@/src/ui/styles'
 import { Badge } from '@/src/ui/Badge'
-import { SolIcon } from '@/src/ui/SolIcon'
+import { AssetIcon } from '@/src/ui/AssetIcon'
 import { formatCompactUsd, type RangeStats } from './headerStats'
 import { MarketPicker } from './MarketPicker'
 
@@ -61,7 +61,7 @@ export function TradeHeader({
       <MarketPicker />
       <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: space.sm }}>
         <View style={{ flexDirection: 'row', alignItems: 'center', gap: space.sm }}>
-          {symbol === 'SOL' ? <SolIcon /> : null}
+          <AssetIcon symbol={symbol} />
           <Text style={[heading, { color: colors.textPrimary }]}>{`${symbol}-PERP`}</Text>
           {maxLeverage !== null ? (
             // `Badge` pins itself to `flex-start`; the wrapper re-centres it on the row.
