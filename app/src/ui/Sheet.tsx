@@ -8,7 +8,7 @@
 // hairline border in `colors.border`, which is the same 1px line.
 import type { ReactNode } from 'react'
 import { useEffect, useState } from 'react'
-import { Animated, Modal, Pressable, StyleSheet, Text, View } from 'react-native'
+import { Animated, Easing, Modal, Pressable, StyleSheet, Text, useWindowDimensions, View } from 'react-native'
 import { useTheme } from '@/src/theme'
 import { useTextStyle } from './styles'
 
@@ -19,7 +19,9 @@ export interface SheetProps {
   children: ReactNode
 }
 
-const CLOSED_OFFSET = 400
+// Ease-out both ways (better-ui): fast start, soft landing.
+const EASE_OUT = Easing.bezier(0.2, 0, 0, 1)
+const BACKDROP_OPACITY = 0.7
 
 export function Sheet({ open, onClose, title, children }: SheetProps) {
   const { colors, space, radius, border } = useTheme()
@@ -27,7 +29,9 @@ export function Sheet({ open, onClose, title, children }: SheetProps) {
   // `useState(() => ...)` rather than `useRef(...).current` — see
   // LeverageSlider's header comment (React Compiler's react-hooks lint
   // treats a `.current` read in the render body as an error).
-  const [translateY] = useState(() => new Animated.Value(CLOSED_OFFSET))
+  // Closed = a full window height down, so a sheet taller than any fixed offset never shows on the first frame.
+  const closedOffset = useWindowDimensions().height
+  const [translateY] = useState(() => new Animated.Value(closedOffset))
   const [mounted, setMounted] = useState(open)
   // Mount synchronously on the `open` transition, during render (the React-
   // docs "adjusting state when a prop changes" pattern) rather than as a
@@ -43,27 +47,40 @@ export function Sheet({ open, onClose, title, children }: SheetProps) {
 
   useEffect(() => {
     if (open) {
-      Animated.timing(translateY, { toValue: 0, duration: 220, useNativeDriver: true }).start()
+      Animated.timing(translateY, { toValue: 0, duration: 220, easing: EASE_OUT, useNativeDriver: true }).start()
     } else if (mounted) {
-      Animated.timing(translateY, { toValue: CLOSED_OFFSET, duration: 180, useNativeDriver: true }).start(
-        ({ finished }) => {
-          if (finished) setMounted(false)
-        },
-      )
+      Animated.timing(translateY, {
+        toValue: closedOffset,
+        duration: 180,
+        easing: EASE_OUT,
+        useNativeDriver: true,
+      }).start(({ finished }) => {
+        if (finished) setMounted(false)
+      })
     }
-  }, [open, mounted, translateY])
+  }, [open, mounted, translateY, closedOffset])
 
   if (!mounted) return null
 
   return (
     <Modal transparent visible animationType="none" onRequestClose={onClose}>
       <View style={{ flex: 1 }}>
-        <Pressable
-          accessibilityRole="button"
-          accessibilityLabel="Close"
-          onPress={onClose}
-          style={[StyleSheet.absoluteFill, { backgroundColor: colors.bg, opacity: 0.7 }]}
-        />
+        {/* The backdrop fades with the sheet's position instead of popping in. */}
+        <Animated.View
+          style={[
+            StyleSheet.absoluteFill,
+            {
+              backgroundColor: colors.bg,
+              opacity: translateY.interpolate({
+                inputRange: [0, closedOffset],
+                outputRange: [BACKDROP_OPACITY, 0],
+                extrapolate: 'clamp',
+              }),
+            },
+          ]}
+        >
+          <Pressable accessibilityRole="button" accessibilityLabel="Close" onPress={onClose} style={{ flex: 1 }} />
+        </Animated.View>
         <Animated.View
           style={{
             position: 'absolute',

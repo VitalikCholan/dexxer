@@ -37,6 +37,8 @@ export function Button({ variant, loading, disabled, onPress, children }: Button
           flexDirection: 'row',
           gap: space.sm,
           paddingHorizontal: space.lg,
+          // Tactile press for every variant (`destructive`/`long` have no pressed color).
+          transform: [{ scale: pressed && !isDisabled ? 0.96 : 1 }],
         }
       }}
     >

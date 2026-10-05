@@ -58,7 +58,9 @@ export function Segment<T extends string | number>({ options, value, onChange, t
             accessibilityRole="button"
             accessibilityState={{ selected }}
             onPress={() => onChange(opt.value)}
-            style={{
+            style={({ pressed }) => ({
+              // Instant press feedback on an unselected option; the selected one already stands out.
+              opacity: pressed && !selected ? 0.6 : 1,
               flex: compact ? undefined : 1,
               borderRadius: compact ? radius.sm : radius.sm - 2,
               alignItems: 'center',
@@ -66,7 +68,7 @@ export function Segment<T extends string | number>({ options, value, onChange, t
               backgroundColor: selected ? selectedBg : 'transparent',
               paddingHorizontal: compact ? space.lg : space.sm,
               paddingVertical: compact ? space.sm : undefined,
-            }}
+            })}
           >
             <Text style={[textStyle, { color: selected ? selectedFg : colors.textSecondary }]}>{opt.label}</Text>
           </Pressable>
