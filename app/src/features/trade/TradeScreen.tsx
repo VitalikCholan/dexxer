@@ -40,6 +40,7 @@ import {
 import * as math from '@/src/lib/math'
 import { ChartSection, type Tf } from './ChartSection'
 import { TradeActivity } from './TradeActivity'
+import { activityVisible } from './activity'
 import { TradeHeader } from './TradeHeader'
 import { maxLeverage, rangeStats } from './headerStats'
 import { TradeTicket, type Exits, type MarketParams } from './TradeTicket'
@@ -74,7 +75,7 @@ export function TradeScreen() {
     () => (base && market ? tradeAccountsFor(base, { market: marketPda, feed: market.feed }) : null),
     [base, market, marketPda],
   )
-  const { slot: position, openBlocked } = slotGate(positionsLive.value, marketPda)
+  const { slot: position, openCount, openBlocked } = slotGate(positionsLive.value, marketPda)
   const marketMark = market?.mark ?? null
   const markUsd = mark.data?.price ?? marketMark
   const markUsdNum = markUsd !== null ? Number(markUsd) / 1e6 : null
@@ -285,14 +286,17 @@ export function TradeScreen() {
           />
         )}
 
-        <TradeActivity
-          symbol={symbol}
-          position={position}
-          markUsd={markUsd}
-          orders={ordersFor(positionsLive.value, marketPda)}
-          busy={busy}
-          onCancel={(slot) => void handleCancel(slot)}
-        />
+        {activityVisible(gate.status, positionsLive.value !== null) ? (
+          <TradeActivity
+            symbol={symbol}
+            position={position}
+            openCount={openCount}
+            markUsd={markUsd}
+            orders={ordersFor(positionsLive.value, marketPda)}
+            busy={busy}
+            onCancel={(slot) => void handleCancel(slot)}
+          />
+        ) : null}
       </ScrollView>
     </Page>
   )
