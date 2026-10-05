@@ -219,7 +219,13 @@ if (cfg.indexerEnabled && !pool) {
   } catch (e) {
     console.warn(`indexer: assets.json unreadable, /markets names are null: ${(e as Error).message}`);
   }
-  app.use(indexerRouter(pool, { markets: () => markets.list(), names: (s) => assetNames.get(s) ?? null }));
+  app.use(
+    indexerRouter(pool, {
+      markets: () => markets.list(),
+      names: (s) => assetNames.get(s) ?? null,
+      tickersCacheMs: envNum("TICKERS_CACHE_MS", 30_000, 5_000),
+    }),
+  );
   try {
     const { startIndexer } = await import("./indexer/accounts.js");
     const hub = wsHub;
