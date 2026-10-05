@@ -147,11 +147,12 @@ export function indexerRouter(pool: DbPool, opts: IndexerRouterOpts): Router {
       tickersCache = { at: now, body };
       res.json(body);
     } catch (e) {
+      console.warn(`indexer: /tickers DB read failed: ${(e as Error).message}`);
       if (tickersCache) {
         res.json(tickersCache.body);
         return;
       }
-      res.status(503).json({ error: `tickers unavailable: ${(e as Error).message}` });
+      res.status(503).json({ error: "tickers unavailable" });
     }
   });
 

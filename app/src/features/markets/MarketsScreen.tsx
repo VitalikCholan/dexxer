@@ -4,20 +4,17 @@
 // A–Z / 24h sort, favourites, position markers, the 16-slot counter. Prices
 // come from the WS mark cache (observed, never fetched per market) and
 // /tickers; selection is the global `useSelectedMarket`.
-import { useState } from 'react'
+import { useCallback, useState } from 'react'
 import { FlatList, Pressable, Text, View } from 'react-native'
 import { router } from 'expo-router'
-import { useQueries } from '@tanstack/react-query'
 import { Page } from '@/src/ui/Page'
 import { Input } from '@/src/ui/Input'
 import { Segment } from '@/src/ui/Segment'
 import { useTheme } from '@/src/theme'
 import { useTextStyle } from '@/src/ui/styles'
-import { DEFAULT_SYMBOL, useMarkets, useSelectedMarket } from '@/src/lib/markets'
+import { useMarkets, useSelectedMarket } from '@/src/lib/markets'
 import { useTickers } from '@/src/lib/tickers'
 import { useFavorites } from '@/src/lib/favoritesStore'
-import { QK, getJson, type Mark } from '@/src/lib/indexer'
-import { parseMark } from '@/src/lib/indexerCodec'
 import { useLiveAccount } from '@/src/lib/live'
 import { decodePositions } from '@/src/lib/positions'
 import { useTradeSession } from '../trade/useTradeSession'
@@ -39,25 +36,13 @@ export function MarketsScreen() {
   const [tab, setTab] = useState<MarketTab>('all')
   const [sort, setSort] = useMarketsSort()
 
-  const symbols = (markets.data?.length ? markets.data : [{ symbol: DEFAULT_SYMBOL }]).map((m) => m.symbol)
-  // Observe the WS-fed mark cache without fetching: `enabled: false` never issues /mark?market=X.
-  const markQueries = useQueries({
-    queries: symbols.map((s) => ({
-      queryKey: QK.mark(s),
-      queryFn: () => getJson(`/mark?market=${encodeURIComponent(s)}`, parseMark),
-      enabled: false,
-    })),
-  })
-  const marks: Record<string, bigint | null> = {}
-  symbols.forEach((s, i) => (marks[s] = (markQueries[i].data as Mark | undefined)?.price ?? null))
-
-  // A few dozen rows: recomputed per render (the React Compiler memoizes this component).
+  // Rebuilt only on registry / tickers / favourites / filter changes — not on price ticks.
   const rows = sortRows(
     filterRows(
       marketRows({
         markets: markets.data ?? [],
         tickers: tickers.data ?? [],
-        marks,
+        marks: {}, // live prices are per row (MarketRowView): a WS tick never rebuilds the list
         positions: positions.value,
         favorites: favorites.list,
         selected: symbol,
@@ -68,6 +53,14 @@ export function MarketsScreen() {
     sort,
   )
   const slots = slotUsage(positions.value)
+  const select = useCallback(
+    (s: string) => {
+      setSymbol(s)
+      router.back()
+    },
+    [setSymbol],
+  )
+  const toggleFavorite = favorites.toggle
 
   const empty =
     query.trim() !== ''
@@ -93,7 +86,15 @@ export function MarketsScreen() {
         </Pressable>
       </View>
       <View style={{ gap: space.md }}>
-        <Input label="Search" value={query} onChangeText={setQuery} hint="Ticker or name" keyboardType="default" />
+        <Input
+          label="Search"
+          value={query}
+          onChangeText={setQuery}
+          hint="Ticker or name"
+          keyboardType="default"
+          autoCorrect={false}
+          autoCapitalize="none"
+        />
         <Segment
           value={tab}
           onChange={setTab}
@@ -136,16 +137,7 @@ export function MarketsScreen() {
             </Text>
           ) : null
         }
-        renderItem={({ item }) => (
-          <MarketRowView
-            row={item}
-            onSelect={() => {
-              setSymbol(item.symbol)
-              router.back()
-            }}
-            onToggleFavorite={() => favorites.toggle(item.symbol)}
-          />
-        )}
+        renderItem={({ item }) => <MarketRowView row={item} onSelect={select} onToggleFavorite={toggleFavorite} />}
       />
     </Page>
   )

@@ -22,6 +22,19 @@ export function parseFavorites(raw: string | null): string[] {
   return out
 }
 
+/**
+ * Whether the stored value may be overwritten: nothing stored yet, or a JSON
+ * array. Malformed data is kept as it is (never written back), like a read error.
+ */
+export function favoritesWritable(raw: string | null): boolean {
+  if (raw === null) return true
+  try {
+    return Array.isArray(JSON.parse(raw))
+  } catch {
+    return false
+  }
+}
+
 export function toggleFavorite(list: readonly string[], symbol: string): string[] {
   return list.includes(symbol) ? list.filter((s) => s !== symbol) : [...list, symbol]
 }

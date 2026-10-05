@@ -61,6 +61,8 @@ test("GET /tickers: DB failure with no cache → 503", async () => {
   await withRouter(fakePool(state), {}, async (url) => {
     const res = await fetch(`${url}/tickers`);
     assert.equal(res.status, 503);
+    // Public endpoint: the pg error text (hosts, ports) is logged, never served.
+    assert.deepEqual(await res.json(), { error: "tickers unavailable" });
   });
 });
 

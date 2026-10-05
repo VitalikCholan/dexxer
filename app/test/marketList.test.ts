@@ -3,10 +3,12 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { PublicKey } from '@solana/web3.js'
 import {
+  displayPrice,
   filterRows,
   formatChange,
   marketRows,
   parseSort,
+  rowAccessibilityLabel,
   slotUsage,
   sortRows,
   type MarketRow,
@@ -137,4 +139,25 @@ test('formatChange: signed percent with two decimals; null → —', () => {
   assert.equal(formatChange(-0.02), '−2.00%')
   assert.equal(formatChange(0), '+0.00%')
   assert.equal(formatChange(null), '—')
+})
+
+test('rowAccessibilityLabel: TalkBack hears price, 24h change and every state, not only the name', () => {
+  const eth = { ...by('ETH'), name: 'Ethereum', change24h: 0.0083, paused: true, hasOrders: true }
+  assert.equal(
+    rowAccessibilityLabel(eth, 2_725_880_000n),
+    'ETH, Ethereum, $2725.88, up 0.83% in 24 hours, max leverage 5×, position open, orders pending, opening paused',
+  )
+  const bare = { ...by('SOL'), name: null, change24h: null }
+  assert.equal(rowAccessibilityLabel(bare, null), 'SOL, no price yet, no 24 hour change yet, max leverage 10×')
+  assert.equal(
+    rowAccessibilityLabel({ ...bare, change24h: -0.02 }, 150_000_000n),
+    'SOL, $150.00, down 2.00% in 24 hours, max leverage 10×',
+  )
+})
+
+test('displayPrice: a fresh WS mark wins; a stale or missing one falls back to /tickers', () => {
+  assert.equal(displayPrice({ price: 151_000_000n, stale: false }, 150_000_000n), 151_000_000n)
+  assert.equal(displayPrice({ price: 151_000_000n, stale: true }, 150_000_000n), 150_000_000n)
+  assert.equal(displayPrice({ price: null, stale: false }, 150_000_000n), 150_000_000n)
+  assert.equal(displayPrice(undefined, null), null)
 })

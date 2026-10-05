@@ -15,7 +15,6 @@ import { useTextStyle } from '@/src/ui/styles'
 import { Badge } from '@/src/ui/Badge'
 import { AssetIcon } from '@/src/ui/AssetIcon'
 import { formatCompactUsd, type RangeStats } from './headerStats'
-import { Segment } from '@/src/ui/Segment'
 import { useFavorites } from '@/src/lib/favoritesStore'
 import { chipSymbols } from '@/src/lib/favorites'
 import { useMarkets, useSelectedMarket } from '@/src/lib/markets'
@@ -46,7 +45,8 @@ export function TradeHeader({
   range,
   poolLiquidity,
 }: TradeHeaderProps) {
-  const { colors, space, radius, border } = useTheme()
+  const { colors, space, radius, border, control } = useTheme()
+  const chip = useTextStyle('body', { mono: true })
   const display = useTextStyle('display', { mono: true })
   const heading = useTextStyle('heading')
   const change = useTextStyle('body', { mono: true })
@@ -109,7 +109,32 @@ export function TradeHeader({
       </View>
 
       {chips.length > 0 ? (
-        <Segment compact value={symbol} onChange={setSymbol} options={chips.map((s) => ({ value: s, label: s }))} />
+        // Wraps instead of scrolling: five 8-character symbols at a large font still fit and stay tappable.
+        <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: space.xs }}>
+          {chips.map((s) => {
+            const selected = s === symbol
+            return (
+              <Pressable
+                key={s}
+                accessibilityRole="button"
+                accessibilityState={{ selected }}
+                accessibilityLabel={`Switch to ${s}-PERP`}
+                onPress={() => setSymbol(s)}
+                style={({ pressed }) => ({
+                  minHeight: control.minHitTarget,
+                  paddingHorizontal: space.md,
+                  justifyContent: 'center',
+                  borderRadius: radius.md,
+                  borderWidth: border.hairline,
+                  borderColor: selected ? colors.accent : colors.border,
+                  backgroundColor: selected ? colors.accentSubtle : pressed ? colors.surfaceAlt : colors.bgElevated,
+                })}
+              >
+                <Text style={[chip, { color: selected ? colors.textPrimary : colors.textSecondary }]}>{s}</Text>
+              </Pressable>
+            )
+          })}
+        </View>
       ) : null}
       {paused ? <Badge tone="warning">{`Opening paused on ${symbol}-PERP`}</Badge> : null}
 

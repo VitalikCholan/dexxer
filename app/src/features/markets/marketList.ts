@@ -6,6 +6,7 @@
 import { DEFAULT_SYMBOL, SOL_FALLBACK, type MarketInfo } from '@/src/lib/markets'
 import type { Ticker } from '@/src/lib/tickers'
 import { MAX_SLOTS, type DecodedPositions } from '@/src/lib/positions'
+import { formatUsd2 } from '@/src/lib/status'
 import { maxLeverage } from '../trade/headerStats'
 
 export type MarketTab = 'all' | 'favorites' | 'positions'
@@ -96,4 +97,29 @@ export function formatChange(c: number | null): string {
   if (c === null) return '—'
   const pct = c * 100
   return `${pct >= 0 ? '+' : '−'}${Math.abs(pct).toFixed(2)}%`
+}
+
+/** What TalkBack reads for a row: the explicit label replaces the merged child text, so it carries every visible fact. */
+export function rowAccessibilityLabel(row: MarketRow, price: bigint | null): string {
+  const parts = [row.symbol]
+  if (row.name) parts.push(row.name)
+  parts.push(price !== null ? `$${formatUsd2(price)}` : 'no price yet')
+  parts.push(
+    row.change24h === null
+      ? 'no 24 hour change yet'
+      : `${row.change24h >= 0 ? 'up' : 'down'} ${Math.abs(row.change24h * 100).toFixed(2)}% in 24 hours`,
+  )
+  if (row.maxLeverage !== null) parts.push(`max leverage ${row.maxLeverage}×`)
+  if (row.hasPosition) parts.push('position open')
+  if (row.hasOrders) parts.push('orders pending')
+  if (row.paused) parts.push('opening paused')
+  return parts.join(', ')
+}
+
+/** A row's shown price: the live WS mark unless it is missing or stale, then the /tickers close. */
+export function displayPrice(
+  live: { price: bigint | null; stale: boolean } | undefined,
+  fallback: bigint | null,
+): bigint | null {
+  return live && !live.stale && live.price !== null ? live.price : fallback
 }

@@ -1,11 +1,11 @@
 // app/src/lib/favoritesStore.tsx
 //
 // Favourites context backed by AsyncStorage (`dexxer.favorites`). A read
-// failure is never written back: until the first read succeeds, toggles stay
-// in memory only (same rule as the History archive).
+// failure or a malformed value is never written back: toggles then stay in
+// memory only (same rule as the History archive).
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type PropsWithChildren } from 'react'
 import AsyncStorage from '@react-native-async-storage/async-storage'
-import { parseFavorites, toggleFavorite } from './favorites'
+import { favoritesWritable, parseFavorites, toggleFavorite } from './favorites'
 
 const KEY = 'dexxer.favorites'
 
@@ -27,7 +27,7 @@ export function FavoritesProvider({ children }: PropsWithChildren) {
       .then((raw) => {
         if (cancelled) return
         setList(parseFavorites(raw))
-        setWritable(true)
+        setWritable(favoritesWritable(raw))
       })
       .catch(() => {})
     return () => {
