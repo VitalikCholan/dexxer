@@ -56,11 +56,7 @@ export function OnboardScreen() {
   }, [ownerKey])
 
   if (!owner) {
-    return (
-      <Page>
-        <ConnectScreen busy={busy} onConnect={() => void connectWallet()} />
-      </Page>
-    )
+    return <ConnectScreen busy={busy} onConnect={() => void connectWallet()} />
   }
 
   // `state === 'SessionSet'` covers this run's batch just finishing;
