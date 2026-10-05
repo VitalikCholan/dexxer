@@ -875,12 +875,21 @@ pub fn undelegate_user<'info>(ctx: Context<'info, UndelegateUser<'info>>) -> Res
         [p.bump]
     }; // RefMut dropped here — before every CPI below that takes `positions`
        // Pending orders are private trading intent: nothing of them may reach
-       // L1. Optional tail — a pre-orders account has none to scrub.
-    if let Some(mut orders) = orders_mut(a.positions.as_ref())? {
-        orders.scrub();
+       // L1 (a pre-orders account has no tail and nothing to scrub).
+       // Every byte past the struct is zeroed, whatever the tail's length: an
+       // account allocated for an earlier (shorter) tail layout is no longer read
+       // as orders — its owner cannot even cancel them — yet may still hold some.
+    {
+        let info: &AccountInfo = a.positions.as_ref();
+        let mut data = info.try_borrow_mut_data()?;
+        if data.len() > ORDERS_AT {
+            data[ORDERS_AT..].fill(0);
+        }
     }
     require!(
-        a.user_account.free_margin == 0 && a.user_account.locked_margin == 0,
+        a.user_account.free_margin == 0
+            && a.user_account.locked_margin == 0
+            && a.user_account.order_reserved == 0,
         DexxerError::BalanceNotZero
     );
     let ub = [a.user_account.bump];
@@ -1025,7 +1034,7 @@ pub struct CloseExitedUser<'info> {
     #[account(mut, close = rent_payer, seeds = [USER_SEED, user_account.owner.as_ref()], bump = user_account.bump,
         constraint = closer.key() == config.fee_payer || closer.key() == user_account.owner @ DexxerError::Unauthorized,
         constraint = user_account.exited @ DexxerError::NotExited,
-        constraint = user_account.free_margin == 0 && user_account.locked_margin == 0 @ DexxerError::BalanceNotZero)]
+        constraint = user_account.free_margin == 0 && user_account.locked_margin == 0 && user_account.order_reserved == 0 @ DexxerError::BalanceNotZero)]
     pub user_account: Box<Account<'info, UserAccount>>,
     #[account(mut, close = rent_payer, seeds = [POSITIONS_SEED, user_account.owner.as_ref()], bump = positions.load()?.bump,
         constraint = positions.load()?.open_count() == 0 @ DexxerError::HasOpenPosition)]

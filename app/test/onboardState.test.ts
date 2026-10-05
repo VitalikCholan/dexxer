@@ -35,7 +35,8 @@ async function userAccount(owner: PublicKey, exited: boolean): Promise<Buffer> {
     bump: 255,
     exited,
     rent_payer: PublicKey.default,
-    _reserved: Array(32).fill(0),
+    order_reserved: new BN(0),
+    _reserved: Array(24).fill(0),
   })
 }
 const empty = (): L1Snapshot => ({ config: null, faucet: null, ownerAta: null, userAccount: null, eata: null })

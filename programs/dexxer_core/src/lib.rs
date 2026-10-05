@@ -144,8 +144,11 @@ pub mod dexxer_core {
         trail_bps: u16,
         tp: u64,
         sl: u64,
+        limit: u64,
     ) -> Result<()> {
-        trade::place_order(ctx, kind, side, size, margin, trigger, trail_bps, tp, sl)
+        trade::place_order(
+            ctx, kind, side, size, margin, trigger, trail_bps, tp, sl, limit,
+        )
     }
     pub fn cancel_order<'info>(ctx: Context<'info, Trade<'info>>, slot: u8) -> Result<()> {
         trade::cancel_order(ctx, slot)

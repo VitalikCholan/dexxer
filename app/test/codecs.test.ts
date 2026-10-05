@@ -26,7 +26,8 @@ test('decodeUserAccount reads actions_left (u32) — the session budget set_sess
     bump: 255,
     exited: true,
     rent_payer: rentPayer,
-    _reserved: Array(32).fill(0),
+    order_reserved: new BN(123_456_789),
+    _reserved: Array(24).fill(0),
   })
   const d = decodeUserAccount(buf)
   assert.equal(d.actionsLeft, 17)
@@ -34,6 +35,7 @@ test('decodeUserAccount reads actions_left (u32) — the session budget set_sess
   assert.equal(d.freeMargin, 5n)
   assert.equal(d.exited, true)
   assert.equal(d.rentPayer.toBase58(), rentPayer.toBase58())
+  assert.equal(d.orderReserved, 123_456_789n, 'margin held by pending entry orders')
 })
 
 test('Config readers hit dusdc_mint, oracle_program and fee_payer (not magic_fee_vault)', async () => {

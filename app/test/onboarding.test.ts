@@ -90,7 +90,8 @@ async function userAccountData(o: {
     bump: 255,
     exited: o.exited ?? false,
     rent_payer: PublicKey.default,
-    _reserved: Array(32).fill(0),
+    order_reserved: new BN(0),
+    _reserved: Array(24).fill(0),
   })
 }
 

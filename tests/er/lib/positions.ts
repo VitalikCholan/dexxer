@@ -16,11 +16,34 @@ const SLOTS_AT = DISC + 32;
 const HISTORY_AT = DISC + 1568;
 const HEAD_AT = DISC + 3104;
 // 3176 B of slots + history (`POSITIONS_SIZE_LEGACY`), then the OPTIONAL 8
-// conditional-order slots (88 B each, state/order.rs). An account onboarded
+// conditional-order slots (96 B each, state/order.rs). An account onboarded
 // before orders is exactly the legacy length and still decodes — the program
-// treats the tail the same way.
-export const POSITIONS_SIZE_LEGACY = DISC + 3176;
-export const POSITIONS_SIZE = POSITIONS_SIZE_LEGACY + 704;
+// treats the tail the same way. The tail was 8 x 88 B before stop-limit added
+// `limit`; such an account (`POSITIONS_SIZE_PREV_TAIL`) also decodes, with no
+// orders, exactly as the program sees it.
+const ORDERS_AT = DISC + 3176;
+const ORDER_RECORD = 96;
+export const ORDER_SLOTS = 8;
+export const POSITIONS_SIZE_LEGACY = ORDERS_AT;
+export const POSITIONS_SIZE = POSITIONS_SIZE_LEGACY + ORDER_SLOTS * ORDER_RECORD;
+export const POSITIONS_SIZE_PREV_TAIL = POSITIONS_SIZE_LEGACY + ORDER_SLOTS * 88;
+/** `OrderKind::as_u8` names; 0 is an empty slot. */
+const ORDER_KINDS = ["none", "limit", "stop", "takeProfit", "stopLoss", "trailingStop"] as const;
+export type OrderKindName = Exclude<(typeof ORDER_KINDS)[number], "none">;
+
+export interface PendingOrder {
+  slot: number;
+  market: PublicKey;
+  kind: OrderKindName;
+  side: "long" | "short";
+  trigger: bigint;
+  /** Entry orders: size to open; exits: size to close (0 = the whole position). */
+  size: bigint;
+  /** Entry orders: margin held in `UserAccount.order_reserved`. */
+  margin: bigint;
+  /** `stop` entry orders: worst fill price (0 = none). */
+  limit: bigint;
+}
 
 export interface PositionSlot {
   index: number;
@@ -55,8 +78,10 @@ export interface Positions {
   history: HistoryRecord[];
   version: number;
   bump: number;
-  /** `false` for a pre-orders account (no order tail): `place_order` on it fails with `OrdersUnsupported`. */
+  /** `false` for a pre-orders account (no current order tail): `place_order` on it fails with `OrdersUnsupported`. */
   ordersSupported: boolean;
+  /** Pending conditional orders of every market, empty slots omitted; always `[]` without a current tail. */
+  orders: PendingOrder[];
 }
 
 const side = (b: number): "long" | "short" => (b === 1 ? "short" : "long");
@@ -64,8 +89,8 @@ const REASONS = ["user", "liquidated", "decrease"] as const;
 const key = (data: Buffer, at: number) => new PublicKey(data.subarray(at, at + 32));
 
 export function decodePositions(data: Buffer): Positions {
-  if (data.length !== POSITIONS_SIZE && data.length !== POSITIONS_SIZE_LEGACY) {
-    throw new Error(`Positions: length ${data.length}, expected ${POSITIONS_SIZE} or ${POSITIONS_SIZE_LEGACY}`);
+  if (data.length !== POSITIONS_SIZE && data.length !== POSITIONS_SIZE_LEGACY && data.length !== POSITIONS_SIZE_PREV_TAIL) {
+    throw new Error(`Positions: length ${data.length}, expected ${POSITIONS_SIZE}, ${POSITIONS_SIZE_PREV_TAIL} or ${POSITIONS_SIZE_LEGACY}`);
   }
   if (!data.subarray(0, DISC).equals(POSITIONS_DISC_BYTES)) throw new Error("Positions: discriminator mismatch");
 
@@ -107,13 +132,31 @@ export function decodePositions(data: Buffer): Positions {
     });
   }
 
+  const ordersSupported = data.length === POSITIONS_SIZE;
+  const orders: PendingOrder[] = [];
+  for (let i = 0; ordersSupported && i < ORDER_SLOTS; i++) {
+    const at = ORDERS_AT + i * ORDER_RECORD;
+    const kind = ORDER_KINDS[data.readUInt8(at + 88)];
+    if (!kind || kind === "none") continue;
+    orders.push({
+      slot: i,
+      market: key(data, at),
+      kind,
+      side: side(data.readUInt8(at + 89)),
+      trigger: data.readBigUInt64LE(at + 32),
+      size: data.readBigUInt64LE(at + 40),
+      margin: data.readBigUInt64LE(at + 48),
+      limit: data.readBigUInt64LE(at + 80),
+    });
+  }
   return {
     owner: key(data, DISC),
     slots,
     history,
+    orders,
     version: data.readUInt8(DISC + 3106),
     bump: data.readUInt8(DISC + 3107),
-    ordersSupported: data.length === POSITIONS_SIZE,
+    ordersSupported,
   };
 }
 

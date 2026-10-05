@@ -127,7 +127,7 @@ test("EXITED_OFFSET is the only byte that differs between exited=true/false enco
   const coder = new BorshAccountsCoder(DEXXER_CORE_IDL);
   const base = {
     version: 3, owner: k(), session_key: k(), session_expiry: new BN(7), actions_left: 5, free_margin: new BN(1), locked_margin: new BN(2),
-    last_withdraw_slot: new BN(3), exit_salt: Array(32).fill(9), bump: 254, rent_payer: k(), _reserved: Array(32).fill(0),
+    last_withdraw_slot: new BN(3), exit_salt: Array(32).fill(9), bump: 254, rent_payer: k(), order_reserved: new BN(0), _reserved: Array(24).fill(0),
   };
   const a = await coder.encode("UserAccount", { ...base, exited: true });
   const b = await coder.encode("UserAccount", { ...base, exited: false });
@@ -233,7 +233,7 @@ test("janitorDeps.listExitedOwners: dataSize + discriminator + exited=1 filters;
   const coder = new BorshAccountsCoder(DEXXER_CORE_IDL);
   const data = await coder.encode("UserAccount", {
     version: 3, owner, session_key: k(), session_expiry: new BN(0), actions_left: 0, free_margin: new BN(0), locked_margin: new BN(0),
-    last_withdraw_slot: new BN(0), exit_salt: Array(32).fill(0), exited: true, bump: 255, rent_payer: rentPayer, _reserved: Array(32).fill(0),
+    last_withdraw_slot: new BN(0), exit_salt: Array(32).fill(0), exited: true, bump: 255, rent_payer: rentPayer, order_reserved: new BN(0), _reserved: Array(24).fill(0),
   });
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const conn: any = {

@@ -70,6 +70,29 @@ export function validateAttached(side: SideName, entry: bigint, tp: bigint, sl: 
   return null
 }
 
+/**
+ * A stop-limit's bound (`Stop` entry orders): it must lie beyond the trigger,
+ * else the order could never fill (long: limit ≥ trigger, short: limit ≤
+ * trigger). `limit === 0n` = no bound.
+ */
+export function validateStopLimit(side: SideName, trigger: bigint, limit: bigint): string | null {
+  if (limit === 0n) return null
+  if (side === 'Long' && limit < trigger) return 'Limit must not be below the trigger price'
+  if (side === 'Short' && limit > trigger) return 'Limit must not be above the trigger price'
+  return null
+}
+
+/**
+ * A partial exit (`size` > 0): smaller than the position and leaving at least
+ * the market's minimum size. `size === 0n` = the whole position, always fine.
+ */
+export function validatePartialSize(size: bigint, positionSize: bigint, minSize: bigint): string | null {
+  if (size === 0n) return null
+  if (size >= positionSize) return 'Leave out the size to close the whole position'
+  if (positionSize - size < minSize) return 'The rest of the position would be below the minimum size'
+  return null
+}
+
 export function validateTrail(bps: number): string | null {
   if (!Number.isInteger(bps) || bps < MIN_TRAIL_BPS || bps > MAX_TRAIL_BPS) {
     return `Trail must be between ${MIN_TRAIL_BPS / 100}% and ${MAX_TRAIL_BPS / 100}%`
@@ -96,11 +119,12 @@ export function describeOrder(o: DecodedOrder): { title: string; detail: string 
     const stop = trailingStopPrice(o.side, o.extreme, o.trailBps)
     return {
       title: `${kindLabel(o.kind)} ${pct}%`,
-      detail: `stops at $${formatUsd2(stop)} · best $${formatUsd2(o.extreme)}`,
+      detail: `stops at $${formatUsd2(stop)} · best $${formatUsd2(o.extreme)}${o.size > 0n ? ` · ${(Number(o.size) / 1e9).toFixed(4)} SOL` : ''}`,
     }
   }
   if (o.kind === 'TakeProfit' || o.kind === 'StopLoss') {
-    return { title: kindLabel(o.kind), detail: `at $${formatUsd2(o.trigger)}` }
+    const part = o.size > 0n ? ` · ${(Number(o.size) / 1e9).toFixed(4)} SOL` : ''
+    return { title: kindLabel(o.kind), detail: `at $${formatUsd2(o.trigger)}${part}` }
   }
   const sol = (Number(o.size) / 1e9).toFixed(4)
   const exits = [o.tp ? `TP $${formatUsd2(o.tp)}` : '', o.sl ? `SL $${formatUsd2(o.sl)}` : '']
@@ -108,6 +132,6 @@ export function describeOrder(o: DecodedOrder): { title: string; detail: string 
     .join(' · ')
   return {
     title: `${kindLabel(o.kind)} ${o.side === 'Long' ? 'buy' : 'sell'} ${sol} SOL`,
-    detail: `at $${formatUsd2(o.trigger)}${exits ? ` · ${exits}` : ''}`,
+    detail: `at $${formatUsd2(o.trigger)}${o.limit > 0n ? ` (max $${formatUsd2(o.limit)})` : ''}${exits ? ` · ${exits}` : ''} · holds $${formatUsd2(o.margin)}`,
   }
 }

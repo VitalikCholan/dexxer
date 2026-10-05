@@ -118,3 +118,48 @@ test("liqTaskId matches the program's golden vector and depends on argument orde
   assert.equal(liqTaskId(positions, market), 1387748199796337972n);
   assert.equal(liqTaskId(market, positions), 4965387733951305052n);
 });
+
+// ---- conditional-order tail (state/order.rs): 8 x 96 B after the fixed struct ----
+import { ORDER_SLOTS, POSITIONS_SIZE_PREV_TAIL } from "../../../tests/er/lib/positions.js";
+
+function putOrder(b: Buffer, i: number, o: { market: PublicKey; kind: number; side: 0 | 1; trigger?: bigint; size?: bigint; margin?: bigint; limit?: bigint }) {
+  const at = 8 + 3176 + i * 96;
+  o.market.toBuffer().copy(b, at);
+  b.writeBigUInt64LE(o.trigger ?? 0n, at + 32);
+  b.writeBigUInt64LE(o.size ?? 0n, at + 40);
+  b.writeBigUInt64LE(o.margin ?? 0n, at + 48);
+  b.writeBigUInt64LE(o.limit ?? 0n, at + 80);
+  b.writeUInt8(o.kind, at + 88);
+  b.writeUInt8(o.side, at + 89);
+}
+
+test("orders: decoded at the 96-byte layout, with the stop-limit bound and partial size", () => {
+  const owner = Keypair.generate().publicKey;
+  const m = Keypair.generate().publicKey;
+  const b = Buffer.alloc(POSITIONS_SIZE);
+  POSITIONS_DISC_BYTES.copy(b, 0);
+  owner.toBuffer().copy(b, 8);
+  putOrder(b, 2, { market: m, kind: 2, side: 0, trigger: 155_000_000n, size: 2_000_000_000n, margin: 200_000_000n, limit: 158_000_000n });
+  putOrder(b, 5, { market: m, kind: 3, side: 0, trigger: 170_000_000n, size: 3_000_000_000n });
+  const p = decodePositions(b);
+  assert.equal(ORDER_SLOTS, 8);
+  assert.equal(p.ordersSupported, true);
+  assert.deepEqual(
+    p.orders.map((o) => [o.slot, o.kind, o.size, o.limit]),
+    [
+      [2, "stop", 2_000_000_000n, 158_000_000n],
+      [5, "takeProfit", 3_000_000_000n, 0n],
+    ],
+  );
+  assert.equal(p.orders[0].margin, 200_000_000n);
+  assert.equal(p.orders[1].side, "long");
+});
+
+test("orders: the previous 88-byte-slot tail decodes with no orders and without order support", () => {
+  const b = Buffer.alloc(POSITIONS_SIZE_PREV_TAIL);
+  POSITIONS_DISC_BYTES.copy(b, 0);
+  const p = decodePositions(b);
+  assert.equal(POSITIONS_SIZE_PREV_TAIL, 8 + 3176 + 704);
+  assert.equal(p.ordersSupported, false);
+  assert.deepEqual(p.orders, []);
+});

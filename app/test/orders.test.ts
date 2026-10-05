@@ -7,6 +7,8 @@ import {
   trailingStopPrice,
   validateAttached,
   validateExit,
+  validatePartialSize,
+  validateStopLimit,
   validateTrail,
 } from '../src/lib/orders'
 import type { DecodedOrder } from '../src/lib/positions'
@@ -72,6 +74,7 @@ test('describeOrder', () => {
     extreme: 0n,
     tp: 0n,
     sl: 0n,
+    limit: 0n,
   }
   assert.deepEqual(describeOrder(base), { title: 'Take profit', detail: 'at $160.00' })
   assert.equal(
@@ -80,5 +83,35 @@ test('describeOrder', () => {
   )
   const entry = describeOrder({ ...base, kind: 'Limit', trigger: $(140), size: 2_000_000_000n, tp: $(150), sl: $(130) })
   assert.equal(entry.title, 'Limit buy 2.0000 SOL')
-  assert.equal(entry.detail, 'at $140.00 · TP $150.00 · SL $130.00')
+  assert.equal(entry.detail, 'at $140.00 · TP $150.00 · SL $130.00 · holds $0.00')
+  // stop-limit bound, margin held, partial exit
+  const stop = describeOrder({
+    ...base,
+    kind: 'Stop',
+    trigger: $(155),
+    limit: $(158),
+    size: 2_000_000_000n,
+    margin: $(200),
+  })
+  assert.equal(stop.detail, 'at $155.00 (max $158.00) · holds $200.00')
+  assert.equal(describeOrder({ ...base, size: 3_000_000_000n }).detail, 'at $160.00 · 3.0000 SOL')
+})
+
+test('validateStopLimit: the bound lies beyond the trigger', () => {
+  assert.equal(validateStopLimit('Long', $(155), 0n), null, 'no bound')
+  assert.equal(validateStopLimit('Long', $(155), $(155)), null)
+  assert.equal(validateStopLimit('Long', $(155), $(158)), null)
+  assert.ok(validateStopLimit('Long', $(155), $(154)))
+  assert.equal(validateStopLimit('Short', $(145), $(142)), null)
+  assert.ok(validateStopLimit('Short', $(145), $(146)))
+})
+
+test('validatePartialSize: below the position, leaving at least the minimum', () => {
+  const sol = (n: number) => BigInt(n * 1e9)
+  const min = 10_000_000n
+  assert.equal(validatePartialSize(0n, sol(10), min), null, 'whole position')
+  assert.equal(validatePartialSize(sol(4), sol(10), min), null)
+  assert.ok(validatePartialSize(sol(10), sol(10), min), 'as large as the position')
+  assert.ok(validatePartialSize(sol(10) - min + 1n, sol(10), min), 'would leave dust')
+  assert.equal(validatePartialSize(sol(10) - min, sol(10), min), null, 'exactly the minimum left')
 })

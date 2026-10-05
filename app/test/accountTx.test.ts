@@ -172,6 +172,7 @@ test('exitMarkets also names markets that only hold a pending order', () => {
         extreme: 0n,
         tp: 0n,
         sl: 0n,
+        limit: 0n,
       },
     ],
     ordersSupported: true,
