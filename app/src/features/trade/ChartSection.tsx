@@ -7,9 +7,9 @@
 // (plain state, not persisted). C.7: a Chart / Token information / Trading
 // rules switch in the same row (`/assets/:symbol` feeds the middle tab).
 import { useState } from 'react'
-import { Pressable, Text, View } from 'react-native'
+import { Pressable, ScrollView, Text, View } from 'react-native'
 import { useTheme } from '@/src/theme'
-import { useTextStyle } from '@/src/ui/styles'
+import { linkPressStyle, useTextLinkHitSlop, useTextStyle } from '@/src/ui/styles'
 import { Segment } from '@/src/ui/Segment'
 import { type PositionSlot } from '@/src/lib/positions'
 import { type TicketMarket } from './marketLimits'
@@ -35,32 +35,37 @@ export interface ChartSectionProps {
 export function ChartSection({ symbol, tf, onTfChange, position, market, poolCapital }: ChartSectionProps) {
   const { colors, space } = useTheme()
   const micro = useTextStyle('micro')
+  const toggleHitSlop = useTextLinkHitSlop(micro)
   const [open, setOpen] = useState(true)
   const [tab, setTab] = useState<'chart' | 'token' | 'rules'>('chart')
 
   return (
     <View style={{ gap: space.sm }}>
-      <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
-        <Segment
-          compact
-          value={tab}
-          onChange={(t) => {
-            setTab(t)
-            setOpen(true)
-          }}
-          options={[
-            { value: 'chart', label: 'Chart' },
-            { value: 'token', label: 'Token info' },
-            { value: 'rules', label: 'Trading rules' },
-          ]}
-        />
+      <View style={{ flexDirection: 'row', alignItems: 'center', gap: space.sm }}>
+        {/* Scrolls instead of pushing the Hide/Show toggle off-screen on narrow phones. */}
+        <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ flex: 1 }}>
+          <Segment
+            compact
+            value={tab}
+            onChange={(t) => {
+              setTab(t)
+              setOpen(true)
+            }}
+            options={[
+              { value: 'chart', label: 'Chart' },
+              { value: 'token', label: 'Token info' },
+              { value: 'rules', label: 'Trading rules' },
+            ]}
+          />
+        </ScrollView>
         <Pressable
           accessibilityRole="button"
           accessibilityState={{ expanded: open }}
           onPress={() => setOpen((o) => !o)}
-          hitSlop={space.sm}
+          hitSlop={toggleHitSlop}
+          style={linkPressStyle}
         >
-          <Text style={[micro, { color: colors.accent }]}>{open ? 'Hide' : 'Show'}</Text>
+          <Text style={[micro, { color: colors.accentText }]}>{open ? 'Hide' : 'Show'}</Text>
         </Pressable>
       </View>
       {!open ? null : tab === 'chart' ? (

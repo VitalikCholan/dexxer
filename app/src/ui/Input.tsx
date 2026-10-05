@@ -1,7 +1,7 @@
 // app/src/ui/Input.tsx
 import { Pressable, Text, TextInput, View } from 'react-native'
 import { useTheme } from '@/src/theme'
-import { useTextStyle } from './styles'
+import { linkPressStyle, useTextLinkHitSlop, useTextStyle } from './styles'
 
 export interface InputProps {
   label: string
@@ -12,9 +12,23 @@ export interface InputProps {
   onMax?: () => void
   placeholder?: string
   keyboardType?: 'default' | 'numeric' | 'decimal-pad'
+  /** Text fields like search: Android autocorrect would rewrite tickers ("zec"). */
+  autoCorrect?: boolean
+  autoCapitalize?: 'none' | 'sentences' | 'words' | 'characters'
 }
 
-export function Input({ label, value, onChangeText, suffix, hint, onMax, placeholder, keyboardType }: InputProps) {
+export function Input({
+  label,
+  value,
+  onChangeText,
+  suffix,
+  hint,
+  onMax,
+  placeholder,
+  keyboardType,
+  autoCorrect,
+  autoCapitalize,
+}: InputProps) {
   const { colors, space, radius, control } = useTheme()
   const labelStyle = useTextStyle('micro')
   const valueStyle = useTextStyle('bodyStrong', { mono: true })
@@ -23,6 +37,7 @@ export function Input({ label, value, onChangeText, suffix, hint, onMax, placeho
   // TextInput overflowed and Android scrolled the leading digits out of view.
   const suffixStyle = useTextStyle('caption')
   const hintStyle = useTextStyle('caption')
+  const maxHitSlop = useTextLinkHitSlop(labelStyle)
 
   return (
     <View style={{ gap: space.xs }}>
@@ -46,13 +61,16 @@ export function Input({ label, value, onChangeText, suffix, hint, onMax, placeho
           placeholder={placeholder}
           placeholderTextColor={colors.textTertiary}
           keyboardType={keyboardType ?? 'decimal-pad'}
+          autoCorrect={autoCorrect}
+          autoCapitalize={autoCapitalize}
+          accessibilityLabel={label}
           numberOfLines={1}
           style={[valueStyle, { flex: 1, minWidth: 0, color: colors.textPrimary, minHeight: control.minHitTarget }]}
         />
         {suffix ? <Text style={[suffixStyle, { color: colors.textSecondary }]}>{suffix}</Text> : null}
         {onMax ? (
-          <Pressable onPress={onMax} hitSlop={space.sm}>
-            <Text style={[labelStyle, { color: colors.accent }]}>MAX</Text>
+          <Pressable onPress={onMax} hitSlop={maxHitSlop} style={linkPressStyle}>
+            <Text style={[labelStyle, { color: colors.accentText }]}>MAX</Text>
           </Pressable>
         ) : null}
       </View>

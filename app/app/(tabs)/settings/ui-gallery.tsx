@@ -19,6 +19,7 @@ import { showToast } from '@/src/ui/Toast'
 import { Skeleton } from '@/src/ui/Skeleton'
 import { EmptyState } from '@/src/ui/EmptyState'
 import { Address } from '@/src/ui/Address'
+import { AssetIcon } from '@/src/ui/AssetIcon'
 import type { Tone } from '@/src/ui/styles'
 
 const TONES: Tone[] = ['neutral', 'pending', 'success', 'warning', 'danger']
@@ -52,6 +53,13 @@ export default function UiGalleryScreen() {
       style={{ flex: 1, backgroundColor: colors.bg }}
       contentContainerStyle={{ padding: space.lg, gap: space.xxl, paddingBottom: space.xxl * 2 }}
     >
+      <Section title="AssetIcon">
+        <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: space.sm }}>
+          {['SOL', 'BTC', 'ETH', 'HYPE', 'ZEC', 'NEW'].map((s) => (
+            <AssetIcon key={s} symbol={s} size={36} />
+          ))}
+        </View>
+      </Section>
       <Section title="Button">
         <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: space.sm }}>
           <Button variant="primary" onPress={() => {}}>
@@ -65,6 +73,9 @@ export default function UiGalleryScreen() {
           </Button>
           <Button variant="ghost" onPress={() => {}}>
             Ghost
+          </Button>
+          <Button variant="long" onPress={() => {}}>
+            Long
           </Button>
         </View>
         <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: space.sm }}>

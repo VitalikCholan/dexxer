@@ -64,6 +64,7 @@ function RootNavigator() {
     <Stack screenOptions={{ headerShown: false }}>
       <Stack.Protected guard={isAuthenticated}>
         <Stack.Screen name="(tabs)" />
+        <Stack.Screen name="markets" options={{ presentation: 'modal', animation: 'slide_from_bottom' }} />
         <Stack.Screen name="+not-found" />
       </Stack.Protected>
       <Stack.Protected guard={!isAuthenticated}>

@@ -11,6 +11,7 @@ import {
   clampLeverage,
   liqAfterAddMargin,
   safeLiq,
+  submitLabel,
 } from '../src/features/trade/ticketMath'
 
 test('deriveTicket vectors (the live-observed 00.00 repro and its neighbours)', () => assertDeriveTicketSelfCheck())
@@ -85,4 +86,15 @@ test('clampLeverage keeps a picked leverage inside [1, maxLev]', () => {
   assert.equal(clampLeverage(0, 5), 1)
   assert.equal(clampLeverage(10, 10), 10)
   assert.equal(clampLeverage(4.6, 10), 5)
+})
+
+test('submitLabel: names the market on every entry; busy wins', () => {
+  assert.equal(submitLabel({ busy: false, orderType: 'market', side: 'long', symbol: 'ETH' }), 'Open Long ETH')
+  assert.equal(submitLabel({ busy: false, orderType: 'market', side: 'short', symbol: 'BTC' }), 'Open Short BTC')
+  assert.equal(submitLabel({ busy: false, orderType: 'limit', side: 'short', symbol: 'BTC' }), 'Place Limit Short BTC')
+  assert.equal(submitLabel({ busy: false, orderType: 'stop', side: 'long', symbol: 'SOL' }), 'Place Stop Long SOL')
+  assert.equal(
+    submitLabel({ busy: true, orderType: 'market', side: 'long', symbol: 'ETH' }),
+    'Signing with session key…',
+  )
 })

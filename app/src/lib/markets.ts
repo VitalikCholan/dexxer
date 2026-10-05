@@ -19,6 +19,8 @@ import { pdas } from './pdas'
 
 export interface MarketInfo {
   symbol: string
+  /** Display name from the relayer's asset table (`"Ethereum"`); `null` when unknown or from an older relayer. */
+  name: string | null
   market: PublicKey
   feed: PublicKey
   params: {
@@ -38,7 +40,11 @@ export interface MarketInfo {
 
 export const DEFAULT_SYMBOL = 'SOL'
 /** Used until `/markets` answers (or when it fails): SOL's PDA is derived locally, its feed comes from the live `Market`. */
-export const SOL_FALLBACK: Pick<MarketInfo, 'symbol' | 'market'> = { symbol: DEFAULT_SYMBOL, market: pdas.market() }
+export const SOL_FALLBACK: Pick<MarketInfo, 'symbol' | 'market' | 'name'> = {
+  symbol: DEFAULT_SYMBOL,
+  market: pdas.market(),
+  name: 'Solana',
+}
 export const MARKETS_KEY = ['indexer', 'markets'] as const
 
 function pubkey(o: Record<string, unknown>, k: string, where: string): PublicKey {
@@ -57,6 +63,13 @@ export function sortMarkets(ms: MarketInfo[]): MarketInfo[] {
   )
 }
 
+function optionalName(o: Record<string, unknown>, where: string): string | null {
+  const v = o.name
+  if (v === undefined || v === null) return null
+  if (typeof v !== 'string') throw new IndexerShapeError(where, `name: expected a string or null`)
+  return v
+}
+
 /** `GET /markets` (services/relayer/src/indexer/http.ts): u64 params as decimal strings. Throws `IndexerShapeError` naming the field. */
 export function parseMarkets(v: unknown): MarketInfo[] {
   if (!Array.isArray(v)) throw new IndexerShapeError('markets', 'expected an array')
@@ -68,6 +81,7 @@ export function parseMarkets(v: unknown): MarketInfo[] {
       const p = obj(o.params, pw)
       return {
         symbol: str(o, 'symbol', w),
+        name: optionalName(o, w),
         market: pubkey(o, 'market', w),
         feed: pubkey(o, 'feed', w),
         params: {

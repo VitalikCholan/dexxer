@@ -121,7 +121,7 @@ export function OnboardScreen() {
           <StepsList state={state} progress={batchProgress} />
         )}
 
-        {error ? <Text style={{ color: colors.short }}>{error}</Text> : null}
+        {error ? <Text style={[caption, { color: colors.short }]}>{error}</Text> : null}
 
         <Button variant="primary" disabled={busy && !failedStep} onPress={() => void advance()}>
           {busy ? 'Confirming…' : failedStep ? 'Retry' : 'Confirm in wallet'}

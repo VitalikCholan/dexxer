@@ -34,7 +34,6 @@ import { useTradeSession } from '../trade/useTradeSession'
 import { useOnboardingGate } from '../onboard/useOnboardingGate'
 import { SetupAccountCard } from '../onboard/SetupAccountCard'
 import { ReceiptSection } from '../receipt/ReceiptSection'
-import { PoolSnapshotCard } from '../receipt/PoolSnapshotCard'
 import { DepositSheet } from './DepositSheet'
 import { WithdrawSheet } from './WithdrawSheet'
 import { ExitSheet, type ExitChecklist } from './ExitSheet'
@@ -45,6 +44,7 @@ type OpenSheet = 'deposit' | 'withdraw' | 'exit' | null
 export function AccountScreen() {
   const { colors, space } = useTheme()
   const heading = useTextStyle('heading')
+  const caption = useTextStyle('caption')
 
   const { account } = useMobileWallet()
   // Retry-wrapped `signTransactions` — a wallet's `reauthorize` rejection
@@ -144,7 +144,7 @@ export function AccountScreen() {
         </View>
 
         {gate.status === 'needs_setup' ? null : error || user.error || positionsLive.error ? (
-          <Text style={{ color: colors.short }}>{error ?? user.error ?? positionsLive.error}</Text>
+          <Text style={[caption, { color: colors.short }]}>{error ?? user.error ?? positionsLive.error}</Text>
         ) : null}
 
         {gate.status === 'needs_setup' ? (
@@ -176,11 +176,11 @@ export function AccountScreen() {
             {/* Receipt and Exit are temporarily hidden — `src/lib/features.ts`. */}
             {FEATURES.receipt ? <ReceiptSection /> : null}
 
-            <PoolSnapshotCard />
-
             {FEATURES.exit ? (
               <Card title="Exit">
-                <Text style={{ color: colors.textSecondary }}>Return your private accounts to L1, fields erased.</Text>
+                <Text style={[caption, { color: colors.textSecondary }]}>
+                  Return your private accounts to L1, fields erased.
+                </Text>
                 <Button variant="destructive" onPress={() => setSheet('exit')}>
                   Exit private account
                 </Button>

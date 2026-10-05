@@ -12,7 +12,7 @@ import { Sheet } from '@/src/ui/Sheet'
 import { Input } from '@/src/ui/Input'
 import { Row } from '@/src/ui/Row'
 import { Button } from '@/src/ui/Button'
-import { formatUsd2 } from '@/src/lib/status'
+import { formatDusdc, formatUsd2 } from '@/src/lib/status'
 import { notional } from '@/src/lib/math'
 import { type PositionSlot } from '@/src/lib/positions'
 import { usdAmount } from '@/src/lib/trade'
@@ -81,9 +81,9 @@ export function AddMarginSheet({
             : undefined
         }
       />
-      <Row label="Margin" value={`$${formatUsd2(position.margin)} → $${formatUsd2(newMargin)}`} />
-      <Row label="Leverage" value={`${leverage(position.margin)} → ${leverage(newMargin)}`} />
-      <Row label="Liq. price" value={`$${formatUsd2(position.liqPrice)} → ${liqAfter}`} />
+      <Row label="Margin" value={`${formatDusdc(position.margin)} → ${formatDusdc(newMargin)}`} mono />
+      <Row label="Leverage" value={`${leverage(position.margin)} → ${leverage(newMargin)}`} mono />
+      <Row label="Liq. price" value={`$${formatUsd2(position.liqPrice)} → ${liqAfter}`} mono />
       {tooMuch ? (
         <Text style={[caption, { color: colors.short }]}>More than your free margin — deposit first</Text>
       ) : null}

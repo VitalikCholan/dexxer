@@ -273,7 +273,7 @@ Post-MVP upgrades (spec §2.4.5):
   calendar).
 - `docs/dexxer-architecture.md` — rationale, leak model, competitive frame
   (§2.1 is outdated where it differs from the spec).
-- `docs/dexxer-plan.md`, `docs/dexxer-mobile-stack.md` — plan and mobile
+- `docs/dexxer-mobile-stack.md` — mobile
   stack (partly outdated, replaced by the spec).
 - `docs/superpowers/plans/weeks0-5-history.md` — condensed plans and measured
   results for weeks 0–5; `docs/superpowers/plans/week6-history.md` — week 6.

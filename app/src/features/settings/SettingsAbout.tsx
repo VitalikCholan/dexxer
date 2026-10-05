@@ -27,7 +27,7 @@ export function SettingsAbout() {
       </Text>
       <Text
         accessibilityRole="link"
-        style={[body, { color: colors.accent }]}
+        style={[body, { color: colors.accentText }]}
         onPress={() => void Linking.openURL(TRADINGVIEW_URL).catch(() => undefined)}
       >
         tradingview.com

@@ -32,13 +32,14 @@ export function MarketInfoCard({ symbol, market }: { symbol: string; market: Tic
         {`Trade ${symbol} price movements with up to ${lev ?? '—'}× leverage, settled in dUSDC. Only you can see your open position.`}
       </Text>
       <View style={{ gap: space.xs }}>
-        <Row label="Max leverage" value={lev !== null ? `${lev}×` : '—'} />
+        <Row label="Max leverage" value={lev !== null ? `${lev}×` : '—'} mono />
         <Row
           label="Open / close fee"
           value={market ? `${formatBps(market.openFeeBps)} / ${formatBps(market.closeFeeBps)}` : '—'}
+          mono
         />
-        <Row label="Maintenance margin" value={market ? formatBps(market.mmrBps) : '—'} />
-        <Row label="Liquidation fee" value={market ? formatBps(market.liqFeeBps) : '—'} />
+        <Row label="Maintenance margin" value={market ? formatBps(market.mmrBps) : '—'} mono />
+        <Row label="Liquidation fee" value={market ? formatBps(market.liqFeeBps) : '—'} mono />
         <Row label="Price" value="Pyth Lazer, mark = EMA" />
         <Row label="Counterparty" value="Protocol pool" />
       </View>
@@ -57,8 +58,8 @@ export function MarketInfoCard({ symbol, market }: { symbol: string; market: Tic
               opacity: pressed ? 0.7 : 1,
             })}
           >
-            <Text style={[link, { color: colors.accent }]}>{l.label}</Text>
-            <Text style={[link, { color: colors.accent }]}>›</Text>
+            <Text style={[link, { color: colors.accentText }]}>{l.label}</Text>
+            <Text style={[link, { color: colors.accentText }]}>›</Text>
           </Pressable>
         ))}
       </View>

@@ -21,7 +21,7 @@ export default function NotFoundScreen() {
       >
         <Text style={[title, { color: colors.textPrimary, textAlign: 'center' }]}>This screen does not exist.</Text>
         <Link href="/" style={{ marginTop: space.md, paddingVertical: space.md }}>
-          <Text style={[body, { color: colors.accent }]}>Go to home screen!</Text>
+          <Text style={[body, { color: colors.accentText }]}>Go to home screen!</Text>
         </Link>
       </View>
     </>

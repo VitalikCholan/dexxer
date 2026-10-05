@@ -4,7 +4,7 @@ import { ActivityIndicator, Pressable, Text, View } from 'react-native'
 import { useTheme } from '@/src/theme'
 import { useTextStyle } from './styles'
 
-export type ButtonVariant = 'primary' | 'secondary' | 'destructive' | 'ghost'
+export type ButtonVariant = 'primary' | 'secondary' | 'destructive' | 'ghost' | 'long'
 
 export interface ButtonProps {
   variant: ButtonVariant
@@ -37,6 +37,8 @@ export function Button({ variant, loading, disabled, onPress, children }: Button
           flexDirection: 'row',
           gap: space.sm,
           paddingHorizontal: space.lg,
+          // Tactile press for every variant (`destructive`/`long` have no pressed color).
+          transform: [{ scale: pressed && !isDisabled ? 0.96 : 1 }],
         }
       }}
     >
@@ -65,12 +67,17 @@ function variantColors(
   }
   switch (variant) {
     case 'primary':
-      return { bg: pressed ? colors.accentPressed : colors.accent, fg: colors.textPrimary }
+      // accentFill (a touch darker than accent) keeps white text at 4.5:1; accent itself gives 3.8.
+      return { bg: pressed ? colors.accentPressed : colors.accentFill, fg: colors.textPrimary }
     case 'secondary':
       return { bg: pressed ? colors.surface : colors.surfaceAlt, fg: colors.textPrimary, borderColor: colors.border }
+    // Dark text on the side color, like `long`: white on short is 2.97:1, textInverse 5.92:1.
     case 'destructive':
-      return { bg: colors.short, fg: colors.textPrimary }
+      return { bg: colors.short, fg: colors.textInverse }
+    // Opens a Long: the side's own color, like the Long/Short toggle (Short opens with `destructive`).
+    case 'long':
+      return { bg: colors.long, fg: colors.textInverse }
     case 'ghost':
-      return { bg: pressed ? colors.accentSubtle : 'transparent', fg: colors.accent }
+      return { bg: pressed ? colors.accentSubtle : 'transparent', fg: colors.accentText }
   }
 }

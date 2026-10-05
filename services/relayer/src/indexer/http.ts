@@ -31,6 +31,7 @@ import { TIMEFRAMES, isTf } from "./timeframes.js";
 import { ORACLE_STALE_MS, isStale } from "./prices.js";
 import { latestPoolSnapshot, latestRoot, latestTick, listCandles, listPoolSnapshots, listTicks } from "./store.js";
 import { parseMarketParam, parsePoolHistoryQuery } from "./query.js";
+import { tickerFrom, tickerWindowStart, type Ticker } from "./tickers.js";
 import type { WsMessage } from "./accounts.js";
 import type { MarketInfo } from "../markets.js";
 import { withSol } from "../withSol.js";
@@ -56,6 +57,12 @@ export function knownSymbols(list: { symbol: string }[]): string[] {
 export interface IndexerRouterOpts {
   /** The market registry's current list (markets.ts) — `/markets` and the `?market=` whitelist. */
   markets: () => MarketInfo[];
+  /** Display name per symbol (`assets/assets.json`); `null` when unknown. Absent → every name is `null`. */
+  names?: (symbol: string) => string | null;
+  /** `/tickers` cache lifetime (ms); default 30000. */
+  tickersCacheMs?: number;
+  /** Clock, for tests. */
+  now?: () => number;
 }
 
 export function indexerRouter(pool: DbPool, opts: IndexerRouterOpts): Router {
@@ -66,7 +73,16 @@ export function indexerRouter(pool: DbPool, opts: IndexerRouterOpts): Router {
   // (MarketRisk is private, risk #24; its address alone says nothing, but the
   // contract stays "only what the program itself publishes").
   router.get("/markets", (_req, res) => {
-    res.json(opts.markets().map((m) => ({ symbol: m.symbol, market: m.market.toBase58(), feed: m.feed.toBase58(), params: m.params })));
+    const nameOf = opts.names ?? (() => null);
+    res.json(
+      opts.markets().map((m) => ({
+        symbol: m.symbol,
+        name: nameOf(m.symbol),
+        market: m.market.toBase58(),
+        feed: m.feed.toBase58(),
+        params: m.params,
+      })),
+    );
   });
 
   router.get("/prices", async (req, res) => {
@@ -111,6 +127,33 @@ export function indexerRouter(pool: DbPool, opts: IndexerRouterOpts): Router {
         ? { market: mq.value, price: t.price.toString(), slot: t.slot, ts: t.ts, publishTime: t.publishTime, stale }
         : { market: mq.value, price: null, slot: null, ts: null, publishTime: null, stale: true },
     );
+  });
+
+  // One answer for every client (no params): it says nothing about which
+  // market anyone looks at. Cached so a screen open costs no DB round trip.
+  const tickersTtl = opts.tickersCacheMs ?? 30_000;
+  const clock = opts.now ?? Date.now;
+  let tickersCache: { at: number; body: Ticker[] } | null = null;
+  router.get("/tickers", async (_req, res) => {
+    const now = clock();
+    if (tickersCache && now - tickersCache.at < tickersTtl) {
+      res.json(tickersCache.body);
+      return;
+    }
+    try {
+      const since = tickerWindowStart(now);
+      const body: Ticker[] = [];
+      for (const symbol of known()) body.push(tickerFrom(symbol, await listCandles(pool, symbol, "1h", since), now));
+      tickersCache = { at: now, body };
+      res.json(body);
+    } catch (e) {
+      console.warn(`indexer: /tickers DB read failed: ${(e as Error).message}`);
+      if (tickersCache) {
+        res.json(tickersCache.body);
+        return;
+      }
+      res.status(503).json({ error: "tickers unavailable" });
+    }
   });
 
   // Paginated backwards in time: `X-Next-Cursor` (a slot) is set only when the

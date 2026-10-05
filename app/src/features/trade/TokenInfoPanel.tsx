@@ -10,7 +10,7 @@
 import { useState } from 'react'
 import { Linking, Pressable, Text, View } from 'react-native'
 import { useTheme } from '@/src/theme'
-import { useTextStyle } from '@/src/ui/styles'
+import { linkPressStyle, useTextLinkHitSlop, useTextStyle } from '@/src/ui/styles'
 import { Row } from '@/src/ui/Row'
 import { Skeleton } from '@/src/ui/Skeleton'
 import { Button } from '@/src/ui/Button'
@@ -41,6 +41,7 @@ function Section({ title, body }: { title: string; body: string }) {
   const heading = useTextStyle('bodyStrong')
   const text = useTextStyle('body')
   const link = useTextStyle('caption')
+  const linkHitSlop = useTextLinkHitSlop(link)
   const [open, setOpen] = useState(false)
   const short = truncateText(body, COLLAPSED_CHARS)
 
@@ -53,9 +54,10 @@ function Section({ title, body }: { title: string; body: string }) {
           accessibilityRole="button"
           accessibilityState={{ expanded: open }}
           onPress={() => setOpen((o) => !o)}
-          hitSlop={space.sm}
+          hitSlop={linkHitSlop}
+          style={linkPressStyle}
         >
-          <Text style={[link, { color: colors.accent }]}>{open ? 'Show less' : 'Show more'}</Text>
+          <Text style={[link, { color: colors.accentText }]}>{open ? 'Show less' : 'Show more'}</Text>
         </Pressable>
       ) : null}
     </View>
@@ -102,7 +104,7 @@ export function TokenInfoBody({ asset, nowMs }: { asset: AssetInfo; nowMs: numbe
     <View style={{ gap: space.lg }}>
       <View style={{ gap: space.xs }}>
         <Text style={[title, { color: colors.textPrimary }]}>{`${asset.name} (${t})`}</Text>
-        <Row label="Rank" value={formatRank(m?.rank ?? null)} />
+        <Row label="Rank" value={formatRank(m?.rank ?? null)} mono />
         <Row label="Launched" value={formatDate(asset.launchDate)} />
       </View>
 
@@ -117,14 +119,14 @@ export function TokenInfoBody({ asset, nowMs }: { asset: AssetInfo; nowMs: numbe
 
       <View style={{ gap: space.xs }}>
         <Text style={[micro, { color: colors.textTertiary }]}>Market data</Text>
-        <Row label="Market cap" value={formatCompactUsd(m?.marketCap ?? null)} />
-        <Row label="Fully diluted market cap" value={formatCompactUsd(m?.fullyDilutedMarketCap ?? null)} />
-        <Row label="24h volume (spot)" value={formatCompactUsd(m?.volume24h ?? null)} />
-        <Row label="Market dominance" value={formatPercent(m?.dominance ?? null)} />
-        <Row label="Circulating supply" value={formatSupply(m?.circulatingSupply ?? null, t)} />
-        <Row label="Max. supply" value={formatSupply(m?.maxSupply ?? null, t)} />
-        <Row label="Total supply" value={formatSupply(m?.totalSupply ?? null, t)} />
-        <Row label="Circulating rate" value={formatPercent(m?.circulatingRate ?? null)} />
+        <Row label="Market cap" value={formatCompactUsd(m?.marketCap ?? null)} mono />
+        <Row label="Fully diluted market cap" value={formatCompactUsd(m?.fullyDilutedMarketCap ?? null)} mono />
+        <Row label="24h volume (spot)" value={formatCompactUsd(m?.volume24h ?? null)} mono />
+        <Row label="Market dominance" value={formatPercent(m?.dominance ?? null)} mono />
+        <Row label="Circulating supply" value={formatSupply(m?.circulatingSupply ?? null, t)} mono />
+        <Row label="Max. supply" value={formatSupply(m?.maxSupply ?? null, t)} mono />
+        <Row label="Total supply" value={formatSupply(m?.totalSupply ?? null, t)} mono />
+        <Row label="Circulating rate" value={formatPercent(m?.circulatingRate ?? null)} mono />
       </View>
 
       {links.length > 0 ? (

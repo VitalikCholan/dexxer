@@ -1,7 +1,7 @@
 // app/src/ui/Address.tsx
 import { Linking, Pressable, Text } from 'react-native'
 import { useTheme } from '@/src/theme'
-import { useTextStyle } from './styles'
+import { linkPressStyle, useTextStyle } from './styles'
 
 export interface AddressProps {
   pubkey: string
@@ -24,6 +24,7 @@ export function Address({ pubkey, explorer }: AddressProps) {
   return (
     <Pressable
       accessibilityRole="link"
+      style={linkPressStyle}
       onPress={() => void Linking.openURL(`https://explorer.solana.com/address/${pubkey}?cluster=devnet`)}
     >
       {label}

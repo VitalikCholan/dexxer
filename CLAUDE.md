@@ -18,7 +18,7 @@ A private perpetual DEX for Solana Seeker. A position is visible only to its own
 ## Documents
 - docs/superpowers/specs/2026-09-18-dexxer-mvp-design.md — the **source of truth** for the MVP (scope, accounts, math, program, client, tests, risks, calendar)
 - docs/dexxer-architecture.md — rationale, leak model, competitive frame (§2.1 is outdated where it differs from the spec)
-- docs/dexxer-plan.md — §2–3 are outdated, replaced by spec §1 and §7.3
+- ~~docs/dexxer-plan.md~~ — removed 05.10.2026 (superseded by the MVP spec); last version in git at `b4bef23`
 - docs/dexxer-mobile-stack.md — RN/Expo stack
 - CONTEXT.md — project glossary (the Dexxer language: roles, accounts, price/liquidation, trader journey); terms only, no rules or implementation
 - docs/solana-perp-privacy-landscape.md, docs/glossary-perp-privacy.md — market and general terms
@@ -26,7 +26,7 @@ A private perpetual DEX for Solana Seeker. A position is visible only to its own
 - docs/android-install-options.md — every way to install the app on Android for testing and demos (AVD, USB, adb wireless, `expo start --dev-client`, EAS, sideload, release APK; what is measured and what is only documented)
 - docs/emulator-runbook.md — how to start/stop the AVD + proxy (`scripts/emu-proxy.cjs`) + Metro + fakewallet/Phantom, what to look for in the logs, known pitfalls
 - docs/superpowers/plans/week6-backlog.md — week-6 backlog (agreed 24.09: risks #37–39, liquidation with a full ring, commit/action economics, #27 SIWS gate, layout migration, MWA identity verification for Phantom)
-- docs/superpowers/specs/2026-10-03-conditional-orders-design.md — conditional orders (Limit/Stop/TP/SL/Trailing): model, execution, migration, what is not measured
+- ~~docs/superpowers/specs/2026-10-03-conditional-orders-design.md~~ — conditional orders spec, removed 05.10.2026; the rules below ("Conditional orders rules", "Orders v2 rules") are the reference now; the full spec is in git at `b4bef23`
 - docs/superpowers/plans/week6-history.md — condensed history of week 6 in place of 7 plans and the results file (anchors `#siws-sessions`, `#multi-market`, `#slots-program`, `#slots-relayer`, `#slots-app`, `#slots-deploy`, `#chart-timeframes`, `#orders-review`, `#token-info`, `#devnet-04-10`, `#lessons`; measurements, M-slots-A…F, Chart C.5, App smoke, process lessons; the full originals are in git, commit `7243d39`)
 
 ## Rules
@@ -146,7 +146,7 @@ A private perpetual DEX for Solana Seeker. A position is visible only to its own
 - **History = the `Positions` ring + an archive on the device** (AsyncStorage `dexxer.history.<owner>`; `features/history/historyArchive.ts` — pure functions, `historyArchiveStore.ts` — storage). A record's time is `seenAt` (when the app first saw the record), because `HistoryRecord` carries only ER slots. **An archive read error is never written back** — the write is skipped. Reasons — `Closed`/`Liquidated`/`Partial close`
 - **Onboarding — two accounts** (`UserAccount` + `Positions`). The `Exited` state (`isExitedOnL1`) means "wait for the relayer's janitor"; there is no `init_user_reuse_queue` in the app. **Exit** passes `exitMarkets` (SOL, open slots, history from the newest, no repeats, ≤16) in `remaining_accounts`. The `Positions` PDA for Exit is derived from the owner (`pdas.positions(owner)`), not from the trading session; without a session key `Positions` is not readable, and Exit cancels only the SOL task
 - **Error map:** 6046 `UserExited`, 6049 `NoFreeSlot`, 6050 `PositionLiquidatable` (`app/src/lib/errors.ts`)
-- **Removed:** `PositionScreen` with its route, Ledger (`LedgerScreen`/`DisclosuresTab`/`RootTab`), `hashStore.ts`, `useDisclosures`, the `Position`/`ClosedRecord`/`DisclosureQueue`/`Disclosure` codecs, the commitment hash, `FEATURES.ledger`/`commitReveal`. Receipt (`BalancesRoot`) stayed; the pool snapshot is now `features/receipt/PoolSnapshotCard.tsx`
+- **Removed:** `PositionScreen` with its route, Ledger (`LedgerScreen`/`DisclosuresTab`/`RootTab`), `hashStore.ts`, `useDisclosures`, the `Position`/`ClosedRecord`/`DisclosureQueue`/`Disclosure` codecs, the commitment hash, `FEATURES.ledger`/`commitReveal`. Receipt (`BalancesRoot`) stayed; the pool snapshot card was removed from the UI 05.10.2026 (no pool info shown to traders)
 - **[Outdated since 01.10.2026: app 140 after the smoke fixes `c0d39db`/`b276769`]** **Tests (01.10.2026, Node 24.18.0):** app **137** (plan-2 baseline — 103); `tsc --noEmit`, `lint:check`, `format:check` clean. `format:check` was not a gate in Tasks 1–6 — 14 files were fixed by the style commit `5d5fd82` (3 of them predate plan 3). The task gate in `app/` is all four commands, like `npm run ci` without `android:build`
 - **[Outdated since 01.10.2026: see "Week 6 rules: position slots, devnet measurements"; smoke partly done]** **Not checked / plan 4:** no live run; an APK for the new program — only after the deploy. Smoke with a real wallet — checklist in `docs/emulator-runbook.md` §6. The deferred review minors by task are listed in spec §2.9 "Implemented (app)"
 
@@ -191,3 +191,10 @@ A private perpetual DEX for Solana Seeker. A position is visible only to its own
 ## Token information rules (04.10.2026, branch `feat/token-information`; tests only — NOT measured on devnet/a device)
 - **Public `GET /assets/:symbol`** (relayer, no DB or keys; `ASSETS_ENABLED=false` turns it off): text and https links — `services/relayer/assets/assets.json` (in the repo, does not depend on an external API; a new asset = an entry there + `coingeckoId`), numbers — CoinGecko (`coins/{id}` + `global` for dominance), in-memory cache `ASSETS_CACHE_MS` (default 600000, min 60000). An upstream failure **never gives an error**: the last numbers with `stale: true`, and without a cache — `market: null` with the text. `volume24h` is the asset's SPOT volume, not our protocol's. Does not touch privacy
 - **App:** the **Token info** tab in `ChartSection` (Chart / Token info / Trading rules), `lib/assets.ts` (`parseAsset` lets through only https links), `features/trade/assetFormat.ts` (no `Intl` — Hermes). Tests: relayer `test/assets.test.ts` (12), app 181
+
+## Market selector rules (05.10.2026, spec `2026-10-05-market-selector-design.md`)
+- The Trade header is a market button (`AssetIcon` + `SYMBOL-PERP ▾` + max leverage) that opens the modal route `/markets`. There are no favourite chips under it (removed 05.10.2026): favourites live only as the ★ tab of the markets screen. `MarketPicker` is gone.
+- The markets screen never fetches per market: prices come from the WS mark cache (`useQueries` with `enabled: false`), 24h change from `GET /tickers` (one answer for every client, cached 30 s on the relayer, `TICKERS_CACHE_MS`). Favourites (`dexxer.favorites`) and sort (`dexxer.marketsSort`) stay on the device; a storage read error is never written back.
+- `GET /markets` carries `name` from `services/relayer/assets/assets.json` (`null` when absent). A new market needs an `assets.json` entry for its name and an official brand SVG in `AssetIcon` (`BRAND_ICON_SYMBOLS` + `GLYPHS`; otherwise a letter avatar — never a traced logo). SOL, BTC, ETH, HYPE and ZEC ship brand marks (sources listed in `AssetIcon.tsx`).
+- A row in the markets list is two sibling buttons (row, ★): a nested `Pressable` inside an accessible one is invisible to TalkBack on Android.
+- The ticket's submit button always names the market (`submitLabel`).

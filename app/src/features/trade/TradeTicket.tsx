@@ -27,7 +27,7 @@ import { Button } from '@/src/ui/Button'
 import { CloseTab } from './CloseTab'
 import * as math from '@/src/lib/math'
 import { formatUsd2 } from '@/src/lib/status'
-import { clampLeverage, deriveTicket, impliedLeverage, safeLiq } from './ticketMath'
+import { clampLeverage, deriveTicket, impliedLeverage, safeLiq, submitLabel } from './ticketMath'
 import { type SideName } from '@/src/lib/codecs'
 import { type PositionSlot } from '@/src/lib/positions'
 import { solSize, usdAmount, type OrderParams } from '@/src/lib/trade'
@@ -342,10 +342,13 @@ function OpenForm({
         <Row
           label={isEntryOrder ? 'Entry at' : 'Entry ≈'}
           value={refPrice !== null ? `$${formatUsd2(refPrice)}` : '—'}
+          mono
         />
-        <Row label="Liq. price" value={liq !== null ? `$${formatUsd2(liq)}` : '—'} />
-        <Row label="Fee" value={feeUsd !== null ? `${formatUsd2(feeUsd)} dUSDC` : '—'} />
-        {isEntryOrder ? null : <Row label="Slippage limit" value={limit !== null ? `$${formatUsd2(limit)}` : '—'} />}
+        <Row label="Liq. price" value={liq !== null ? `$${formatUsd2(liq)}` : '—'} mono />
+        <Row label="Fee" value={feeUsd !== null ? `${formatUsd2(feeUsd)} dUSDC` : '—'} mono />
+        {isEntryOrder ? null : (
+          <Row label="Slippage limit" value={limit !== null ? `$${formatUsd2(limit)}` : '—'} mono />
+        )}
       </View>
       <View style={{ flexDirection: 'row', gap: space.md }}>
         <View style={{ flex: 1 }}>
@@ -376,14 +379,8 @@ function OpenForm({
           fills.
         </Text>
       ) : null}
-      <Button variant={side === 'long' ? 'primary' : 'destructive'} disabled={!canSubmit} onPress={submit}>
-        {busy
-          ? 'Signing with session key…'
-          : isEntryOrder
-            ? `Place ${orderType === 'limit' ? 'Limit' : 'Stop'} ${side === 'long' ? 'Long' : 'Short'}`
-            : side === 'long'
-              ? 'Open Long'
-              : 'Open Short'}
+      <Button variant={side === 'long' ? 'long' : 'destructive'} disabled={!canSubmit} onPress={submit}>
+        {submitLabel({ busy, orderType, side, symbol })}
       </Button>
     </View>
   )

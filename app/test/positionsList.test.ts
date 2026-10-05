@@ -21,6 +21,7 @@ const slot = (index: number, market = k()): PositionSlot => ({
 })
 const mi = (symbol: string, market = k()): MarketInfo => ({
   symbol,
+  name: null,
   market,
   feed: k(),
   params: {

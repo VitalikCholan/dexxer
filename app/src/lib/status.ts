@@ -26,6 +26,19 @@ export function formatUsd2(raw1e6: bigint): string {
 }
 
 /**
+ * A collateral amount (margin, PnL, fees, balances) at 1e6 — `'20.00 dUSDC'`.
+ * Prices keep the `$` prefix (`$${formatUsd2(price)}`); amounts never do.
+ */
+export function formatDusdc(raw1e6: bigint): string {
+  return `${formatUsd2(raw1e6)} dUSDC`
+}
+
+/** Signed collateral amount (PnL): `'+0.77 dUSDC'`, `'−1.20 dUSDC'` (U+2212 before the number). */
+export function formatSignedDusdc(raw1e6: bigint): string {
+  return `${raw1e6 >= 0n ? '+' : '−'}${formatDusdc(raw1e6 >= 0n ? raw1e6 : -raw1e6)}`
+}
+
+/**
  * `UserAccount.sessionExpiry` (unix seconds) vs current wall-clock time,
  * formatted for the session badge (`AccountScreen.tsx`). Bug fixed here
  * (observed live, CLAUDE.md week-4 report): the old inline logic derived

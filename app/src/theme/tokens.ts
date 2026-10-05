@@ -13,10 +13,12 @@ export const colors = {
   borderStrong: '#323847',
   textPrimary: '#EDEFF4',
   textSecondary: '#8A93A5',
-  textTertiary: '#6C7484',
+  textTertiary: '#7E8798',
   textInverse: '#05060A',
   accent: '#7A5CFF',
-  accentPressed: '#6A4CEF',
+  accentText: '#8A71FD',
+  accentFill: '#6E53E6',
+  accentPressed: '#634BCF',
   accentSubtle: 'rgba(122,92,255,0.14)',
   long: '#2FBF7F',
   longSubtle: 'rgba(47,191,127,0.14)',
@@ -92,6 +94,7 @@ export const radius = {
   sm: 6,
   md: 10,
   lg: 14,
+  xl: 26,
   pill: 999,
 } as const
 
@@ -116,7 +119,7 @@ export const layout = {
 } as const
 
 export const control = {
-  minHitTarget: 44,
+  minHitTarget: 48,
   buttonHeight: 52,
   inputHeight: 52,
   segmentHeight: 40,

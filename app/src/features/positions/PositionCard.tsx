@@ -8,7 +8,7 @@
 // (`positions.ts` decodes only open slots, so there is no state to check);
 // `symbol` names its market.
 import { Text, View } from 'react-native'
-import { formatUsd2 } from '@/src/lib/status'
+import { formatDusdc, formatSignedDusdc, formatUsd2 } from '@/src/lib/status'
 import { useTheme } from '@/src/theme'
 import { useTextStyle } from '@/src/ui/styles'
 import { Card } from '@/src/ui/Card'
@@ -127,20 +127,21 @@ export function PositionCard({
         <Badge tone={p.side === 'Long' ? 'success' : 'danger'}>{p.side}</Badge>
       </View>
       {note ? <Text style={[caption, { color: colors.textTertiary }]}>{note}</Text> : null}
-      <Row label="Size" value={`${sol(p.size)} ${symbol}`} />
+      <Row label="Size" value={`${sol(p.size)} ${symbol}`} mono />
       <Row label="Entry" value={`$${formatUsd2(p.entry)}`} mono />
       <Row label="Mark" value={mark !== null ? `$${formatUsd2(mark)}` : '—'} mono />
       <Row
         label="Unrealized PnL"
         value={
           upnl !== null
-            ? `${upnl >= 0n ? '+' : ''}$${formatUsd2(upnl)}${upnlPct !== null ? ` (${upnlPct >= 0 ? '+' : ''}${upnlPct.toFixed(1)}%)` : ''}`
+            ? `${formatSignedDusdc(upnl)}${upnlPct !== null ? ` (${upnlPct >= 0 ? '+' : ''}${upnlPct.toFixed(1)}%)` : ''}`
             : '—'
         }
         tone={upnl === null ? undefined : upnl >= 0n ? 'success' : 'danger'}
+        mono
       />
-      <Row label="Margin" value={`$${formatUsd2(p.margin)}`} />
-      <Row label="Liq. price" value={`$${formatUsd2(p.liqPrice)}`} />
+      <Row label="Margin" value={formatDusdc(p.margin)} mono />
+      <Row label="Liq. price" value={`$${formatUsd2(p.liqPrice)}`} mono />
       {liqPct !== null ? (
         <View style={{ gap: space.xs }}>
           <View style={{ height: 4, borderRadius: 2, backgroundColor: colors.surfaceAlt, overflow: 'hidden' }}>

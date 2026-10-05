@@ -59,3 +59,19 @@ test('parseMarkets rejects a market key that is not a public key', () => {
     (e: unknown) => e instanceof IndexerShapeError && /market/.test(e.message),
   )
 })
+
+test('parseMarkets: name is optional — a string, null, or absent (old relayer) → null', () => {
+  const out = parseMarkets([{ ...row('SOL'), name: 'Solana' }, { ...row('BTC'), name: null }, row('ETH')])
+  assert.deepEqual(
+    out.map((m) => [m.symbol, m.name]),
+    [
+      ['SOL', 'Solana'],
+      ['BTC', null],
+      ['ETH', null],
+    ],
+  )
+})
+
+test('parseMarkets: a non-string name is a shape error', () => {
+  assert.throws(() => parseMarkets([{ ...row('SOL'), name: 42 }]), IndexerShapeError)
+})
