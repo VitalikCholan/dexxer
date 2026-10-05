@@ -1,6 +1,6 @@
 # Market selector — design specification
 
-**Date:** 5 October 2026 · **Status:** approved in brainstorming, pending review of this file and the implementation plan
+**Date:** 5 October 2026 · **Status:** implemented (plan `docs/superpowers/plans/2026-10-05-market-selector.md`); BTC/ETH/HYPE/ZEC brand SVGs pending (letter avatars)
 **Goal:** replace the five-symbol row on the Trade tab with a market selector that stays comfortable on a phone as the market list grows from 5 to several dozen.
 **Depends on:** PR #22 (`fix/ui-design-plans-01-04`) merged first — this design uses its tokens (`accentText`, `control.minHitTarget = 48`, `radius.xl`), the `long` button variant and the dUSDC/`$` formatting rule.
 
