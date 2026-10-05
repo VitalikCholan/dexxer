@@ -8,7 +8,7 @@
 //
 // Week 3 Task 1 already measured `commit_and_undelegate` after
 // `CloseEphemeralPermissionCpi` PASSING on a spike program
-// (`spikes/01-private-counter-tee`, week3-results.md §Task 1 M-A) — this
+// (`spikes/01-private-counter-tee`, weeks0-5-history.md#week-3 §Task 1 M-A) — this
 // script is the first time the exact same mechanism runs on `dexxer_core`
 // itself, hence "M-A confirmed on dexxer_core" rather than a bare "PASS".
 //

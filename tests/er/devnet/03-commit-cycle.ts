@@ -3,7 +3,7 @@
 // Task 5, script 3 of 4: `commit_aggregate` x12, >=5s apart, transaction
 // signed by `Config.fee_payer` via a TEE-authenticated connection — proving
 // the fee-vault-scoped commit path crosses M3's plain-commit limit of 10
-// (week2-results.md §Task 1). After each commit, polls base-layer `Pool`
+// (weeks0-5-history.md#week-2 §Task 1). After each commit, polls base-layer `Pool`
 // until `last_commit_slot` propagates; records the `FeeEscrow` PDA's ER
 // lamport balance before/after every commit — the real per-commit cost
 // measurement M3 could not pin, and the first attempt at this script

@@ -1,363 +1,363 @@
-# Референсна архітектура Perp DEX на Solana
+# Perp DEX reference architecture on Solana
 
-Що мусить мати кожен протокол цієї категорії — незалежно від моделі ціноутворення й шару приватності. Написано з позиції solution architect: спочатку інваріанти, потім компоненти, потім Solana-специфіка, потім чеклист.
-
----
-
-## 0. Три інваріанти, з яких усе випливає
-
-Перп-DEX — це система, яка одночасно тримає три обіцянки:
-
-1. **Платоспроможність.** У будь-який момент сума того, що протокол винен трейдерам і LP, не перевищує того, що він має. Кожен компонент нижче існує або щоб цю умову підтримувати, або щоб чесно розподілити збитки, коли її порушено.
-2. **Справедлива ціна.** Позиція відкривається, оцінюється і закривається за ціною, яку не може маніпулювати ні учасник, ні оператор.
-3. **Детермінована ліквідація.** Позиція, яка більше не забезпечена, закривається вчасно і за правилами, відомими заздалегідь.
-
-Усе інше — фандинг, комісії, ордери, UI — обслуговує ці три.
+What every protocol in this category must have — regardless of the pricing model and the privacy layer. Written from a solution architect's point of view: invariants first, then components, then Solana specifics, then a checklist.
 
 ---
 
-## 1. Маржинальний двигун (accounting core)
+## 0. Three invariants everything follows from
 
-Серце протоколу. Живе повністю ончейн (або в SVM-ролапі з комітом на L1).
+A perp DEX is a system that keeps three promises at once:
 
-### Сутності
+1. **Solvency.** At any moment the sum of what the protocol owes traders and LPs does not exceed what it has. Every component below exists either to maintain this condition or to distribute losses fairly when it is broken.
+2. **Fair price.** A position is opened, valued and closed at a price that neither a participant nor the operator can manipulate.
+3. **Deterministic liquidation.** A position that is no longer collateralized is closed on time and by rules known in advance.
 
-| Сутність | Що зберігає |
+Everything else — funding, fees, orders, UI — serves these three.
+
+---
+
+## 1. Margin engine (accounting core)
+
+The heart of the protocol. It lives fully on-chain (or in an SVM rollup that commits to L1).
+
+### Entities
+
+| Entity | What it stores |
 |---|---|
-| `Market` | Актив, оракул, параметри ризику (max leverage, IMR, MMR, OI cap), стан фандингу, індекс ціни |
-| `Pool` / `Custody` | Резерви колатералю, зобов'язання, LP-частки, страховий фонд |
-| `UserAccount` | Колатераль, режим маржі, посилання на позиції |
-| `Position` | Ринок, сторона, розмір, ціна входу, накопичений фандинг, час відкриття |
+| `Market` | Asset, oracle, risk parameters (max leverage, IMR, MMR, OI cap), funding state, price index |
+| `Pool` / `Custody` | Collateral reserves, liabilities, LP shares, insurance fund |
+| `UserAccount` | Collateral, margin mode, references to positions |
+| `Position` | Market, side, size, entry price, accumulated funding, open time |
 
-### Що двигун мусить рахувати детерміновано
+### What the engine must compute deterministically
 
-- **Unrealized PnL** = `size × (mark − entry)` з урахуванням сторони
+- **Unrealized PnL** = `size × (mark − entry)`, taking the side into account
 - **Equity** = `collateral + unrealizedPnL − pendingFunding − pendingFees`
-- **Initial Margin** (IMR) — мінімум для відкриття/збільшення
-- **Maintenance Margin** (MMR) — мінімум для утримання; нижче → ліквідація
-- **Ліквідаційна ціна** — розв'язок рівняння `equity(price) = MMR × notional`
+- **Initial Margin** (IMR) — the minimum to open/increase
+- **Maintenance Margin** (MMR) — the minimum to hold; below it → liquidation
+- **Liquidation price** — the solution of the equation `equity(price) = MMR × notional`
 
-### Режими маржі
+### Margin modes
 
-- **Isolated** — колатераль закріплений за позицією. Простіший, ізолює ризик, гірша капіталоефективність.
-- **Cross** — один колатераль на всі позиції акаунта. Складніша ліквідація (яку позицію закривати першою), кращий UX для активних трейдерів.
+- **Isolated** — collateral is tied to the position. Simpler, isolates risk, worse capital efficiency.
+- **Cross** — one collateral for all of the account's positions. Harder liquidation (which position to close first), better UX for active traders.
 
-MVP майже завжди починає з isolated.
+An MVP almost always starts with isolated.
 
-### Арифметика
+### Arithmetic
 
-- Тільки цілі числа з фіксованою точністю (u64/u128, `checked_*` операції).
-- Явний напрямок округлення: **на користь протоколу** у кожній формулі (комісії вгору, виплати вниз). Це не дрібниця — асиметрія округлення на мільйонах операцій стає вектором витоку резервів.
-- Окремі decimals для ціни, розміру, колатералю; конвертація в одному місці.
+- Only fixed-precision integers (u64/u128, `checked_*` operations).
+- An explicit rounding direction: **in the protocol's favour** in every formula (fees up, payouts down). This is not a detail — rounding asymmetry over millions of operations becomes a vector for draining reserves.
+- Separate decimals for price, size, collateral; conversion in one place.
 
 ---
 
-## 2. Ціновий шар (oracle & price semantics)
+## 2. Price layer (oracle & price semantics)
 
-Перп не має власного price discovery за визначенням (він деривативний), тому ціна приходить зовні. Помилка тут — найчастіша причина втрати коштів у категорії.
+A perp has no price discovery of its own by definition (it is a derivative), so the price comes from outside. A mistake here is the most common cause of lost funds in the category.
 
-### Джерела
+### Sources
 
-- **Pyth** (pull-модель: клієнт приносить підписане оновлення в транзакцію; Lazer для низької латентності)
-- **Switchboard** як резерв/агрегація
-- Власний **Pricing Oracle всередині ER**, якщо архітектура на MagicBlock
+- **Pyth** (pull model: the client brings a signed update into the transaction; Lazer for low latency)
+- **Switchboard** as a fallback/aggregation
+- Our own **Pricing Oracle inside the ER**, if the architecture is on MagicBlock
 
-### Дві ціни, не одна
+### Two prices, not one
 
-| Ціна | Для чого | Джерело |
+| Price | What for | Source |
 |---|---|---|
-| **Index** | Що коштує актив «насправді» | Оракул, агрегат CEX/спот |
-| **Mark** | За чим оцінюються позиції й спрацьовує ліквідація | Index + премія/EMA; згладжена, стійка до спайків |
+| **Index** | What the asset is "really" worth | Oracle, CEX/spot aggregate |
+| **Mark** | What positions are valued at and what triggers liquidation | Index + premium/EMA; smoothed, resistant to spikes |
 
-Ліквідувати за raw oracle print — помилка: один спайк на 2% на 400 мс виносить сотні позицій, які через секунду були б живі.
+Liquidating at a raw oracle print is a mistake: a single 2% spike for 400 ms wipes out hundreds of positions that would have been alive a second later.
 
-### Обов'язкові перевірки на кожне читання
+### Mandatory checks on every read
 
-- **Staleness**: `now − publish_time ≤ max_age` (типово 10–30 с для L1, менше в ER)
-- **Confidence interval**: якщо `conf / price > threshold` — не відкривати нових позицій, ліквідувати обережно або паузити
-- **Deviation guard**: різниця між двома джерелами > X% → пауза ринку
+- **Staleness**: `now − publish_time ≤ max_age` (typically 10–30 s for L1, less in an ER)
+- **Confidence interval**: if `conf / price > threshold` — do not open new positions, liquidate carefully or pause
+- **Deviation guard**: a difference between two sources > X% → pause the market
 - **Status**: Pyth `Trading` vs `Halted`/`Unknown`
 
-### Виконання: ціна входу ≠ mark
+### Execution: entry price ≠ mark
 
-- **Price impact** як функція від `size / available liquidity` (пулова модель) або від глибини книги
-- **Spread** для покриття ризику мейкера/пулу
-- Явна **max slippage** від користувача — інваріант, який програма перевіряє, а не UI
+- **Price impact** as a function of `size / available liquidity` (pool model) or of book depth
+- **Spread** to cover the maker's/pool's risk
+- An explicit **max slippage** from the user — an invariant the program checks, not the UI
 
 ---
 
-## 3. Модель ціноутворення та контрагента
+## 3. Pricing and counterparty model
 
-Фундаментальний вибір, який визначає половину решти архітектури.
+A fundamental choice that determines half of the rest of the architecture.
 
-| Модель | Хто контрагент | Ціна | Плюси | Мінуси | Приклади |
+| Model | Who is the counterparty | Price | Pros | Cons | Examples |
 |---|---|---|---|---|---|
-| **Peer-to-pool** (oracle-priced) | LP-пул | Оракул + impact | Проста, глибока з першого дня, детермінована | LP тримають напрямковий ризик; немає price discovery | Jupiter, Flash, Adrena, GMX |
-| **vAMM** | Віртуальна крива, пул як бекстоп | Крива | Не потребує мейкерів | Складна калібрація, ризик розходження з index | Perp v1, Drift v1 |
-| **CLOB** | Інші трейдери/мейкери | Книга | Справжній price discovery | Холодний старт, залежність від мейкерів, MEV | Phoenix, Bulk, dYdX |
-| **RFQ** | Конкретний мейкер | Найкраще котирування | Price discovery без публічної книги; сумісний із приватністю | Потрібні реальні мейкери | Variational, Bullet |
-| **Гібрид** | Пул + книга/RFQ | Змішана | Найкращий UX | Найскладніша | Drift v2, Jupiter+HumidiFi |
+| **Peer-to-pool** (oracle-priced) | LP pool | Oracle + impact | Simple, deep from day one, deterministic | LPs hold directional risk; no price discovery | Jupiter, Flash, Adrena, GMX |
+| **vAMM** | Virtual curve, pool as backstop | Curve | Needs no makers | Hard calibration, risk of diverging from index | Perp v1, Drift v1 |
+| **CLOB** | Other traders/makers | Book | Real price discovery | Cold start, dependence on makers, MEV | Phoenix, Bulk, dYdX |
+| **RFQ** | A specific maker | Best quote | Price discovery without a public book; compatible with privacy | Needs real makers | Variational, Bullet |
+| **Hybrid** | Pool + book/RFQ | Mixed | Best UX | Most complex | Drift v2, Jupiter+HumidiFi |
 
-Солана Фундація (червень 2026) явно пріоритезує моделі з двостороннім потоком (CLOB, RFQ) над пуловими. Для MVP пул лишається найреалістичнішим; RFQ — природний v2.
-
----
-
-## 4. Ліквідність, ризик пулу і розподіл збитків
-
-### Джерела капіталу
-
-- **LP-пул** із часткою (JLP-подібний токен): дохід = комісії + borrow + PnL трейдерів (зворотний)
-- **Власний капітал** протоколу (на старті часто єдиний LP)
-- **Страховий фонд** — окремий буфер, поповнюється з комісій і ліквідаційних штрафів
-
-### Каскад покриття bad debt (обов'язково визначений заздалегідь)
-
-1. Маржа позиції
-2. Ліквідаційний штраф / буфер
-3. Страховий фонд
-4. **ADL** (Auto-Deleveraging): примусове закриття прибуткових позицій протилежної сторони, за рейтингом прибутковість × плече
-5. **Socialized loss**: пропорційний haircut усім
-
-Альтернатива — **senior/junior** (Percolator): депозити — senior-вимога, нереалізований прибуток — junior; ніхто не виводить більше, ніж є. Прибирає потребу в страховому фонді ціною того, що переможець може отримати менше номіналу.
-
-### Ліміти
-
-- **OI cap** на ринок (абсолютний і відносно пулу)
-- **Max position size** на акаунт
-- **Utilization cap** пулу
-- **Skew limits** — максимальна асиметрія лонг/шорт
+The Solana Foundation (June 2026) explicitly prioritizes models with two-sided flow (CLOB, RFQ) over pool models. For an MVP the pool remains the most realistic; RFQ is a natural v2.
 
 ---
 
-## 5. Фандинг
+## 4. Liquidity, pool risk and loss distribution
 
-Механізм, який тримає mark біля index за відсутності арбітражу через поставку.
+### Sources of capital
 
-- **Premium index** = `(mark − index) / index`, усереднений за інтервал
+- **LP pool** with shares (a JLP-like token): income = fees + borrow + traders' PnL (inverse)
+- The protocol's **own capital** (at launch often the only LP)
+- **Insurance fund** — a separate buffer, replenished from fees and liquidation penalties
+
+### Bad debt coverage cascade (must be defined in advance)
+
+1. Position margin
+2. Liquidation penalty / buffer
+3. Insurance fund
+4. **ADL** (Auto-Deleveraging): forced closing of profitable positions on the opposite side, ranked by profitability × leverage
+5. **Socialized loss**: a proportional haircut for everyone
+
+The alternative is **senior/junior** (Percolator): deposits are a senior claim, unrealized profit is junior; nobody withdraws more than exists. It removes the need for an insurance fund at the cost of a winner possibly receiving less than face value.
+
+### Limits
+
+- **OI cap** per market (absolute and relative to the pool)
+- **Max position size** per account
+- Pool **utilization cap**
+- **Skew limits** — the maximum long/short asymmetry
+
+---
+
+## 5. Funding
+
+The mechanism that keeps mark near index in the absence of delivery arbitrage.
+
+- **Premium index** = `(mark − index) / index`, averaged over an interval
 - **Rate** = `clamp(premium + interest, −cap, +cap)`
-- **Інтервал**: 1 год стандарт; на швидких ринках — безперервне нарахування per-slot
-- **Напрямок**: скошена сторона платить протилежній (або пулу в peer-to-pool)
-- **Реалізація**: глобальний кумулятивний індекс `cumulative_funding_rate` на ринку; позиція зберігає snapshot при відкритті; `pending = size × (current − snapshot)`. Ніколи не ітерувати по позиціях для нарахування.
+- **Interval**: 1 h is standard; on fast markets — continuous per-slot accrual
+- **Direction**: the skewed side pays the opposite side (or the pool in peer-to-pool)
+- **Implementation**: a global cumulative index `cumulative_funding_rate` on the market; a position stores a snapshot at open; `pending = size × (current − snapshot)`. Never iterate over positions to accrue.
 
 ---
 
-## 6. Ліквідаційний двигун
+## 6. Liquidation engine
 
-### Тригер
+### Trigger
 
-`equity < MMR × notional` за **mark**-ціною, з гістерезисом, щоб позиція не дзвеніла на межі.
+`equity < MMR × notional` at the **mark** price, with hysteresis so the position does not flap at the boundary.
 
-### Часткова vs повна
+### Partial vs full
 
-- **Повна** — простіше, гірше для трейдера
-- **Часткова** — закрити стільки, щоб повернути маржу вище IMR + буфер; вимагає ітеративного розрахунку
+- **Full** — simpler, worse for the trader
+- **Partial** — close enough to bring margin back above IMR + a buffer; requires an iterative calculation
 
-### Хто виконує
+### Who executes
 
-| Модель | Плюси | Мінуси |
+| Model | Pros | Cons |
 |---|---|---|
-| **Permissionless liquidators** (боти за винагороду) | Децентралізовано, самоорганізується | Потребує публічних позицій; race conditions; MEV |
-| **Permissioned keeper / crank** | Детерміновано, сумісно з приватністю | Єдина точка відмови; потрібен SLA і trustless fallback |
+| **Permissionless liquidators** (bots for a reward) | Decentralized, self-organizing | Requires public positions; race conditions; MEV |
+| **Permissioned keeper / crank** | Deterministic, compatible with privacy | Single point of failure; needs an SLA and a trustless fallback |
 
-Приватний перп за визначенням змушений обрати друге — і тому мусить мати **trustless exit**: користувач завжди може закрити/вивести через базовий шар, якщо crank мертвий.
+A private perp is forced by definition to choose the second — and therefore must have a **trustless exit**: the user can always close/withdraw through the base layer if the crank is dead.
 
-### Економіка
+### Economics
 
-- **Liquidation fee** (0.5–2% від notional) → частина ліквідатору, частина у страховий фонд
-- Порядок закриття при cross-margin: найризиковіша позиція першою
-- Логування кожної ліквідації як події з причиною і цінами
+- **Liquidation fee** (0.5–2% of notional) → part to the liquidator, part to the insurance fund
+- Closing order under cross margin: the riskiest position first
+- Log every liquidation as an event with the reason and prices
 
-### Латентність
+### Latency
 
-На L1 — 400 мс слот + черга. Реальна затримка від перетину порогу до виконання: 1–3 с у спокійному ринку, більше під навантаженням. Це визначає розмір MMR-буфера. В ER (10–50 мс блоки) буфер можна суттєво зменшити — це прямий економічний виграш для трейдера.
+On L1 — a 400 ms slot + a queue. The real delay from crossing the threshold to execution: 1–3 s in a calm market, more under load. This determines the size of the MMR buffer. In an ER (10–50 ms blocks) the buffer can be reduced substantially — a direct economic gain for the trader.
 
 ---
 
-## 7. Комісії
+## 7. Fees
 
-| Комісія | Коли | Типово |
+| Fee | When | Typical |
 |---|---|---|
-| Open / close | На notional при вході/виході | 5–10 bps |
-| Borrow / hourly | На notional за час утримання (peer-to-pool) | 0.005–0.02%/год |
-| Funding | Між сторонами | Динамічна |
-| Liquidation | При ліквідації | 0.5–2% |
-| Price impact | Неявна, у ціні | Функція розміру |
+| Open / close | On notional at entry/exit | 5–10 bps |
+| Borrow / hourly | On notional for the holding time (peer-to-pool) | 0.005–0.02%/h |
+| Funding | Between sides | Dynamic |
+| Liquidation | On liquidation | 0.5–2% |
+| Price impact | Implicit, in the price | A function of size |
 
-**Маршрутизація** — визначена в програмі, не в governance: частка LP / страховий фонд / казначейство / (за тезою фундації) базовий шар.
-
----
-
-## 8. Типи ордерів і виконання
-
-Solana не має нативного шедулінгу, тому все, що не виконується миттєво, вимагає keeper'а.
-
-- **Market** — атомарно в одній транзакції
-- **Limit / Stop / TP / SL** — ончейн-запис + keeper, який тригерить за ціною; винагорода keeper'у
-- **Request → Fill** (двофазне): користувач створює запит, keeper виконує за наступною ціною оракула. Захищає від фронтрану та маніпуляції оракулом у тій самій транзакції. Стандарт у Jupiter/GMX.
-- **Reduce-only**, **post-only** — прапорці, що їх програма мусить примусово перевіряти
+**Routing** — defined in the program, not in governance: the share for LPs / insurance fund / treasury / (per the foundation's thesis) the base layer.
 
 ---
 
-## 9. Solana-специфіка акаунтної моделі
+## 8. Order types and execution
 
-### PDA-дизайн
+Solana has no native scheduling, so anything that does not execute instantly requires a keeper.
+
+- **Market** — atomically in one transaction
+- **Limit / Stop / TP / SL** — an on-chain record + a keeper that triggers on price; a reward for the keeper
+- **Request → Fill** (two-phase): the user creates a request, a keeper executes it at the next oracle price. Protects against front-running and oracle manipulation in the same transaction. Standard in Jupiter/GMX.
+- **Reduce-only**, **post-only** — flags the program must enforce
+
+---
+
+## 9. Solana account model specifics
+
+### PDA design
 
 ```
 Market        [b"market", market_id]
 Pool          [b"pool", pool_id]
-Custody       [b"custody", pool, mint]          ← токен-вольт
+Custody       [b"custody", pool, mint]          ← token vault
 UserAccount   [b"user", owner]
-Position      [b"position", owner, market, side]   ← або індекс для кількох
+Position      [b"position", owner, market, side]   ← or an index for several
 Order         [b"order", owner, nonce]
 ```
 
-### Обмеження й наслідки
+### Limits and consequences
 
-- **10 MB max account**, але практично: `zero_copy` для великих структур, `Box<Account>` у стеку Anchor
-- **Compute budget**: 200k CU дефолт, до 1.4M за запитом. Ліквідація з оракулом і кількома CPI легко з'їдає 300–500k — бюджет треба виставляти явно
-- **Contention**: гарячий акаунт (пул, ринок) у кожній транзакції = серіалізація. Мітигації: батчинг, розділення на шарди, винесення в ER
-- **Rent**: ~0.002 SOL на позицію 200–300 байт; на масштабі — стаття витрат; закриті позиції закривати й повертати ренту
-- **Versioned tx + Address Lookup Tables**: обов'язково, коли в транзакції > 30 акаунтів (оракули + custody + позиції)
-- **Token-2022**: підтримувати, якщо колатераль може мати extensions; Confidential Balances — окрема історія
+- **10 MB max account**, but in practice: `zero_copy` for large structures, `Box<Account>` on the Anchor stack
+- **Compute budget**: 200k CU default, up to 1.4M on request. A liquidation with an oracle and several CPIs easily eats 300–500k — the budget must be set explicitly
+- **Contention**: a hot account (pool, market) in every transaction = serialization. Mitigations: batching, splitting into shards, moving into an ER
+- **Rent**: ~0.002 SOL per 200–300-byte position; at scale — a cost line; close closed positions and return the rent
+- **Versioned tx + Address Lookup Tables**: mandatory when a transaction has > 30 accounts (oracles + custody + positions)
+- **Token-2022**: support it if the collateral may have extensions; Confidential Balances is a separate story
 
-### Anchor-констрейнти як перша лінія безпеки
+### Anchor constraints as the first line of security
 
-- `has_one`, `seeds`, `bump`, `constraint =` на кожному акаунті
-- Owner-перевірки на всі зовнішні акаунти (оракул, токен-акаунти)
-- Ніколи не довіряти `remaining_accounts` без явної валідації
+- `has_one`, `seeds`, `bump`, `constraint =` on every account
+- Owner checks on all external accounts (oracle, token accounts)
+- Never trust `remaining_accounts` without explicit validation
 
 ---
 
-## 10. Keeper / crank інфраструктура
+## 10. Keeper / crank infrastructure
 
-Офчейн-компонент, без якого ончейн-програма не працює. Мусить бути в архітектурному документі як first-class citizen.
+An off-chain component without which the on-chain program does not work. It must be in the architecture document as a first-class citizen.
 
-| Задача | Частота | Хто |
+| Task | Frequency | Who |
 |---|---|---|
-| Ліквідації | Кожен слот / блок ER | Crank |
-| Оновлення funding index | Інтервал | Crank або lazy при першій взаємодії |
-| Виконання limit/stop | Реакція на ціну | Keeper |
-| Оракульні pull-оновлення | Перед кожною дією | Клієнт або crank |
-| Коміт стану ER → L1 | Інтервал / поріг | Оператор ER |
+| Liquidations | Every slot / ER block | Crank |
+| Funding index update | Interval | Crank, or lazily on first interaction |
+| Limit/stop execution | Reaction to price | Keeper |
+| Oracle pull updates | Before every action | Client or crank |
+| ER → L1 state commit | Interval / threshold | ER operator |
 
-Вимоги: ідемпотентність, повторні спроби, моніторинг відставання, алерти, **і документований сценарій, коли crank мертвий**.
-
----
-
-## 11. Адміністрування й governance
-
-- **Upgrade authority** → мультисиг (Squads), не один ключ
-- **Timelock** на зміни параметрів ризику
-- **Guardian / pause** — окремий ключ з правом лише зупинити (відкриття нових позицій), але не змінити
-- Параметри ринку в акаунті, не в коді: зміна без редеплою
-- Публічний changelog параметрів
+Requirements: idempotency, retries, lag monitoring, alerts, **and a documented scenario for when the crank is dead**.
 
 ---
 
-## 12. Безпека
+## 11. Administration and governance
 
-### Специфічні для перпів вектори
+- **Upgrade authority** → a multisig (Squads), not a single key
+- **Timelock** on risk parameter changes
+- **Guardian / pause** — a separate key with the right only to stop (opening new positions), not to change
+- Market parameters in an account, not in code: change without a redeploy
+- A public changelog of parameters
 
-- **Oracle manipulation** у тій самій транзакції → двофазне виконання або перевірка `publish_time`
-- **Sandwich на відкритті/закритті** → max slippage + Jito bundles / DontFront
-- **Rounding drain** → аудит напрямку округлення в кожній формулі
-- **Bad debt через недостатній MMR** → стрес-тести на історичній волатильності
-- **Stale funding index** → lazy-update при кожній взаємодії з ринком
-- **Liquidation griefing** → мінімальний розмір позиції, ліміт на кількість
-- **CPI-реентрантність** (немає в Solana в класичному сенсі, але є через callback-патерни)
+---
 
-### Процес
+## 12. Security
 
-- Формальна верифікація інваріантів ядра, де можливо (Percolator як приклад)
-- Fuzzing маржинальної математики (`proptest`)
-- Незалежний аудит **до** реальних грошей — без винятків
+### Perp-specific vectors
+
+- **Oracle manipulation** in the same transaction → two-phase execution or a `publish_time` check
+- **Sandwich on open/close** → max slippage + Jito bundles / DontFront
+- **Rounding drain** → audit the rounding direction in every formula
+- **Bad debt from an insufficient MMR** → stress tests on historical volatility
+- **Stale funding index** → lazy update on every interaction with the market
+- **Liquidation griefing** → minimum position size, a limit on the count
+- **CPI reentrancy** (not in Solana in the classic sense, but possible through callback patterns)
+
+### Process
+
+- Formal verification of core invariants where possible (Percolator as an example)
+- Fuzzing of the margin math (`proptest`)
+- An independent audit **before** real money — no exceptions
 - Bug bounty
-- Публічний документ моделі загроз
+- A public threat model document
 
 ---
 
-## 13. Спостережуваність та індексація
+## 13. Observability and indexing
 
-- **Anchor events** на кожну зміну стану: open, close, liquidate, funding_settle, deposit, withdraw
-- **Індексер** (Helius webhooks / Geyser / власний) → історія позицій, PnL, обсяги
-- **Публічні метрики** пулу: TVL, OI, utilization, coverage ratio, страховий фонд
-- Дашборд стану keeper'ів: відставання, помилки, останній успішний crank
+- **Anchor events** on every state change: open, close, liquidate, funding_settle, deposit, withdraw
+- **Indexer** (Helius webhooks / Geyser / our own) → position history, PnL, volumes
+- **Public pool metrics**: TVL, OI, utilization, coverage ratio, insurance fund
+- A keeper status dashboard: lag, errors, last successful crank
 
-Для приватного перпа: події лишаються, але агрегатні; per-user історія — тільки для власника (або після розкриття).
-
----
-
-## 14. Клієнт і SDK
-
-- **IDL** опублікований; TS SDK згенерований (Codama/Anchor)
-- Побудова транзакції з: оракульним оновленням, ALT, compute budget, priority fee
-- **Simulation** перед відправкою — обов'язково для перпів (показати користувачу ліквідаційну ціну до підпису)
-- Обробка асинхронних fill'ів (request → fill): UI-стан «очікує виконання»
-- Mobile: MWA + Session Keys, щоб не підписувати кожну дію
+For a private perp: events remain, but aggregated; per-user history is only for the owner (or after disclosure).
 
 ---
 
-## 15. Комплаєнс і межі
+## 14. Client and SDK
 
-- Geo-блокування на фронтенді (не в програмі — вона permissionless)
-- Скринінг адрес на депозиті/виведенні (Chainalysis/TRM API або on-chain реєстр)
-- Умови використання, disclaimers про плече
-- Для приватних протоколів: явна модель розкриття (кому, коли, що) — це частина архітектури, не юридичний додаток
+- **IDL** published; TS SDK generated (Codama/Anchor)
+- Building a transaction with: oracle update, ALT, compute budget, priority fee
+- **Simulation** before sending — mandatory for perps (show the user the liquidation price before signing)
+- Handling asynchronous fills (request → fill): a "pending execution" UI state
+- Mobile: MWA + Session Keys, so as not to sign every action
 
 ---
 
-## 16. Чеклист «протокол готовий до реальних грошей»
+## 15. Compliance and boundaries
 
-**Ядро**
-- [ ] Усі формули маржі в одному модулі з тестами на граничні випадки
-- [ ] Напрямок округлення задокументований і перевірений
-- [ ] Каскад bad debt визначений і реалізований до останнього кроку
-- [ ] Funding через кумулятивний індекс, без ітерацій
+- Geo-blocking on the frontend (not in the program — it is permissionless)
+- Address screening on deposit/withdrawal (Chainalysis/TRM API or an on-chain registry)
+- Terms of use, leverage disclaimers
+- For private protocols: an explicit disclosure model (to whom, when, what) — this is part of the architecture, not a legal appendix
 
-**Ціна**
-- [ ] Mark ≠ raw oracle; є згладжування
-- [ ] Staleness, confidence, deviation — перевіряються на кожне читання
-- [ ] Двофазне виконання або еквівалентний захист від oracle-манипуляції
+---
 
-**Ліквідація**
-- [ ] Тригер за mark, з гістерезисом
-- [ ] Часткова ліквідація або обґрунтована відмова від неї
-- [ ] Trustless exit при відмові keeper'а
-- [ ] Стрес-тест MMR на історичній волатильності активу
+## 16. Checklist "protocol ready for real money"
+
+**Core**
+- [ ] All margin formulas in one module with edge-case tests
+- [ ] Rounding direction documented and verified
+- [ ] Bad debt cascade defined and implemented to the last step
+- [ ] Funding through a cumulative index, no iteration
+
+**Price**
+- [ ] Mark ≠ raw oracle; there is smoothing
+- [ ] Staleness, confidence, deviation — checked on every read
+- [ ] Two-phase execution or equivalent protection against oracle manipulation
+
+**Liquidation**
+- [ ] Trigger by mark, with hysteresis
+- [ ] Partial liquidation or a justified refusal of it
+- [ ] Trustless exit on keeper failure
+- [ ] MMR stress test on the asset's historical volatility
 
 **Solana**
-- [ ] PDA-схема без гарячих точок або з планом мітигації contention
-- [ ] Compute budget виставляється явно на важких інструкціях
-- [ ] ALT для транзакцій з багатьма акаунтами
-- [ ] Anchor-констрейнти на кожному акаунті
+- [ ] A PDA scheme without hot spots or with a contention mitigation plan
+- [ ] Compute budget set explicitly on heavy instructions
+- [ ] ALTs for transactions with many accounts
+- [ ] Anchor constraints on every account
 
-**Операції**
-- [ ] Keeper ідемпотентний, моніториться, має runbook відмови
-- [ ] Upgrade authority — мультисиг; guardian окремо
-- [ ] Параметри ризику — в акаунтах, з timelock
+**Operations**
+- [ ] Keeper is idempotent, monitored, has a failure runbook
+- [ ] Upgrade authority is a multisig; guardian separate
+- [ ] Risk parameters in accounts, with a timelock
 
-**Безпека**
-- [ ] Незалежний аудит
-- [ ] Fuzzing маржинальної математики
-- [ ] Публічна модель загроз
+**Security**
+- [ ] Independent audit
+- [ ] Fuzzing of the margin math
+- [ ] Public threat model
 
-**Прозорість**
-- [ ] Відкритий код ядра
-- [ ] Публічні метрики платоспроможності
-- [ ] Індексер і історія подій
+**Transparency**
+- [ ] Open-source core
+- [ ] Public solvency metrics
+- [ ] Indexer and event history
 
 ---
 
-## Додаток: де приватний перп відхиляється від референсу
+## Appendix: where a private perp deviates from the reference
 
-| Компонент | Референс | Приватний перп |
+| Component | Reference | Private perp |
 |---|---|---|
-| Ліквідатори | Permissionless боти | Permissioned crank у TEE + trustless exit |
-| Позиції | Публічні PDA | Делеговані в PER, читання за permission |
-| Метрики | Per-market OI лонг/шорт | Агрегат без розбиття на сторони; coverage у бакетах |
-| Історія | Публічна | Розкриття постфактум (13F-модель) |
-| Індексер | Читає все | Читає лише публічні події й агрегати |
-| Push-сповіщення | Бекенд стежить за позиціями | Локально в клієнті або notifier усередині TEE |
-| Ордери limit/stop | Публічний запис + keeper | Запис у ER; keeper = той самий crank |
+| Liquidators | Permissionless bots | Permissioned crank in a TEE + trustless exit |
+| Positions | Public PDAs | Delegated into PER, read by permission |
+| Metrics | Per-market long/short OI | An aggregate without a split by side; coverage in buckets |
+| History | Public | Disclosure after the fact (13F model) |
+| Indexer | Reads everything | Reads only public events and aggregates |
+| Push notifications | A backend watches positions | Locally in the client or a notifier inside the TEE |
+| Limit/stop orders | Public record + keeper | A record in the ER; keeper = the same crank |
 
-Усе інше — маржинальна математика, оракульна дисципліна, каскад bad debt, governance, аудит — лишається без змін. Приватність — це шар над референсом, а не заміна йому.
+Everything else — the margin math, oracle discipline, the bad debt cascade, governance, audit — stays unchanged. Privacy is a layer over the reference, not a replacement for it.

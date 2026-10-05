@@ -1,6 +1,6 @@
 # idlgen
 
-Генератор IDL програми `dexxer_core` без `anchor-cli` (його `[toolchain] solana_version` перемикає глобальну Solana). Окремий крейт поза workspace, використовує `anchor_lang_idl::build::IdlBuilder` 0.1.4.
+IDL generator for the `dexxer_core` program without `anchor-cli` (its `[toolchain] solana_version` switches the global Solana). A separate crate outside the workspace, using `anchor_lang_idl::build::IdlBuilder` 0.1.4.
 
 ```bash
 cargo build --release --manifest-path tools/idlgen/Cargo.toml
@@ -8,10 +8,10 @@ env -u RUSTUP_TOOLCHAIN CARGO_TARGET_DIR="$PWD/tools/idlgen/target/idl-build" \
   tools/idlgen/target/release/idlgen "$PWD/programs/dexxer_core" "$PWD/idl/dexxer_core.json"
 ```
 
-`idl/dexxer_core.json` — канонічний IDL, який CI порівнює (`cmp`) з виходом `anchor build`.
+`idl/dexxer_core.json` is the canonical IDL, which CI compares (`cmp`) with the output of `anchor build`.
 
-Пастки:
-- `IdlBuilder` підставляє літерал `+{toolchain}`, якщо виставлено `RUSTUP_TOOLCHAIN`, тому запускати ЗІБРАНИЙ бінар з `env -u RUSTUP_TOOLCHAIN`, а не через `cargo run`.
-- Шлях до програми — абсолютний; `CARGO_TARGET_DIR` — свіжий на кожен checkout.
-- Вихід без кінцевого `\n` — CI порівнює його побайтово з `anchor build`.
-- Збірка компілює програму з фічею `idl-build` і може тривати кілька хвилин.
+Pitfalls:
+- `IdlBuilder` inserts a literal `+{toolchain}` when `RUSTUP_TOOLCHAIN` is set, so run the BUILT binary with `env -u RUSTUP_TOOLCHAIN`, not through `cargo run`.
+- The path to the program must be absolute; `CARGO_TARGET_DIR` must be fresh for every checkout.
+- The output has no trailing `\n` — CI compares it byte for byte with `anchor build`.
+- The build compiles the program with the `idl-build` feature and can take several minutes.

@@ -1,13 +1,13 @@
-# Дизайн-джерела (тиждень 4)
+# Design sources (week 4)
 
-Файли з проєкту Claude Design «Dexxer X-account визуали» (`claude.ai/design/p/527a6278-…`), забрані 22.09.2026 через DesignSync. **Статус: інспірейшн, не спека** — імплементація адаптує їх під бізнес-логіку застосунку (реальні поля, стани, обмеження MVP), див. `claude-design-prompt.md`.
+Files from the Claude Design project "Dexxer X-account визуали" (`claude.ai/design/p/527a6278-…`), pulled on 22.09.2026 through DesignSync. **Status: inspiration, not a spec** — the implementation adapts them to the app's business logic (real fields, states, MVP limits), see `claude-design-prompt.md`.
 
-| Файл | Що це |
+| File | What it is |
 |---|---|
-| `Dexxer App.dc.html` | Екрани й компоненти мобільного застосунку 390×844, dark only (IBM Plex Sans/Mono, акцент `#7A5CFF`). Відкривати локально разом із `support.js` (рантайм канвасу) |
-| `tokens.json` | Кольори, типографічна шкала, відступи, радіуси, лейаут-константи — джерело для `app/src/theme` |
-| `Dexxer X Visuals.dc.html` | Візуали для X-акаунта (картка 1600×900, банер, аватар) — брендовий тон, не UI |
-| `reference-2026-09-22.png` | Скріншот-референс, завантажений у проєкт 22.09 |
-| `claude-design-prompt.md` | Промт зі структурою екранів, полями й станами для наступної ітерації дизайну |
+| `Dexxer App.dc.html` | Mobile app screens and components at 390×844, dark only (IBM Plex Sans/Mono, accent `#7A5CFF`). Open locally together with `support.js` (the canvas runtime) |
+| `tokens.json` | Colours, type scale, spacing, radii, layout constants — the source for `app/src/theme` |
+| `Dexxer X Visuals.dc.html` | Visuals for the X account (a 1600×900 card, banner, avatar) — brand tone, not UI |
+| `reference-2026-09-22.png` | A reference screenshot uploaded to the project on 22.09 |
+| `claude-design-prompt.md` | A prompt with the screen structure, fields and states for the next design iteration |
 
-Правило: компоненти застосунку читають лише токени; жоден hex не пишеться в компонентах напряму.
+Rule: app components read only tokens; no hex value is written directly in components.

@@ -1,95 +1,99 @@
 # Dexxer
 
-Приватний perpetual DEX для Solana Seeker, побудований на MagicBlock Private
-Ephemeral Rollups (PER, TEE). Позиція видима лише власнику — трекери,
-копі-боти й самі ми бачимо тільки те, що вихідно публічне: огрублений
-знімок пулу, `BalancesRoot`-квитанцію і 13F-розкриття без адреси.
+A private perpetual DEX for Solana Seeker, built on MagicBlock Private
+Ephemeral Rollups (PER, TEE). A position is visible only to its owner —
+trackers, copy bots and we ourselves see only what is public by design: a
+coarsened pool snapshot, the `BalancesRoot` receipt and a 13F disclosure
+without an address.
 
-## Що це
+## What it is
 
-Dexxer — власне перп-ядро (не омнібус над Jupiter, не форк існуючого
-протоколу) на шаблоні MagicBlock: позиція — делегований PDA всередині TEE
-(Intel TDX) з permission-списком `[owner, session, crank]`. Жоден акаунт із
-полями позиції не комітиться на L1 до закриття — на базовому шарі видно
-лише акаунт під Delegation Program з байтами онбордингу, без жодного поля
-трейду. Приватність тут — це **фільтр читання в TEE**, а не шифрування: на
-L1 такого фільтра немає, тому сирий приватний акаунт ніколи не потрапляє
-туди як є; усе, що має вийти назовні, виходить лише через окремий
-публічний похідний акаунт (`Pool`-знімок, `BalancesRoot`, `Commitment`/
-`Disclosure`). Формулювання приватності — від трекерів, копі-ботів і від
-нас; **не** від Intel і не від оператора MagicBlock.
+Dexxer is its own perp core (not an omnibus over Jupiter, not a fork of an
+existing protocol) on the MagicBlock template: a position is a delegated PDA
+inside a TEE (Intel TDX) with the permission list `[owner, session, crank]`.
+No account with position fields is committed to L1 before close — the base
+layer shows only an account under the Delegation Program with its onboarding
+bytes, without a single trade field. Privacy here is a **read filter in the
+TEE**, not encryption: L1 has no such filter, so a raw private account never
+lands there as is; everything that must leave goes out only through a
+separate public derived account (`Pool` snapshot, `BalancesRoot`,
+`Commitment`/`Disclosure`). The privacy claim is: from trackers, copy bots
+and from us; **not** from Intel and not from the MagicBlock operator.
 
 ```mermaid
 flowchart LR
-    W[Гаманець<br/>MWA / Seed Vault] --> APP[Мобільний застосунок<br/>owner-conn · session-conn]
+    W[Wallet<br/>MWA / Seed Vault] --> APP[Mobile app<br/>owner-conn · session-conn]
     APP -- owner/session TEE --> ER
     subgraph ER["MagicBlock PER (TEE)"]
         POS["Position / UserAccount / DisclosureQueue<br/>permissioned [owner, session, crank]"]
         PL["PoolLive / MarketRisk<br/>permissioned [crank, admin]"]
     end
     CRANK[services/relayer<br/>crank · indexer · sponsor] -- crank/fee_payer --> ER
-    ER -- "commit_aggregate, ~5 хв батч" --> L1
-    subgraph L1["Solana L1 (публічне)"]
-        POOL["Pool — знімок, крок 100 dUSDC"]
+    ER -- "commit_aggregate, ~5 min batch" --> L1
+    subgraph L1["Solana L1 (public)"]
+        POOL["Pool — snapshot, 100 dUSDC step"]
         ROOT["BalancesRoot"]
         DISC["Commitment / Disclosure"]
     end
-    CRANK -- "читає лише публічне + оракул" --> L1
-    APP -- "читає публічне напряму" --> L1
+    CRANK -- "reads only public data + oracle" --> L1
+    APP -- "reads public data directly" --> L1
 ```
 
-## Що зроблено (MVP, тижні 0–4)
+## What has been built (MVP, weeks 0–4)
 
-- **Тиждень 0** — 10/11 spike-перевірок PASS (приватність у TEE, eSPL,
-  scheduler, MWA з ER-blockhash, `verifyTeeRpcIntegrity` на Hermes).
-- **Тиждень 1** — перп-ядро без приватності: маржа, ліквідація, crank,
-  інваріант пулу; тулчейн-пастки задокументовано (nightly для LiteSVM).
-- **Тиждень 2** — приватність (`[owner, session, crank]`), devnet-tee
-  деплой `dexxer_core`, `withdraw`, планувальник + `commit_aggregate` через
-  делегований `FeeEscrow`, мобільний скелет (TEE-conn, session-стор,
+- **Week 0** — 10/11 spike checks PASS (privacy in the TEE, eSPL,
+  scheduler, MWA with an ER blockhash, `verifyTeeRpcIntegrity` on Hermes).
+- **Week 1** — perp core without privacy: margin, liquidation, crank,
+  pool invariant; toolchain pitfalls documented (nightly for LiteSVM).
+- **Week 2** — privacy (`[owner, session, crank]`), devnet-tee deployment of
+  `dexxer_core`, `withdraw`, scheduler + `commit_aggregate` through a
+  delegated `FeeEscrow`, mobile skeleton (TEE connection, session store,
   Trade/Position).
-- **Тиждень 3** — 13F-розкриття (commit-then-reveal через `commit_aggregate`),
-  `BalancesRoot` (zero-copy, keccak256), `undelegate_user`/trustless-exit,
-  History/Receipt екрани, перший CI.
-- **Тиждень 4** — `PoolLive` приватний агрегат + `Pool` як публічний
-  огрублений знімок (ризик #24 закрито), `services/relayer` на Railway
-  (crank + публічний індексер + `/sponsor`), онбординг у ≤2 підписи зі
-  спонсорованим rent, планувальник `i64::MAX` на живому розкладі
-  (mark-backstop), дизайн-токени + 5-табовий UI за макетами Claude Design.
-- **Тиждень 5** — надійність без relayer-а: per-position `liquidation_check`
-  (планувальник у TEE реально ліквідує, не лише рухає mark — ризик #18
-  закрито повністю), close звільняє позицію одразу й кладе запис у
-  `DisclosureQueue` (`mark_committed` видалено), reveal за один цикл при
-  нульовій затримці, вихід із боргом розкриття (частковий
+- **Week 3** — 13F disclosure (commit-then-reveal through `commit_aggregate`),
+  `BalancesRoot` (zero-copy, keccak256), `undelegate_user`/trustless exit,
+  History/Receipt screens, first CI.
+- **Week 4** — `PoolLive` private aggregate + `Pool` as a public coarsened
+  snapshot (risk #24 closed), `services/relayer` on Railway (crank + public
+  indexer + `/sponsor`), onboarding in ≤2 signatures with sponsored rent,
+  `i64::MAX` scheduler on the live schedule (mark backstop), design tokens +
+  5-tab UI from Claude Design mockups.
+- **Week 5** — reliability without the relayer: per-position
+  `liquidation_check` (the scheduler in the TEE actually liquidates, not only
+  moves the mark — risk #18 fully closed), close frees the position at once
+  and pushes a record into `DisclosureQueue` (`mark_committed` removed),
+  reveal in one cycle at zero delay, exit with disclosure debt (partial
   `undelegate_user` + `close_orphan_queue`/`close_exited_user`), **0-SOL
-  онбординг** (`DelegateUser.payer`, нові `/sponsor`-shapes — виміряно 0
-  лампортів на owner, включно з ER-леґом), identity-aware MWA auth-token,
-  два devnet-апгрейди програми, relayer з карантином отруєних черг.
-- **Тиждень 6** — SIWS-сесії relayer-а для `/sponsor`/`/nonce`, мульти-маркет
-  (SOL/BTC/ETH/HYPE/ZEC), позиції-слоти (один `Positions` на 16 ринків,
-  розкриття угод скасовано, історія — приватне кільце), **чистий старт на
-  devnet 01.10.2026** — нова програма `Fyg2…UfCY`, relayer і dev-client APK
-  на ній; ліквідація лише планувальником виміряна за 8.5–10.2 с, relayer-ом —
-  за 2.9 с; smoke з fakewallet пройшов кроки 1–7 з 9
-  (1 — за логами й L1, 2–7 — за повідомленням власника).
+  onboarding** (`DelegateUser.payer`, new `/sponsor` shapes — measured 0
+  lamports on the owner, including the ER leg), identity-aware MWA auth
+  token, two devnet program upgrades, a relayer with quarantine for poisoned
+  queues.
+- **Week 6** — relayer SIWS sessions for `/sponsor`/`/nonce`, multi-market
+  (SOL/BTC/ETH/HYPE/ZEC), position slots (one `Positions` for 16 markets,
+  trade disclosure cancelled, history is a private ring), **clean start on
+  devnet 01.10.2026** — new program `Fyg2…UfCY`, with the relayer and the
+  dev-client APK on it; scheduler-only liquidation measured at 8.5–10.2 s,
+  relayer liquidation at 2.9 s; the fakewallet smoke passed steps 1–7 of 9
+  (1 — by logs and L1, 2–7 — as reported by the owner).
 
-Деталі й виміряні цифри — `docs/superpowers/plans/week{1,2,3,4,5,6}-results.md`.
+Details and measured numbers — `docs/superpowers/plans/weeks0-5-history.md`
+(weeks 0–5) and `docs/superpowers/plans/week6-history.md`.
 
-**Застаріло з 01.10.2026:** опис приватності й розкриття вище й нижче (13F, `Commitment`/`Disclosure`,
-`DisclosureQueue`, `Position` на ринок) — стан до тижня 6; актуальна модель — spec §2.9.
+**Outdated since 01.10.2026:** the description of privacy and disclosure above and below (13F,
+`Commitment`/`Disclosure`, `DisclosureQueue`, `Position` per market) is the state before week 6; the
+current model is spec §2.9.
 
-## Швидкий старт
+## Quick start
 
-### Передумови
+### Prerequisites
 
-- Anchor `1.0.2`, Solana CLI `3.1.9`, Rust `1.89` (закріплено в
+- Anchor `1.0.2`, Solana CLI `3.1.9`, Rust `1.89` (pinned in
   `rust-toolchain.toml`)
-- Додатково `rustup toolchain install nightly-2026-09-18` — потрібен лише
-  для LiteSVM-тестів (транзитивний `solana-syscalls`, див. `CLAUDE.md`)
-- Node `24` (через `nvm`; `export PATH="$HOME/.nvm/versions/node/v24.18.0/bin:$PATH"`
-  у прикладах нижче — підставте свою версію)
+- Additionally `rustup toolchain install nightly-2026-09-18` — needed only
+  for the LiteSVM tests (transitive `solana-syscalls`, see `CLAUDE.md`)
+- Node `24` (via `nvm`; `export PATH="$HOME/.nvm/versions/node/v24.18.0/bin:$PATH"`
+  in the examples below — substitute your version)
 
-### Програма й тести
+### Program and tests
 
 ```sh
 anchor build
@@ -98,14 +102,14 @@ cargo test -p dexxer_core                                 # unit — 61/61
 cargo +nightly-2026-09-18 test -p dexxer_litesvm            # LiteSVM — 87/87
 ```
 
-### ER/devnet-скрипти (`tests/er/`)
+### ER/devnet scripts (`tests/er/`)
 
 ```sh
 cd tests/er
 npm ci
-npm run q1              # локальний mb-stack: депозит
-npm run q2               # локальний mb-stack: permissions
-DEXXER_NET=devnet npm run devnet:onboard    # приклад devnet-скрипту; повний список — tests/er/README.md
+npm run q1              # local mb-stack: deposit
+npm run q2               # local mb-stack: permissions
+DEXXER_NET=devnet npm run devnet:onboard    # example devnet script; full list — tests/er/README.md
 ```
 
 ### Relayer (`services/relayer`)
@@ -115,158 +119,165 @@ cd services/relayer
 npm ci
 npm test                 # 100/100 — candles, feed golden vectors, health, shutdown, keys,
                           # sponsor whitelist/rate-limit, orphan janitor, disclosure quarantine/rotation
-npm run dev               # локальний запуск (DEXXER_NET=devnet, потребує CRANK_KEY_B58/FEE_PAYER_KEY_B58 env)
+npm run dev               # local run (DEXXER_NET=devnet, needs CRANK_KEY_B58/FEE_PAYER_KEY_B58 env)
 ```
 
-Живі env тижня 5 (значення на Railway, деталі — `docs/deployments.md`):
-`COMMIT_INTERVAL_TICKS=60` (замінює зашитий `DISCLOSURE_EVERY_TICKS`, дефолт 300),
-`COMMIT_MAX_ACTIONS=4` (дефолт; реальний бридж MagicBlock відхиляє 8 реальних дій за раз —
-виміряно), `QUARANTINE_CYCLES` (дефолт 10, ізолює чергу, що падає 2 рази поспіль).
+Live week-5 env (values on Railway, details — `docs/deployments.md`):
+`COMMIT_INTERVAL_TICKS=60` (replaces the hard-coded `DISCLOSURE_EVERY_TICKS`, default 300),
+`COMMIT_MAX_ACTIONS=4` (default; the real MagicBlock bridge rejects 8 real actions at once —
+measured), `QUARANTINE_CYCLES` (default 10, isolates a queue that fails twice in a row).
 
-### Мобільний застосунок (`app/`)
+### Mobile app (`app/`)
 
-MWA не працює в Expo Go — потрібен dev build:
+MWA does not work in Expo Go — a dev build is required:
 
 ```sh
 cd app
 npm ci
-npx expo run:android      # dev build; або npm run android
+npx expo run:android      # dev build; or npm run android
 npx tsc --noEmit
 npm run lint:check         # expo lint
 ```
 
-Для перевірки на емуляторі без реального гаманця — fakewallet:
+To test on an emulator without a real wallet — fakewallet:
 
 ```sh
 npx solana-mobile@latest device install fakewallet
 ```
 
-Скріпти crank-fallback і week-1 CLI демо — у `scripts/` (`npm run crank`,
+The crank-fallback script and the week-1 CLI demo are in `scripts/` (`npm run crank`,
 `npm run week1`).
 
-### Devnet-адреси й live-сервіси
+### Devnet addresses and live services
 
-Повний і актуальний список — `docs/deployments.md`. Коротко:
+The full, current list is in `docs/deployments.md`. In short:
 
 | | |
 |---|---|
-| `dexxer_core` program id | `Fyg2yJBoN97ScWxT37xBp2zaaiNncNqnGJ7PAbtnUfCY` (позиції-слоти, план 4; стара — `G2ok…`, див. `docs/deployments.md`) |
+| `dexxer_core` program id | `Fyg2yJBoN97ScWxT37xBp2zaaiNncNqnGJ7PAbtnUfCY` (position slots, plan 4; the old one is `G2ok…`, see `docs/deployments.md`) |
 | Base RPC | `https://rpc.magicblock.app/devnet` |
 | ER/TEE | `https://devnet-tee.magicblock.app` |
-| Relayer/індексер | `https://relayer-production-1ae7.up.railway.app` |
+| Relayer/indexer | `https://relayer-production-1ae7.up.railway.app` |
 
-Ендпоінти relayer/індексера:
+Relayer/indexer endpoints:
 
-| Ендпоінт | Що повертає |
+| Endpoint | What it returns |
 |---|---|
-| `GET /healthz` | стан crank/fee-payer балансів, тік/коміт, статус індексера, `schedulerActive` |
-| `GET /mark` | останній mark-прайс (з `stale`-прапорцем) |
-| `GET /prices?tf=1m\|5m\|15m&limit=N` | OHLC-свічки |
-| `GET /pool/latest` | останній `Pool`-знімок (capital/locked/fees/…) |
-| `GET /markets` | символи ринків (SOL першим); `?market=` на `/mark`/`/prices`, `/ws?markets=` |
-| ~~`GET /disclosures?limit=N`~~ | **404 з 01.10.2026** — розкриття угод скасовано (spec §2.9) |
-| `GET /root/latest` | останній `BalancesRoot` (root_slot, листки) |
-| `wss://…/ws` | live `mark`/`pool`-фрейми (кадру `disclosure` з 01.10.2026 нема) |
+| `GET /healthz` | crank/fee-payer balance state, tick/commit, indexer status, `schedulerActive` |
+| `GET /mark` | latest mark price (with a `stale` flag) |
+| `GET /prices?tf=1m\|5m\|15m&limit=N` | OHLC candles |
+| `GET /pool/latest` | latest `Pool` snapshot (capital/locked/fees/…) |
+| `GET /markets` | market symbols (SOL first); `?market=` on `/mark`/`/prices`, `/ws?markets=` |
+| ~~`GET /disclosures?limit=N`~~ | **404 since 01.10.2026** — trade disclosure cancelled (spec §2.9) |
+| `GET /root/latest` | latest `BalancesRoot` (root_slot, leaves) |
+| `wss://…/ws` | live `mark`/`pool` frames (no `disclosure` frame since 01.10.2026) |
 
-`dUSDC`-мінт — власний faucet-мінт, генерується bootstrap-скриптом
-(`Config.dusdc_mint`, не фіксована адреса в цьому README — пул фондує
-протокол на кожному чистому devnet-розгортанні).
+The `dUSDC` mint is our own faucet mint, generated by the bootstrap script
+(`Config.dusdc_mint`, not a fixed address in this README — the protocol funds
+the pool on every clean devnet deployment).
 
-## Як це працює (коротко)
+## How it works (in short)
 
-- **Приватність = фільтр читання в TEE/QFS, не шифрування.** Permissioned
-  акаунт (`Position`/`UserAccount`/`DisclosureQueue`) блокує читання для
-  всіх, крім `[owner, session, crank]`; байти ніколи не шифруються — на L1
-  такий фільтр не діє, тому сирий приватний акаунт туди не комітиться.
-- **`PoolLive` vs `Pool`.** Кожна дія (open/close/deposit/withdraw/
-  ліквідація) пише лише приватний робочий агрегат `PoolLive` (`[crank,
-  admin]`, ніколи не комітиться). Раз на ~5 хв `commit_aggregate` публікує
-  в `Pool` округлений знімок (крок `SNAPSHOT_STEP = 100 dUSDC`: активи —
-  вниз, зобов'язання — вгору) — це єдине, що бачить світ на L1.
-- **Commit-then-reveal, queue-first (week 5).** Закрита позиція одразу
-  штовхає запис у приватну `DisclosureQueue` і звільняє `Position` —
-  `commitment` (keccak256-хеш деталей угоди) і саме розкриття (`Disclosure`,
-  без адреси власника) виходять із черги в одному `commit_aggregate`-батчі
-  (`write_commitment`/`write_disclosure`). Програмна стеля
-  `MAX_ACTIONS_PER_COMMIT = 8`; живий relayer-дефолт `COMMIT_MAX_ACTIONS = 4`
-  — реальний бридж MagicBlock відхиляє 8 реальних дій за раз (виміряно).
-- **Онбординг в один клік, 0 SOL (week 5).** Застосунок збирає весь
-  онбординг у пачку (`signTransactions`); rent усіх трьох PDA й
-  делегування тепер спонсорується через `POST /sponsor` relayer'а
-  (`DelegateUser.payer` окремо від `owner`, нові ATA/delegate-shapes) —
-  виміряно **0 лампортів на owner** протягом усього циклу, включно з
-  ER-леґом (permissions+session), на живих 0-SOL гаманцях (M-I,
-  `week5-results.md`).
-- **Relayer — єдиний привілейований сервіс.** `services/relayer` тримає
-  лише `crank`/`fee_payer`-ключі, ніколи owner/session-токени; читає лише
-  публічні акаунти й оракул. Клієнт читає приватний стан напряму через
-  owner-TEE-з'єднання (`accountSubscribe`), не через relayer.
+- **Privacy = a read filter in the TEE/QFS, not encryption.** A permissioned
+  account (`Position`/`UserAccount`/`DisclosureQueue`) blocks reads for
+  everyone except `[owner, session, crank]`; the bytes are never encrypted —
+  that filter does not apply on L1, so a raw private account is not committed
+  there.
+- **`PoolLive` vs `Pool`.** Every action (open/close/deposit/withdraw/
+  liquidation) writes only the private working aggregate `PoolLive` (`[crank,
+  admin]`, never committed). Once every ~5 min `commit_aggregate` publishes a
+  rounded snapshot into `Pool` (step `SNAPSHOT_STEP = 100 dUSDC`: assets
+  down, liabilities up) — this is the only thing the world sees on L1.
+- **Commit-then-reveal, queue-first (week 5).** A closed position at once
+  pushes a record into the private `DisclosureQueue` and frees `Position` —
+  the `commitment` (a keccak256 hash of the trade details) and the disclosure
+  itself (`Disclosure`, without the owner's address) leave the queue in one
+  `commit_aggregate` batch (`write_commitment`/`write_disclosure`). The
+  program ceiling is `MAX_ACTIONS_PER_COMMIT = 8`; the live relayer default
+  is `COMMIT_MAX_ACTIONS = 4` — the real MagicBlock bridge rejects 8 real
+  actions at once (measured).
+- **One-tap onboarding, 0 SOL (week 5).** The app assembles the whole
+  onboarding into a batch (`signTransactions`); the rent of all three PDAs
+  and the delegation is now sponsored through the relayer's `POST /sponsor`
+  (`DelegateUser.payer` separate from `owner`, new ATA/delegate shapes) —
+  measured **0 lamports on the owner** over the whole cycle, including the
+  ER leg (permissions+session), on live 0-SOL wallets (M-I,
+  `weeks0-5-history.md#week-5`).
+- **The relayer is the only privileged service.** `services/relayer` holds
+  only the `crank`/`fee_payer` keys, never owner/session tokens; it reads
+  only public accounts and the oracle. The client reads private state
+  directly over the owner TEE connection (`accountSubscribe`), not through
+  the relayer.
 
-## Чесні обмеження
+## Honest limitations
 
-- **Anonymity set мала** — тестери одиниці; `Pool`-знімок округлений до
-  100 dUSDC, але при малій кількості одночасних трейдерів differencing між
-  знімками все одно може виказати активність (ризик #24, знято архітектурно
-  цього тижня, differencing лишається). Повне рішення — ZK-доказ
-  забезпеченості над приватним root-ом (§2.4.5 спеки), пост-MVP.
-- **Довіра до TEE (Intel/оператор MagicBlock).** Апаратна гарантія, не
-  криптографічна; `verifyTeeRpcIntegrity` перевіряє справжність TDX-квоти,
-  але не звіряє MRTD/RTMR з allowlist коду (v1).
-- **Ліквідації тепер planувальник-driven, `services/relayer` — fallback,
-  не єдина точка відмови (тиждень 5).** `liquidation_check` — окрема
-  scheduler-задача на кожну позицію, зареєстрована самою програмою; на
-  devnet виміряно PASS — ліквідація без жодного relayer-виклику за 6.97 с
-  (ризик #18 закрито повністю, не лише mark-backstop тижня 4).
-  `services/relayer`/`crank-fallback` лишається потрібним як другий
-  незалежний шлях і для всього іншого (коміти, індексація, sponsor).
-- **Reveal за один цикл, з відомим дефектом бриджу.** При нульовій
-  затримці розкриття комміт+reveal виходять на L1 одним циклом
-  `commit_aggregate` (виміряно). Одна конкретна черга на devnet
-  відхиляється бриджем MagicBlock на кожному протестованому бюджеті дій
-  (не рятується тюнінгом) — цей трейдер лишається заблокованим на
-  `QueueFull`, доки не буде програмного фіксу (тиждень 6); relayer ізолює
-  проблему карантином, щоб вона не блокувала розкриття інших трейдерів.
-- **Exit із боргом розкриття.** Вихід не чекає на reveal — частковий
-  `undelegate_user` лишає чергу делегованою crank-у, який її дренує й
-  закриває постфактум (`close_orphan_queue`/`close_exited_user`), rent
-  повертається власнику. Виміряно end-to-end на 0-SOL гаманцях (M-I).
-- **Онбординг — 0 SOL, виміряно, не лише спонсоровано частково (тиждень
-  5).** `DelegateUser.payer` + нові `/sponsor`-shapes закрили останній
-  owner-funded залишок (≈0.004 SOL тижня 4) — на живих 0-SOL гаманцях весь
-  цикл, включно з ER-леґом, пройшов за 0 лампортів (ризик #22 закрито
-  повністю).
-- **Одна позиція на ринок**, devnet-only, тестовий `dUSDC`-мінт, власний
-  тестовий пул як контрагент PnL — не реальна ліквідність. 4 legacy-позиції
-  тижнів 1–2 назавжди застрягли на старому лейауті акаунта (постійне
-  зміщення OI на ринку).
-- Повний список ризиків (#1–#36, з мітигаціями й статусом) —
+- **The anonymity set is small** — there are only a handful of testers; the
+  `Pool` snapshot is rounded to 100 dUSDC, but with few concurrent traders,
+  differencing between snapshots can still reveal activity (risk #24,
+  removed architecturally this week, differencing remains). The full
+  solution is a ZK proof of solvency over a private root (spec §2.4.5),
+  post-MVP.
+- **Trust in the TEE (Intel/the MagicBlock operator).** A hardware
+  guarantee, not a cryptographic one; `verifyTeeRpcIntegrity` checks that
+  the TDX quote is genuine but does not match MRTD/RTMR against a code
+  allowlist (v1).
+- **Liquidations are now scheduler-driven; `services/relayer` is a fallback,
+  not a single point of failure (week 5).** `liquidation_check` is a separate
+  scheduler task per position, registered by the program itself; measured
+  PASS on devnet — liquidation without a single relayer call in 6.97 s
+  (risk #18 fully closed, not only the week-4 mark backstop).
+  `services/relayer`/`crank-fallback` is still needed as a second
+  independent path and for everything else (commits, indexing, sponsor).
+- **Reveal in one cycle, with a known bridge defect.** At zero disclosure
+  delay, commit + reveal reach L1 in one `commit_aggregate` cycle
+  (measured). One specific queue on devnet is rejected by the MagicBlock
+  bridge at every tested action budget (tuning does not help) — that trader
+  stays blocked on `QueueFull` until a program fix (week 6); the relayer
+  isolates the problem with quarantine so it does not block other traders'
+  disclosures.
+- **Exit with disclosure debt.** Exit does not wait for the reveal — a
+  partial `undelegate_user` leaves the queue delegated to the crank, which
+  drains and closes it afterwards (`close_orphan_queue`/`close_exited_user`);
+  the rent returns to the owner. Measured end to end on 0-SOL wallets (M-I).
+- **Onboarding is 0 SOL, measured, not just partly sponsored (week 5).**
+  `DelegateUser.payer` + the new `/sponsor` shapes closed the last
+  owner-funded remainder (≈0.004 SOL in week 4) — on live 0-SOL wallets the
+  whole cycle, including the ER leg, cost 0 lamports (risk #22 fully
+  closed).
+- **One position per market**, devnet-only, a test `dUSDC` mint, our own
+  test pool as the PnL counterparty — not real liquidity. 4 legacy positions
+  from weeks 1–2 are stuck forever on the old account layout (a permanent OI
+  offset on the market).
+- The full list of risks (#1–#36, with mitigations and status) —
   `docs/superpowers/specs/2026-09-18-dexxer-mvp-design.md` §7.1.
 
 ## Roadmap
 
-Пост-MVP апгрейди (спека §2.4.5):
+Post-MVP upgrades (spec §2.4.5):
 
-- Merkle-root замість плаского списку `BalancesRoot` при N > 64.
-- Root рахує сама програма інкрементально (без crank-асерту).
-- Власний L1-vault замість eSPL → суверенний exit.
-- ZK-доказ забезпеченості (Groth16/BN254) над приватним root-ом — публічний
-  знімок несе лише `root + proof + огрублений ratio`, без сирих агрегатів.
-- Disclosure/root-цикли всередині MagicBlock scheduler-а (потребує реєстру
-  кандидатів у програмі).
-- Funding rate, TP/SL, мульти-маркет, TEE-атестація в застосунку, iOS.
+- A Merkle root instead of the flat `BalancesRoot` list when N > 64.
+- The program computes the root itself, incrementally (without a crank
+  assertion).
+- Our own L1 vault instead of eSPL → sovereign exit.
+- A ZK proof of solvency (Groth16/BN254) over a private root — the public
+  snapshot carries only `root + proof + coarsened ratio`, without raw
+  aggregates.
+- Disclosure/root cycles inside the MagicBlock scheduler (needs a candidate
+  registry in the program).
+- Funding rate, TP/SL, multi-market, TEE attestation in the app, iOS.
 
-## Документи
+## Documents
 
-- `docs/superpowers/specs/2026-09-18-dexxer-mvp-design.md` — джерело
-  правди для MVP (скоуп, акаунти, математика, програма, клієнт, тести,
-  ризики, календар).
-- `docs/dexxer-architecture.md` — обґрунтування, витік-модель, конкурентна
-  рамка (§2.1 застарів там, де розходиться зі спекою).
-- `docs/dexxer-plan.md`, `docs/dexxer-mobile-stack.md` — план і мобільний
-  стек (частково застарілі, замінені спекою).
-- `docs/superpowers/plans/week{1,2,3,4,5}-results.md` — виміряні результати
-  кожного тижня.
-- `docs/deployments.md` — живі devnet-адреси, PDA, relayer/Railway,
-  scheduler `task_id` (без секретів).
-- `services/relayer/README.md` — crank/індексер/`/sponsor` зсередини.
-- `CLAUDE.md` — архітектурні рішення й робочі правила репозиторію.
+- `docs/superpowers/specs/2026-09-18-dexxer-mvp-design.md` — the source of
+  truth for the MVP (scope, accounts, math, program, client, tests, risks,
+  calendar).
+- `docs/dexxer-architecture.md` — rationale, leak model, competitive frame
+  (§2.1 is outdated where it differs from the spec).
+- `docs/dexxer-plan.md`, `docs/dexxer-mobile-stack.md` — plan and mobile
+  stack (partly outdated, replaced by the spec).
+- `docs/superpowers/plans/weeks0-5-history.md` — condensed plans and measured
+  results for weeks 0–5; `docs/superpowers/plans/week6-history.md` — week 6.
+- `docs/deployments.md` — live devnet addresses, PDAs, relayer/Railway,
+  scheduler `task_id` (no secrets).
+- `services/relayer/README.md` — crank/indexer/`/sponsor` from the inside.
+- `CLAUDE.md` — architecture decisions and the repository's working rules.

@@ -26,7 +26,7 @@ export const TEE_WS = config.teeWs
 /**
  * devnet-tee's ER validator identity — the address PDAs are delegated *to*
  * (`delegateSpl`'s `validator` option, `delegate_user`'s target). Matches
- * `tests/er/lib/env.ts`'s `devnet` profile / week2-results.md §Task 1 M1
+ * `tests/er/lib/env.ts`'s `devnet` profile / weeks0-5-history.md#week-2 §Task 1 M1
  * (this is the TEE validator's own key, not a program-derived signer).
  */
 export const ER_VALIDATOR = new PublicKey(config.erValidator)

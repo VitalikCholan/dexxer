@@ -15,7 +15,7 @@ use ephemeral_rollups_sdk::{
 // delegated, signs via seeds" requirement (confirmed on real devnet:
 // `commit_aggregate` hard-failed at commit #11 with `0xA0000000`, the
 // no-vault-path limit, even with `.magic_fee_vault(...)` wired — see
-// week2-results.md §Task 5 "03-commit-cycle"). The CPI's actual intent payer
+// weeks0-5-history.md#week-2 §Task 5 "03-commit-cycle"). The CPI's actual intent payer
 // is now `fee_escrow` (state/fee_escrow.rs), a dedicated delegated PDA that
 // signs via `invoke_signed` — mirroring the private-counter spike's M3b fix
 // (`commit_with_vault` switched its CPI payer from a plain wallet to the

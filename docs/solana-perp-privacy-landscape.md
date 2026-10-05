@@ -1,482 +1,482 @@
-# Перп-DEX і приватність на Solana — карта підходів
+# Perp DEXs and privacy on Solana — a map of approaches
 
-**Дата:** 11 вересня 2026
-**Джерело:** власне дослідження в рамках проєкту Cloak (приватний мобільний перп для Seeker)
-**Статус даних:** зібрано з публічних джерел (Soladex, DefiLlama, огляди категорії, офіційні доки, mainnet-симуляція Jupiter Perps). Цифри перевіряти перед використанням у деку.
+**Date:** 11 September 2026
+**Source:** our own research for the Cloak project (a private mobile perp for Seeker)
+**Data status:** collected from public sources (Soladex, DefiLlama, category reviews, official docs, a mainnet simulation of Jupiter Perps). Check the numbers before using them in a deck.
 
 ---
 
-## Частина 1. Ліквідність, матчинг і архітектура venue
+## Part 1. Liquidity, matching and venue architecture
 
-Спільна проблема всіх DEX: **хтось має стояти на іншому боці угоди**. Розділи 1.0–1.5 — шість відповідей на це питання (моделі ліквідності); розділи 1.6–1.8 — ортогональні осі: де зіставляються заявки, чому пули виграли на публічних чейнах і чим vault відрізняється від омнібусу.
+The common problem of every DEX: **someone has to stand on the other side of the trade**. Sections 1.0–1.5 are six answers to that question (liquidity models); sections 1.6–1.8 are orthogonal axes: where orders are matched, why pools won on public chains and how a vault differs from an omnibus.
 
-**Рамка: з чого складається будь-який перп-DEX.** Незалежно від моделі, у ньому є три шари:
-1. **Виконання і ланцюг** — де зіставляються ордери й де живе стан (власний L1, роллап, офчейн-матчинг з ончейн-сетлментом, або програма на загальному чейні).
-2. **Ліквідність, маржа і LP** — хто контрагент і чий капітал забезпечує позиції.
-3. **Ризик, оракул, кліринг** — ончейн-оракули, маржинальні модулі, логіка ліквідацій, ризикові буфери.
+**Frame: what any perp DEX consists of.** Regardless of the model, it has three layers:
+1. **Execution and chain** — where orders are matched and where state lives (own L1, a rollup, off-chain matching with on-chain settlement, or a program on a general-purpose chain).
+2. **Liquidity, margin and LPs** — who the counterparty is and whose capital backs the positions.
+3. **Risk, oracle, clearing** — on-chain oracles, margin modules, liquidation logic, risk buffers.
 
-Cloak додає **четвертий шар — приватний облік**, не чіпаючи перші три: виконання й ліквідність беремо в чужого venue, ризик-модуль дублюємо всередині (внутрішня ліквідація з випередженням).
+Cloak adds a **fourth layer — private accounting**, without touching the first three: execution and liquidity come from someone else's venue, the risk module is duplicated inside (internal liquidation that runs ahead).
 
-### 1.0 Класичний AMM (формульна крива)
+### 1.0 Classic AMM (formula curve)
 
-Спільний пул двох активів; ціна визначається **формулою за співвідношенням резервів** (constant product `x·y=k` або його варіації). Трейдер торгує проти пулу, LP отримують частку комісій.
+A shared pool of two assets; the price is set by a **formula over the reserve ratio** (constant product `x·y=k` or its variations). The trader trades against the pool, LPs receive a share of fees.
 
-**Навіщо з'явився:** перші DEX намагалися тримати ордербук ончейн, і це не працювало — кожне виставлення й скасування ордера коштує транзакцію, маркетмейкерам невигідно, книга порожня. AMM зробив контрагента завжди доступним, бо ним стала формула.
-
-| + | − |
-|---|---|
-| Контрагент є завжди, без очікування | Ціна від формули, а не від ринку → велике проковзування на великих ордерах |
-| Пасивний дохід LP без активного управління | Арбітражери постійно вирівнюють пул із зовнішнім ринком коштом LP |
-| Гранично просто, permissionless створення пулів | **Непостійні втрати (IL)**: при різкому русі ціни LP має менше, ніж якби просто тримав монети |
-| Композабельність: будь-яка програма може свопнути через CPI | Капітал розмазаний по всьому діапазону цін замість зони реальної торгівлі |
-
-**Статус:** для споту на Solana поступово витісняється prop AMM (див. 1.4). Для деривативів у чистому вигляді майже не використовується.
-
-### 1.1 Peer-to-pool (trader-to-LP) — основна модель перпів на Solana
-
-Трейдер торгує **проти спільного пулу**, але ціна береться **з оракула**, а не з формули. Пул виступає контрагентом усіх трейдів; LP по суті стають протилежною стороною ринку.
+**Why it appeared:** the first DEXs tried to keep an order book on-chain, and it did not work — every order placement and cancellation costs a transaction, market makers find it unprofitable, the book is empty. The AMM made a counterparty always available, because the formula became the counterparty.
 
 | + | − |
 |---|---|
-| Майже нульове проковзування навіть на великих ордерах | LP тримають односторонню експозицію проти натовпу трейдерів |
-| Миттєве виконання, без очікування контрагента | Borrow-ставка росте з утилізацією пулу (до 35%/рік у Jupiter при util >80%) |
-| **CPI-сумісність** — стороння програма може відкривати позицію | Залежність від якості оракула: затримка або маніпуляція = неправильні ліквідації |
-| Прозора, передбачувана економіка для інтегратора | Глибина обмежена розміром пулу; нові ринки потребують нового капіталу |
+| A counterparty is always there, no waiting | The price comes from a formula, not the market → large slippage on large orders |
+| Passive LP income without active management | Arbitrageurs constantly realign the pool with the outside market at the LPs' expense |
+| Extremely simple, permissionless pool creation | **Impermanent loss (IL)**: on a sharp price move the LP has less than if they had just held the coins |
+| Composability: any program can swap through CPI | Capital is spread over the whole price range instead of the zone of real trading |
 
-| Venue | Пул / токен | Особливості |
+**Status:** for spot on Solana it is gradually being displaced by the prop AMM (see 1.4). For derivatives it is almost never used in pure form.
+
+### 1.1 Peer-to-pool (trader-to-LP) — the main perp model on Solana
+
+The trader trades **against a shared pool**, but the price comes **from an oracle**, not from a formula. The pool is the counterparty to all trades; LPs effectively become the opposite side of the market.
+
+| + | − |
+|---|---|
+| Almost zero slippage even on large orders | LPs hold one-sided exposure against the crowd of traders |
+| Instant execution, no waiting for a counterparty | The borrow rate grows with pool utilization (up to 35%/year at Jupiter at util >80%) |
+| **CPI compatibility** — a third-party program can open a position | Dependence on oracle quality: delay or manipulation = wrong liquidations |
+| Transparent, predictable economics for an integrator | Depth is limited by pool size; new markets need new capital |
+
+| Venue | Pool / token | Features |
 |---|---|---|
-| **Jupiter Perps** | JLP, ~$1.3–2.5B | Найглибший пул Solana; 5 ринків; комісії 6 bps open + 6 bps close + price impact + borrow (~13%/рік при util 10%, до 35% при util >80%); **відкриття асинхронне** — програма створює request, permissioned keeper виконує fill |
-| **GMTrade** (ex-GMXSOL) | Multi-pool GM Pool / GLV | Форк GMX V2 за голосуванням GMX DAO, mainnet з березня 2025; **#1 на Solana за 30-денним обсягом**; ~90 ринків: крипта + forex + товари + індекси + акції через Chainlink Data Streams; заявлені ~0.5 bps комісії; ізоляція ризику LP по ринках |
-| **Flash.Trade** | FLP / токен FAF | Pool-to-peer; до 100x (реально 20x на частині активів); крипта, forex, золото; market/limit/SL/TP. **Програма закрита** (репо `flash-perpetuals` публічно не існує); `flash-sdk-rust` для читання ончейн-стану; `examples-v2` (MIT, липень 2026); **форк `magicblock-labs/session-keys` і `magicblock-grpc-example`** — тобто живий Solana-перп уже інтегрований з MagicBlock; плюс власний MCP-сервер для агентів і форк Yellowstone для індексації |
-| **Adrena** | ALP | Третій за обсягом на Solana у 2025; до 100x; без ліквідаційних комісій |
+| **Jupiter Perps** | JLP, ~$1.3–2.5B | The deepest pool on Solana; 5 markets; fees 6 bps open + 6 bps close + price impact + borrow (~13%/year at util 10%, up to 35% at util >80%); **opening is asynchronous** — the program creates a request, a permissioned keeper executes the fill |
+| **GMTrade** (ex-GMXSOL) | Multi-pool GM Pool / GLV | A GMX V2 fork by GMX DAO vote, mainnet since March 2025; **#1 on Solana by 30-day volume**; ~90 markets: crypto + forex + commodities + indices + stocks through Chainlink Data Streams; claimed ~0.5 bps fees; LP risk isolated per market |
+| **Flash.Trade** | FLP / FAF token | Pool-to-peer; up to 100x (really 20x on some assets); crypto, forex, gold; market/limit/SL/TP. **The program is closed** (the `flash-perpetuals` repo does not exist publicly); `flash-sdk-rust` for reading on-chain state; `examples-v2` (MIT, July 2026); **a fork of `magicblock-labs/session-keys` and `magicblock-grpc-example`** — i.e. a live Solana perp is already integrated with MagicBlock; plus its own MCP server for agents and a Yellowstone fork for indexing |
+| **Adrena** | ALP | Third by volume on Solana in 2025; up to 100x; no liquidation fees |
 
 ### 1.2 Central Limit Order Book (CLOB)
 
-Класична книга заявок: мейкери ставлять лімітки, тейкери забирають. Матчинг буває ончейн, офчейн з ончейн-сетлментом, або на власному ланцюзі.
+A classic order book: makers place limit orders, takers take them. Matching is on-chain, off-chain with on-chain settlement, or on a dedicated chain.
 
 | + | − |
 |---|---|
-| Точний контроль ціни: лімітні ордери, видима глибина | **Без професійних маркетмейкерів книга порожня** — головна причина смерті ончейн-ордербуків |
-| Немає IL: маркетмейкер сам керує інвентарем | Ончейн-матчинг дорогий; офчейн — це довіра до оператора |
-| Знайомий досвід для трейдера з CEX | **Для омнібус-інтеграції через CPI зазвичай не підходить** |
-| Природне ціноутворення від попиту й пропозиції | Проковзування на тонких ринках гірше за peer-to-pool |
+| Precise price control: limit orders, visible depth | **Without professional market makers the book is empty** — the main reason on-chain order books die |
+| No IL: the market maker manages its own inventory | On-chain matching is expensive; off-chain means trusting the operator |
+| A familiar experience for a CEX trader | **Usually unsuitable for omnibus integration through CPI** |
+| Natural pricing from supply and demand | Slippage on thin markets is worse than peer-to-pool |
 
-| Venue | Де матчинг | Особливості |
+| Venue | Where matching happens | Features |
 |---|---|---|
-| **Pacifica** | Власний Pacifica L1, офчейн-матчинг + ончейн-сетлмент | sub-20ms; $100B+ кумулятивно; taker від 0.04%; unified margin; **Android-застосунок з липня 2026**; засновниця — Constance Wang (ex-FTX COO) |
-| **Velocity** (ex-Drift) — *див. 1.5, гібрид* | JIT-аукціон → DLOB → AMM | Після експлойту 1 квітня 2026 (~$295M, соціальна інженерія мультисигу, не баг контракту) — ребренд 1 липня, приватна бета, вужчий скоуп; раніше мав **Delegated Accounts, Vaults і Builder Codes** — офіційні примітиви для сторонніх інтеграторів |
-| **Margin** (Solayer) | CLOB на Solana | Ранній: SOL-перп лише 2x, лише cross-margin; крипта + товари + акції; лідерборд із PnL і Sharpe |
-| **Phoenix** | Ончейн/гібрид | USDC-колатераль, окремий депозитний рахунок, cross/isolated, TP/SL, реферали 20% fee share |
-| **Raydium Perps / Saros** | Orderly Network (офчейн, мультичейн) | 70–100+ пар, 50–100x, gasless |
-| **Aster** (не Solana-нативний, але торгує з Solana) | Два режими: **Pro** — книга ордерів на BNB, Ethereum, **Solana**, Arbitrum; **Simple** — **пулова модель** з окремою системою комісій | Комісії 0% мейкер / 0.04% тейкер на USDT-перпах. **Дія: перевірити Simple-режим на CPI-сумісність із Solana** — якщо пуловий контракт розгорнутий на Solana, це потенційний venue для омнібусу |
+| **Pacifica** | Its own Pacifica L1, off-chain matching + on-chain settlement | sub-20ms; $100B+ cumulative; taker from 0.04%; unified margin; **Android app since July 2026**; founder — Constance Wang (ex-FTX COO) |
+| **Velocity** (ex-Drift) — *see 1.5, hybrid* | JIT auction → DLOB → AMM | After the 1 April 2026 exploit (~$295M, social engineering of the multisig, not a contract bug) — rebrand on 1 July, private beta, narrower scope; previously had **Delegated Accounts, Vaults and Builder Codes** — official primitives for third-party integrators |
+| **Margin** (Solayer) | CLOB on Solana | Early: SOL perp only 2x, cross-margin only; crypto + commodities + stocks; leaderboard with PnL and Sharpe |
+| **Phoenix** | On-chain/hybrid | USDC collateral, a separate deposit account, cross/isolated, TP/SL, referrals 20% fee share |
+| **Raydium Perps / Saros** | Orderly Network (off-chain, multichain) | 70–100+ pairs, 50–100x, gasless |
+| **Aster** (not Solana-native, but trades from Solana) | Two modes: **Pro** — an order book on BNB, Ethereum, **Solana**, Arbitrum; **Simple** — a **pool model** with its own fee system | Fees 0% maker / 0.04% taker on USDT perps. **Action: check Simple mode for CPI compatibility with Solana** — if the pool contract is deployed on Solana, it is a potential venue for the omnibus |
 
-### 1.3 RFQ / єдиний маркетмейкер
+### 1.3 RFQ / single market maker
 
-Публічну книгу замінює **один LP, який котирує ціни на запит, хеджує назовні (CEX/DEX/OTC) і ділиться PnL із вкладниками**.
-
-| + | − |
-|---|---|
-| Інституційна глибина без власного капіталу: ліквідність агрегується ззовні | Централізація: якість залежить від одного оператора |
-| Швидкий лістинг нових і екзотичних ринків | Немає публічної книги → гірша прозорість ціноутворення |
-| Кастомні деривативи, білатеральний сетлмент | Композабельність гірша, ніж у пулових моделей |
-| Вкладники отримують частку PnL маркетмейкера | Ризик контрагента концентрований |
-
-**Приклад поза Solana:** Variational (Arbitrum) з роздрібним фронтом Omni — 450+ ринків, нульові комісії. Структурно найближчий родич омнібус-моделі: багато користувачів усередині, одна сутність назовні.
-
-### 1.4 Prop AMM (закрита логіка котирування) — найшвидше зростання
-
-Пул є, але ціну дає **не статична формула, а закрита офчейн-модель**, що реагує на ринок у реальному часі. Гібрид зручності пулу й інтелекту маркетмейкера. Сеттлмент, кастодія й облік лишаються ончейн.
+The public book is replaced by **one LP that quotes prices on request, hedges outside (CEX/DEX/OTC) and shares PnL with depositors**.
 
 | + | − |
 |---|---|
-| Вужчі спреди й краще виконання, ніж у формульних AMM і часто ніж у CEX | Логіка закрита: довіра до оператора, неможливість аудиту ціноутворення |
-| Динамічне управління інвентарем → менше stale-котирувань і мисприсингу | Пули створює команда протоколу, не permissionless |
-| Сегментація потоку: роздріб отримує кращі умови, ніж токсичні боти | Не дає жодної приватності **трейдеру** — його своп і далі публічний |
-| Композабельність збережена (на відміну від RFQ) — роутери маршрутизують у неї | Концентрація: один гравець тримає велику частку ринку |
+| Institutional depth without own capital: liquidity is aggregated from outside | Centralization: quality depends on one operator |
+| Fast listing of new and exotic markets | No public book → worse pricing transparency |
+| Custom derivatives, bilateral settlement | Composability is worse than in pool models |
+| Depositors get a share of the market maker's PnL | Counterparty risk is concentrated |
 
-**Масштаб на Solana:** prop AMM ≈ **75% DEX-обсягу**, з них понад 60% — HumidiFi ($1B+ на день, ~35% усього спота); сегмент виріс з <10% до >70% приблизно за рік. Детальніше — розділ 5.8.
+**Example outside Solana:** Variational (Arbitrum) with the retail front end Omni — 450+ markets, zero fees. Structurally the closest relative of the omnibus model: many users inside, one entity outside.
 
-### 1.5 Гібридні моделі (кілька шарів обробки однієї заявки)
+### 1.4 Prop AMM (closed quoting logic) — the fastest growth
 
-Замість одного механізму — послідовність: заявка проходить через кілька шарів, кожен компенсує слабкість попереднього.
-
-**Drift / Velocity (Solana): JIT-аукціон → DLOB → AMM.**
-Ордер спершу потрапляє в **Just-In-Time аукціон** — коротке вікно, де маркетмейкери конкурують за право заповнити його. Незаповнений залишок іде в **DLOB** (децентралізовану книгу лімітних ордерів, яку тримають офчейн keeper'и, а виконують ончейн). Що не покрито й там — падає в **AMM** як контрагента останньої надії.
-
-**Bluefin (Sui): зовнішнє зіставлення + ончейн-розрахунок.**
-Заявки зіставляються поза блокчейном, розрахунок і стан позицій — у мережі. Проміжна конфігурація між повністю ончейн-книгою і повністю офчейн-матчингом.
-
-**dYdX Chain: валідатори як маркетмейкінгова інфраструктура.**
-Валідатори блокчейна самі тримають книгу в пам'яті й зіставляють заявки; ончейн потрапляють лише виконані угоди й позиції. Логіка: тисячі виставлень і скасувань на секунду писати в ланцюг економічно безглуздо, тому в стан іде тільки результат.
-
-**Hyperliquid: книга як частина стану.**
-Найчистіша конструкція: книга живе безпосередньо в стані HyperCore — кожне виставлення й скасування є ончейн-станом, а не офчейн-домовленістю валідаторів. Можливо тільки на спеціалізованому L1, побудованому навколо цієї задачі; звідси ж і ~70% частки ринку перп-DEX.
-
-**Компроміс на рівні інфраструктури (три варіанти для будь-якого перп-DEX):**
-- **Власний L1** (Hyperliquid) — повний контроль, найнижча затримка; ціна: будувати валідаторів і забезпечувати безпеку мережі.
-- **Роллап** (Lighter, Reya) — безпека Ethereum при швидшому виконанні й дешевшому сетлменті.
-- **Офчейн-матчинг + ончейн-сетлмент** (dYdX, Bluefin) — менше газу й затримки; ціна: довіра до офчейн-інфраструктури.
-- **Network extension / аплікаційний шар поверх чейна** (Bullet на Solana, MagicBlock ER/PER) — власний субстрат виконання з субмілісекундною латентністю, але **всередині екосистеми**: успадковує пропускну здатність і ліквідність базового шару, комітить стан назад. Четвертий варіант, що з'явився останнім і знімає дилему «свій чейн або повільно».
+There is a pool, but the price comes **not from a static formula but from a closed off-chain model** that reacts to the market in real time. A hybrid of pool convenience and market-maker intelligence. Settlement, custody and accounting stay on-chain.
 
 | + | − |
 |---|---|
-| Краща ціна від конкуренції маркетмейкерів (JIT) при збереженні гарантії виконання (AMM) | Кілька шарів = кілька наборів припущень і поверхонь атаки |
-| Гнучкість лімітних ордерів разом із завжди доступним контрагентом | **Непередбачувана ціна входу**: залежить від того, хто виграв аукціон або яка глибина книги в цю мілісекунду |
-| Продуктивність CEX без централізованого оператора (dYdX, Hyperliquid) | Консистентність офчейн-книги між валідаторами — окрема складна задача (dYdX) |
-| Верифікованість книги, якщо вона в стані (Hyperliquid) | Вимагає власного ланцюга; трейдерів і ліквідність треба мігрувати |
+| Tighter spreads and better execution than formula AMMs and often than CEXs | The logic is closed: trust in the operator, the pricing cannot be audited |
+| Dynamic inventory management → fewer stale quotes and mispricing | Pools are created by the protocol team, not permissionless |
+| Flow segmentation: retail gets better terms than toxic bots | Gives no privacy at all to the **trader** — their swap is still public |
+| Composability preserved (unlike RFQ) — routers route into it | Concentration: one player holds a large market share |
 
-**Урок Velocity.** Після експлойту на ~$295M (соціальна інженерія мультисигу, не баг механізмів) команда перезапускається зі **свідомо звуженим скоупом**: тільки перпи, тільки USDT, прибрані Isolated Markets і Amplify. Складність визнана частиною проблеми — корисний прецедент для будь-кого, хто планує багатошарову архітектуру.
+**Scale on Solana:** prop AMMs ≈ **75% of DEX volume**, of which over 60% is HumidiFi ($1B+ per day, ~35% of all spot); the segment grew from <10% to >70% in about a year. More detail — section 5.8.
 
-**Чому гібриди гірші для омнібус-моделі.** У JIT ціна залежить від переможця аукціону, у DLOB — від глибини книги в конкретний момент. Для агрегованої позиції це означає непередбачувану ціну входу, яку потім важко чесно атрибутувати конкретному користувачеві. У peer-to-pool ціна береться з оракула — детермінована, і per-user атрибуція тривіальна. Тобто вибір пулових venue — не лише через CPI-сумісність, а й через **передбачуваність ціноутворення**.
+### 1.5 Hybrid models (several processing layers for one order)
 
-### 1.6 Еволюція матчингу: офчейн → ончейн → розподілений
+Instead of one mechanism — a sequence: the order passes through several layers, each compensating for the weakness of the previous one.
 
-Класифікація за тим, **де фізично зіставляються заявки** (ортогональна до моделі ліквідності):
+**Drift / Velocity (Solana): JIT auction → DLOB → AMM.**
+An order first enters a **Just-In-Time auction** — a short window where market makers compete for the right to fill it. The unfilled remainder goes to the **DLOB** (a decentralized limit order book kept off-chain by keepers and executed on-chain). Whatever is not covered there falls to the **AMM** as the counterparty of last resort.
 
-| Спосіб | Хто | + | − |
+**Bluefin (Sui): external matching + on-chain settlement.**
+Orders are matched off the blockchain, settlement and position state are on the network. An intermediate configuration between a fully on-chain book and fully off-chain matching.
+
+**dYdX Chain: validators as market-making infrastructure.**
+The chain's validators themselves keep the book in memory and match orders; only executed trades and positions go on-chain. The logic: writing thousands of placements and cancellations per second to the chain is economically pointless, so only the result goes into state.
+
+**Hyperliquid: the book as part of state.**
+The purest construction: the book lives directly in HyperCore state — every placement and cancellation is on-chain state, not an off-chain agreement between validators. Possible only on a specialized L1 built around this task; hence also the ~70% share of the perp DEX market.
+
+**The trade-off at the infrastructure level (three options for any perp DEX):**
+- **Own L1** (Hyperliquid) — full control, lowest latency; the price: building validators and securing the network.
+- **Rollup** (Lighter, Reya) — Ethereum security with faster execution and cheaper settlement.
+- **Off-chain matching + on-chain settlement** (dYdX, Bluefin) — less gas and latency; the price: trust in the off-chain infrastructure.
+- **Network extension / application layer on top of a chain** (Bullet on Solana, MagicBlock ER/PER) — its own execution substrate with sub-millisecond latency, but **inside the ecosystem**: it inherits the throughput and liquidity of the base layer and commits state back. The fourth option, the most recent, which removes the "own chain or slow" dilemma.
+
+| + | − |
+|---|---|
+| Better price from market-maker competition (JIT) while keeping guaranteed execution (AMM) | Several layers = several sets of assumptions and attack surfaces |
+| Flexibility of limit orders together with an always-available counterparty | **Unpredictable entry price**: depends on who won the auction or what the book depth is at that millisecond |
+| CEX performance without a centralized operator (dYdX, Hyperliquid) | Consistency of the off-chain book across validators is a separate hard problem (dYdX) |
+| Verifiability of the book if it is in state (Hyperliquid) | Requires its own chain; traders and liquidity have to migrate |
+
+**The Velocity lesson.** After the ~$295M exploit (social engineering of the multisig, not a bug in the mechanisms) the team is relaunching with a **deliberately narrowed scope**: perps only, USDT only, Isolated Markets and Amplify removed. Complexity was acknowledged as part of the problem — a useful precedent for anyone planning a multi-layer architecture.
+
+**Why hybrids are worse for the omnibus model.** In JIT the price depends on the auction winner, in the DLOB on the book depth at a specific moment. For an aggregated position this means an unpredictable entry price that is then hard to attribute fairly to a specific user. In peer-to-pool the price comes from the oracle — deterministic, and per-user attribution is trivial. So the choice of pool venues is not only about CPI compatibility but also about **pricing predictability**.
+
+### 1.6 The evolution of matching: off-chain → on-chain → distributed
+
+A classification by **where orders are physically matched** (orthogonal to the liquidity model):
+
+| Method | Who | + | − |
 |---|---|---|---|
-| **Офчейн-матчинг** | Paradex, Aevo, Pacifica | Швидкість, глибина книги, якість виконання | Залежність від централізованих компонентів; менша прозорість |
-| **Ончейн-книга** | Hyperliquid (у стані HyperCore), Phoenix | Прозорість і безпека, trustless-середовище | Газ, латентність, потреба в оптимізаціях |
-| **Розподілений матчинг** | dYdX v4, Hyperliquid | Книга живе **в мемпулі**; ордери зіставляються під час продукції блоку за умовами мемпулу. Прозорість, близька до ончейн, при продуктивності офчейну | **Можливий лише на апчейнах, де розробник контролює execution client** |
+| **Off-chain matching** | Paradex, Aevo, Pacifica | Speed, book depth, execution quality | Dependence on centralized components; less transparency |
+| **On-chain book** | Hyperliquid (in HyperCore state), Phoenix | Transparency and security, a trustless environment | Gas, latency, the need for optimizations |
+| **Distributed matching** | dYdX v4, Hyperliquid | The book lives **in the mempool**; orders are matched during block production under mempool conditions. Transparency close to on-chain with off-chain performance | **Possible only on appchains where the developer controls the execution client** |
 
-**Тренд (за даними Logarithm Finance, 2024):** частка офчейн-матчингу знижується, ринок рухається до ончейн і розподілених схем.
+**Trend (per Logarithm Finance, 2024):** the share of off-chain matching is falling, the market is moving towards on-chain and distributed schemes.
 
-**Наслідок для нас, важливий і остаточний:** ми будуємо на **публічному чейні**, тому розподілений матчинг для нас недоступний за визначенням — публічні блокчейни не дозволяють такої глибокої інтеграції з execution client. Це остаточно закриває питання «а чи не зробити власний матчинг».
+**The consequence for us, important and final:** we build on a **public chain**, so distributed matching is unavailable to us by definition — public blockchains do not allow such deep integration with the execution client. This finally closes the question "why not build our own matching".
 
-### 1.7 Чому пули виграли саме на публічних чейнах
+### 1.7 Why pools won specifically on public chains
 
-Ордербук-DEX спершу домінували; до 2023 пулові моделі забрали ~45% обсягу перпів. Три причини, і всі три структурні:
+Order-book DEXs dominated at first; by 2023 pool models had taken ~45% of perp volume. Three reasons, all three structural:
 
-1. **Пулова архітектура вимагає меншої пропускної здатності й латентності** — тому дає прийнятні компроміси на публічних шарах виконання, де книга задихається.
-2. **Немає потреби депонувати або бриджити активи** — суттєва перевага для казуального трейдера.
-3. **Демократизація маркетмейкінгу**: LP отримують комісії й токени, це створює глибину без професійних десків.
+1. **The pool architecture needs less throughput and latency** — so it gives acceptable trade-offs on public execution layers, where a book chokes.
+2. **No need to deposit or bridge assets** — a substantial advantage for the casual trader.
+3. **Democratization of market making**: LPs earn fees and tokens, which creates depth without professional desks.
 
-**Найважливіше спостереження:** на **апчейнах і роллапах** домінує книга, на **публічних чейнах** — пули. Solana — показовий випадок: попри високу пропускну здатність і мінімальний час блоку (аргументи за ончейн-книги), за обсягом лідирує **Jupiter — пулова біржа**.
+**The most important observation:** on **appchains and rollups** the book dominates, on **public chains** — pools. Solana is a telling case: despite high throughput and minimal block time (arguments for on-chain books), the volume leader is **Jupiter — a pool exchange**.
 
-Отже вибір peer-to-pool для омнібусу — не питання зручності, а відповідність структурі публічного чейна.
+So choosing peer-to-pool for the omnibus is not a matter of convenience but a fit with the structure of a public chain.
 
-### 1.8 Vault'и: публічний двійник омнібусу
+### 1.8 Vaults: the public twin of the omnibus
 
-Ордербук-біржі шукають способи дати роздрібу пасивне надання ліквідності. **HLP у Hyperliquid** — протокольний vault, що маркетмейкить і ліквідує, отримуючи частину комісій; користувачі можуть створювати власні vault'и, і це фактично **формалізована інфраструктура пасивного копітрейдингу**. dYdX v4 анонсував аналогічні LP-vault'и.
+Order-book exchanges look for ways to give retail passive liquidity provision. **HLP at Hyperliquid** is a protocol vault that market-makes and liquidates, receiving part of the fees; users can create their own vaults, and this is effectively **formalized infrastructure for passive copy trading**. dYdX v4 announced similar LP vaults.
 
-Конструкція формально схожа на наш омнібус: багато вкладників, одна позиція назовні. **Різниця — у призначенні: vault публічний і створений, щоб за ним стежили й копіювали; омнібус приватний і створений, щоб не стежили.** Це готова відповідь на питання «чим ваш омнібус відрізняється від HLP».
+The construction is formally similar to our omnibus: many depositors, one position outside. **The difference is in purpose: a vault is public and created to be watched and copied; an omnibus is private and created not to be watched.** This is a ready answer to the question "how is your omnibus different from HLP".
 
-### 1.9 Ланцюг ризику: маржа → ліквідація → бекстоп → ADL
+### 1.9 The risk chain: margin → liquidation → backstop → ADL
 
-Спільний для всіх трьох архітектур, і саме на третій та четвертій сходинках вони розходяться найсильніше.
+Common to all three architectures, and it is precisely on the third and fourth steps that they diverge most.
 
-| Крок | Що відбувається | Де архітектури різняться |
+| Step | What happens | Where architectures differ |
 |---|---|---|
-| **1. Маржа** | Позиція має тримати колатераль вище підтримуючого порогу. Поріг рахується від **референсної ціни** venue (суміш зовнішніх і внутрішніх даних), а не від останньої угоди — захист від маніпуляції і джерело плутанини, коли графік коротко показує ціну, яка нічого не тригернула | Пороги залежать від активу й левериджу |
-| **2. Ліквідація** | Venue закриває позицію, зазвичай виштовхуючи її в ринок. Якщо зійшлась близько до очікуваної ціни — трейдер втрачає маржу, іноді з залишком | У книзі — розрив ліквідності; у пулі — пул поглинає |
-| **3. Бекстоп** | Якщо ринок не може поглинути позицію, її бере щось інше: страховий фонд із попередніх ліквідацій, протокольний vault (на баланс вкладників) або пул, який і так був контрагентом | **Тут живе реальний ризик-профіль venue** |
-| **4. Auto-deleveraging (ADL)** | Якщо бекстоп вичерпано, venue **примусово скорочує позиції на виграшному боці**, щоб баланс зійшовся. Черга ранжується за комбінацією нереалізованого прибутку, левериджу й розміру | Рідко, але задокументовано в кожного серйозного venue |
+| **1. Margin** | A position must keep collateral above the maintenance threshold. The threshold is computed from the venue's **reference price** (a mix of external and internal data), not from the last trade — a protection against manipulation and a source of confusion when the chart briefly shows a price that triggered nothing | Thresholds depend on the asset and leverage |
+| **2. Liquidation** | The venue closes the position, usually by pushing it into the market. If it closed near the expected price, the trader loses the margin, sometimes with a remainder | In a book — a liquidity gap; in a pool — the pool absorbs it |
+| **3. Backstop** | If the market cannot absorb the position, something else takes it: an insurance fund from previous liquidations, a protocol vault (on depositors' balance) or the pool that was the counterparty anyway | **This is where the venue's real risk profile lives** |
+| **4. Auto-deleveraging (ADL)** | If the backstop is exhausted, the venue **forcibly reduces positions on the winning side** so the balance closes. The queue is ranked by a combination of unrealized profit, leverage and size | Rare, but documented at every serious venue |
 
-**Тест для вибору venue:** якщо майданчик не може пояснити у власній документації, що саме відбувається на кроках 3 і 4 — його ризик оцінити неможливо.
+**A test for choosing a venue:** if a venue cannot explain in its own documentation what exactly happens at steps 3 and 4, its risk cannot be assessed.
 
-**Наслідок для омнібусу — нова вимога до дизайну.** ADL скорочує **нашу агреговану позицію**, а не позицію конкретного користувача. Отже потрібні:
-- правило розподілу примусового скорочення між учасниками (pro rata? за левериджем, як у самих venue? за часом входу?) — обране заздалегідь і описане в умовах;
-- врахування того, що **омнібус із високим агрегованим левериджем стоїть першим у черзі ADL** — ще один аргумент за консервативний cap;
-- окремий стан у PER-суб-леджері для частково скороченої позиції.
+**The consequence for the omnibus — a new design requirement.** ADL reduces **our aggregated position**, not a specific user's position. So we need:
+- a rule for distributing a forced reduction among participants (pro rata? by leverage, like the venues themselves? by entry time?) — chosen in advance and described in the terms;
+- to account for the fact that **an omnibus with high aggregated leverage stands first in the ADL queue** — one more argument for a conservative cap;
+- a separate state in the PER sub-ledger for a partially reduced position.
 
-Без цього перший же ADL перетворює приватність на суперечку про те, чию позицію зрізали.
+Without this, the very first ADL turns privacy into a dispute about whose position was cut.
 
-### 1.10 Арифметика плеча (для UI і для власних лімітів)
+### 1.10 Leverage arithmetic (for the UI and for our own limits)
 
-При **10x** приблизно **10%** несприятливого руху знищує позицію (до комісій і фандингу). При **50x** — приблизно **2%**, а такі рухи в крипті трапляються кілька разів на день. Референсні ціни, буфери підтримуючої маржі й часткові ліквідації змінюють ці числа на краях, але не порядок величини.
+At **10x** roughly a **10%** adverse move wipes out the position (before fees and funding). At **50x** — roughly **2%**, and such moves happen several times a day in crypto. Reference prices, maintenance-margin buffers and partial liquidations change these numbers at the edges, but not the order of magnitude.
 
-Спостереження про стимули, варте окремого рядка: venue заробляє на нотіоналі, тому трейдер із 50x генерує в п'ятдесят разів більше комісій з того самого колатералю, а шанси пережити звичайну волатильність падають відповідно. **Високе плече — не фіча, а дозвіл, і вигідний він асиметрично.** Плюс черга ADL ранжує високоплечові позиції першими — venue знають, які рахунки крихкі.
+An observation about incentives worth its own line: a venue earns on notional, so a trader at 50x generates fifty times more fees from the same collateral, while the chances of surviving ordinary volatility fall accordingly. **High leverage is not a feature but a permission, and it pays off asymmetrically.** Plus the ADL queue ranks high-leverage positions first — venues know which accounts are fragile.
 
-Для нашого UI: показувати не «до 50x», а відстань до ліквідації у відсотках руху ціни поруч зі слайдером плеча.
+For our UI: show not "up to 50x" but the distance to liquidation as a percentage of price movement next to the leverage slider.
 
-### 1.11 Цвинтар і закономірність: на Solana виживають пули, книги йдуть у власні мережі
+### 1.11 The graveyard and the pattern: on Solana pools survive, books leave for their own networks
 
-| Протокол | Що робив | Що сталося |
+| Protocol | What it did | What happened |
 |---|---|---|
-| **PsyOptions / PsyFi** | Permissionless-мінт опціонів, опціонний AMM, covered-call вольти | Інфраструктура є, ліквідності не набрали; категорія згасла |
-| **Friktion** | DOV (автоматизовані вольти, що продають опціони) | Закрився |
-| **Zeta Markets** | Опціони → перпи; **повністю ончейн CLOB на Solana**, 20x крос-маржа, SDK і CPI-програми для маркетмейкерів; **$15B+ обсягу** | **Припинила роботу в травні 2025**; команда пішла будувати **Bullet** — network extension на Solana (див. нижче) |
-| **Drift** | Гібрид JIT + DLOB + AMM | Експлойт на ~$295M (соціальна інженерія мультисигу), ребренд у **Velocity**, приватна бета зі звуженим скоупом |
-| **Jupiter, GMTrade, Flash, Adrena** | Peer-to-pool з оракульними цінами | **Живі, ростуть, домінують за обсягом** |
+| **PsyOptions / PsyFi** | Permissionless option minting, an options AMM, covered-call vaults | The infrastructure exists, liquidity was not gathered; the category faded |
+| **Friktion** | DOVs (automated vaults that sell options) | Shut down |
+| **Zeta Markets** | Options → perps; **a fully on-chain CLOB on Solana**, 20x cross margin, SDK and CPI programs for market makers; **$15B+ volume** | **Ceased operations in May 2025**; the team left to build **Bullet** — a network extension on Solana (see below) |
+| **Drift** | Hybrid JIT + DLOB + AMM | A ~$295M exploit (social engineering of the multisig), rebrand to **Velocity**, a private beta with a narrowed scope |
+| **Jupiter, GMTrade, Flash, Adrena** | Peer-to-pool with oracle prices | **Alive, growing, dominant by volume** |
 
-**Закономірність, а не збіг.** Успішні ордербук-команди врешті будують власний шар виконання: dYdX (StarkEx → власний Cosmos-чейн), Aster (мультичейн → Aster Chain), Zeta ($15B обсягу на Solana → Bullet). Книга на загальному чейні впирається в те, що маркетмейкінг вимагає постійного виставлення й скасування ордерів, а це там дорого й повільно. Пулові моделі цього не вимагають — і саме вони на Solana живі.
+**A pattern, not a coincidence.** Successful order-book teams eventually build their own execution layer: dYdX (StarkEx → its own Cosmos chain), Aster (multichain → Aster Chain), Zeta ($15B of volume on Solana → Bullet). A book on a general-purpose chain runs into the fact that market making requires constant placing and cancelling of orders, and that is expensive and slow there. Pool models do not require it — and it is they that are alive on Solana.
 
-**Важливий нюанс у випадку Zeta:** вони обрали не власний L1, а **network extension поверх Solana** — шар виконання, що лишається в екосистемі. Тобто дилема «свій чейн або повільно» має третю відповідь, і саме її обрала команда з найбільшим досвідом перпів на Solana.
+**An important nuance in Zeta's case:** they chose not their own L1 but a **network extension on top of Solana** — an execution layer that stays in the ecosystem. So the "own chain or slow" dilemma has a third answer, and it is the one chosen by the team with the most perp experience on Solana.
 
-**Наслідок для нас — четверте незалежне підтвердження вибору peer-to-pool.** Ми на публічному чейні, не будуємо книгу, не будуємо власну мережу.
+**The consequence for us — a fourth independent confirmation of choosing peer-to-pool.** We are on a public chain, we do not build a book, we do not build our own network.
 
-**Практична нота:** SDK і CPI-програми Zeta були офіційним каналом інтеграції для маркетмейкерів. Протокол мертвий, але код — можливий референс «як влаштована CPI-інтеграція з перп-протоколом на Anchor».
+**A practical note:** Zeta's SDK and CPI programs were the official integration channel for market makers. The protocol is dead, but the code is a possible reference for "how a CPI integration with a perp protocol on Anchor is structured".
 
-### Застереження про якість даних: wash trading
+### A caveat about data quality: wash trading
 
-Автори галузевих оглядів прямо визнають, що **wash trading — значна проблема всієї індустрії**, публічно заявлені обсяги неможливо верифікувати, і **надути обсяг значно легше, ніж маніпулювати TVL**. Тому ранжування за **коефіцієнтом ефективності — середній денний обсяг / TVL** — надійніше за голий обсяг.
+The authors of industry reviews openly admit that **wash trading is a significant problem across the whole industry**, publicly claimed volumes cannot be verified, and **inflating volume is much easier than manipulating TVL**. So ranking by the **efficiency ratio — average daily volume / TVL** — is more reliable than bare volume.
 
-**Практичний наслідок для вибору venue:** перш ніж ставити омнібус на GMTrade через його «перше місце за 30-денним обсягом», порахувати обсяг/TVL для Jupiter, GMTrade, Flash і Adrena. Місце за обсягом може бути куплене.
+**A practical consequence for choosing a venue:** before putting the omnibus on GMTrade because of its "first place by 30-day volume", compute volume/TVL for Jupiter, GMTrade, Flash and Adrena. A place by volume can be bought.
 
-### На горизонті: Bullet (Solana network extension, команда Zeta)
+### On the horizon: Bullet (Solana network extension, the Zeta team)
 
-Після закриття Zeta (травень 2025, $15B+ обсягу) команда будує **Bullet** — не окремий L1, а **network extension на Solana**: аплікаційно-специфічний шар виконання з власним субстратом під DeFi, заявлені **0.1 мс виконання транзакції** і тисячі TPS, плюс ZK-криптографія для верифікованості. У фабрику мережі вбудовані перпи, спот і лендинг. Мотивація в їхніх словах: Solana має користувачів, активи, ліквідність і торгову культуру, але їй бракувало **виділеного шару виконання** професійного рівня.
+After Zeta shut down (May 2025, $15B+ volume) the team is building **Bullet** — not a separate L1 but a **network extension on Solana**: an application-specific execution layer with its own substrate for DeFi, a claimed **0.1 ms transaction execution** and thousands of TPS, plus ZK cryptography for verifiability. Perps, spot and lending are built into the fabric of the network. The motivation in their words: Solana has the users, assets, liquidity and trading culture, but it lacked a professional-grade **dedicated execution layer**.
 
-**Чому це важливо для нашої архітектури.** Bullet і MagicBlock PER — рішення одного класу: спеціалізований шар виконання поверх Solana з субмілісекундною латентністю і комітом стану на базовий шар. Різниця в призначенні (трейдинг із вбудованим матчингом проти приватного стану в TEE). Тобто **наш вибір PER концептуально підтверджений найдосвідченішою перп-командою Solana**: щоб отримати швидкий трейдинг на Solana, не треба йти з Solana — треба будувати шар виконання.
+**Why this matters for our architecture.** Bullet and MagicBlock PER are solutions of the same class: a specialized execution layer on top of Solana with sub-millisecond latency and state committed to the base layer. The difference is in purpose (trading with built-in matching versus private state in a TEE). So **our choice of PER is conceptually confirmed by Solana's most experienced perp team**: to get fast trading on Solana you do not need to leave Solana — you need to build an execution layer.
 
-**Як venue-кандидат — перевірено і викреслено (вересень 2026).** Програмний доступ є, але це **REST/WebSocket API, а не CPI**: `bullet-rust-sdk` (MIT, + WASM для JS/TS) — REST-клієнт, згенерований з OpenAPI через Progenitor, і власний формат транзакцій `CallMessage` з неймспейсами `User / Public / Keeper / Vault / Admin`. Позиції живуть **у стані біржі Bullet**, а не як Solana-акаунти; підпис — через `Keypair::from_hex(private_key)`.
+**As a venue candidate — checked and crossed out (September 2026).** There is programmatic access, but it is a **REST/WebSocket API, not CPI**: `bullet-rust-sdk` (MIT, + WASM for JS/TS) is a REST client generated from OpenAPI through Progenitor, with its own transaction format `CallMessage` with namespaces `User / Public / Keeper / Vault / Admin`. Positions live **in the Bullet exchange state**, not as Solana accounts; signing is through `Keypair::from_hex(private_key)`.
 
-Це структурно несумісно з омнібус-моделлю, а не просто незручно:
-- агрегуємо користувачів → **наш сервер тримає ключ і підписує за них** = кастодія, тобто те, чого продукт не робить;
-- кожен підписує сам → **немає агрегації, отже немає приватності**. Плюс Seed Vault не віддає приватний ключ, а SDK не показує шляху «підписати зовні й релеїти».
+This is structurally incompatible with the omnibus model, not merely inconvenient:
+- we aggregate users → **our server holds the key and signs for them** = custody, i.e. what the product does not do;
+- everyone signs themselves → **no aggregation, hence no privacy**. Plus Seed Vault does not give out the private key, and the SDK shows no "sign externally and relay" path.
 
-Тобто Bullet — API-first біржа в моделі dYdX v3 / Hyperliquid: приватність там була б властивістю оператора, а не архітектури. **Лишається як архітектурний референс** (network extension = той самий клас, що MagicBlock PER), не як venue.
+So Bullet is an API-first exchange in the dYdX v3 / Hyperliquid model: privacy there would be a property of the operator, not of the architecture. **It stays as an architectural reference** (network extension = the same class as MagicBlock PER), not as a venue.
 
-### Percolator (Solana) — деплойований, формально верифікований, кандидат №1 на форк власного ядра
+### Percolator (Solana) — deployed, formally verified, candidate #1 for forking our own core
 
-Анатолій Яковенко (співзасновник Solana) будує **Percolator** — permissionless перп-протокол: `aeyakovenko/percolator-prog` (програма) + крейт `percolator` (ризик-двигун v16). Один ринок = один слаб-акаунт з масивом активів; **Router** нетить портфельну експозицію й роутить атомарно. Збірка під **Anchor v2 / Pinocchio entrypoint**, platform-tools 1.52; LiteSVM-інтеграційні тести, fuzz-корпус, stateful fuzz; **формальна верифікація ризик-двигуна (Kani proofs)**.
+Anatoly Yakovenko (Solana co-founder) is building **Percolator** — a permissionless perp protocol: `aeyakovenko/percolator-prog` (the program) + the `percolator` crate (risk engine v16). One market = one slab account with an array of assets; the **Router** nets portfolio exposure and routes atomically. Built for **Anchor v2 / Pinocchio entrypoint**, platform-tools 1.52; LiteSVM integration tests, a fuzz corpus, stateful fuzz; **formal verification of the risk engine (Kani proofs)**.
 
-**Статус змінився з «на горизонті» на «деплойований»:** програма існує з program ID, її піднімають у локальному валідаторі (Syntx робить це в `setup-intent.ts`), навколо є екосистема — **Percolator Launch** («pump.fun для перпів»: перп-ринок для будь-якого SPL-токена в один клік, до 20x, vAMM для стартової ліквідності, страховий фонд; live on devnet, 365 комітів) і **Syntx** (vault-шар з адаптерами).
+**Status changed from "on the horizon" to "deployed":** the program exists with a program ID, it is brought up in a local validator (Syntx does this in `setup-intent.ts`), and there is an ecosystem around it — **Percolator Launch** ("pump.fun for perps": a perp market for any SPL token in one click, up to 20x, vAMM for starting liquidity, an insurance fund; live on devnet, 365 commits) and **Syntx** (a vault layer with adapters).
 
-**Дизайн-ідея, що закриває нашу проблему ADL на рівні архітектури:** «передбачувана альтернатива ADL» — прибуток трактується як **junior-вимога** до балансу біржі, депонований капітал — як **senior**; жоден користувач не може вивести більше, ніж реально існує на балансі. Замість примусового скорочення виграшних позицій постфактум — порядок вимог за побудовою.
+**A design idea that closes our ADL problem at the architecture level:** "a predictable alternative to ADL" — profit is treated as a **junior claim** on the exchange balance, deposited capital as **senior**; no user can withdraw more than actually exists on the balance. Instead of forcibly reducing winning positions after the fact — an order of claims by construction.
 
-**Чесне застереження з їхнього README великими літерами:** EDUCATIONAL RESEARCH PROJECT — NOT PRODUCTION READY — NOT AUDITED. Для хакатону прийнятно; для реальних коштів — стоп до аудиту. І модель **coin-margined** (депонуєш той самий токен, яким торгуєш) — перевірити, чи є USDC-маржа або чи це принципово.
+**An honest caveat from their README in capital letters:** EDUCATIONAL RESEARCH PROJECT — NOT PRODUCTION READY — NOT AUDITED. Acceptable for a hackathon; for real funds — stop until an audit. And the model is **coin-margined** (you deposit the same token you trade) — check whether there is USDC margin or whether this is fundamental.
 
-**Роль для нас:** якщо ліквідність не мусить бути чужою (Опція 2 в архітектурі), Percolator — основний кандидат на форк власного ядра: найсвіжіший тулчейн, верифікований ризик, композабельний instruction set з описаним CPI-binding, ім'я Яковенка для суддів. Перевірка на тижні 0: збірка, USDC-маржа, делегація акаунтів позицій у PER.
+**Its role for us:** if liquidity does not have to be someone else's (Option 2 in the architecture), Percolator is the main candidate for forking our own core: the freshest toolchain, verified risk, a composable instruction set with a described CPI binding, Yakovenko's name for the judges. Week-0 check: build, USDC margin, delegating position accounts into PER.
 
-### Кандидати на форк власного ядра (Опція 2) — зведення
+### Candidates for forking our own core (Option 2) — summary
 
-| Кандидат | Ліцензія / стан | Для чого |
+| Candidate | Licence / state | What for |
 |---|---|---|
-| **Percolator** | Відкритий; educational, not audited; Anchor v2 / Pinocchio | **Основа**, якщо лягає |
-| **`solana-labs/perpetuals`** → форки Flash, Adrena | Apache-2.0; оригінал архівний (3 роки, Anchor ~0.26), аудит-звіт у репо, ~5.5K рядків | Лише формули + аудит-звіт. Форки Flash і Adrena закриті (`AdrenaFoundation/perpetuals` — archived 2024 копія solana-labs) |
-| **Drift `protocol-v2`** (→ velocity-exchange) | Відкритий; десятки тисяч рядків; Rust 1.70 / Solana 1.16; перехідний стан після експлойту | Довідник з ліквідацій і страхового фонду, не база |
-| **Brute** (`divi2806/brute`, 2026) | **LICENSE відсутній → all rights reserved; код не брати**; хакатонна якість | Референс сучасного тулчейну (Pyth Hermes + ончейн-верифікація, індексер, TP/SL keeper) |
-| **Syntx** (`psyto/syntx`) | Apache-2.0; Anchor 0.30.1 | Приклад CPI-інтеграції з Percolator; готові VenueAdapter'и |
+| **Percolator** | Open; educational, not audited; Anchor v2 / Pinocchio | **The base**, if it fits |
+| **`solana-labs/perpetuals`** → Flash and Adrena forks | Apache-2.0; the original is archived (3 years, Anchor ~0.26), an audit report in the repo, ~5.5K lines | Only the formulas + the audit report. The Flash and Adrena forks are closed (`AdrenaFoundation/perpetuals` — an archived 2024 copy of solana-labs) |
+| **Drift `protocol-v2`** (→ velocity-exchange) | Open; tens of thousands of lines; Rust 1.70 / Solana 1.16; transitional state after the exploit | A reference for liquidations and the insurance fund, not a base |
+| **Brute** (`divi2806/brute`, 2026) | **No LICENSE → all rights reserved; do not take the code**; hackathon quality | A reference for a modern toolchain (Pyth Hermes + on-chain verification, indexer, TP/SL keeper) |
+| **Syntx** (`psyto/syntx`) | Apache-2.0; Anchor 0.30.1 | An example of CPI integration with Percolator; ready-made VenueAdapters |
 
-**Що міняє власне ядро:** омнібус був потрібен лише тому, що позиції жили на чужому venue. Якщо ядро своє — позиції є акаунтами нашої програми і делегуються в PER напряму; приватність природна, без агрегації, request state machine, двошарової ліквідації й розподілу ADL. Натомість повертається ризик пулу, потреба в капіталі й страховому фонді — і тут senior/junior-модель Percolator — найкраща відповідь.
+**What our own core changes:** the omnibus was needed only because positions lived on someone else's venue. If the core is ours, positions are accounts of our program and are delegated into PER directly; privacy is natural, without aggregation, a request state machine, two-layer liquidation and ADL distribution. In exchange, pool risk returns, along with the need for capital and an insurance fund — and here Percolator's senior/junior model is the best answer.
 
-### Комісії конкурентів (орієнтир для економіки продукту)
+### Competitor fees (a reference for product economics)
 
-| Майданчик | Мейкер | Тейкер | Примітка |
+| Venue | Maker | Taker | Note |
 |---|---|---|---|
-| Aster | **0%** | 0.04% | USDT-перпи, базовий рівень |
-| Hyperliquid | 0.015% | 0.045% | базовий рівень |
-| ApeX Omni | 0.02% | 0.05% | VIP-знижки |
-| GMX | 0.04% | 0.06% | ставка залежить від впливу угоди на баланс відкритого інтересу |
+| Aster | **0%** | 0.04% | USDT perps, base tier |
+| Hyperliquid | 0.015% | 0.045% | base tier |
+| ApeX Omni | 0.02% | 0.05% | VIP discounts |
+| GMX | 0.04% | 0.06% | the rate depends on the trade's impact on the open-interest balance |
 | Jupiter Perps | — | 6 bps open + 6 bps close | + price impact + borrow ≈ 13 bps round-trip |
-| GMTrade | — | заявлені ~0.5 bps | **перевірити на mainnet** |
+| GMTrade | — | claimed ~0.5 bps | **check on mainnet** |
 
-Наш орієнтир: ~13 bps round-trip на Jupiter — верхня межа ринку. Privacy-premium 2–5 bps зверху виглядає інакше залежно від venue: на Jupiter це +25% до вартості трейду, на GMTrade із заявленими 0.5 bps — кратно більше у відносних числах, але дешевше в абсолютних. **Ще один аргумент перевірити GMTrade першим.**
+Our reference: ~13 bps round-trip on Jupiter is the upper bound of the market. A privacy premium of 2–5 bps on top looks different depending on the venue: on Jupiter it is +25% to the cost of a trade, on GMTrade with its claimed 0.5 bps — multiples more in relative terms, but cheaper in absolute terms. **One more argument to check GMTrade first.**
 
-### Зведення: яка модель для чого
+### Summary: which model for what
 
-| Модель | Хто контрагент | Ціна входу | Проковзування | CPI-сумісність | Де застосовується |
+| Model | Who is the counterparty | Entry price | Slippage | CPI compatibility | Where it is used |
 |---|---|---|---|---|---|
-| Класичний AMM | Формула | Детермінована (формула) | Високе на обсязі | ✅ | Спот, лонг-тейл токенів |
-| Peer-to-pool | Пул за оракульною ціною | **Детермінована (оракул)** | Майже нульове | ✅ | **Перпи на Solana; наш вибір** |
-| CLOB | Інший трейдер | Від глибини книги | Залежить від глибини | ⚠️ рідко | Перпи для профі, CEX-подібний досвід |
-| RFQ | Один маркетмейкер | Від котирування | Залежить від котирування | ❌ | Екзотика, інституційні ринки |
-| Prop AMM | Пул із закритою моделлю | Від закритої моделі | Найнижче | ✅ | Спот на Solana (домінує) |
-| Гібрид (JIT+DLOB+AMM) | Залежить від шару | **Непередбачувана** | Низьке | ⚠️ складно | Drift/Velocity, dYdX, Hyperliquid |
+| Classic AMM | Formula | Deterministic (formula) | High on volume | ✅ | Spot, long-tail tokens |
+| Peer-to-pool | Pool at the oracle price | **Deterministic (oracle)** | Almost zero | ✅ | **Perps on Solana; our choice** |
+| CLOB | Another trader | From book depth | Depends on depth | ⚠️ rarely | Perps for pros, a CEX-like experience |
+| RFQ | One market maker | From the quote | Depends on the quote | ❌ | Exotics, institutional markets |
+| Prop AMM | Pool with a closed model | From the closed model | Lowest | ✅ | Spot on Solana (dominant) |
+| Hybrid (JIT+DLOB+AMM) | Depends on the layer | **Unpredictable** | Low | ⚠️ hard | Drift/Velocity, dYdX, Hyperliquid |
 
 ---
 
-## Частина 2. Шар поверх venue: агрегатори й роутери
+## Part 2. The layer on top of venues: aggregators and routers
 
-Окрема категорія: не тримають ліквідності, а маршрутизують у venue. Розрізняються тим, **кому належить позиція**.
+A separate category: they hold no liquidity but route into venues. They differ by **who owns the position**.
 
-| Продукт | Хто власник позиції | Venue | Що дає |
+| Product | Who owns the position | Venue | What it gives |
 |---|---|---|---|
-| **Ranger** | Гаманець юзера (без депозиту, колатераль виділяється в реальному часі) | Jupiter, Flash, Drift | Smart Order Router, агрегація funding rates, OI, ліквідацій у єдиному форматі |
-| **Imperial** | **Смарт-контракт-власник позиції** (per-user) | Jupiter, Flash, Phoenix, GMTrade | Роутинг за левериджем/ліквідністю; DCA, trailing, indicator-ордери; One Click без підписів; Telegram-бот; **Liquidation Map** (де скупчені чужі стоп-лоси); лідерборд, поінти, реферали |
-| **Lavarage** | Протокол (спот-маржа, не перп) | Jupiter (роутинг свопів) | Позиція більша за баланс через позику з SOL/USDC-вольтів; вхід через email/соцмережу (Privy) |
+| **Ranger** | The user's wallet (no deposit, collateral allocated in real time) | Jupiter, Flash, Drift | Smart Order Router, aggregation of funding rates, OI and liquidations in one format |
+| **Imperial** | **A smart contract owns the position** (per-user) | Jupiter, Flash, Phoenix, GMTrade | Routing by leverage/liquidity; DCA, trailing, indicator orders; One Click without signatures; Telegram bot; **Liquidation Map** (where other people's stop-losses cluster); leaderboard, points, referrals |
+| **Lavarage** | The protocol (spot margin, not perp) | Jupiter (swap routing) | A position larger than the balance through a loan from SOL/USDC vaults; sign-in through email/social (Privy) |
 
-**Ключове спостереження.** Imperial довів у проді, що **програма може володіти позицією і виконувати трейди за користувача на кількох Solana-venue**. Але позиція лишається per-user — ончейн видно, чия вона. Агрегації кількох користувачів в одну позицію не робить ніхто.
+**The key observation.** Imperial proved in production that **a program can own a position and execute trades on behalf of a user on several Solana venues**. But the position stays per-user — it is visible on-chain whose it is. Nobody aggregates several users into one position.
 
 ---
 
-## Частина 3. Приватність: які механізми існують
+## Part 3. Privacy: what mechanisms exist
 
-### 3.1 Технічні підходи (плюси й мінуси — у колонках «де добре» / «де погано»)
+### 3.1 Technical approaches (pros and cons are in the "good for" / "bad for" columns)
 
-| Підхід | Як працює | Модель довіри | Де добре | Де погано |
+| Approach | How it works | Trust model | Good for | Bad for |
 |---|---|---|---|---|
-| **MPC** (Arcium) | Дані розбиваються на шари між вузлами (secret sharing); обчислення над шифротекстом у MXE — акаунті, що зв'язує програму, визначення обчислень і кластер Arx-вузлів. Solana-програма робить CPI `queue_computation`, результат приходить колбеком, підписаним кластером. Тулчейн: Arcis (Rust-фреймворк і компілятор), Anchor-сумісні програми, TS-клієнт | Криптографічна, **«хоча б один чесний вузол»** (Cerberus) — сильніше за TEE, де довіряєш Intel і оператору | Разові обчислення над входами кількох сторін: підрахунок голосів, sealed-bid, матчинг у дарк-пулі, **доказ платоспроможності** | Частий змінюваний стан: кожне оновлення — MPC-раунд із затримкою і вартістю. **І головніше — `detect-and-abort`:** при виявленій помилці протоколу обчислення зупиняється, а не віддає зіпсований результат; застосунок мусить сам обробляти відмову, повтор, закінчення черги й міграцію. Для ліквідаційного контуру це дискваліфікує: крок, який іноді просто не відбувається, у ризик-логіці неприпустимий |
-| **TEE** (MagicBlock PER) | Делегований акаунт живе в SVM-роллапі всередині Intel TDX; доступ за permission-списком; 10–50 мс; локально емулюється через Query Filtering Service | Апаратна: довіряєш Intel і оператору валідатора | Приватний стан з частими оновленнями: позиції, маржа, ліквідаційний crank | Слабша за MPC модель довіри; атестацію коду треба перевіряти окремо (allowlist MRTD/RTMR) |
-| **ZK** (Paradex, Aster Chain, Lighter) | Стан шифрується, коректність доводиться доказами; зазвичай вимагає власного ланцюга під це | Криптографічна | Повний контроль стеку, приватність за побудовою | Потрібен власний чейн; трейдер має мігрувати в іншу екосистему |
-| **Shielded pool** (Vanish, Turbine, Privacy Cash) | Депозит у спільний пул (shield), приватна активність усередині, вихід (unshield) | Залежить від реалізації | Свопи, перекази, DCA, депозити | Не тримає складного стану з плечем і ліквідаціями |
-| **Закрита логіка ціноутворення** (prop AMM — HumidiFi, Solana) | Маркетмейкер котирує з офчейн HFT-моделі й внутрішніх ризик-метрик; сеттлмент і кастодія на Solana; логіка не публікується свідомо. Приватність не криптографічна, а структурна — модель просто закрита | Довіра до оператора; кошти не в кастодії | Якість виконання: вужчі спреди, менше failed-транзакцій, сегментація роздрібу проти токсичного потоку | Нічого не дає приватності *трейдера* — його своп і далі публічний |
-| **Приватність на рівні протоколу** (Aztec — EVM L2) | Власна мережа з «програмованою приватністю»: приватні функції виконуються локально в PXE на пристрої користувача, у мережу йдуть лише ZKP; стан — зашифровані `notes` за UTXO-моделлю з нуліфікаторами; публічна і приватна логіка розділені (приватна може викликати публічну, не навпаки) | Криптографічна (zk-SNARK, UltraPLONK) | Приватність за замовчуванням для будь-якого застосунку, гнучке комбінування відкритих і закритих даних у межах однієї транзакції | Власна мова (Noir), несумісність з EVM, складна багаторівнева архітектура, вищі вимоги до заліза; ризик повторити траєкторію Starknet |
-| **Shielded pool + cross-contract calls** (RAILGUN — EVM-еталон) | Те саме плюс міжконтрактні виклики: в одному блоці unshield → мультиколл до зовнішніх протоколів → re-shield результату; при падінні будь-якого виклику вся транзакція ревертиться | Криптографічна (ZK, Groth16) | Приватна взаємодія з будь-яким публічним протоколом: свопи, LP, стейкінг | Тільки EVM (Ethereum, Arbitrum, Polygon, BSC); генерація доказу 20–30 с на слабких пристроях — неприйнятно для мобільного трейдингу |
+| **MPC** (Arcium) | Data is split into shares among nodes (secret sharing); computation over ciphertext in an MXE — an account that binds the program, the computation definition and a cluster of Arx nodes. The Solana program makes a CPI `queue_computation`, the result comes back in a callback signed by the cluster. Toolchain: Arcis (a Rust framework and compiler), Anchor-compatible programs, a TS client | Cryptographic, **"at least one honest node"** (Cerberus) — stronger than a TEE, where you trust Intel and the operator | One-off computations over inputs from several parties: vote counting, sealed bids, dark-pool matching, **proof of solvency** | Frequently changing state: every update is an MPC round with latency and cost. **And more importantly — `detect-and-abort`:** on a detected protocol error the computation stops rather than returning a corrupted result; the application must itself handle the failure, retry, queue expiry and migration. For a liquidation loop this is disqualifying: a step that sometimes simply does not happen is unacceptable in risk logic |
+| **TEE** (MagicBlock PER) | A delegated account lives in an SVM rollup inside Intel TDX; access by a permission list; 10–50 ms; emulated locally through the Query Filtering Service | Hardware: you trust Intel and the validator operator | Private state with frequent updates: positions, margin, the liquidation crank | A weaker trust model than MPC; code attestation must be checked separately (an MRTD/RTMR allowlist) |
+| **ZK** (Paradex, Aster Chain, Lighter) | State is encrypted, correctness is proven by proofs; usually requires a dedicated chain for this | Cryptographic | Full control of the stack, privacy by construction | Needs its own chain; the trader has to migrate to another ecosystem |
+| **Shielded pool** (Vanish, Turbine, Privacy Cash) | A deposit into a shared pool (shield), private activity inside, exit (unshield) | Depends on the implementation | Swaps, transfers, DCA, deposits | Does not hold complex state with leverage and liquidations |
+| **Closed pricing logic** (prop AMM — HumidiFi, Solana) | The market maker quotes from an off-chain HFT model and internal risk metrics; settlement and custody on Solana; the logic is deliberately not published. The privacy is not cryptographic but structural — the model is simply closed | Trust in the operator; funds are not in custody | Execution quality: tighter spreads, fewer failed transactions, segmenting retail from toxic flow | Gives nothing for the *trader's* privacy — their swap is still public |
+| **Protocol-level privacy** (Aztec — EVM L2) | Its own network with "programmable privacy": private functions run locally in the PXE on the user's device, only ZKPs go to the network; state is encrypted `notes` in a UTXO model with nullifiers; public and private logic are separated (private can call public, not the reverse) | Cryptographic (zk-SNARK, UltraPLONK) | Privacy by default for any application, flexible combination of open and closed data within one transaction | Its own language (Noir), EVM incompatibility, a complex multi-level architecture, higher hardware requirements; the risk of repeating Starknet's trajectory |
+| **Shielded pool + cross-contract calls** (RAILGUN — the EVM benchmark) | The same plus cross-contract calls: in one block unshield → a multicall to external protocols → re-shield of the result; if any call fails, the whole transaction reverts | Cryptographic (ZK, Groth16) | Private interaction with any public protocol: swaps, LP, staking | EVM only (Ethereum, Arbitrum, Polygon, BSC); proof generation 20–30 s on weak devices — unacceptable for mobile trading |
 
-### 3.2 Що саме ховається — важлива різниця
+### 3.2 What exactly is hidden — an important difference
 
-| Що ховається | Хто робить | Коментар |
+| What is hidden | Who does it | Comment |
 |---|---|---|
-| **Джерело коштів** (зв'язок CEX/KYC ↔ торговий гаманець) | Privacy Cash | SDK, є в dApp Store, Solana Mobile сам рекомендував |
-| **Мережа** (IP, логи) | UR Network | p2p VPN, нативно на Seeker, інтеграція з Seed Vault Wallet |
-| **Перекази і DCA** | Turbine Cash | 0.30% за виведення; отримувач не трасує tx до відправника |
-| **Спот-своп** | Vanish | Shield → trade → unshield; роутинг через агрегатори Solana; **one-in/one-out**: зв'язок депозиту й виведення прозорий, приватна лише активність; скринінг Elliptic (AML/OFAC) + Range |
-| **Повідомлення** | Cherry | E2E, ключ генерується з підпису гаманця на пристрої; відкритий GitHub |
-| **Ордер до виконання** | Aster (hidden orders, з червня 2025), Aster Chain (ZK, березень 2026) | Ховає намір; після виконання позиція існує в їхній системі |
-| **Активність на ZK-шарі** | ApeX Omni (zkLink X, ex-StarkEx) | Індивідуальна активність приватна, баланси й сетлменти верифіковані ончейн; приватність — властивість шару, не окремий продукт. Мультичейн: Ethereum, BNB, Arbitrum, Mantle, Base, **Solana** (як чейн депозиту) |
-| **Сума переказу при публічних власниках** | **Confidential Balances** (SPL Token-2022) | Суми зашифровані, власники акаунтів публічні; конфіденційний переказ не змінює `pre/postTokenBalances`. **Обмеження, що робить його незастосовним для нас: вмикається на рівні мінта** — щоб робити конфіденційні перекази USDC, розширення має бути в самому мінті USDC (володіє Circle). Свій wrapped-токен = фрагментація ліквідності й нова довіра. Плюс вартість: кожен переказ вимагає створити, верифікувати й закрити три proof-context акаунти (equality, ciphertext validity, range) — прийнятно для рідкісного депозиту, не для частих дій. Аудиторський ElGamal-ключ теж глобальний на мінт і призначається його authority |
-| **Логіка ціноутворення маркетмейкера** | HumidiFi та інші prop AMM | Закрита модель як захист від хижого потоку й MEV; ~75% DEX-обсягу Solana йде через prop AMM, з них >60% — HumidiFi (сегмент виріс з <10% до >70% за рік) |
-| **Позиція протягом життя** (розмір, вхід, ліквідація, PnL) | **Paradex** (Starknet), анонси Darklake/UniFi, плани Umbra | На Solana — **немає жодного живого** |
+| **Source of funds** (the CEX/KYC ↔ trading wallet link) | Privacy Cash | SDK, in the dApp Store, recommended by Solana Mobile itself |
+| **Network** (IP, logs) | UR Network | p2p VPN, native on Seeker, integrated with Seed Vault Wallet |
+| **Transfers and DCA** | Turbine Cash | 0.30% per withdrawal; the recipient cannot trace the tx to the sender |
+| **Spot swap** | Vanish | Shield → trade → unshield; routing through Solana aggregators; **one-in/one-out**: the deposit-withdrawal link is transparent, only the activity is private; Elliptic (AML/OFAC) + Range screening |
+| **Messages** | Cherry | E2E, the key is generated from a wallet signature on the device; open GitHub |
+| **An order before execution** | Aster (hidden orders, since June 2025), Aster Chain (ZK, March 2026) | Hides intent; after execution the position exists in their system |
+| **Activity on a ZK layer** | ApeX Omni (zkLink X, ex-StarkEx) | Individual activity is private, balances and settlements are verified on-chain; privacy is a property of the layer, not a separate product. Multichain: Ethereum, BNB, Arbitrum, Mantle, Base, **Solana** (as a deposit chain) |
+| **Transfer amount with public owners** | **Confidential Balances** (SPL Token-2022) | Amounts are encrypted, account owners are public; a confidential transfer does not change `pre/postTokenBalances`. **The limitation that makes it inapplicable for us: it is enabled at the mint level** — to make confidential USDC transfers, the extension must be in the USDC mint itself (owned by Circle). Our own wrapped token = liquidity fragmentation and new trust. Plus the cost: every transfer requires creating, verifying and closing three proof-context accounts (equality, ciphertext validity, range) — acceptable for a rare deposit, not for frequent actions. The auditor ElGamal key is also global per mint and assigned by its authority |
+| **A market maker's pricing logic** | HumidiFi and other prop AMMs | A closed model as protection against predatory flow and MEV; ~75% of Solana DEX volume goes through prop AMMs, >60% of that is HumidiFi (the segment grew from <10% to >70% in a year) |
+| **A position over its lifetime** (size, entry, liquidation, PnL) | **Paradex** (Starknet), Darklake/UniFi announcements, Umbra plans | On Solana — **not a single live one** |
 
-### 3.2b Офіційна таксономія Foundation: п'ять вимірів приватності
+### 3.2b The Foundation's official taxonomy: five dimensions of privacy
 
-Solana Docs починають розділ про приватність із правильного попередження: «приватний» означає різне в різних моделях, і треба визначити **що саме** ховається, **хто має мати змогу це інспектувати** і **скільки контролю потрібно оператору** — до вибору шляху інтеграції. П'ять вимірів:
+The Solana Docs open the privacy section with the right warning: "private" means different things in different models, and you need to define **what exactly** is hidden, **who should be able to inspect it** and **how much control the operator needs** — before choosing an integration path. Five dimensions:
 
-1. **Конфіденційність сум** — розміри й баланси приховані.
-2. **Анонімність учасників** — хто саме бере участь.
-3. **Політики контролю** — ліміти, дозволи, правила переказів.
-4. **Приватне виконання** — обчислення над прихованим станом.
-5. **Аудиторський доступ** — хто й на яких умовах може подивитись.
+1. **Amount confidentiality** — sizes and balances are hidden.
+2. **Participant anonymity** — who exactly takes part.
+3. **Control policies** — limits, permissions, transfer rules.
+4. **Private execution** — computation over hidden state.
+5. **Audit access** — who can look and under what conditions.
 
-**Три офіційні рішення проти цих вимірів:**
+**Three official solutions against these dimensions:**
 
-| Рішення | Що приватне | Що публічне | Аудит |
+| Solution | What is private | What is public | Audit |
 |---|---|---|---|
-| **Confidential Balances** (Token-2022) | Баланси й суми переказів | Мінт, токен-акаунти, власники, факт участі в транзакції | Опційний глобальний ElGamal-ключ аудитора на мінті: дешифрує суми переказів, **не** розкриває повний баланс і **не** дає права рухати кошти |
-| **Solana Privacy Protocol (Rings)**, бета, доки Helius | Default Ring: актив і сума; Custom Rings: можуть бути confidential **або** anonymous | Default Ring: відправник і отримувач | Custom Rings — Solana-програми, що додають політику переказів, звітність, комплаєнс і видимість для аудитора |
-| **Private Channels** | Уся активність усередині каналу | Депозити й виведення на мейннеті | Оператор визначає, кому дати видимість |
+| **Confidential Balances** (Token-2022) | Balances and transfer amounts | Mint, token accounts, owners, the fact of taking part in a transaction | An optional global auditor ElGamal key on the mint: decrypts transfer amounts, does **not** reveal the full balance and does **not** give the right to move funds |
+| **Solana Privacy Protocol (Rings)**, beta, Helius docs | Default Ring: asset and amount; Custom Rings: can be confidential **or** anonymous | Default Ring: sender and recipient | Custom Rings are Solana programs that add a transfer policy, reporting, compliance and auditor visibility |
+| **Private Channels** | All activity inside the channel | Deposits and withdrawals on mainnet | The operator decides whom to give visibility |
 
-**Що з цього потрібно перп-протоколу з приватними позиціями:** усі п'ять вимірів одночасно. Саме тому жоден одиничний механізм не покриває задачу, і конструкція збирається з шарів: агрегація дає анонімність учасників, TEE — приватне виконання, ончейн-програма — політики, 13F-розкриття і публічний coverage ratio — аудит.
+**What a perp protocol with private positions needs from this:** all five dimensions at once. That is why no single mechanism covers the task, and the construction is assembled from layers: aggregation gives participant anonymity, the TEE private execution, the on-chain program policies, 13F disclosure and a public coverage ratio audit.
 
-**Rings як кандидат:** найближче з офіційного до нашої конструкції (чотири виміри нативно), але це шар **балансів і переказів**, не шар виконання — частий змінюваний стан позиції з маржинальними перерахунками він, найімовірніше, не покриває. Реалістична роль — депозитно-маржинальний шар, не заміна PER. Статус бета; перевіряти в доках Helius три речі: чи тримає Custom Ring стан з частими оновленнями, чи є доступ із чужої програми через CPI, чи придатна бета для демо.
+**Rings as a candidate:** the closest of the official options to our construction (four dimensions natively), but it is a layer of **balances and transfers**, not an execution layer — it most likely does not cover a position's frequently changing state with margin recalculations. A realistic role is a deposit/margin layer, not a replacement for PER. Beta status; check three things in the Helius docs: whether a Custom Ring holds state with frequent updates, whether there is access from another program through CPI, whether the beta is fit for a demo.
 
-**Private Channels як анти-патерн і як референс одночасно:** модель із довіреним оператором (RBAC, JWT, секвенсер) — рівно те, чим ми не хочемо бути; але їхній **SMT exclusion proof** — готовий механізм примусового викупу коштів ончейн незалежно від офчейн-шару, відкритий під MIT. Форма архітектури та сама, що в нас: ончейн-escrow → приватне виконання збоку → сетлмент назад. Тобто Foundation сам випускає цей патерн як легітимний — корисний аргумент для пітчу.
+**Private Channels as an anti-pattern and a reference at once:** a model with a trusted operator (RBAC, JWT, sequencer) — exactly what we do not want to be; but their **SMT exclusion proof** is a ready mechanism for forced on-chain withdrawal of funds independently of the off-chain layer, open under MIT. The shape of the architecture is the same as ours: on-chain escrow → private execution on the side → settlement back. So the Foundation itself ships this pattern as legitimate — a useful argument for the pitch.
 
-### 3.3 Приватність vs анонімність
+### 3.3 Privacy vs anonymity
 
-Формулювання, яке варто відтворювати точно (використовує і Aster, і Vanish): **privacy is not anonymity.** Приватність — це невидимість активності для сторонніх спостерігачів; анонімність — розрив зв'язку між особою і коштами. Vanish явно відмежовується від міксерів: зв'язок депозит↔виведення зберігається, приховується лише те, що відбувалось усередині.
+A wording worth reproducing exactly (used by both Aster and Vanish): **privacy is not anonymity.** Privacy is the invisibility of activity to outside observers; anonymity is breaking the link between a person and the funds. Vanish explicitly distances itself from mixers: the deposit↔withdrawal link is kept, only what happened inside is hidden.
 
-Для комплаєнсу це принципово: **прозорі межі + приватна середина + скринінг на вході й виході** — конструкція, що проходить AML-вимоги; повна незв'язність — ні.
+For compliance this is fundamental: **transparent boundaries + a private middle + screening on entry and exit** is a construction that passes AML requirements; full unlinkability does not.
 
 ---
 
-## Частина 4. Мобільність
+## Part 4. Mobility
 
-| Продукт | Формат | Solana-стек | Приватність |
+| Product | Format | Solana stack | Privacy |
 |---|---|---|---|
-| **Jupiter Mobile** | Нативна апка, #1 у dApp Store | ✅ MWA, Seed Vault | ❌ |
-| **Drift** | Апка, #4 у dApp Store | ✅ | ❌ |
-| **Pacifica** | Android-застосунок (липень 2026) | ❌ не в dApp Store | ❌ |
-| **Aster Mobile** | Google Play + App Store | ❌ EVM-гаманець; публічна скарга, що Phantom на Seeker не працює; **немає в dApp Store** | ⚠️ hidden orders |
-| **Lighter** | App Store + Google Play (`com.zklighter.app`) | ❌ | ⚠️ ZK-рollup, не приватні позиції |
-| **Imperial** | Мобільна сесія через приватне посилання в браузері + Telegram-бот | ❌ | ❌ |
-| **Fensory, Cashflow** | Нативні Seeker-апки (yield, xStocks) | ✅ | ❌ |
+| **Jupiter Mobile** | Native app, #1 in the dApp Store | ✅ MWA, Seed Vault | ❌ |
+| **Drift** | App, #4 in the dApp Store | ✅ | ❌ |
+| **Pacifica** | Android app (July 2026) | ❌ not in the dApp Store | ❌ |
+| **Aster Mobile** | Google Play + App Store | ❌ EVM wallet; a public complaint that Phantom does not work on Seeker; **not in the dApp Store** | ⚠️ hidden orders |
+| **Lighter** | App Store + Google Play (`com.zklighter.app`) | ❌ | ⚠️ ZK rollup, not private positions |
+| **Imperial** | A mobile session through a private link in the browser + Telegram bot | ❌ | ❌ |
+| **Fensory, Cashflow** | Native Seeker apps (yield, xStocks) | ✅ | ❌ |
 
-**Висновок:** мобільні перпи існують; Solana-нативних мобільних перпів два (Jupiter, Drift) — обидва публічні; приватних мобільних перпів немає ніде.
+**Conclusion:** mobile perps exist; there are two Solana-native mobile perps (Jupiter, Drift) — both public; there are no private mobile perps anywhere.
 
 ---
 
-## Частина 5. Ключові механізми, які варто знати при побудові
+## Part 5. Key mechanisms worth knowing when building
 
-### 5.1 Омнібус (pooled account)
-Одна позиція на venue від імені багатьох користувачів; per-user облік — поза ланцюгом або в приватному шарі. Джерело приватності: **ончейн фізично немає per-user позицій**, а не шифрування поверх публічного.
+### 5.1 Omnibus (pooled account)
+One position on a venue on behalf of many users; per-user accounting is off-chain or in a private layer. The source of privacy: **there are physically no per-user positions on-chain**, not encryption on top of public data.
 
-Підтверджено mainnet-симуляцією на Jupiter Perps: owner-валідація проходить з off-curve PDA, `allowIncreasePosition = true`; Position PDA деривується з (owner, pool, custody, collateralCustody, side) → один омнібус-owner = одна позиція на сторону.
+Confirmed by a mainnet simulation on Jupiter Perps: owner validation passes with an off-curve PDA, `allowIncreasePosition = true`; the Position PDA is derived from (owner, pool, custody, collateralCustody, side) → one omnibus owner = one position per side.
 
-**Ціна конструкції:** соціалізований ризик. Venue ліквідує омнібус як ціле за агрегованою маржею, тому потрібні власна внутрішня ліквідація з випередженням, вищий per-user поріг маржі й cap агрегованого левериджу.
+**The price of the construction:** socialized risk. The venue liquidates the omnibus as a whole by aggregated margin, so we need our own internal liquidation that runs ahead, a higher per-user margin threshold and a cap on aggregated leverage.
 
-**Другий ризик, який часто пропускають: маніпуляція тонким ринком.** Кейс JELLYJELLY на Hyperliquid (березень 2025, ~$12M збитків): атакер відкрив велику позицію в неліквідному активі й рухав спотову ціну, щоб зашкодити пулу-контрагенту. Омнібус на тонкому ринку стає мішенню тієї самої атаки — причому постраждають усі учасники агрегованої позиції. **Мітигація проста і обов'язкова: торгувати лише ліквідні ринки (SOL, BTC, ETH), не пускати омнібус у лонг-тейл.**
+**A second risk that is often missed: thin-market manipulation.** The JELLYJELLY case on Hyperliquid (March 2025, ~$12M of losses): an attacker opened a large position in an illiquid asset and moved the spot price to harm the counterparty pool. An omnibus on a thin market becomes a target of the same attack — and all participants of the aggregated position suffer. **The mitigation is simple and mandatory: trade only liquid markets (SOL, BTC, ETH), do not let the omnibus into the long tail.**
 
-**Четверта властивість, специфічна для Solana: агрегація дає приватність ціною серіалізації.** Транзакції на Solana виконуються паралельно, лише якщо не беруть write-lock тих самих акаунтів. Омнібус — один акаунт на сторону, тому всі дії користувачів конкурують за один лок, і черга утворюється саме під навантаженням. Мітигація: per-user стан тримати в окремих PDA (у PER він і так окремий), а спільний агрегат оновлювати батчами через crank, а не на кожну дію. Перевіряється навантажувальним прогоном, не міркуванням: реалістичні умови виконання на Solana залежать від таймінгу слотів, блокування акаунтів, лімітів обчислень і завантаженості мережі — математична модель цього не передбачає.
+**A fourth property, specific to Solana: aggregation buys privacy at the price of serialization.** Transactions on Solana run in parallel only if they do not take write locks on the same accounts. The omnibus is one account per side, so all user actions compete for one lock, and the queue forms precisely under load. Mitigation: keep per-user state in separate PDAs (in PER it is separate anyway), and update the shared aggregate in batches through the crank, not on every action. This is checked by a load run, not by reasoning: real execution conditions on Solana depend on slot timing, account locking, compute limits and network congestion — a mathematical model does not predict them.
 
-**Третя вимога, з уроку Lighter: шлях виходу, що не залежить від нас.** Якщо PER-оператор недоступний або протокол зупинено, користувач має мати змогу довести свою частку омнібусу й забрати її. Без цього приватність перетворюється на залежність від нашої доступності — і це перше, що спитає технічний рецензент.
+**A third requirement, from the Lighter lesson: an exit path that does not depend on us.** If the PER operator is unavailable or the protocol is stopped, the user must be able to prove their share of the omnibus and take it. Without this, privacy turns into dependence on our availability — and that is the first thing a technical reviewer will ask.
 
 ### 5.2 Session Keys
-Ефемерна пара ключів як другий підписант + session-token PDA з expiry і scope. Дозволяє торгувати без промпту гаманця на кожну дію. Обмеження: **SPL Token не розуміє session tokens**, тому рух токенів (депозит маржі) вимагає окремого підпису й approve обмеженому program authority.
+An ephemeral key pair as a second signer + a session-token PDA with expiry and scope. It allows trading without a wallet prompt for every action. Limitation: **SPL Token does not understand session tokens**, so token movement (a margin deposit) requires a separate signature and an approve to a limited program authority.
 
-### 5.3 Асинхронний fill (keeper-модель)
-У Jupiter Perps відкриття не атомарне: CPI створює position request, permissioned keeper виконує його окремою транзакцією. Наслідки: затримка між запитом і виконанням, ціна входу відома лише постфактум, потрібні slippage-параметр, TTL на pending і обробка failed/expired.
+### 5.3 Asynchronous fill (keeper model)
+In Jupiter Perps opening is not atomic: the CPI creates a position request, a permissioned keeper executes it in a separate transaction. Consequences: a delay between request and execution, the entry price is known only after the fact, a slippage parameter, a TTL on pending and handling of failed/expired are needed.
 
-### 5.4 Розкриття постфактум (13F-модель)
-Позиція приватна під час утримання, публічна після закриття. Дає аудит, верифікований трек-рекорд і лідерборд без податку копіювання. Аналог — квартальне розкриття позицій інституційних фондів у США.
+### 5.4 Disclosure after the fact (13F model)
+A position is private while held and public after close. It gives audit, a verified track record and a leaderboard without the copy tax. The analogue is the quarterly position disclosure of institutional funds in the US.
 
-### 5.5 Compliance-шар
-Робочий шаблон на Solana (Vanish Integrity Framework): скринінг кожного депозиту й виведення в реальному часі через **Elliptic** (AML, OFAC, санкційні списки) і **Range** (Solana-нативний моніторинг, 90+ чейнів). Плюс геофенсинг на рівні мережевого входу (PER-ingress у MagicBlock робить IP-геофенсинг і OFAC-скринінг до виконання транзакції) — це дозволяє не збирати точну геолокацію в застосунку, що важливо для політики dApp Store (precise geolocation = Regulated Data).
+### 5.5 Compliance layer
+A working template on Solana (Vanish Integrity Framework): real-time screening of every deposit and withdrawal through **Elliptic** (AML, OFAC, sanctions lists) and **Range** (Solana-native monitoring, 90+ chains). Plus geofencing at the network-ingress level (the PER ingress in MagicBlock does IP geofencing and OFAC screening before the transaction executes) — this allows not collecting precise geolocation in the app, which matters for the dApp Store policy (precise geolocation = Regulated Data).
 
-**Регуляторний контекст 2026 (рухається швидко).** CFTC схвалив BTCPERP як перший регульований перпетуальний контракт і видав no-action letter для конверсії перпетуально-подібних продуктів; водночас CME судиться з CFTC, стверджуючи, що перпи є свопами й мають підпадати під Dodd-Frank. Очікуваний напрямок — роздвоєння ринку: регульована оншорна версія з нижчим плечем, ідентифікацією й правом на оскарження, і офшорна permissionless з протилежним набором. Практичний висновок: гео-фенсинг і комплаєнс-шар закладати одразу, юрисдикційні розкриття писати до запуску.
+**Regulatory context 2026 (moving fast).** The CFTC approved BTCPERP as the first regulated perpetual contract and issued a no-action letter for converting perpetual-like products; at the same time CME is suing the CFTC, arguing that perps are swaps and should fall under Dodd-Frank. The expected direction is a split market: a regulated onshore version with lower leverage, identification and a right of appeal, and an offshore permissionless one with the opposite set. The practical conclusion: build geofencing and a compliance layer in from the start, write jurisdictional disclosures before launch.
 
-### 5.6 Уроки RAILGUN Relay Adapt (EVM, але патерн переноситься)
+### 5.6 Lessons from RAILGUN Relay Adapt (EVM, but the pattern carries over)
 
-RAILGUN роками тримає в проді конструкцію, структурно ідентичну омнібусу: зовнішній протокол бачить лише контракт-посередник, за яким стоїть приватний облік багатьох користувачів. Три деталі, які варто врахувати при побудові на Solana:
+RAILGUN has kept in production for years a construction structurally identical to an omnibus: the external protocol sees only an intermediary contract behind which stands the private accounting of many users. Three details worth considering when building on Solana:
 
-1. **Cookbook / рецепти як спосіб організації коду.** Типова послідовність викликів до venue (approve → дія) винесена в бібліотеку «рецептів», яка сама рахує комісії й формує поля транзакції. Переклад: адаптер кожного venue має бути рецептом, а не гілкою в ядрі — додати GMTrade або Flash має означати додати адаптер.
-2. **Явний і повний список того, що повертається в приватний облік.** У RAILGUN усе, що не перелічене в `relayAdaptShieldERC20Addresses`, не підлягає відновленню. Наш аналог: при закритті позиції треба явно врахувати залишок маржі, PnL і пил від часткових закриттів — інакше кошти застрягнуть на омнібус-PDA без атрибуції користувачу. Клас багів, який важко виявити постфактум.
-3. **Комісія списується до дії.** У них unshield-fee 0.25% зменшує суму до свопу, тому всі розрахунки ведуться від суми після комісії. У нас так само: комісія venue (6 bps у Jupiter) списується до відкриття, і per-user облік має оперувати чистою сумою.
+1. **A cookbook / recipes as a way of organizing code.** The typical sequence of calls to a venue (approve → action) is moved into a library of "recipes" that itself computes fees and builds the transaction fields. Translation: each venue's adapter should be a recipe, not a branch in the core — adding GMTrade or Flash should mean adding an adapter.
+2. **An explicit and complete list of what returns to private accounting.** In RAILGUN everything not listed in `relayAdaptShieldERC20Addresses` cannot be recovered. Our analogue: when a position closes, the remaining margin, PnL and dust from partial closes must be explicitly accounted for — otherwise funds get stuck on the omnibus PDA without attribution to a user. A class of bugs that is hard to detect after the fact.
+3. **The fee is charged before the action.** For them the 0.25% unshield fee reduces the amount before the swap, so all calculations are done from the post-fee amount. Same for us: the venue fee (6 bps at Jupiter) is charged before opening, and per-user accounting must operate on the net amount.
 
-Плюс окремий примітив, вартий перенесення: **view-only гаманці** — доступ до перегляду приватних балансів без права витрачати. Для нас це аудит омнібусу партнером і можливість для трейдера поділитися своєю позицією, не віддаючи ключів. У PER реалізується permission-списком.
+Plus a separate primitive worth carrying over: **view-only wallets** — access to view private balances without the right to spend. For us this is an audit of the omnibus by a partner and a way for a trader to share their position without handing over keys. In PER it is implemented by a permission list.
 
-### 5.7 Уроки Aztec (EVM L2, патерн і регуляторний прецедент)
+### 5.7 Lessons from Aztec (EVM L2, a pattern and a regulatory precedent)
 
-**Програмована приватність** — точна назва конструкції, до якої ми йдемо: у межах однієї системи комбінуються відкриті й закриті дані, і протокол сам вирішує, що публічне. У Aztec контракт може розкривати кількість учасників DAO, ховаючи конкретні адреси. Наш аналог: публічний агрегат омнібусу (coverage ratio, сумарна експозиція) при приватних per-user позиціях.
+**Programmable privacy** is the exact name of the construction we are heading towards: open and closed data are combined within one system, and the protocol itself decides what is public. In Aztec a contract can reveal the number of DAO participants while hiding the specific addresses. Our analogue: a public omnibus aggregate (coverage ratio, total exposure) with private per-user positions.
 
-**Розділення прав «бачити» і «витрачати».** У Aztec з кожною адресою пов'язані три пари ключів: nullifier key (витрачання ноти), incoming viewing key (розшифрування вхідних), outgoing viewing key (відстеження вихідних). Для нас це дизайн permission-списку в PER: owner (змінює позицію), viewer (аудитор, партнер, податковий сервіс — бачить, не чіпає), опційно delegated trader. Реалізується конфігом, не криптографією.
+**Separating the rights "to see" and "to spend".** In Aztec three key pairs are tied to every address: a nullifier key (spending a note), an incoming viewing key (decrypting incoming), an outgoing viewing key (tracking outgoing). For us this is the design of the permission list in PER: owner (changes the position), viewer (auditor, partner, tax service — sees, does not touch), optionally a delegated trader. Implemented by configuration, not cryptography.
 
-**Регуляторний урок — найважливіший.** Aztec Connect (приватний шлюз до DeFi) закрився в березні 2023 року, приблизно через пів року після санкцій США проти Tornado Cash; FTX блокувала акаунти за перекази через нього. За MiCA європейські біржі делістили анонімні активи (Monero). Ключовий висновок оглядачів: комбінація публічного і приватного станів — це **опція для комплаєнсу**, бо дає регулятору точку контролю; у Aztec Connect такої точки не було технічно, і це стало його вразливістю.
+**The regulatory lesson — the most important.** Aztec Connect (a private gateway to DeFi) shut down in March 2023, about half a year after the US sanctions against Tornado Cash; FTX blocked accounts for transfers through it. Under MiCA European exchanges delisted anonymous assets (Monero). The key conclusion of observers: combining public and private state is an **option for compliance**, because it gives the regulator a control point; Aztec Connect technically had no such point, and that became its vulnerability.
 
-Це третій незалежний доказ тієї самої тези після Vanish (прозорі межі + скринінг) і 13F-моделі: **повна непрозорість — регуляторний ризик, вибіркова прозорість — регуляторна перевага.** Наша конфігурація (приватна позиція під час утримання, публічний агрегат постійно, повне розкриття після закриття) — не компроміс заради зручності, а найстійкіша з можливих.
+This is the third independent proof of the same thesis after Vanish (transparent boundaries + screening) and the 13F model: **full opacity is a regulatory risk, selective transparency is a regulatory advantage.** Our configuration (a private position while held, a public aggregate always, full disclosure after close) is not a compromise for convenience but the most robust one possible.
 
-**Аргумент проти власного стеку.** Aztec вимагає нової мови (Noir) і несумісний з EVM; оглядачі прямо ставлять питання, чи не повторить він траєкторію Starknet — гучний запуск і спад через брак попиту на такий рівень захисту. Те саме стосується Paradex і Aster Chain. Наш вибір протилежний: приватний шар поверх існуючої екосистеми, без міграції трейдерів і без нової мови.
+**An argument against our own stack.** Aztec requires a new language (Noir) and is incompatible with EVM; observers openly ask whether it will repeat Starknet's trajectory — a loud launch and a decline due to a lack of demand for that level of protection. The same applies to Paradex and Aster Chain. Our choice is the opposite: a private layer on top of an existing ecosystem, without migrating traders and without a new language.
 
-### 5.8 Prop AMM: Solana вже обрала непрозорість там, де вона дає кращу ціну
+### 5.8 Prop AMM: Solana has already chosen opacity where it gives a better price
 
-**HumidiFi** — найбільший DEX Solana за обсягом: >$1B на день, ~35% усієї спотової DEX-активності; інтегрований у Jupiter, DFlow, Titan, OKX Router. Це **proprietary AMM**: котирування генеруються офчейн HFT-моделлю з реальних ринкових даних і внутрішніх ризик-метрик, а сеттлмент, кастодія й облік лишаються на Solana.
+**HumidiFi** is the largest Solana DEX by volume: >$1B per day, ~35% of all spot DEX activity; integrated into Jupiter, DFlow, Titan, OKX Router. It is a **proprietary AMM**: quotes are generated off-chain by an HFT model from real market data and internal risk metrics, while settlement, custody and accounting stay on Solana.
 
-Обґрунтування закритості — їхнє власне: **відкриття внутрішньої маркетмейкерської логіки історично призводить до хижого потоку й токсичного MEV, що погіршує результат роздрібних юзерів.** Замість блокування адрес їхній двигун адаптується до недоброчесної поведінки в реальному часі.
+The justification for closedness is their own: **opening internal market-making logic historically leads to predatory flow and toxic MEV, which worsens outcomes for retail users.** Instead of blocking addresses, their engine adapts to bad behaviour in real time.
 
-Структурний зсув, який це створило: **prop AMM тепер ~75% DEX-обсягу Solana** (з них HumidiFi — понад 60%), а сегмент виріс з <10% до >70% частки приблизно за рік.
+The structural shift this created: **prop AMMs are now ~75% of Solana DEX volume** (of which HumidiFi is over 60%), and the segment grew from <10% to >70% share in about a year.
 
-**Чому це найсильніший ринковий аргумент за приватність у торгівлі.** Три чверті спотового обсягу Solana вже виконується проти непублічної логіки — і ринок від цього виграв: вужчі спреди, менше failed-транзакцій, гірші умови для токсичного потоку. Прозорість ціноутворення виявилась не цінністю, а вразливістю.
+**Why this is the strongest market argument for privacy in trading.** Three quarters of Solana spot volume already executes against non-public logic — and the market gained from it: tighter spreads, fewer failed transactions, worse conditions for toxic flow. Pricing transparency turned out to be not a value but a vulnerability.
 
-Формулювання для пітчу: *Solana вже обрала непрозорість там, де вона дає кращу ціну. Ми робимо те саме з іншого боку столу — ховаємо не котирування маркетмейкера, а позицію трейдера.*
+A wording for the pitch: *Solana has already chosen opacity where it gives a better price. We do the same from the other side of the table — we hide not the market maker's quote but the trader's position.*
 
-**Практична нота:** HumidiFi будує «універсальний шар ліквідності» з issuer-centric пулами під керуванням окремих десків. Якщо омнібус колись потребуватиме кращого виконання за пул Jupiter — це потенційний партнер, а не конкурент.
+**A practical note:** HumidiFi is building a "universal liquidity layer" with issuer-centric pools managed by separate desks. If the omnibus ever needs better execution than the Jupiter pool, this is a potential partner, not a competitor.
 
-**Обережно з доменами:** існує SEO-клон `humidifi.trade`, що видає себе за перп-DEX із власним «EDGE chain», StarkEx і прямим посиланням на APK. Справжній сайт — `humidifi.xyz`.
+**Careful with domains:** there is an SEO clone `humidifi.trade` that poses as a perp DEX with its own "EDGE chain", StarkEx and a direct APK link. The real site is `humidifi.xyz`.
 
-### 5.9 Патерни з GMX (EVM-еталон пулової моделі; GMTrade на Solana — його форк)
+### 5.9 Patterns from GMX (the EVM benchmark of the pool model; GMTrade on Solana is its fork)
 
-**Делегована торгівля документована як підтримуваний сценарій.** У доках GMX є окремий розділ «Delegated trading integration» для тих, хто будує делеговану або one-click торгівлю поверх протоколу. Тобто патерн «програма торгує за користувача» — не хак, а офіційний шлях інтеграції. Оскільки GMTrade на Solana є форком GMX V2, їхня модель делегування потенційно переноситься.
+**Delegated trading is documented as a supported scenario.** The GMX docs have a separate section "Delegated trading integration" for those building delegated or one-click trading on top of the protocol. So the pattern "a program trades on behalf of a user" is not a hack but an official integration path. Since GMTrade on Solana is a GMX V2 fork, their delegation model may carry over.
 
-**GMX Account — прямий аналог омнібусу за словником.** Окремий торговий баланс на Arbitrum, прив'язаний до того самого гаманця; депозити з інших чейнів автоматично мостяться (Stargate + LayerZero). Ключове формулювання з доків: це **два способи надати кошти для позицій, а не два окремі позиційні рахунки** — позиції належать гаманцю незалежно від джерела маржі. Готова мова для пояснення нашої конструкції.
+**GMX Account — a direct analogue of the omnibus by vocabulary.** A separate trading balance on Arbitrum tied to the same wallet; deposits from other chains are bridged automatically (Stargate + LayerZero). The key wording from the docs: these are **two ways of providing funds for positions, not two separate position accounts** — positions belong to the wallet regardless of the margin source. Ready language for explaining our construction.
 
-**One-Click Trading — EVM-аналог Session Keys з моделлю безпеки, яку варто скопіювати:**
-- ключ суб-акаунта зберігається локально, трейди підписуються автоматично;
-- **кошти від закриття позицій можуть повертатись тільки у власний гаманець користувача**;
-- **кількість дій без підпису обмежена авторизованим лімітом** (авторизував 10 — після десятої знову вікно підпису);
-- чесно названий ризик: компрометація середовища = витік ключа, і ліміт дій є єдиною страховкою.
+**One-Click Trading — the EVM analogue of Session Keys, with a security model worth copying:**
+- the sub-account key is stored locally, trades are signed automatically;
+- **funds from closing positions can return only to the user's own wallet**;
+- **the number of actions without a signature is limited by an authorized limit** (authorized 10 — after the tenth, a signature window again);
+- an honestly named risk: compromise of the environment = key leak, and the action limit is the only insurance.
 
-Останній пункт — доповнення до нашого session-token PDA: у нас були expiry і scope, ліміту кількості дій не було.
+The last point is an addition to our session-token PDA: we had expiry and scope, but no limit on the number of actions.
 
-**Per-market staleness thresholds.** Свіжість оракульної ціни в GMX — не одна константа, а параметр на ринок: від 15 секунд (акції, індекси) до 280 секунд (натуральний газ у неробочі години). Плюс off-hours пороги діють ще 10 хвилин після відкриття ринку, щоб не відхиляти звіти на переході. Для нашого ліквідаційного crank це означає: поріг застарілості ціни треба конфігурувати по ринках, а не задавати глобально.
+**Per-market staleness thresholds.** Oracle price freshness in GMX is not one constant but a per-market parameter: from 15 seconds (stocks, indices) to 280 seconds (natural gas off-hours). Plus off-hours thresholds apply for another 10 minutes after the market opens, so as not to reject reports at the transition. For our liquidation crank this means: the price staleness threshold must be configured per market, not set globally.
 
-**Аргумент для pain-слайда від інкумбента.** Перший абзац їхніх доків: GMX використовує оракульне ціноутворення з агрегованих біржових даних, **що зменшує ризик ліквідації від тимчасових віків**. Найбільший пуловий перп-DEX EVM-світу називає вік-ліквідації проблемою, яку спеціально проєктував обійти.
+**An argument for the pain slide from the incumbent.** The first paragraph of their docs: GMX uses oracle pricing from aggregated exchange data, **which reduces the risk of liquidation from temporary wicks**. The largest pool perp DEX of the EVM world names wick liquidations as a problem it was specifically designed to avoid.
 
-**Динамічні ризик-параметри як приклад зрілості.** Для TradFi-ринків GMX перемикає конфігурацію між on-hours і off-hours: знижує максимальне плече (100x → 25x на золоті), піднімає liquidation factor (0.5% → 0.8%), збільшує комісії й borrow, звужує ліміти відкритого інтересу. Інтерфейс попереджає, коли позиція може наблизитись до ліквідації після перемикання. Для нас це модель того, як мають поводитись cap'и омнібусу в періоди низької ліквідності.
+**Dynamic risk parameters as an example of maturity.** For TradFi markets GMX switches configuration between on-hours and off-hours: lowers max leverage (100x → 25x on gold), raises the liquidation factor (0.5% → 0.8%), increases fees and borrow, narrows open-interest limits. The interface warns when a position may approach liquidation after the switch. For us this is a model of how the omnibus caps should behave in periods of low liquidity.
 
 ---
 
-## Частина 6. Підсумкова матриця
+## Part 6. Summary matrix
 
-| Клітинка | Стан на Solana |
+| Cell | State on Solana |
 |---|---|
-| Публічні перпи, peer-to-pool | ✅ Jupiter, GMTrade, Flash, Adrena; **Percolator** (деплойований, формально верифікований, permissionless) |
-| Публічні перпи, CLOB | ✅ Pacifica, Velocity, Margin, Phoenix |
-| Роутинг/агрегація перпів | ✅ Ranger (з гаманця), Imperial (контракт-власник) |
-| Приватні перекази / депозити / DCA | ✅ Privacy Cash, Turbine, Vanish |
-| Приватні повідомлення | ✅ Cherry |
-| Приватний мережевий трафік | ✅ UR Network |
-| Конфіденційні обчислення | ✅ Arcium (MPC), MagicBlock PER (TEE) |
-| Мобільні перпи | ✅ Jupiter Mobile, Drift (публічні) |
-| Приватна логіка ціноутворення (prop AMM) | ✅ HumidiFi та ін. — ~75% DEX-обсягу |
-| **Приватна позиція з плечем** | ❌ **порожньо** |
-| **Приватний перп у dApp Store / на Seeker** | ❌ **порожньо** |
+| Public perps, peer-to-pool | ✅ Jupiter, GMTrade, Flash, Adrena; **Percolator** (deployed, formally verified, permissionless) |
+| Public perps, CLOB | ✅ Pacifica, Velocity, Margin, Phoenix |
+| Perp routing/aggregation | ✅ Ranger (from the wallet), Imperial (contract owner) |
+| Private transfers / deposits / DCA | ✅ Privacy Cash, Turbine, Vanish |
+| Private messages | ✅ Cherry |
+| Private network traffic | ✅ UR Network |
+| Confidential computation | ✅ Arcium (MPC), MagicBlock PER (TEE) |
+| Mobile perps | ✅ Jupiter Mobile, Drift (public) |
+| Private pricing logic (prop AMM) | ✅ HumidiFi and others — ~75% of DEX volume |
+| **A private leveraged position** | ❌ **empty** |
+| **A private perp in the dApp Store / on Seeker** | ❌ **empty** |
 
 ---
 
-## Джерела
+## Sources
 
-Soladex (огляди проєктів, оновлення липень–вересень 2026): Lavarage, Margin, Flash.Trade, Phoenix, Imperial, Ranger, Fensory, Cashflow, Cherry, Vanish, Turbine Cash, Arcium, Privacy Cash · DefiLlama (perps/chain/solana) · awesome-perp-dex (GitHub, curated list 2026) · Messari/Blockworks (Paradex) · The Defiant (Aster hidden orders, Aster Chain) · Solana Mobile Docs і Publisher Policy (21.07.2026) · MagicBlock Docs (PER, Session Keys, Pricing Oracle, prediction markets guide) · Google Play (Aster Mobile, Lighter) · офіційні сторінки x402 і Agent Registry на solana.com · Arcium Docs (MXE, Arx-вузли, Cerberus detect-and-abort, Arcis, «Private DeFi: encrypted positions» як канонічний юзкейс) · GitHub org flash-trade (flash-perpetuals як форк solana-labs/perpetuals, flash-sdk-rust, session-keys форк MagicBlock, magicblock-grpc-example, MCP) · Solana Docs, «Privacy for Financial Applications» (п'ять вимірів, Confidential Balances / Rings / Private Channels), «Private Channels» (SMT exclusion proof, MIT, Foundation GitHub), «Confidential Balances» (auditor keys, proof-акаунти), «MEV Protection with Jito DontFront» · Solana Docs, «Add Solana to Your Exchange» (priority fees по write-locked акаунтах, blockhash expiration, versioned tx v1, Token-2022 Confidential Balances) · Bullet docs (network extension на Solana, 0.1 мс виконання, вбудовані перпи/спот/лендинг) · Zeta Markets docs (дисклеймер про припинення роботи, травень 2025; $15B+ обсягу, CLOB, SDK/CPI) · crypto.news, «What is a perp DEX? The three architectures, compared» (липень 2026) — ланцюг ризику з ADL, арифметика плеча, регуляторний зріз · Logarithm Finance, «PerpDex Design Overview» (листопад 2024) — еволюція базових шарів, класифікація матчингу, пули vs книга на публічних чейнах, vault'и, застереження про wash trading і метрику обсяг/TVL · Bitium Blog, «Learn the Architecture of Perpetual DEXs + How to Build One» (жовтень 2025) і «On-Chain Copytrading in 2026: Perpetual DEX Vaults» (січень 2026) — тришарова рамка, компроміси інфраструктури, trustless exit Lighter · MEXC/BitcoinEthereumNews — Percolator (Anatoly Yakovenko, шардовані слаби) · Incrypted, «Деривативні платформи: як вони влаштовані» (серпень 2026) — класифікація архітектур, комісії, Bluefin, кейс JELLYJELLY · GMX Docs (trading overview, delegated trading, One-Click Trading, TradFi risk windows) · ApeX Omni (огляди 2026: zkLink X, мультичейн, Solana як чейн депозиту) · HumidiFi Litepaper (humidifi.xyz — prop AMM, частки ринку) · Aztec (огляд архітектури: PXE, notes/nullifiers, три ключі, портали; історія Aztec Connect) · RAILGUN Developer Guide (cross-contract calls, Cookbook, view-only wallets) · власна mainnet-симуляція Jupiter Perps (вересень 2026).
+Soladex (project reviews, updates July–September 2026): Lavarage, Margin, Flash.Trade, Phoenix, Imperial, Ranger, Fensory, Cashflow, Cherry, Vanish, Turbine Cash, Arcium, Privacy Cash · DefiLlama (perps/chain/solana) · awesome-perp-dex (GitHub, curated list 2026) · Messari/Blockworks (Paradex) · The Defiant (Aster hidden orders, Aster Chain) · Solana Mobile Docs and Publisher Policy (21.07.2026) · MagicBlock Docs (PER, Session Keys, Pricing Oracle, prediction markets guide) · Google Play (Aster Mobile, Lighter) · the official x402 and Agent Registry pages on solana.com · Arcium Docs (MXE, Arx nodes, Cerberus detect-and-abort, Arcis, "Private DeFi: encrypted positions" as the canonical use case) · GitHub org flash-trade (flash-perpetuals as a fork of solana-labs/perpetuals, flash-sdk-rust, MagicBlock session-keys fork, magicblock-grpc-example, MCP) · Solana Docs, "Privacy for Financial Applications" (five dimensions, Confidential Balances / Rings / Private Channels), "Private Channels" (SMT exclusion proof, MIT, Foundation GitHub), "Confidential Balances" (auditor keys, proof accounts), "MEV Protection with Jito DontFront" · Solana Docs, "Add Solana to Your Exchange" (priority fees on write-locked accounts, blockhash expiration, versioned tx v1, Token-2022 Confidential Balances) · Bullet docs (network extension on Solana, 0.1 ms execution, built-in perps/spot/lending) · Zeta Markets docs (shutdown disclaimer, May 2025; $15B+ volume, CLOB, SDK/CPI) · crypto.news, "What is a perp DEX? The three architectures, compared" (July 2026) — the risk chain with ADL, leverage arithmetic, regulatory snapshot · Logarithm Finance, "PerpDex Design Overview" (November 2024) — evolution of base layers, matching classification, pools vs books on public chains, vaults, the wash-trading caveat and the volume/TVL metric · Bitium Blog, "Learn the Architecture of Perpetual DEXs + How to Build One" (October 2025) and "On-Chain Copytrading in 2026: Perpetual DEX Vaults" (January 2026) — the three-layer frame, infrastructure trade-offs, Lighter's trustless exit · MEXC/BitcoinEthereumNews — Percolator (Anatoly Yakovenko, sharded slabs) · Incrypted, "Derivative platforms: how they work" (August 2026) — architecture classification, fees, Bluefin, the JELLYJELLY case · GMX Docs (trading overview, delegated trading, One-Click Trading, TradFi risk windows) · ApeX Omni (2026 reviews: zkLink X, multichain, Solana as a deposit chain) · HumidiFi Litepaper (humidifi.xyz — prop AMM, market shares) · Aztec (architecture overview: PXE, notes/nullifiers, three keys, portals; Aztec Connect history) · RAILGUN Developer Guide (cross-contract calls, Cookbook, view-only wallets) · our own mainnet simulation of Jupiter Perps (September 2026).
 
-**Застереження:** обсяги, комісії й статуси протоколів змінюються швидко; частина цифр — вторинні джерела. Перед використанням у публічних матеріалах перевіряти на першоджерелах.
+**Caveat:** volumes, fees and protocol statuses change quickly; some numbers are from secondary sources. Check primary sources before using them in public materials.

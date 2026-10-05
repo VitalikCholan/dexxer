@@ -1,6 +1,6 @@
 # Тиждень 6 — бек-лог (узгоджено 24.09.2026)
 
-Джерела: фінальне ревʼю тижня 5 (`week5-results.md`, ризики #37–39), виміри Task 7, smoke-тест із реальним
+Джерела: фінальне ревʼю тижня 5 (`weeks0-5-history.md#week-5`, ризики #37–39), виміри Task 7, smoke-тест із реальним
 Phantom (24.09), доки MagicBlock (fees, runtime limits, magic actions), джерела `magicblock-validator`
 (committor `TaskStrategist`). Пріоритет: **надійність → безпека/міграція → продукт**. Спека — новий §2.7
 (brainstorming → writing-plans → SDD), як у тижнях 3–5.
@@ -9,7 +9,7 @@ Phantom (24.09), доки MagicBlock (fees, runtime limits, magic actions), дж
 і свічки `1m/1h/1d` у Postgres задеплоєно на devnet (деплоймент `0968a8e6`), бекфіл історії — Hyperliquid без ключа
 (Pyth Pro відкинуто), атрибуція TradingView увімкнена, smoke апки на AVD PASS; лишились release-APK і Postgres-тести
 локально. Поза бек-логом: ✅ ретеншн `ticks` (7 діб); ✅ стейл-тіки оракула більше не пишуться в БД. Виміри —
-`week6-results.md` «Графік C.5, частина 2»; правила — CLAUDE.md «Правила тижня 6: графік…». Решта зведення — як на 01.10.
+`week6-history.md` «Графік C.5, частина 2»; правила — CLAUDE.md «Правила тижня 6: графік…». Решта зведення — як на 01.10.
 
 **Статус (04.10.2026, ніч): два рішення по 6.B.** Режим маржі — лише Isolated, перемикач Isolated/Cross знято ⛔ (обґрунтування в 6.B, spec §1.1). Borrow Rate — ⏸ не для devnet, відкладено до мейннет-плану (утилізація пулу ≈1 %, зміна лейауту слота — робити одним апгрейдом зі stop-limit і резервуванням маржі; дешевий UI-плейсхолдер зараз). 6.B лишається 🟡 через залишки ордерів.
 
@@ -17,7 +17,7 @@ Phantom (24.09), доки MagicBlock (fees, runtime limits, magic actions), дж
 `Fyg2…UfCY` (слот `507294602`, `extend` 32 768 Б ≈0.17 SOL + деплой), relayer — деплоймент `58089680`; `/assets/*` живий. Smoke
 на AVD з легасі-гаманцем `2TQe…`: Token info ✅ на живих числах, `OrdersUnsupported` (6054) на `place_order` ✅ — фікс блокера 3
 працює на мережі; новий гаманець з Limit-ордером ⏸ відкладено. Знахідка: тост з помилкою ховається під `Modal`-шітом (нижче, 6.B).
-Деталі — `week6-results.md` «Деплой на devnet і smoke, 04.10.2026».
+Деталі — `week6-history.md` «Деплой на devnet і smoke, 04.10.2026».
 
 **Статус (04.10.2026, вечір; два PR колеги змерджено в `main`, тоді ще не деплоєно):**
 - **PR #14 «умовні ордери» — змерджено 06:43 UTC (`c459847`).** Пункт 6.B 🟡: Limit/Stop-market/TP/SL/Trailing у `main`;
@@ -26,12 +26,12 @@ Phantom (24.09), доки MagicBlock (fees, runtime limits, magic actions), дж
   6.B Borrow Rate ⬜; stop-limit і виконання ордерів кранком relayer-а — не зроблено. Середні зауваження ревʼю відкриті
   (список у пункті 6.B нижче).
 - **PR #15 «Token information» — змерджено 07:40 UTC (`2bfe24a`).** Пункт 7 ✅ у коді: relayer `GET /assets/:symbol`
-  (CoinGecko без ключа, кеш 10 хв), вкладка Token info під графіком. Ревʼю 04.10 без блокерів (`week6-results.md`
+  (CoinGecko без ключа, кеш 10 хв), вкладка Token info під графіком. Ревʼю 04.10 без блокерів (`week6-history.md`
   «Token information»); дрібниці відкриті: повідомлення «not available» і на мережеву помилку, env `ASSETS_*`/`COINGECKO_API_KEY`
   не внесено в `docs/deployments.md`.
 - **Наступний крок — розкатка на devnet (гейти власника):** `anchor build` → `solana program deploy` нової збірки на
   `Fyg2…UfCY` (апгрейд, не новий id — legacy-акаунти переживають завдяки опційному хвосту) → `railway up` relayer-а тим самим
-  заходом (новий декодер, `/assets`) → виміри з `week6-results.md` «Не виміряно на devnet»: smoke-гаманець `2TQe…` (3184 Б)
+  заходом (новий декодер, `/assets`) → виміри з `week6-history.md` «Не виміряно на devnet»: smoke-гаманець `2TQe…` (3184 Б)
   має отримати `OrdersUnsupported` на ордер і далі торгувати; новий гаманець — Limit без позиції, виконання планувальником
   за фактом, не за успіхом tx; CU `run_orders`; `/assets/SOL` з живого relayer-а. Правила — CLAUDE.md «Правила умовних
   ордерів» і «Правила Token information».
@@ -43,7 +43,7 @@ B.1 ✅ (+ `SIWS_DOMAIN` на prod 01.10), B.2 ⛔ → чистий старт �
 C.1 ✅ (мульти-маркет на devnet: SOL/BTC/ETH/HYPE/ZEC), C.2 🟡, C.3 ⬜, C.4 🟡, C.5 🟡, C.6-A 🟡, C.6-B ⬜, C.7 🟡.
 Поза бек-логом: ⛔ `/disclosures`, `/stats` видалено разом із розкриттям (план 2); ✅ `GET /markets`,
 `?market=`, `/ws?markets=*`; ✅ рефакторинг `app/` (PR #7); ✅ прапорці фіч (PR #9; `ledger`/`commitReveal`
-прибрано в плані 3). Виміри плану 4 — `week6-results.md`; правила — CLAUDE.md «Правила тижня 6: позиції-слоти…».
+прибрано в плані 3). Виміри плану 4 — `week6-history.md`; правила — CLAUDE.md «Правила тижня 6: позиції-слоти…».
 
 **Статус (29.09.2026, історично):** A — ⬜ усе; B.1 ✅ (PR #8), B.2 ⬜, B.3 ✅ (M-K тижня 5), B.4 ✅ (PR #7);
 C.1 🟡 програма (PR #10), C.2 🟡 відео, C.3 ⬜, C.4 🟡 / C.5 🟡 / C.6-A 🟡 / C.7 🟡 Trading rules (PR #9), C.6-B ⬜.
