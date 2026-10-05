@@ -23,7 +23,7 @@ import { Button } from '@/src/ui/Button'
 import { Skeleton } from '@/src/ui/Skeleton'
 import { showToast } from '@/src/ui/Toast'
 import { useLiveAccount } from '@/src/lib/live'
-import { useCandles, useIndexerConnected, useMark, usePoolHistory } from '@/src/lib/indexer'
+import { useCandles, useIndexerConnected, useMark } from '@/src/lib/indexer'
 import { decodeUserAccount, readMarket, type SideName } from '@/src/lib/codecs'
 import { describeTxError } from '@/src/lib/errors'
 import { useSelectedMarket } from '@/src/lib/markets'
@@ -66,7 +66,6 @@ export function TradeScreen() {
   const userLive = useLiveAccount(conn, base?.userAccount ?? null, decodeUserAccount)
   const mark = useMark(symbol)
   const change24h = useCandles(symbol, '15m', 96)
-  const pool = usePoolHistory(1)
   const indexerConnected = useIndexerConnected()
 
   // Right after a switch the subscription still holds the previous market for
@@ -229,14 +228,7 @@ export function TradeScreen() {
           range={rangeStats(change24h.data, now * 1000)}
         />
 
-        <ChartSection
-          symbol={symbol}
-          tf={tf}
-          onTfChange={setTf}
-          position={position}
-          market={market}
-          poolCapital={pool.data?.length ? pool.data[pool.data.length - 1].capitalTotal : null}
-        />
+        <ChartSection symbol={symbol} tf={tf} onTfChange={setTf} position={position} market={market} />
 
         {oracle.reason === 'loading' ? (
           <Skeleton lines={1} />

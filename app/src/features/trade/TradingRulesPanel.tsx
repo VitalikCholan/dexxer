@@ -1,8 +1,8 @@
 // app/src/features/trade/TradingRulesPanel.tsx
 //
-// C.7 "Trading rules" tab next to the chart: `tradingRules.ts`'s groups as
-// label / value rows. Everything here is public `Market` state (and the
-// public `Pool` snapshot); the tab has nothing private to show.
+// The "Trading rules" section of the Info tab next to the chart:
+// `tradingRules.ts`'s groups as label / value rows. Everything here is public
+// `Market` state; the section has nothing private to show.
 import { Text, View } from 'react-native'
 import { useTheme } from '@/src/theme'
 import { useTextStyle } from '@/src/ui/styles'
@@ -11,22 +11,17 @@ import { Skeleton } from '@/src/ui/Skeleton'
 import { type TicketMarket } from './marketLimits'
 import { tradingRules } from './tradingRules'
 
-export function TradingRulesPanel({
-  market,
-  poolCapital,
-}: {
-  market: TicketMarket | null
-  poolCapital: bigint | null
-}) {
+export function TradingRulesPanel({ market }: { market: TicketMarket | null }) {
   const { colors, space } = useTheme()
+  const heading = useTextStyle('heading')
   const micro = useTextStyle('micro')
-  const caption = useTextStyle('caption')
 
   if (!market) return <Skeleton lines={6} />
 
   return (
     <View style={{ gap: space.lg }}>
-      {tradingRules(market, poolCapital).map((g) => (
+      <Text style={[heading, { color: colors.textPrimary }]}>Trading rules</Text>
+      {tradingRules(market).map((g) => (
         <View key={g.title} style={{ gap: space.xs }}>
           <Text style={[micro, { color: colors.textTertiary }]}>{g.title}</Text>
           {g.rows.map((r) => (
@@ -34,9 +29,6 @@ export function TradingRulesPanel({
           ))}
         </View>
       ))}
-      <Text style={[caption, { color: colors.textTertiary }]}>
-        Read live from the on-chain market. Current open interest is private and not shown.
-      </Text>
     </View>
   )
 }

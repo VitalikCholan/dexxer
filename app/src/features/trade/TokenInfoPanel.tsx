@@ -1,6 +1,6 @@
 // app/src/features/trade/TokenInfoPanel.tsx
 //
-// C.7 «Token information» tab: name / ticker / rank / launch date, the
+// C.7 «Token information» (the Info tab's first section): name / ticker / rank / launch date, the
 // Overview · Utility and Mechanics · Ecosystem texts (collapsible), All-time
 // high / low cards, the market-data table and Website / Whitepaper / Explorer /
 // GitHub links. Everything comes from the relayer's `/assets/:symbol`; it is
