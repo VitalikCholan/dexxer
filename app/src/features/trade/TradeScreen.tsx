@@ -41,7 +41,6 @@ import * as math from '@/src/lib/math'
 import { ChartSection, type Tf } from './ChartSection'
 import { TradeActivity } from './TradeActivity'
 import { TradeHeader } from './TradeHeader'
-import { MarketInfoCard } from './MarketInfoCard'
 import { maxLeverage, rangeStats } from './headerStats'
 import { TradeTicket, type Exits, type MarketParams } from './TradeTicket'
 import { decodeTicketMarket } from './marketLimits'
@@ -294,8 +293,6 @@ export function TradeScreen() {
           busy={busy}
           onCancel={(slot) => void handleCancel(slot)}
         />
-
-        <MarketInfoCard symbol={symbol} market={market} />
       </ScrollView>
     </Page>
   )

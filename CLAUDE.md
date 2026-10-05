@@ -199,3 +199,4 @@ A private perpetual DEX for Solana Seeker. A position is visible only to its own
 - `GET /markets` carries `name` from `services/relayer/assets/assets.json` (`null` when absent). A new market needs an `assets.json` entry for its name and an official brand SVG in `AssetIcon` (`BRAND_ICON_SYMBOLS` + `GLYPHS`; otherwise a letter avatar — never a traced logo). SOL, BTC, ETH, HYPE and ZEC ship brand marks (sources listed in `AssetIcon.tsx`).
 - A row in the markets list is two sibling buttons (row, ★): a nested `Pressable` inside an accessible one is invisible to TalkBack on Android.
 - The ticket's submit button always names the market (`submitLabel`).
+- There is no "About <SYMBOL>-PERP" card at the bottom of Trade (removed 05.10.2026: it repeated the Info tab and showed the oracle and the pool). The Perpetuals explainer and the risk disclosure are linked from Settings → Learn (`SettingsLearn.tsx`) — the only entry point to `/info/*`, keep it.
