@@ -26,6 +26,9 @@ export interface SegmentProps<T> {
 export function Segment<T extends string | number>({ options, value, onChange, tone, compact }: SegmentProps<T>) {
   const { colors, space, radius, control } = useTheme()
   const textStyle = useTextStyle(compact ? 'body' : 'bodyStrong', { mono: compact })
+  // Drawn option height: compact = text + paddingVertical; full = segmentHeight minus the 2 dp container padding.
+  const optionHeight = compact ? (textStyle.lineHeight ?? 0) + 2 * space.sm : control.segmentHeight - 2 * 2
+  const optionSlop = Math.max(0, (control.minHitTarget - optionHeight) / 2)
 
   return (
     <View
@@ -56,6 +59,8 @@ export function Segment<T extends string | number>({ options, value, onChange, t
           <Pressable
             key={String(opt.value)}
             accessibilityRole="button"
+            // Vertical touch area up to control.minHitTarget; options sit edge to edge, so no horizontal slop.
+            hitSlop={{ top: optionSlop, bottom: optionSlop }}
             accessibilityState={{ selected }}
             onPress={() => onChange(opt.value)}
             style={({ pressed }) => ({

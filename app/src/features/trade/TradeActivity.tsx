@@ -107,8 +107,8 @@ export function TradeActivity({
               opacity: pressed ? 0.7 : 1,
             })}
           >
-            <Text style={[link, { color: colors.accent }]}>Manage in Positions</Text>
-            <Text style={[link, { color: colors.accent }]}>›</Text>
+            <Text style={[link, { color: colors.accentText }]}>Manage in Positions</Text>
+            <Text style={[link, { color: colors.accentText }]}>›</Text>
           </Pressable>
         </View>
       )}

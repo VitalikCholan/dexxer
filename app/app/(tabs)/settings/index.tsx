@@ -32,7 +32,7 @@ export default function TabSettingsScreen() {
         <Text style={[heading, { color: colors.textPrimary }]}>Developer</Text>
         {DEVELOPER_LINKS.map((l) => (
           <Link key={l.href} href={l.href} asChild>
-            <Text style={StyleSheet.flatten([link, { color: colors.accent, lineHeight: 30 }])}>{l.label}</Text>
+            <Text style={StyleSheet.flatten([link, { color: colors.accentText, lineHeight: 30 }])}>{l.label}</Text>
           </Link>
         ))}
       </View>

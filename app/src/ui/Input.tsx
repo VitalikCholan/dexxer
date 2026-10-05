@@ -53,7 +53,7 @@ export function Input({ label, value, onChangeText, suffix, hint, onMax, placeho
         {suffix ? <Text style={[suffixStyle, { color: colors.textSecondary }]}>{suffix}</Text> : null}
         {onMax ? (
           <Pressable onPress={onMax} hitSlop={maxHitSlop} style={linkPressStyle}>
-            <Text style={[labelStyle, { color: colors.accent }]}>MAX</Text>
+            <Text style={[labelStyle, { color: colors.accentText }]}>MAX</Text>
           </Pressable>
         ) : null}
       </View>

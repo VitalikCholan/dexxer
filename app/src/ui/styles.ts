@@ -36,7 +36,7 @@ export function useToneColors(): Record<Tone, { fg: string; bg: string }> {
     // No dedicated "pending" token in docs/design/tokens.json — derived from
     // `accent` (the app's one in-flight/active-state color) rather than
     // invented; see task-8 report.
-    pending: { fg: colors.accent, bg: colors.accentSubtle },
+    pending: { fg: colors.accentText, bg: colors.accentSubtle },
     success: { fg: colors.long, bg: colors.longSubtle },
     warning: { fg: colors.warning, bg: colors.warningSubtle },
     danger: { fg: colors.short, bg: colors.shortSubtle },

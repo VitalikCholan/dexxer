@@ -57,7 +57,7 @@ function Section({ title, body }: { title: string; body: string }) {
           hitSlop={linkHitSlop}
           style={linkPressStyle}
         >
-          <Text style={[link, { color: colors.accent }]}>{open ? 'Show less' : 'Show more'}</Text>
+          <Text style={[link, { color: colors.accentText }]}>{open ? 'Show less' : 'Show more'}</Text>
         </Pressable>
       ) : null}
     </View>

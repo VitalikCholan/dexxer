@@ -58,8 +58,8 @@ export function MarketInfoCard({ symbol, market }: { symbol: string; market: Tic
               opacity: pressed ? 0.7 : 1,
             })}
           >
-            <Text style={[link, { color: colors.accent }]}>{l.label}</Text>
-            <Text style={[link, { color: colors.accent }]}>›</Text>
+            <Text style={[link, { color: colors.accentText }]}>{l.label}</Text>
+            <Text style={[link, { color: colors.accentText }]}>›</Text>
           </Pressable>
         ))}
       </View>

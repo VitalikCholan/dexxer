@@ -13,9 +13,10 @@ export const colors = {
   borderStrong: '#323847',
   textPrimary: '#EDEFF4',
   textSecondary: '#8A93A5',
-  textTertiary: '#6C7484',
+  textTertiary: '#7E8798',
   textInverse: '#05060A',
   accent: '#7A5CFF',
+  accentText: '#8A71FD',
   accentPressed: '#6A4CEF',
   accentSubtle: 'rgba(122,92,255,0.14)',
   long: '#2FBF7F',
@@ -117,7 +118,7 @@ export const layout = {
 } as const
 
 export const control = {
-  minHitTarget: 44,
+  minHitTarget: 48,
   buttonHeight: 52,
   inputHeight: 52,
   segmentHeight: 40,

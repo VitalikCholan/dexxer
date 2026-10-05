@@ -48,13 +48,18 @@ export interface TradingChartProps {
 }
 
 function Pill({ label, active, onPress }: { label: string; active?: boolean; onPress: () => void }) {
-  const { colors, space, radius, border } = useTheme()
+  const { colors, space, radius, border, control } = useTheme()
   const style = useTextStyle('caption', { mono: true })
+  // The pill is drawn 28 dp tall; the touch area reaches control.minHitTarget vertically only,
+  // so neighbouring pills (gap space.xs) never steal each other's taps.
+  const drawn = (style.lineHeight ?? 0) + 2 * space.xs + 2 * border.hairline
+  const slop = Math.max(0, (control.minHitTarget - drawn) / 2)
   return (
     <Pressable
       accessibilityRole="button"
       accessibilityState={{ selected: !!active }}
       onPress={onPress}
+      hitSlop={{ top: slop, bottom: slop }}
       style={({ pressed }) => ({
         paddingHorizontal: space.sm,
         paddingVertical: space.xs,
@@ -329,7 +334,7 @@ export function TradingChart({ symbol, tf, onTfChange, position }: TradingChartP
                 }}
                 style={{ flex: 1, paddingVertical: space.sm }}
               >
-                <Text style={[body, { color: t.id === prefs.type ? colors.accent : colors.textPrimary }]}>
+                <Text style={[body, { color: t.id === prefs.type ? colors.accentText : colors.textPrimary }]}>
                   {t.label}
                 </Text>
               </Pressable>

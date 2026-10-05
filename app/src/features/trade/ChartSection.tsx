@@ -65,7 +65,7 @@ export function ChartSection({ symbol, tf, onTfChange, position, market, poolCap
           hitSlop={toggleHitSlop}
           style={linkPressStyle}
         >
-          <Text style={[micro, { color: colors.accent }]}>{open ? 'Hide' : 'Show'}</Text>
+          <Text style={[micro, { color: colors.accentText }]}>{open ? 'Hide' : 'Show'}</Text>
         </Pressable>
       </View>
       {!open ? null : tab === 'chart' ? (

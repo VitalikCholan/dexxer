@@ -76,6 +76,6 @@ function variantColors(
     case 'long':
       return { bg: colors.long, fg: colors.textInverse }
     case 'ghost':
-      return { bg: pressed ? colors.accentSubtle : 'transparent', fg: colors.accent }
+      return { bg: pressed ? colors.accentSubtle : 'transparent', fg: colors.accentText }
   }
 }
