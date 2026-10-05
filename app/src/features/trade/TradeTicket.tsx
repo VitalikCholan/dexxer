@@ -73,8 +73,6 @@ export interface TradeTicketProps {
 }
 
 export function TradeTicket({ position, onClose, ...open }: TradeTicketProps) {
-  const { colors } = useTheme()
-  const caption = useTextStyle('caption')
   const [tab, setTab] = useState<'open' | 'close'>('open')
   const hasOpenPosition = position !== null
   // No slot on this market: the Close tab is not offered at all, and a full
@@ -112,9 +110,6 @@ export function TradeTicket({ position, onClose, ...open }: TradeTicketProps) {
           onClose={onClose}
         />
       )}
-      <Text style={[caption, { color: colors.textSecondary, textAlign: 'center' }]}>
-        No wallet prompt — signed by your session key
-      </Text>
     </Card>
   )
 }
