@@ -67,7 +67,7 @@ import {
 } from "./program.js";
 
 export const LAZER_FEED_ID = "6";
-// devnet-tee's validator-scoped magic fee vault (M3, week2-results.md §Task 1):
+// devnet-tee's validator-scoped magic fee vault (M3, weeks0-5-history.md#week-2 §Task 1):
 // `magicFeeVaultPdaFromValidator(ER_VALIDATOR)` = this address, measured with
 // 8.39 SOL funded. Local mb-stack keeps `PublicKey.default()` (no fee-vault
 // requirement there).
@@ -779,7 +779,7 @@ export async function bootstrapDevnet(): Promise<BootstrappedDevnet> {
         // signer of ALREADY-scheduled ticks on a different, simpler spike
         // program; it is NOT what the Magic Program accepts as a signer
         // inside `dexxer_core`'s own scheduled `crank_tick`, see
-        // `crank-signer.ts` and week2-results.md §Task 6 for the full
+        // `crank-signer.ts` and weeks0-5-history.md#week-2 §Task 6 for the full
         // evidence trail). An EXISTING Config still needs a real
         // `set_scheduler_signer` call — see `scripts/admin/set-scheduler-signer.ts`.
         crankSignerPda(admin.publicKey),

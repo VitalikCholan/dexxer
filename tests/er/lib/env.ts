@@ -12,7 +12,7 @@
 // `local`, so every value below is byte-identical to week 1 when the env
 // var is unset) plus `ROUTER`/`routerStatus` and `teeConn` for real devnet +
 // `devnet-tee.magicblock.app`. Addresses for the `devnet` profile are the
-// ones fixed in `docs/superpowers/plans/2026-09-20-week2-privacy-devnet.md`
+// ones fixed in `docs/superpowers/plans/weeks0-5-history.md#week-2`
 // (Global Constraints) and already spiked in `spikes/lib/env.ts` (week 0).
 
 import { Connection, Keypair, LAMPORTS_PER_SOL, PublicKey, Transaction, TransactionInstruction } from "@solana/web3.js";
@@ -67,7 +67,7 @@ const PROFILES: Record<Net, NetProfile> = {
     er: "http://127.0.0.1:7799",
     erWs: "ws://127.0.0.1:7800",
     public: "http://127.0.0.1:6699",
-    router: "http://127.0.0.1:6699", // mb-stack's query-filtering service also answers getDelegationStatus (see week1-results.md)
+    router: "http://127.0.0.1:6699", // mb-stack's query-filtering service also answers getDelegationStatus (see weeks0-5-history.md#week-1)
     validator: "mAGicPQYBMvcYveUZA5F5UNNwyHvfYh5xkLS2Fr1mev",
     oracle: "68xBWNR1uKorC7keLWvsT1pCmKC4RnwvRF4LoV3CCprh", // mock_oracle program id (localnet/LiteSVM only)
   },

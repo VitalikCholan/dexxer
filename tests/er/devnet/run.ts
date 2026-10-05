@@ -8,7 +8,7 @@
 // try/catch by the runner so a failure in one does not abort the rest.
 // Ground truth (signatures, addresses, tables) is printed to stdout; the
 // full transcript is the evidence pasted into
-// docs/superpowers/plans/week2-results.md and the task-1 report.
+// docs/superpowers/plans/weeks0-5-history.md#week-2 and the task-1 report.
 //
 // Preconditions (see task-1 report for the exact commands run):
 //  - spikes/05-crank-tee: `anchor keys sync` (new id, old on-chain program was

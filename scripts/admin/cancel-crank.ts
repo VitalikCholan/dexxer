@@ -1,6 +1,6 @@
 // scripts/admin/cancel-crank.ts
 //
-// Task 6 fix round 3: exercise `cancel_crank` for real (week2-results.md
+// Task 6 fix round 3: exercise `cancel_crank` for real (weeks0-5-history.md#week-2
 // Task 1's task-context finding left `CancelCrankCpi`'s account requirements
 // UNMEASURED — no `schedule_crank` call had ever succeeded to cancel). Stops
 // the Magic Actions task registered by `schedule-crank.ts`.

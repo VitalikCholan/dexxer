@@ -9,7 +9,7 @@
 // fix round 2 hit twice (that restriction is scoped to that one CPI's
 // `instruction_accounts`, not to base-layer instructions in general — see
 // `programs/dexxer_core/src/instructions/admin.rs`'s `set_scheduler_signer`
-// doc comment and week2-results.md §Task 6 for the full evidence trail).
+// doc comment and weeks0-5-history.md#week-2 §Task 6 for the full evidence trail).
 //
 // Run this ONCE before `schedule-crank.ts` (existing devnet Config; a fresh
 // bootstrap already seeds the field correctly via `bootstrapDevnet()`'s

@@ -2,7 +2,7 @@
 //
 // Owner-side TEE (PER) connection: `devnet-tee.magicblock.app` requires a
 // `?token=` from `getAuthToken`, proven by signing a challenge message with
-// the identity being authenticated (spike-07, week2-results.md §Task 1
+// the identity being authenticated (spike-07, weeks0-5-history.md#week-2 §Task 1
 // M1/M2, `tests/er/lib/env.ts`'s `teeConn`). For the OWNER, that signature
 // has to come from Mobile Wallet Adapter (`signMessages`) — there is no
 // local owner key. `session.ts` has the session-key equivalent, which signs

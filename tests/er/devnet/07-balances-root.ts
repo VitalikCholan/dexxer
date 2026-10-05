@@ -91,7 +91,7 @@ async function main() {
   async function runRootCycleInline(): Promise<{ filled: number; rootSlotEr: bigint; owners: InstanceType<typeof PublicKey>[] }> {
     const userAccs = await crankConn.getProgramAccounts(crankCore.programId, { filters: [{ memcmp: { offset: 0, bytes: USER_DISC } }] });
     // LEGACY-LAYOUT FINDING (measured while building this script — see
-    // week3-results.md §Task 8): this devnet deployment carries `UserAccount`
+    // weeks0-5-history.md#week-3 §Task 8): this devnet deployment carries `UserAccount`
     // PDAs from before `exit_salt`/`last_withdraw_slot` were added to the
     // struct (weeks 1-2 testing, same program id, never migrated) — 150B
     // (current) vs 110B/118B (pre-week3). `set_balances_root`'s Rust loop

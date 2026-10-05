@@ -25,7 +25,7 @@
 //
 // `crank` account / signer identity history (see
 // `tests/er/lib/crank-signer.ts` for the current derivation and its pinned
-// validator source, and week2-results.md §Task 6 for the full evidence
+// validator source, and weeks0-5-history.md#week-2 §Task 6 for the full evidence
 // trail across all three fix rounds):
 //   - fix round 1: flat `CRANK_SIGNER` — failed on-chain ("only the crank
 //     signer PDA can be a signer in cranks").
@@ -60,7 +60,7 @@
 //
 // task_context (ScheduleCrank's 7th remaining_account, matches the on-chain
 // `expected` order [task_context, crank, config, market, market_risk, pool,
-// feed]): week2-results.md Task 1's task-context finding — neither
+// feed]): weeks0-5-history.md#week-2 Task 1's task-context finding — neither
 // `ephemeral-rollups-sdk` 0.16.2 nor `magicblock-magic-program-api` 0.10.1
 // expose an on-chain PDA derivation for this account, and empirically *any*
 // consistent, already-existing account works at this position (a spike

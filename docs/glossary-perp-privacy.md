@@ -1,189 +1,171 @@
-# Глосарій: перпи, ліквідність, приватність
+# Glossary: perps, liquidity, privacy
 
-Терміни, розібрані в дослідженні під проєкт Cloak. Впорядковано за темами; усередині — від базового до складнішого.
-
----
-
-## 1. Базове
-
-**Ліквідність** — наскільки легко купити або продати актив, не зрушивши його ціну. Ліквідний ринок: багато учасників, вузький спред, великий ордер проходить майже за ціною з екрана. Тонкий ринок: мало учасників, продаж займає тижні або вимагає знижки. Найдефіцитніший ресурс у DeFi: побудувати біржу легко, знайти тих, хто стоятиме на іншому боці — важко.
-
-**Ліквідний актив** — багато покупців і продавців, ціна відома щосекунди (SOL, BTC, акції Apple).
-**Неліквідний актив** — угоди рідкісні, ціни немає, є лише оцінка (квартира, рідкісна картка, частка в бізнесі). Продати можна, але або тижнями, або зі знижкою 20–40%.
-
-**Спред** — різниця між найкращою ціною купівлі й продажу.
-**Проковзування (slippage)** — наскільки гірше за очікувану ціну виконався ордер.
-**Глибина** — скільки можна купити чи продати, перш ніж ціна помітно зрушить.
-
-**Дериватив** — контракт, вартість якого залежить від ціни іншого активу. Сам по собі нічого не вартий; квиток на потяг не є потягом, але його ціна залежить від потяга.
-
-**Ф'ючерс** — зобов'язання купити або продати актив у майбутньому за домовленою ціною. Обидві сторони зобов'язані виконати.
-
-**Перпетуальний контракт (перп)** — крипто-винахід: ф'ючерс без дати експірації. Тримається скільки завгодно, прив'язку до споту утримує ставка фінансування.
-
-**Опціон** — право, але не обов'язок купити або продати за фіксованою ціною до певної дати. Максимальний збиток покупця — сплачена премія. Аналогія: завдаток за квартиру, що фіксує ціну на три місяці.
+General market terms covered in the research for the project. Ordered by topic; within each, from basic to more advanced. Dexxer's own terms are in `CONTEXT.md`.
 
 ---
 
-## 2. Механіка торгівлі
+## 1. Basics
 
-**Книга ордерів (стакан)** — дві колонки заявок: покупці (bids) знизу, продавці (asks) зверху. Заявки — не «лонг» і «шорт», а купівля й продаж за конкретною ціною: одна й та сама купівля може відкривати лонг одному й закривати шорт іншому.
+**Liquidity** — how easily an asset can be bought or sold without moving its price. A liquid market: many participants, a narrow spread, a large order fills almost at the on-screen price. A thin market: few participants, a sale takes weeks or requires a discount. The scarcest resource in DeFi: building an exchange is easy, finding those who will stand on the other side is hard.
 
-**Тейкер** — забирає наявну заявку зі стакана, отримує негайне виконання, платить вищу комісію.
-**Мейкер** — ставить заявку й чекає, додає ліквідність, платить менше або отримує ребейт.
+**Liquid asset** — many buyers and sellers, the price is known every second (SOL, BTC, Apple stock).
+**Illiquid asset** — trades are rare, there is no price, only an estimate (an apartment, a rare card, a stake in a business). It can be sold, but either over weeks or at a 20–40% discount.
 
-**Ринковий ордер (market)** — «купи негайно за найкращою ціною». Виконання гарантоване, ціна — ні.
-**Лімітний ордер (limit)** — «купи не дорожче за X». Ціна гарантована, виконання — ні.
-**Stop-loss** — автоматичний продаж при падінні до заданої ціни; обмежує збиток.
-**Take-profit** — автоматичний продаж при досягненні цілі; фіксує прибуток.
-**DCA (dollar-cost averaging)** — розбиття великої угоди на серію дрібних у часі або по цінових рівнях.
-**Trailing order** — стоп, що «їде» за ціною на заданому інтервалі, захищаючи прибуток.
+**Spread** — the difference between the best buy and sell price.
+**Slippage** — how much worse than the expected price an order executed.
+**Depth** — how much can be bought or sold before the price moves noticeably.
 
-**Плече (leverage)** — експозиція більша за вкладений капітал. $1000 під 10x = позиція $10 000.
+**Derivative** — a contract whose value depends on the price of another asset. It is worth nothing by itself; a train ticket is not a train, but its price depends on the train.
 
-**Маржа** — власний капітал, заблокований як гарантія позиції.
-- **Початкова маржа** — скільки треба покласти, щоб відкрити.
-- **Підтримуюча маржа** — мінімум, нижче якого позицію примусово закривають.
+**Futures** — an obligation to buy or sell an asset in the future at an agreed price. Both sides are obliged to perform.
 
-**Cross margin** — весь баланс рахунку підтримує всі позиції; прибуток однієї рятує іншу, але одна погана може з'їсти весь рахунок.
-**Isolated margin** — кожна позиція має власну виділену маржу; максимальні втрати обмежені нею.
+**Perpetual contract (perp)** — a crypto invention: a futures contract without an expiry date. It can be held as long as you like; the funding rate keeps it pegged to spot.
 
-**Ліквідація** — примусове закриття позиції, коли маржа падає нижче підтримуючої. Забирають рівно стільки, щоб покрити борг, плюс ліквідаційна комісія. Чим більше плече, тим ближче ліквідаційна ціна: при 10x убиває рух на ~9%, при 100x — менше відсотка.
-
-**Bad debt** — ситуація, коли в різкому русі позицію не встигли закрити за розрахунковою ціною і збиток перевищив маржу. Покривається страховим фондом протоколу.
-
-**Бекстоп** — третя сходинка ланцюга ризику: якщо ринок не може поглинути ліквідовану позицію, її бере страховий фонд, протокольний vault або сам пул-контрагент. Саме тут архітектури venue розходяться найсильніше.
-
-**ADL (auto-deleveraging)** — четверта, остання сходинка: якщо бекстоп вичерпано, venue **примусово скорочує позиції на виграшному боці**, щоб баланс зійшовся. Черга ранжується за нереалізованим прибутком, левериджем і розміром — високоплечові закриваються першими. Рідко, але задокументовано в кожного серйозного venue.
-
-**Вік (wick)** — різкий короткий стрибок ціни, що одразу відкочується. Найчастіша причина ліквідації трейдера, який мав рацію по суті.
-
-**Path dependence** — залежність результату від *шляху* ціни, а не лише від кінцевої точки. У перпах вона є (вік убиває), в опціоні — немає (важлива тільки ціна на резолюції).
-
-**Ставка фінансування (funding rate)** — періодичні платежі між трейдерами, що тримають ціну перпа біля спотової. Перп вище споту → лонги платять шортам; нижче → навпаки. Платять кожні 1–8 годин. По суті — вартість утримання позиції в часі.
-
-**Borrow rate** — аналог у peer-to-pool venue: плата пулу за позичений капітал, росте з утилізацією пулу (у Jupiter ~13%/рік при util 10%, до 35% при util >80%).
-
-**Тета (theta)** — в опціонах: плата за час, «танення» вартості контракту в міру наближення експірації. Економічно — родич funding rate: різна назва, та сама сутність, ти платиш за час.
-
-**ITM / ATM / OTM** — in / at / out of the money. В опціонах на ціну: страйк нижче / дорівнює / вище поточної ціни. У бінарних інструментах спрощується до самої ціни контракту: 85¢ = ITM (подія ймовірна), 50¢ = ATM, 12¢ = OTM.
-
-**Множник у бінарному контракті = 1 / ймовірність.** Частка по 10¢ дає 10x, по 80¢ — 1.25x. Ринок дає цей множник безкоштовно; будь-яка ампліфікація понад нього мусить бути профінансована чиїмось капіталом.
+**Option** — the right, but not the obligation, to buy or sell at a fixed price until a certain date. The buyer's maximum loss is the premium paid. Analogy: a deposit on an apartment that fixes the price for three months.
 
 ---
 
-## 3. Моделі ліквідності
+## 2. Trading mechanics
 
-**Пул ліквідності** — спільний резервуар активів, проти якого торгують, замість пошуку конкретного контрагента. Учасники (LP) отримують токен частки й дохід від комісій.
+**Order book** — two columns of orders: buyers (bids) below, sellers (asks) above. Orders are not "long" and "short" but buys and sells at a specific price: the same buy can open a long for one person and close a short for another.
 
-**LP (liquidity provider)** — той, хто вніс кошти в пул.
+**Taker** — takes an existing order from the book, gets immediate execution, pays a higher fee.
+**Maker** — places an order and waits, adds liquidity, pays less or receives a rebate.
 
-**AMM (automated market maker)** — механізм, де ціну визначає формула за співвідношенням резервів (`x·y=k`). Вирішив проблему порожніх ончейн-ордербуків: контрагент є завжди, бо ним є формула.
+**Market order** — "buy now at the best price". Execution is guaranteed, the price is not.
+**Limit order** — "buy no higher than X". The price is guaranteed, execution is not.
+**Stop-loss** — an automatic sale when the price falls to a set level; limits the loss.
+**Take-profit** — an automatic sale when a target is reached; locks in the profit.
+**DCA (dollar-cost averaging)** — splitting a large trade into a series of small ones over time or across price levels.
+**Trailing order** — a stop that "follows" the price at a set distance, protecting profit.
 
-**Непостійні втрати (impermanent loss, IL)** — втрата LP через зміну співвідношення цін у пулі: у підсумку має менше, ніж якби просто тримав ті самі монети.
+**Leverage** — exposure larger than the capital put in. $1000 at 10x = a $10 000 position.
 
-**Peer-to-pool (trader-to-LP)** — пул виступає контрагентом, але ціна береться **з оракула**, а не з формули. Майже нульове проковзування; ризик односторонньої експозиції на LP. Основна модель перпів на Solana (Jupiter, GMTrade, Flash, Adrena). **CPI-сумісна** — стороння програма може відкривати позицію.
+**Margin** — own capital locked as collateral for a position.
+- **Initial margin** — how much must be put in to open.
+- **Maintenance margin** — the minimum below which the position is force-closed.
 
-**CLOB (central limit order book)** — класична книга заявок. Матчинг ончейн, офчейн або на власному ланцюзі. Точний контроль ціни, але без маркетмейкерів книга порожня.
+**Cross margin** — the whole account balance backs all positions; the profit of one saves another, but one bad one can eat the whole account.
+**Isolated margin** — each position has its own allocated margin; maximum losses are limited by it.
 
-**RFQ (request for quote)** — замість книги запит котирування: трейдер питає ціну, маркетмейкер відповідає. Публічну книгу замінює один LP, що котирує й хеджує назовні.
+**Liquidation** — forced closing of a position when margin falls below maintenance. Exactly enough is taken to cover the debt, plus a liquidation fee. The higher the leverage, the closer the liquidation price: at 10x a ~9% move kills it, at 100x — less than a percent.
 
-**Prop AMM (proprietary AMM)** — пул із закритою офчейн-моделлю котирування замість статичної формули. Логіка не публікується свідомо: відкрита маркетмейкерська логіка притягує хижий потік і MEV. На Solana ≈75% DEX-обсягу.
+**Bad debt** — a situation where, in a sharp move, the position was not closed in time at the calculated price and the loss exceeded the margin. Covered by the protocol's insurance fund.
 
-**Омнібус (pooled account)** — одна позиція на venue від імені багатьох користувачів; per-user облік ведеться окремо. Джерело приватності: ончейн фізично немає per-user позицій.
+**Backstop** — the third step of the risk chain: if the market cannot absorb a liquidated position, it is taken by the insurance fund, a protocol vault or the counterparty pool itself. This is where venue architectures diverge most.
 
-**Нетинг** — взаємне погашення зустрічних позицій усередині системи без виходу на зовнішній venue.
+**ADL (auto-deleveraging)** — the fourth, last step: if the backstop is exhausted, the venue **forcibly reduces positions on the winning side** so the balance closes. The queue is ranked by unrealized profit, leverage and size — high-leverage positions are closed first. Rare, but documented at every serious venue.
 
----
+**Wick** — a sharp short price spike that immediately reverts. The most common reason a trader who was right on substance gets liquidated.
 
-## 4. Інфраструктура Solana
+**Path dependence** — the outcome depends on the *path* of the price, not only on the end point. Perps have it (a wick kills), an option does not (only the price at resolution matters).
 
-**CPI (cross-program invocation)** — виклик однієї Solana-програми з іншої. Те, що дозволяє нашій програмі відкрити позицію на Jupiter Perps.
+**Funding rate** — periodic payments between traders that keep the perp price near spot. Perp above spot → longs pay shorts; below → the reverse. Paid every 1–8 hours. In essence, the cost of holding a position over time.
 
-**PDA (program derived address)** — адреса, похідна від програми й набору seed'ів, без приватного ключа. Програма підписує за неї через `invoke_signed`. Може бути власником позиції на venue.
+**Borrow rate** — the analogue at a peer-to-pool venue: a fee to the pool for borrowed capital, rising with pool utilization (at Jupiter ~13%/year at util 10%, up to 35% at util >80%).
 
-**IDL (interface definition language)** — машиночитний опис Anchor-програми: інструкції, структури акаунтів, події і **коди помилок**. Дозволяє декодувати `custom program error: 0x1773` у `SlippageExceeded`. Аналог source map у Sentry.
+**Theta** — in options: the charge for time, the "melting" of the contract's value as expiry approaches. Economically a relative of the funding rate: a different name, the same thing — you pay for time.
 
-**Оракул** — джерело зовнішніх даних для ончейн-програми. Pyth, Chainlink, Switchboard. Доставляє **факти** (ціна зараз), а не прогнози.
+**ITM / ATM / OTM** — in / at / out of the money. In price options: the strike is below / equal to / above the current price. In binary instruments it simplifies to the contract price itself: 85¢ = ITM (the event is likely), 50¢ = ATM, 12¢ = OTM.
 
-**Keeper** — permissioned виконавець відкладених дій. У Jupiter Perps CPI лише створює request, а fill робить keeper окремою транзакцією — тому відкриття **не атомарне**.
-
-**Crank** — періодичний виклик, що рухає стан протоколу: перевірка маржі, експірація, ліквідація.
-
-**Account contention (боротьба за write-lock)** — транзакції на Solana виконуються паралельно, лише якщо не пишуть в одні акаунти; ті, що беруть write-lock того самого акаунта, серіалізуються. Для омнібус-моделі це структурний bottleneck: одна позиція = один акаунт = спільна черга під навантаженням.
-
-**MWA (Mobile Wallet Adapter)** — протокол підпису транзакцій мобільним гаманцем на Android; bottom sheet без перемикання апок.
-
-**Seed Vault** — апаратне сховище ключів на Solana Mobile (Seeker); підпис із біометрією.
-
-**Session Keys** — ефемерна пара ключів як другий підписант плюс session-token PDA з expiry і scope. Дозволяє торгувати без промпту гаманця на кожну дію. Обмеження: SPL Token не розуміє session tokens, тому рух токенів вимагає окремого підпису.
-
-**dApp Store** — крипто-дружній магазин застосунків на Seeker; лістинги — NFT на Solana.
+**The multiplier in a binary contract = 1 / probability.** A share at 10¢ gives 10x, at 80¢ — 1.25x. The market gives this multiplier for free; any amplification beyond it must be funded by someone's capital.
 
 ---
 
-## 5. Приватність
+## 3. Liquidity models
 
-**Приватність ≠ анонімність.** Приватність — невидимість активності для сторонніх. Анонімність — розрив зв'язку між особою і коштами. Формулювання, яке використовують і Aster, і Vanish.
+**Liquidity pool** — a shared reservoir of assets that people trade against instead of looking for a specific counterparty. Participants (LPs) receive a share token and income from fees.
 
-**MPC (multi-party computation)** — обчислення над зашифрованими даними, розбитими на шари між вузлами; жоден вузол не бачить значень. Arcium на Solana. Криптографічна модель довіри; дорого для часто змінюваного стану.
+**LP (liquidity provider)** — someone who put funds into the pool.
 
-**TEE (trusted execution environment)** — апаратно ізольоване середовище виконання (Intel TDX). MagicBlock PER: приватний стан у SVM-роллапі з 10–50 мс латентністю. Швидко, але довіра апаратна, не криптографічна.
+**AMM (automated market maker)** — a mechanism where the price is set by a formula over the reserve ratio (`x·y=k`). It solved the problem of empty on-chain order books: a counterparty always exists, because the formula is the counterparty.
 
-**ZK (zero-knowledge proof)** — доказ коректності обчислення без розкриття даних. Aztec, Paradex, Lighter, Aster Chain. Зазвичай вимагає власного ланцюга; генерація доказу на слабкому пристрої — 20–30 секунд.
+**Impermanent loss (IL)** — an LP's loss from a change in the price ratio in the pool: in the end they have less than if they had simply held the same coins.
 
-**Shielded pool** — депозит у спільний пул (shield), приватна активність усередині, вихід (unshield). Vanish, Turbine, Privacy Cash, RAILGUN.
+**Peer-to-pool (trader-to-LP)** — the pool is the counterparty, but the price comes **from an oracle**, not from a formula. Almost zero slippage; the risk of one-sided exposure for LPs. The main perp model on Solana (Jupiter, GMTrade, Flash, Adrena). **CPI-compatible** — a third-party program can open a position.
 
-**Hidden orders** — ордер, розмір і напрямок якого не видно в книзі до виконання. Ховає **намір**, не позицію. Aster.
+**CLOB (central limit order book)** — a classic order book. Matching is on-chain, off-chain or on a dedicated chain. Precise price control, but without market makers the book is empty.
 
-**Dark pool** — майданчик, де великі ордери виконуються без розкриття наміру ринку. У TradFi — до 40% обсягу зрілого ринку.
+**RFQ (request for quote)** — instead of a book, a quote request: the trader asks for a price, a market maker answers. The public book is replaced by one LP that quotes and hedges outside.
 
-**13F-модель розкриття** — позиція приватна під час утримання, публічна після закриття. Аналог квартального розкриття позицій інституційних фондів у США. Дає аудит і трек-рекорд без податку копіювання.
+**Prop AMM (proprietary AMM)** — a pool with a closed off-chain quoting model instead of a static formula. The logic is deliberately not published: open market-making logic attracts predatory flow and MEV. ≈75% of DEX volume on Solana.
 
-**Програмована приватність** — комбінування відкритих і закритих даних у межах однієї системи: контракт розкриває агрегат, ховаючи індивідуальні записи. Термін Aztec.
+**Omnibus (pooled account)** — one position on a venue on behalf of many users; per-user accounting is kept separately. The source of privacy: there are physically no per-user positions on-chain.
 
-**Notes і нуліфікатори** — UTXO-подібна модель приватного стану: зашифрований запис («нота») витрачається шляхом публікації унікального ідентифікатора, який доводить витрату, не розкриваючи змісту.
-
-**View-only доступ** — право бачити приватний стан без права його змінювати. Для аудиту, партнерів, податкових сервісів.
-
-**Податок копіювання** — втрати трейдера через те, що його вхід дзеркалять копі-боти й ціна рухається проти нього, поки він набирає позицію.
-
-**Полювання на ліквідацію** — стратегія, за якої учасники бачать рівні ліквідації великих позицій і мають стимул штовхнути ціну туди.
-
-**MEV (maximal extractable value)** — вартість, яку можна витягти з упорядкування транзакцій: фронтран, сендвіч-атаки, арбітраж.
+**Netting** — mutual offsetting of opposite positions inside the system without going out to an external venue.
 
 ---
 
-## 6. Комплаєнс
+## 4. Solana infrastructure
 
-**AML-скринінг** — перевірка адрес на зв'язок із незаконними коштами. Робочі вендори на Solana: Elliptic (AML, санкції), Range (Solana-нативний моніторинг).
+**CPI (cross-program invocation)** — a call from one Solana program to another. What lets a program open a position on Jupiter Perps.
 
-**OFAC** — американський санкційний список; перевірка на нього обов'язкова для будь-якого фінансового продукту з доступом із США.
+**PDA (program derived address)** — an address derived from a program and a set of seeds, without a private key. The program signs for it through `invoke_signed`. It can be the owner of a position on a venue.
 
-**One-in / one-out модель** — зв'язок депозиту й виведення лишається прозорим на рівні гаманця, приватною є лише активність усередині. Ключова відмінність від міксера. Vanish.
+**IDL (interface definition language)** — a machine-readable description of an Anchor program: instructions, account structures, events and **error codes**. It lets you decode `custom program error: 0x1773` into `SlippageExceeded`. The analogue of a source map in Sentry.
 
-**Regulated Data** — категорії даних з особливими вимогами за політикою dApp Store: державні ID, медичні дані, біометрія, **точна геолокація**, дані неповнолітніх. Причина робити геофенсинг на IP-рівні, а не через GPS у застосунку.
+**Oracle** — a source of external data for an on-chain program. Pyth, Chainlink, Switchboard. It delivers **facts** (the price now), not forecasts.
 
-**Геофенсинг** — обмеження доступу за юрисдикцією. У MagicBlock PER робиться на мережевому вході, до виконання транзакції.
+**Keeper** — a permissioned executor of deferred actions. In Jupiter Perps the CPI only creates a request, and a keeper does the fill in a separate transaction — so opening is **not atomic**.
 
----
+**Crank** — a periodic call that moves protocol state forward: margin checks, expiry, liquidation.
 
-## 7. Терміни проєкту Cloak
+**Account contention (the fight for a write lock)** — transactions on Solana run in parallel only if they do not write to the same accounts; those that take a write lock on the same account are serialized. For the omnibus model this is a structural bottleneck: one position = one account = a shared queue under load.
 
-**Омнібус-PDA** — акаунт-власник агрегованої позиції на venue. Підтверджено mainnet-симуляцією: Jupiter Perps приймає off-curve PDA як owner; Position PDA деривується з (owner, pool, custody, collateralCustody, side), тому один омнібус-owner = одна позиція на сторону.
+**MWA (Mobile Wallet Adapter)** — the protocol for signing transactions with a mobile wallet on Android; a bottom sheet without switching apps.
 
-**PER-суб-леджер** — приватний per-user облік усередині Private Ephemeral Rollup: хто скільки тримає, видно лише власнику через permission-список.
+**Seed Vault** — hardware key storage on Solana Mobile (Seeker); signing with biometrics.
 
-**Двошарова ліквідація** — venue ліквідує омнібус за агрегованою маржею, тому внутрішня ліквідація окремого юзера мусить спрацьовувати **раніше**, з вищим per-user порогом маржі.
+**Session Keys** — an ephemeral key pair as a second signer plus a session-token PDA with expiry and scope. It allows trading without a wallet prompt for every action. Limitation: SPL Token does not understand session tokens, so token movement requires a separate signature.
 
-**Розподіл ADL** — правило, за яким примусове скорочення агрегованої позиції венью розкладається між учасниками омнібусу (pro rata, за левериджем або за часом входу). Має бути обране й описане до запуску: без нього перший же ADL перетворюється на суперечку, чию позицію зрізали.
-
-**Соціалізований ризик омнібусу** — ситуація, коли проблема одного учасника може зачепити інших через спільну позицію на venue. Лікується вищими внутрішніми порогами, cap'ом агрегованого левериджу і буфером з комісій.
-
-**Request state machine** — `requested → pending → filled | failed | expired`. Потрібна через асинхронний keeper-fill: ціна входу відома лише постфактум.
-
-**Coverage ratio** — публічний агрегат здоров'я омнібусу: співвідношення забезпечення до зобов'язань. Приватні позиції, публічна платоспроможність.
+**dApp Store** — a crypto-friendly app store on Seeker; listings are NFTs on Solana.
 
 ---
 
-*Складено 11 вересня 2026 на основі дослідження екосистеми Solana під проєкт Cloak.*
+## 5. Privacy
+
+**Privacy ≠ anonymity.** Privacy is the invisibility of activity to outsiders. Anonymity is breaking the link between a person and the funds. A wording used by both Aster and Vanish.
+
+**MPC (multi-party computation)** — computation over encrypted data split into shares among nodes; no node sees the values. Arcium on Solana. A cryptographic trust model; expensive for frequently changing state.
+
+**TEE (trusted execution environment)** — a hardware-isolated execution environment (Intel TDX). MagicBlock PER: private state in an SVM rollup with 10–50 ms latency. Fast, but the trust is in hardware, not cryptography.
+
+**ZK (zero-knowledge proof)** — a proof that a computation is correct without revealing the data. Aztec, Paradex, Lighter, Aster Chain. Usually requires its own chain; generating a proof on a weak device takes 20–30 seconds.
+
+**Shielded pool** — a deposit into a shared pool (shield), private activity inside, exit (unshield). Vanish, Turbine, Privacy Cash, RAILGUN.
+
+**Hidden orders** — an order whose size and direction are not visible in the book until execution. It hides **intent**, not the position. Aster.
+
+**Dark pool** — a venue where large orders execute without revealing intent to the market. In TradFi — up to 40% of a mature market's volume.
+
+**13F disclosure model** — a position is private while held and public after close. Analogous to the quarterly position disclosure of institutional funds in the US. It gives audit and a track record without the copy tax.
+
+**Programmable privacy** — combining open and closed data within one system: a contract reveals an aggregate while hiding individual records. An Aztec term.
+
+**Notes and nullifiers** — a UTXO-like model of private state: an encrypted record (a "note") is spent by publishing a unique identifier that proves the spend without revealing the contents.
+
+**View-only access** — the right to see private state without the right to change it. For audit, partners, tax services.
+
+**Copy tax** — a trader's losses because copy bots mirror their entry and the price moves against them while they build the position.
+
+**Liquidation hunting** — a strategy in which participants see the liquidation levels of large positions and have an incentive to push the price there.
+
+**MEV (maximal extractable value)** — the value that can be extracted from transaction ordering: front-running, sandwich attacks, arbitrage.
+
+---
+
+## 6. Compliance
+
+**AML screening** — checking addresses for links to illicit funds. Working vendors on Solana: Elliptic (AML, sanctions), Range (Solana-native monitoring).
+
+**OFAC** — the US sanctions list; checking against it is mandatory for any financial product accessible from the US.
+
+**One-in / one-out model** — the link between deposit and withdrawal stays transparent at the wallet level, only the activity inside is private. The key difference from a mixer. Vanish.
+
+**Regulated Data** — data categories with special requirements under the dApp Store policy: government IDs, medical data, biometrics, **precise geolocation**, data of minors. The reason to geofence at the IP level rather than through GPS in the app.
+
+**Geofencing** — restricting access by jurisdiction. In MagicBlock PER it is done at the network ingress, before the transaction executes.
+
+---
+
+*Compiled 11 September 2026 from research into the Solana ecosystem; the project-specific section on the rejected omnibus design was removed on 05.10.2026 (see git history).*

@@ -7,7 +7,7 @@
 // finite-iterations sibling) is down or its crank loop is disabled. Tech
 // debt #18 (spec §7.1): week 3's `spikes/05-crank-tee` measured
 // `iterations = i64::MAX` PASS/ticking on a throwaway spike program
-// (week3-results.md §M-D); this script is the first time it's applied to
+// (weeks0-5-history.md#week-3 §M-D); this script is the first time it's applied to
 // the real `dexxer_core` deployment.
 //
 // Structure mirrors `schedule-crank.ts` closely (same task_id derivation,
@@ -67,7 +67,7 @@ if (NET !== "devnet") {
 
 const INTERVAL_MS = 1_000;
 // i64::MAX — the "effectively forever" value week 3's M-D spike measured as
-// accepted and actually ticking (week3-results.md §M-D, 81 ticks / 65s).
+// accepted and actually ticking (weeks0-5-history.md#week-3 §M-D, 81 ticks / 65s).
 const ITERATIONS = "9223372036854775807";
 const POLL_SECONDS = 60;
 const POLL_DELAY_MS = 5_000;

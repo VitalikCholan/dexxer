@@ -1,6 +1,6 @@
 // Week-3 M-C, fix round 1: re-measure the action-bundle boundary on a
 // GENUINELY FRESH, never-committed `counter` account, to rule out the
-// confound flagged in review — week2-results.md M3a documented that a plain
+// confound flagged in review — weeks0-5-history.md#week-2 M3a documented that a plain
 // top-level Signer payer gets exactly 10 successful `commit()`s per account,
 // then a PERMANENT `0xA0000000` ("COMMIT_LIMIT_ERR" per that measurement),
 // never resetting. `commit_with_n_actions` uses exactly that payer path
@@ -96,7 +96,7 @@ async function countUpdateLeaderboardLogs(sig: string): Promise<number> {
   return (tx?.meta?.logMessages ?? []).filter((l) => l.includes("Instruction: UpdateLeaderboard")).length;
 }
 
-// COMMIT_LIMIT_ERR per week2-results.md M3a (10 successful plain commits/account, then permanent).
+// COMMIT_LIMIT_ERR per weeks0-5-history.md#week-2 M3a (10 successful plain commits/account, then permanent).
 const COMMIT_LIMIT_ERR = "0xa0000000";
 
 const results: any[] = [];

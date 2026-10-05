@@ -15,13 +15,13 @@
 //
 // M-D (spike 05) is NOT re-run by default: its program was deployed
 // (~1.6 SOL), measured, and closed (SOL refunded) once already, during this
-// task's session (see docs/superpowers/plans/week3-results.md, Task 1 §M-D).
+// task's session (see docs/superpowers/plans/weeks0-5-history.md#week-3, Task 1 §M-D).
 // Re-running it here would require a fresh `anchor keys sync` + a fresh
 // ~1.6 SOL deploy (the closed program id can never be redeployed) just to
 // reproduce numbers already recorded. Pass `RUN_MD=1` to opt in anyway (you
 // are responsible for the deploy cost and for closing the program after).
 //
-// process.env bootstrap gotcha (see 00-measure.ts, week2-results.md Task 1):
+// process.env bootstrap gotcha (see 00-measure.ts, weeks0-5-history.md#week-2 Task 1):
 // tests/er/.env pins LOCAL mb-stack endpoints for q1/q2, and lib/env.ts's
 // cfg() reads `.env` *over* the `devnet` profile default. This file doesn't
 // import lib/env.js at all (it only shells out to spike scripts, which have
@@ -70,7 +70,7 @@ if (process.env.RUN_MD === "1") {
 } else {
   console.log(
     "\nM-D: skipped (spike 05's program was deployed, measured, and closed " +
-      "once already this task — see week3-results.md Task 1 §M-D for the " +
+      "once already this task — see weeks0-5-history.md#week-3 Task 1 §M-D for the " +
       "recorded run. Pass RUN_MD=1 to re-run against a freshly deployed spike 05.)",
   );
 }
