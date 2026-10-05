@@ -2,7 +2,7 @@
 //
 // Fix round 1: split out of TradeScreen.tsx to keep it under the
 // ~200-line guideline. Week 6 (C.6-A) market header: the market switch
-// (header button → `/markets`, favourite chips), then the mark + `<SYMBOL>-PERP` +
+// (header button → `/markets`), then the mark + `<SYMBOL>-PERP` +
 // max-leverage badge on top (oracle freshness is shown only when it matters:
 // TradeScreen's stale/disconnected warning), the big
 // mark price with its 24h change, then a stats row — High / Low over the
@@ -16,9 +16,7 @@ import { useTextStyle } from '@/src/ui/styles'
 import { Badge } from '@/src/ui/Badge'
 import { AssetIcon } from '@/src/ui/AssetIcon'
 import { formatCompactUsd, type RangeStats } from './headerStats'
-import { useFavorites } from '@/src/lib/favoritesStore'
-import { chipSymbols } from '@/src/lib/favorites'
-import { useMarkets, useSelectedMarket } from '@/src/lib/markets'
+import { useMarkets } from '@/src/lib/markets'
 
 function fmtUsd(n: number): string {
   return n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
@@ -37,18 +35,13 @@ export interface TradeHeaderProps {
 }
 
 export function TradeHeader({ symbol, markUsdNum, pctChange, maxLeverage, range, poolLiquidity }: TradeHeaderProps) {
-  const { colors, space, radius, border, control } = useTheme()
-  const chip = useTextStyle('body', { mono: true })
+  const { colors, space } = useTheme()
   const display = useTextStyle('display', { mono: true })
   const heading = useTextStyle('heading')
   const change = useTextStyle('body', { mono: true })
   const micro = useTextStyle('micro')
   const statValue = useTextStyle('caption', { mono: true })
   const markets = useMarkets()
-  const favorites = useFavorites()
-  const { setSymbol } = useSelectedMarket()
-  const registry = markets.data?.length ? markets.data.map((m) => m.symbol) : [symbol]
-  const chips = chipSymbols(favorites.list, registry)
   const paused = markets.data?.find((m) => m.symbol === symbol)?.params.pausedOpen ?? false
 
   const stats: { label: string; value: string }[] = [
@@ -84,34 +77,6 @@ export function TradeHeader({ symbol, markUsdNum, pctChange, maxLeverage, range,
         </Pressable>
       </View>
 
-      {chips.length > 0 ? (
-        // Wraps instead of scrolling: five 8-character symbols at a large font still fit and stay tappable.
-        <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: space.xs }}>
-          {chips.map((s) => {
-            const selected = s === symbol
-            return (
-              <Pressable
-                key={s}
-                accessibilityRole="button"
-                accessibilityState={{ selected }}
-                accessibilityLabel={`Switch to ${s}-PERP`}
-                onPress={() => setSymbol(s)}
-                style={({ pressed }) => ({
-                  minHeight: control.minHitTarget,
-                  paddingHorizontal: space.md,
-                  justifyContent: 'center',
-                  borderRadius: radius.md,
-                  borderWidth: border.hairline,
-                  borderColor: selected ? colors.accent : colors.border,
-                  backgroundColor: selected ? colors.accentSubtle : pressed ? colors.surfaceAlt : colors.bgElevated,
-                })}
-              >
-                <Text style={[chip, { color: selected ? colors.textPrimary : colors.textSecondary }]}>{s}</Text>
-              </Pressable>
-            )
-          })}
-        </View>
-      ) : null}
       {paused ? <Badge tone="warning">{`Opening paused on ${symbol}-PERP`}</Badge> : null}
 
       <View style={{ flexDirection: 'row', alignItems: 'baseline', gap: space.md }}>

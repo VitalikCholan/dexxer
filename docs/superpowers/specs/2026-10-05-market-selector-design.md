@@ -29,7 +29,7 @@ Assumptions (confirmed): markets are added one at a time by the admin; a few doz
 | D1 | Sorting of the full list | **A–Z (SOL first) · 24h ▲ · 24h ▼**, client-side. No volume sort: trades are private, the protocol has no public per-market volume. |
 | D2 | Source of the 24h change for all markets | **New relayer endpoint `GET /tickers`**, one response for all markets. |
 | D3 | Asset name and icon | **`name` in `GET /markets`** (from `services/relayer/assets/assets.json`); **SVG icons bundled in the app**, letter-avatar fallback. |
-| D4 | Quick chips under the header | **Favourites only** (★), at most 5. No chips row while there are no favourites. |
+| D4 | Quick chips under the header | ~~Favourites only (★), at most 5~~ **Removed 05.10.2026** (owner decision after the first build: the row read as the old five-symbol picker). Favourites live only as the ★ tab on the markets screen. |
 | D5 | Where the list lives | **Full-screen modal route** `app/markets.tsx` that looks like a tall sheet — not the existing `Sheet` (sized for short forms, no keyboard handling) and not an inline dropdown. |
 
 A correction from the brainstorming: the code has **no dedicated "swipe switches the market" gesture**. The CLAUDE.md note about the AVD was a tap on the market row during a fast swipe; removing the row removes the problem.
@@ -77,7 +77,7 @@ Each entry gains `name: string | null`, looked up by symbol in `assets/assets.js
 
 - React context + `AsyncStorage` key `dexxer.favorites`, following `app/src/lib/marketStore.tsx`.
 - Value: an ordered list of symbols, in the order they were starred.
-- The chips show the first 5 that are in the registry; all of them appear on the ★ tab.
+- Favourites are shown on the ★ tab of the markets screen (the header chips were removed 05.10.2026, see D4).
 - A starred symbol missing from the registry is skipped in the UI but kept in storage (the market may come back).
 - A storage read error or malformed JSON yields an empty list and is **never written back** (the History archive rule).
 - Pure read/parse/toggle functions live next to it and are tested without storage.
@@ -99,7 +99,7 @@ Each entry gains `name: string | null`, looked up by symbol in `assets/assets.js
 - `MarketPicker` is removed.
 - **Market button** in its place: `[icon] ETH-PERP ▾ 10×`; opens `app://markets`. Accessibility label "Market ETH-PERP, change market".
 - The "Pyth Lazer" pill stays on the right.
-- **Favourite chips** under the button: shown only when there is at least one favourite; at most 5; the selected market highlighted; no horizontal scrolling.
+- ~~Favourite chips under the button~~ removed 05.10.2026 (D4): the header has only the market button.
 - The "Opening paused on ETH-PERP" badge stays.
 
 ### 5.2 Markets screen
@@ -146,7 +146,7 @@ Route `app/app/markets.tsx` (root `Stack`, `presentation: 'modal'`, slides from 
 
 - **Relayer:** §3.3.
 - **App (`node --test`, pure functions):** `parseMarkets` with and without `name`; `parseTickers`; `marketRows`; `filterRows` (case, name match, tabs); `sortRows` (SOL first, `null` last); `slotUsage`; favourites parse/toggle; the submit-button label with the symbol.
-- **Emulator (Phantom AVD):** open the markets screen from the header; search "eth"; star BTC and see its chip; select through a chip and through a row; Back closes the screen; font scale 1.3×. Position markers and the 16/16 state need an onboarded account — they go to the live-run checklist.
+- **Emulator (Phantom AVD):** open the markets screen from the header; search "eth"; star BTC and see it on the ★ tab; select through a row; Back closes the screen; font scale 1.3×. Position markers and the 16/16 state need an onboarded account — they go to the live-run checklist.
 - App gate: `npm test`, `tsc --noEmit`, `lint:check`, `format:check`. Relayer: its test suite on Node 24.18 with `DEXXER_IDL_DIR`.
 
 ## 8. Rollout

@@ -4,9 +4,6 @@
 // of symbols kept only on this device. Pure; storage is favoritesStore.tsx.
 const SYMBOL = /^[A-Z0-9]{1,8}$/
 
-/** Favourite chips under the Trade header. */
-export const MAX_CHIPS = 5
-
 /** Stored JSON → symbols. Anything malformed is an empty list; invalid or repeated entries are dropped. */
 export function parseFavorites(raw: string | null): string[] {
   if (raw === null) return []
@@ -37,9 +34,4 @@ export function favoritesWritable(raw: string | null): boolean {
 
 export function toggleFavorite(list: readonly string[], symbol: string): string[] {
   return list.includes(symbol) ? list.filter((s) => s !== symbol) : [...list, symbol]
-}
-
-/** Favourites that are listed right now, in starring order, at most `max`. Unlisted ones stay stored, just not shown. */
-export function chipSymbols(favorites: readonly string[], registry: readonly string[], max = MAX_CHIPS): string[] {
-  return favorites.filter((s) => registry.includes(s)).slice(0, max)
 }
