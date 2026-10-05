@@ -255,7 +255,7 @@ pub fn liquidation_check(mut ctx: Context<LiquidationCheck>) -> Result<()> {
     // Liquidation always goes first: a position that is liquidatable this tick
     // must not be rescued by a stop that happens to share the tick.
     if let (true, Some(orders)) = (has_orders, orders.as_deref_mut()) {
-        run_orders(
+        if run_orders(
             a.config.paused,
             &a.market,
             market_key,
@@ -267,7 +267,14 @@ pub fn liquidation_check(mut ctx: Context<LiquidationCheck>) -> Result<()> {
             &px,
             mark,
             &clock,
-        )?;
+        )
+        .is_err()
+        {
+            // Orders never fail the tick: the hysteresis bookkeeping above
+            // must land, and every step of `run_orders` is all-or-nothing, so
+            // whatever it could not execute is left exactly as it was.
+            msg!("orders: skipped (error)");
+        }
     }
     Ok(())
 }
@@ -369,9 +376,10 @@ pub(crate) fn run_orders(
         }
         // The reservation goes back to free margin first: the open below takes
         // its margin and fee from there, and an order that fails it is dropped
-        // with the money already returned.
-        orders[i] = bytemuck::Zeroable::zeroed();
+        // with the money already returned. The release goes first: if it
+        // fails (an accounting bug), the order is left exactly as it was.
         user.release(o.reserved())?;
+        orders[i] = bytemuck::Zeroable::zeroed();
         let opened = open_core(
             market,
             market_key,

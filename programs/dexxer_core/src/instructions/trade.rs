@@ -271,44 +271,45 @@ pub(crate) fn open_core(
         .checked_add(chk.open_fee)
         .ok_or(DexxerError::MathOverflow)?;
     require!(user.free_margin >= cost, DexxerError::InsufficientMargin);
-    let u = &mut *user;
-    u.free_margin = u
+    // Check before write: a conditional order that cannot open is dropped by
+    // its executor, which then carries on — nothing may be half-applied.
+    let free_margin = user
         .free_margin
         .checked_sub(cost)
         .ok_or(DexxerError::MathOverflow)?;
-    u.locked_margin = u
+    let locked_margin = user
         .locked_margin
         .checked_add(margin)
         .ok_or(DexxerError::MathOverflow)?;
-    let pool = &mut *pool;
-    pool.locked_total = pool
+    let locked_total = pool
         .locked_total
         .checked_add(margin)
         .ok_or(DexxerError::MathOverflow)?;
-    pool.fees_accrued = pool
+    let fees_accrued = pool
         .fees_accrued
         .checked_add(chk.open_fee)
         .ok_or(DexxerError::MathOverflow)?;
     let entry_notional = math::notional(size, price)?;
-    let r = &mut *risk_acc;
-    match side {
-        Side::Long => {
-            r.oi_long = r
-                .oi_long
-                .checked_add(entry_notional)
-                .ok_or(DexxerError::MathOverflow)?
-        }
-        Side::Short => {
-            r.oi_short = r
-                .oi_short
-                .checked_add(entry_notional)
-                .ok_or(DexxerError::MathOverflow)?
-        }
+    let side_oi = match side {
+        Side::Long => risk_acc.oi_long,
+        Side::Short => risk_acc.oi_short,
     }
-    r.open_positions = r
+    .checked_add(entry_notional)
+    .ok_or(DexxerError::MathOverflow)?;
+    let open_positions = risk_acc
         .open_positions
         .checked_add(1)
         .ok_or(DexxerError::MathOverflow)?;
+
+    user.free_margin = free_margin;
+    user.locked_margin = locked_margin;
+    pool.locked_total = locked_total;
+    pool.fees_accrued = fees_accrued;
+    match side {
+        Side::Long => risk_acc.oi_long = side_oi,
+        Side::Short => risk_acc.oi_short = side_oi,
+    }
+    risk_acc.open_positions = open_positions;
     {
         positions.slots[idx] = PositionSlot {
             market: market_key,
@@ -740,28 +741,31 @@ pub(crate) fn decrease_core(
         .oi_notional
         .checked_sub(closed_oi)
         .ok_or(DexxerError::MathOverflow)?;
-    risk::settle_into_pool(pool, released, &s, false)?;
-    user.free_margin = user
+    // Check before write: a partial exit order that cannot settle is dropped
+    // by its executor, which then carries on — nothing may be half-applied.
+    // `settle_into_pool` is itself all-or-nothing and is the last step that
+    // can fail.
+    let free_margin = user
         .free_margin
         .checked_add(s.to_user)
         .ok_or(DexxerError::MathOverflow)?;
-    user.locked_margin = user
+    let locked_margin = user
         .locked_margin
         .checked_sub(released)
         .ok_or(DexxerError::MathOverflow)?;
+    let side_oi = match side {
+        Side::Long => risk_acc.oi_long,
+        Side::Short => risk_acc.oi_short,
+    }
+    .checked_sub(closed_oi)
+    .ok_or(DexxerError::MathOverflow)?;
+    risk::settle_into_pool(pool, released, &s, false)?;
+
+    user.free_margin = free_margin;
+    user.locked_margin = locked_margin;
     match side {
-        Side::Long => {
-            risk_acc.oi_long = risk_acc
-                .oi_long
-                .checked_sub(closed_oi)
-                .ok_or(DexxerError::MathOverflow)?
-        }
-        Side::Short => {
-            risk_acc.oi_short = risk_acc
-                .oi_short
-                .checked_sub(closed_oi)
-                .ok_or(DexxerError::MathOverflow)?
-        }
+        Side::Long => risk_acc.oi_long = side_oi,
+        Side::Short => risk_acc.oi_short = side_oi,
     }
     let p = &mut positions.slots[idx];
     p.size = remaining;
@@ -822,15 +826,6 @@ pub fn finalize_close(
     let pnl = math::upnl(side, pos.size, pos.entry, exit)?;
     let fee = math::fee(notional_exit, fee_bps)?;
     let s = risk::settle(pos.margin, pnl, fee)?;
-    risk::settle_into_pool(pool, pos.margin, &s, reason == CloseReason::Liquidated)?;
-    user.free_margin = user
-        .free_margin
-        .checked_add(s.to_user)
-        .ok_or(DexxerError::MathOverflow)?;
-    user.locked_margin = user
-        .locked_margin
-        .checked_sub(pos.margin)
-        .ok_or(DexxerError::MathOverflow)?;
     // OI is decremented by the position's own tracked contribution
     // (`pos.oi_notional`, maintained in lock-step at open/increase/decrease),
     // NOT by recomputing `notional(pos.size, pos.entry)`: `entry` is a VWAP
@@ -840,24 +835,38 @@ pub fn finalize_close(
     // (every candidate in the batch, not just this one) even though nothing
     // is actually wrong. `oi_notional` is exact by construction, so this
     // subtraction can only fail on a genuine accounting bug.
-    match side {
-        Side::Long => {
-            risk_acc.oi_long = risk_acc
-                .oi_long
-                .checked_sub(pos.oi_notional)
-                .ok_or(DexxerError::MathOverflow)?
-        }
-        Side::Short => {
-            risk_acc.oi_short = risk_acc
-                .oi_short
-                .checked_sub(pos.oi_notional)
-                .ok_or(DexxerError::MathOverflow)?
-        }
+    //
+    // Check before write: an exit order that cannot settle leaves the tick
+    // running (its executor only logs it), so nothing may be half-applied.
+    // `settle_into_pool` is itself all-or-nothing and is the last step that
+    // can fail.
+    let free_margin = user
+        .free_margin
+        .checked_add(s.to_user)
+        .ok_or(DexxerError::MathOverflow)?;
+    let locked_margin = user
+        .locked_margin
+        .checked_sub(pos.margin)
+        .ok_or(DexxerError::MathOverflow)?;
+    let side_oi = match side {
+        Side::Long => risk_acc.oi_long,
+        Side::Short => risk_acc.oi_short,
     }
-    risk_acc.open_positions = risk_acc
+    .checked_sub(pos.oi_notional)
+    .ok_or(DexxerError::MathOverflow)?;
+    let open_positions = risk_acc
         .open_positions
         .checked_sub(1)
         .ok_or(DexxerError::MathOverflow)?;
+    risk::settle_into_pool(pool, pos.margin, &s, reason == CloseReason::Liquidated)?;
+
+    user.free_margin = free_margin;
+    user.locked_margin = locked_margin;
+    match side {
+        Side::Long => risk_acc.oi_long = side_oi,
+        Side::Short => risk_acc.oi_short = side_oi,
+    }
+    risk_acc.open_positions = open_positions;
     positions.push_history(HistoryRecord {
         market: market_key,
         size: pos.size,

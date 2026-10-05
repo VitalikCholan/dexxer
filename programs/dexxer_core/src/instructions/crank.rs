@@ -206,7 +206,10 @@ pub fn crank_tick<'info>(mut ctx: Context<'info, CrankTick<'info>>) -> Result<()
         // them working while the scheduler is down. An order the other path
         // already executed is simply gone — running twice is harmless.
         if let (true, Some(orders)) = (has_orders, orders.as_deref_mut()) {
-            run_orders(
+            // One trader's order that cannot execute must not abort the batch
+            // for everyone else: `run_orders` is all-or-nothing per order, so
+            // the error is logged and the candidate left as it was.
+            if run_orders(
                 a.config.paused,
                 &a.market,
                 market_key,
@@ -218,7 +221,11 @@ pub fn crank_tick<'info>(mut ctx: Context<'info, CrankTick<'info>>) -> Result<()
                 &px,
                 mark,
                 &clock,
-            )?;
+            )
+            .is_err()
+            {
+                msg!("orders: skipped (error)");
+            }
         }
         // `positions` is zero-copy: its bytes were written in place and the
         // `RefMut`s are dropped at the end of this iteration. Only the Borsh
