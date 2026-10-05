@@ -82,8 +82,8 @@ export function TradeScreen() {
   const markUsdNum = markUsd !== null ? Number(markUsd) / 1e6 : null
 
   // Single source of truth for "is the oracle good enough to trade on" — the
-  // freshness dot, the paused banner, and the Open button's `disabled` all
-  // derive from this ONE predicate (fix round 1: previously the dot alone
+  // paused banner and the Open button's `disabled` both derive from this ONE
+  // predicate (the header's freshness dot was removed 05.10.2026) (fix round 1: previously the dot alone
   // also gated on `indexerConnected`/loading, while the banner and
   // `disabled` only checked `stale === true` — a disconnected or still-
   // loading feed showed a yellow dot with no banner and a still-enabled
@@ -95,7 +95,6 @@ export function TradeScreen() {
     return { ok: true, reason: null }
   }, [mark.isLoading, mark.data, indexerConnected])
   const tradingPaused = !oracle.ok
-  const dotColor = oracle.ok ? colors.long : colors.warning
 
   const pctChange = (() => {
     const c = change24h.data
@@ -226,7 +225,6 @@ export function TradeScreen() {
           symbol={symbol}
           markUsdNum={markUsdNum}
           pctChange={pctChange}
-          dotColor={dotColor}
           maxLeverage={market ? maxLeverage(market.maxLevBps, market.imrBps) : null}
           range={rangeStats(change24h.data, now * 1000)}
           poolLiquidity={pool.data?.length ? pool.data[pool.data.length - 1].capitalTotal : null}

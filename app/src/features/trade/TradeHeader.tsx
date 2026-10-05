@@ -3,7 +3,8 @@
 // Fix round 1: split out of TradeScreen.tsx to keep it under the
 // ~200-line guideline. Week 6 (C.6-A) market header: the market switch
 // (header button → `/markets`, favourite chips), then the mark + `<SYMBOL>-PERP` +
-// max-leverage badge and the "Pyth Lazer" freshness pill on top, the big
+// max-leverage badge on top (oracle freshness is shown only when it matters:
+// TradeScreen's stale/disconnected warning), the big
 // mark price with its 24h change, then a stats row — High / Low over the
 // fetched candles and the pool's liquidity from the public 5-min `Pool`
 // snapshot (rounded to 100 dUSDC). Open interest is deliberately absent: it
@@ -28,7 +29,6 @@ export interface TradeHeaderProps {
   symbol: string
   markUsdNum: number | null
   pctChange: number | null
-  dotColor: string
   /** Integer max leverage for the badge; null while the market loads. */
   maxLeverage: number | null
   range: RangeStats | null
@@ -36,21 +36,12 @@ export interface TradeHeaderProps {
   poolLiquidity: bigint | null
 }
 
-export function TradeHeader({
-  symbol,
-  markUsdNum,
-  pctChange,
-  dotColor,
-  maxLeverage,
-  range,
-  poolLiquidity,
-}: TradeHeaderProps) {
+export function TradeHeader({ symbol, markUsdNum, pctChange, maxLeverage, range, poolLiquidity }: TradeHeaderProps) {
   const { colors, space, radius, border, control } = useTheme()
   const chip = useTextStyle('body', { mono: true })
   const display = useTextStyle('display', { mono: true })
   const heading = useTextStyle('heading')
   const change = useTextStyle('body', { mono: true })
-  const caption = useTextStyle('caption')
   const micro = useTextStyle('micro')
   const statValue = useTextStyle('caption', { mono: true })
   const markets = useMarkets()
@@ -91,21 +82,6 @@ export function TradeHeader({
             </View>
           ) : null}
         </Pressable>
-        <View
-          style={{
-            flexDirection: 'row',
-            alignItems: 'center',
-            gap: space.xs,
-            paddingHorizontal: space.sm,
-            paddingVertical: space.xs,
-            borderWidth: border.hairline,
-            borderColor: colors.border,
-            borderRadius: radius.pill,
-          }}
-        >
-          <View style={{ width: 6, height: 6, borderRadius: 3, backgroundColor: dotColor }} />
-          <Text style={[caption, { color: colors.textSecondary }]}>Pyth Lazer</Text>
-        </View>
       </View>
 
       {chips.length > 0 ? (
