@@ -122,7 +122,7 @@ export function CloseTab({ position, symbol, markUsd, closeFeeBps, minSize, busy
         disabled={disabled || busy || markUsd === null || block !== null}
         onPress={() => void onClose(closeSize)}
       >
-        {busy ? 'Signing with session key…' : full ? 'Close position' : `Close ${sol(closeSize)} ${symbol}`}
+        {busy ? 'Signing with session key…' : full ? `Close ${symbol} position` : `Close ${sol(closeSize)} ${symbol}`}
       </Button>
     </View>
   )

@@ -190,3 +190,16 @@ export function liqAfterAddMargin(
 ): bigint | null {
   return safeLiq(side, entry, size, margin + add, mmrBps)
 }
+
+/** The ticket's submit text: always names the market, so a wrong-market tap is visible before it lands. */
+export function submitLabel(o: {
+  busy: boolean
+  orderType: 'market' | 'limit' | 'stop'
+  side: 'long' | 'short'
+  symbol: string
+}): string {
+  if (o.busy) return 'Signing with session key…'
+  const side = o.side === 'long' ? 'Long' : 'Short'
+  if (o.orderType === 'market') return `Open ${side} ${o.symbol}`
+  return `Place ${o.orderType === 'limit' ? 'Limit' : 'Stop'} ${side} ${o.symbol}`
+}
