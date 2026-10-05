@@ -59,11 +59,6 @@ export function formatDate(iso: string): string {
   return `${MONTHS[d.getUTCMonth()]} ${d.getUTCDate()}, ${d.getUTCFullYear()}`
 }
 
-/** "#5"; "—" when unknown. */
-export function formatRank(rank: number | null): string {
-  return rank === null ? '—' : `#${rank}`
-}
-
 /** "Updated 3 min ago" for the disclaimer; `null` without data. */
 export function updatedAgo(updatedAt: number | null, nowMs: number): string | null {
   if (updatedAt === null) return null
