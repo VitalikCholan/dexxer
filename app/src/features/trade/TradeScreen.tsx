@@ -289,7 +289,8 @@ export function TradeScreen() {
             position={position}
             openBlocked={openBlocked}
             busy={busy}
-            disabled={tradingPaused || sessionExpired || sessionUsedUp || !session}
+            // Not set up (or still checking): a live-looking Open would only fail after "Signing…".
+            disabled={tradingPaused || sessionExpired || sessionUsedUp || !session || gate.status !== 'ready'}
             onOpen={handleOpen}
             onPlace={handlePlace}
             onClose={handleClose}

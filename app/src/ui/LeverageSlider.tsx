@@ -7,9 +7,10 @@
 // a function built during render) as errors, so track width lives in state
 // instead and the `PanResponder` is rebuilt — cheaply — whenever it changes.
 import { useMemo, useState } from 'react'
-import { type GestureResponderEvent, PanResponder, Text, View } from 'react-native'
+import { type GestureResponderEvent, PanResponder, type PanResponderGestureState, Text, View } from 'react-native'
 import { useTheme } from '@/src/theme'
 import { useTextStyle } from './styles'
+import { sliderIntent } from './sliderGesture'
 
 export interface LeverageSliderProps {
   value: number
@@ -36,10 +37,19 @@ export function LeverageSlider({ value, onChange, min = 1, max = 10 }: LeverageS
   const panResponder = useMemo(
     () =>
       PanResponder.create({
+        // Claim the touch so a tap can set the value, but change nothing until the gesture says
+        // what it is (`sliderIntent`): a vertical move is the page scroll — hand it back.
         onStartShouldSetPanResponder: () => true,
-        onMoveShouldSetPanResponder: () => true,
-        onPanResponderGrant: (e: GestureResponderEvent) => onChange(valueFromX(e.nativeEvent.locationX)),
-        onPanResponderMove: (e: GestureResponderEvent) => onChange(valueFromX(e.nativeEvent.locationX)),
+        onMoveShouldSetPanResponder: (_e, g) => sliderIntent(g.dx, g.dy) === 'drag',
+        onPanResponderTerminationRequest: (_e, g) => sliderIntent(g.dx, g.dy) !== 'drag',
+        // Let the native (vertical) ScrollView intercept, otherwise a swipe that starts here can't scroll the page.
+        onShouldBlockNativeResponder: () => false,
+        onPanResponderMove: (e: GestureResponderEvent, g: PanResponderGestureState) => {
+          if (sliderIntent(g.dx, g.dy) === 'drag') onChange(valueFromX(e.nativeEvent.locationX))
+        },
+        onPanResponderRelease: (e: GestureResponderEvent, g: PanResponderGestureState) => {
+          if (sliderIntent(g.dx, g.dy) !== 'scroll') onChange(valueFromX(e.nativeEvent.locationX))
+        },
       }),
     // eslint-disable-next-line react-hooks/exhaustive-deps -- rebuilding per onChange/value identity would thrash mid-gesture for no benefit; trackWidth/min/max are what actually change valueFromX's math.
     [min, max, trackWidth],
