@@ -23,6 +23,15 @@ export EXPO_PUBLIC_BUILD_NUMBER="${1:-$(git -C "$ROOT" rev-list --count HEAD)}"
 export ANDROID_HOME="${ANDROID_HOME:-$HOME/Android/Sdk}"
 export NODE_ENV=production
 
+# React Native's native modules (CMake + prefab) fail under JDK 24+ ("A restricted
+# method in java.lang.System has been called"). Use JDK 17 or 21 via JAVA_HOME.
+JAVA_BIN="${JAVA_HOME:+$JAVA_HOME/bin/}java"
+JAVA_MAJOR="$("$JAVA_BIN" -version 2>&1 | sed -n 's/.*version "\([0-9]*\).*/\1/p' | head -1)"
+if [ -z "$JAVA_MAJOR" ] || [ "$JAVA_MAJOR" -ge 24 ]; then
+  echo "JDK ${JAVA_MAJOR:-?} found; the Android build needs JDK 17 or 21 — run with JAVA_HOME=/path/to/jdk-21 $0" >&2
+  exit 1
+fi
+
 cd "$APP"
 npx expo prebuild -p android --no-install
 (cd android && ./gradlew assembleRelease --no-daemon)
