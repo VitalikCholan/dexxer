@@ -15,15 +15,19 @@
 
 ## 0. Чекліст запуску (гейти власника)
 
-1. **Release-збірка APK.** Release keystore і підпис (`docs/android-install-options.md` §16). Відбиток SHA-256
-   сертифіката додати в `ASSETLINKS_SHA256_FINGERPRINTS` relayer-а, інакше MWA-верифікація ідентичності впаде.
-   Збірку стемпити: `EXPO_PUBLIC_BUILD_CHANNEL=beta`, `EXPO_PUBLIC_BUILD_NUMBER=<N>` (номер видно в Settings → Beta
-   і в кожному звіті).
+1. **Release-збірка APK.** Ключ — `keys/android/dexxer-release.keystore`, паролі й відбиток —
+   `keys/android/release-signing.env` (обидва поза git; **зберегти копію в менеджері паролів** — без них не можна
+   оновити вже встановлені копії). Збірка: `app/scripts/build-release.sh [номер]` — підставляє ключ через плагін
+   `app/plugins/withReleaseSigning.js` (бо `app/android` генерується prebuild-ом), стемпить
+   `EXPO_PUBLIC_BUILD_CHANNEL=beta` і `EXPO_PUBLIC_BUILD_NUMBER`, кладе APK у `app/dist/` і звіряє, що він підписаний
+   саме release-ключем. Відбиток SHA-256 сертифіката має бути в `ASSETLINKS_SHA256_FINGERPRINTS` relayer-а поряд із
+   debug-відбитком, інакше MWA-верифікація ідентичності впаде.
 2. **Telegram:** бот через @BotFather, закритий чат команди «dexxer-alerts», бот у чаті. На Railway —
    `ALERT_TELEGRAM_BOT_TOKEN`, `ALERT_TELEGRAM_CHAT_ID`. Окремо — група для тестерів (обговорення, анонси).
-3. **Railway env:** `FEEDBACK_ADMIN_TOKEN` (`openssl rand -base64 32`), `FEEDBACK_IP_SALT` (теж випадковий),
-   `METRICS_TOKEN`, `BETA_ALLOWLIST` (адреси з анкети), `SPONSOR_DAILY_SOL` під хвилю (§9). Деплой relayer-а
-   застосує міграцію `011_feedback.sql`.
+3. **Railway env:** готові значення — `keys/beta-relayer.env` (поза git): `FEEDBACK_ADMIN_TOKEN`,
+   `FEEDBACK_IP_SALT`, `METRICS_TOKEN`, Telegram, `ASSETLINKS_SHA256_FINGERPRINTS`, `SPONSOR_DAILY_SOL`. Вставити в
+   Railway → relayer → Variables → Raw Editor. `BETA_ALLOWLIST` — лише коли є список адрес (з ним усі інші гаманці
+   отримують відмову). Деплой relayer-а застосує міграцію `011_feedback.sql`.
 4. **Зовнішній uptime-монітор** на `GET /healthz` (Better Stack або UptimeRobot, безкоштовний план, раз на хвилину,
    сповіщення в той самий Telegram). Власні алерти relayer-а мовчать, коли він сам лежить, тому без цього пункту не
    стартуємо.
