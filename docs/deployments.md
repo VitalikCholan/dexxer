@@ -139,6 +139,13 @@ program id) і ролі ключів.
 `fee_payer` 0.40 SOL < порога 0.5 — алерт про баланс очікуваний, доки не поповнено. Відкат: `railway up` з `main`
 (`cfd3d4b`) — `redeploy` деплойменту з `railway up` не працює (див. вище).
 
+**Перший beta-APK (06.10.2026, 19:11):** `app/dist/dexxer-beta-451.apk` (`app/scripts/build-release.sh`, JDK 21 —
+з JDK 25 нативні модули не збираються), `versionCode 451`, підпис release-ключем `0A:1B:BF:…:99:95` (перевірено
+`apksigner`), SHA-256 файлу `ba5234c9…65a8`, 161 МБ (усі чотири ABI). Smoke на чистому AVD `beta_check` (Android 35,
+без Metro): запуск → екран Connect → «Report a problem» → звіт `#2` дійшов на relayer з `build 451`, `channel beta`,
+`screen /sign-in`, журнал — лише навігація; позначено `wontfix`. Не перевірено: Connect з гаманцем на release-збірці,
+краш-репорт на пристрої.
+
 ### Ключі (ролі, не значення)
 
 Приватність-правило (CLAUDE.md): relayer тримає ЛИШЕ `crank`/`fee_payer` —
