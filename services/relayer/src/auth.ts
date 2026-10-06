@@ -22,6 +22,7 @@ import { PublicKey } from "@solana/web3.js";
 import nacl from "tweetnacl";
 import { parseSignInMessage } from "@solana/wallet-standard-util";
 import type { DbPool } from "./db.js";
+import { NOT_ON_BETA_LIST } from "./betaAccess.js";
 
 export const CHALLENGE_TTL_MS = 5 * 60 * 1000;
 export const ISSUED_AT_SKEW_MS = 5 * 60 * 1000;
@@ -96,6 +97,8 @@ export interface AuthDeps {
   domain: string;
   sessionTtlMs: number;
   now?: () => number;
+  /** `BETA_ALLOWLIST` (betaAccess.ts): when set, only these wallets get a session (403 otherwise). */
+  allowlist?: Set<string> | null;
 }
 
 export function authRouter(deps: AuthDeps): Router {
@@ -137,6 +140,13 @@ export function authRouter(deps: AuthDeps): Router {
     if (!check.ok) {
       console.log(`auth: sign-in rejected for ${body.address}: ${check.error}`);
       res.status(check.status).json({ error: check.error });
+      return;
+    }
+    // Closed beta: checked after the signature, so the answer says nothing
+    // about a wallet whose key the caller does not hold.
+    if (deps.allowlist && !deps.allowlist.has(check.owner.toBase58())) {
+      console.log(`auth: sign-in refused for ${body.address}: not on the beta allowlist`);
+      res.status(403).json({ error: NOT_ON_BETA_LIST });
       return;
     }
     // Only after the signature checks out — garbage must not be able to burn someone else's nonce.

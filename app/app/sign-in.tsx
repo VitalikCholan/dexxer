@@ -28,5 +28,7 @@ export default function SignIn() {
     }
   }
 
-  return <ConnectScreen busy={isSigningIn} onConnect={() => void handleSignIn()} />
+  return (
+    <ConnectScreen busy={isSigningIn} onConnect={() => void handleSignIn()} onReport={() => router.push('/report')} />
+  )
 }

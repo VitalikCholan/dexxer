@@ -15,6 +15,9 @@ export interface InputProps {
   /** Text fields like search: Android autocorrect would rewrite tickers ("zec"). */
   autoCorrect?: boolean
   autoCapitalize?: 'none' | 'sentences' | 'words' | 'characters'
+  /** Free text (bug reports): several lines, body font, top-aligned. */
+  multiline?: boolean
+  maxLength?: number
 }
 
 export function Input({
@@ -28,10 +31,14 @@ export function Input({
   keyboardType,
   autoCorrect,
   autoCapitalize,
+  multiline,
+  maxLength,
 }: InputProps) {
   const { colors, space, radius, control } = useTheme()
   const labelStyle = useTextStyle('micro')
-  const valueStyle = useTextStyle('bodyStrong', { mono: true })
+  const numberStyle = useTextStyle('bodyStrong', { mono: true })
+  const textStyle = useTextStyle('body')
+  const valueStyle = multiline ? textStyle : numberStyle
   // Caption-sized suffix so a six-character amount (e.g. `116.54`) still fits
   // next to `dUSDC` + `MAX` in a half-width ticket field — with `body` the
   // TextInput overflowed and Android scrolled the leading digits out of view.
@@ -44,13 +51,13 @@ export function Input({
       <Text style={[labelStyle, { color: colors.textSecondary }]}>{label}</Text>
       <View
         style={{
-          minHeight: control.inputHeight,
+          minHeight: multiline ? control.inputHeight * 3 : control.inputHeight,
           borderRadius: radius.md,
           borderWidth: 1,
           borderColor: colors.border,
           backgroundColor: colors.surface,
           flexDirection: 'row',
-          alignItems: 'center',
+          alignItems: multiline ? 'flex-start' : 'center',
           paddingHorizontal: space.sm,
           gap: space.xs,
         }}
@@ -64,8 +71,19 @@ export function Input({
           autoCorrect={autoCorrect}
           autoCapitalize={autoCapitalize}
           accessibilityLabel={label}
-          numberOfLines={1}
-          style={[valueStyle, { flex: 1, minWidth: 0, color: colors.textPrimary, minHeight: control.minHitTarget }]}
+          numberOfLines={multiline ? undefined : 1}
+          multiline={multiline}
+          maxLength={maxLength}
+          textAlignVertical={multiline ? 'top' : undefined}
+          style={[
+            valueStyle,
+            {
+              flex: 1,
+              minWidth: 0,
+              color: colors.textPrimary,
+              minHeight: multiline ? control.inputHeight * 3 : control.minHitTarget,
+            },
+          ]}
         />
         {suffix ? <Text style={[suffixStyle, { color: colors.textSecondary }]}>{suffix}</Text> : null}
         {onMax ? (

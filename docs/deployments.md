@@ -124,6 +124,12 @@ program id) і ролі ключів.
 бюджеті) виключається rotation/quarantine-механізмом і більше не блокує молодші черги — деталі,
 сигнатури й таблиця циклів у `docs/superpowers/plans/weeks0-5-history.md#week-5` §Task 7.0.
 
+### Закрита бета — змінні (06.10.2026, ще не виставлені)
+
+`FEEDBACK_ADMIN_TOKEN`, `FEEDBACK_IP_SALT`, `ALERT_TELEGRAM_BOT_TOKEN`, `ALERT_TELEGRAM_CHAT_ID`, `METRICS_TOKEN`,
+`BETA_ALLOWLIST`; пороги алертів — дефолти (`services/relayer/README.md`, «Env vars»). Порядок і решта гейтів —
+`docs/beta-testing.md` §0. Деплой застосує міграцію `011_feedback.sql`.
+
 ### Ключі (ролі, не значення)
 
 Приватність-правило (CLAUDE.md): relayer тримає ЛИШЕ `crank`/`fee_payer` —

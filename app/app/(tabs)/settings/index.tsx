@@ -6,6 +6,7 @@ import { Page } from '@/src/ui/Page'
 import { SettingsUiAccount } from '@/src/features/settings/SettingsUiAccount'
 import { SettingsAbout } from '@/src/features/settings/SettingsAbout'
 import { SettingsLearn } from '@/src/features/settings/SettingsLearn'
+import { SettingsBeta } from '@/src/features/settings/SettingsBeta'
 
 // Task 8 (5-tab layout): `onboard` dropped out of the tab bar
 // (`href: null` in app/app/(tabs)/_layout.tsx) but stays reachable from here
@@ -30,6 +31,7 @@ export default function TabSettingsScreen() {
     <Page>
       <SettingsUiAccount />
       <SettingsLearn />
+      <SettingsBeta />
       <View style={{ gap: space.sm }}>
         <Text style={[heading, { color: colors.textPrimary }]}>Developer</Text>
         {DEVELOPER_LINKS.map((l) => (

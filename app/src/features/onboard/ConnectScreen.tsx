@@ -50,10 +50,19 @@ function DexxerMark({ color }: { color: string }) {
   )
 }
 
-export function ConnectScreen({ busy, onConnect }: { busy: boolean; onConnect: () => void }) {
+export function ConnectScreen({
+  busy,
+  onConnect,
+  onReport,
+}: {
+  busy: boolean
+  onConnect: () => void
+  onReport?: () => void
+}) {
   const { colors, space } = useTheme()
   const name = useTextStyle('display')
   const tagline = useTextStyle('title')
+  const caption = useTextStyle('caption')
 
   return (
     <Page>
@@ -71,6 +80,15 @@ export function ConnectScreen({ busy, onConnect }: { busy: boolean; onConnect: (
         <Button variant="primary" loading={busy} onPress={onConnect}>
           Connect wallet
         </Button>
+        {onReport ? (
+          <Text
+            accessibilityRole="link"
+            onPress={onReport}
+            style={[caption, { color: colors.textSecondary, textAlign: 'center', paddingTop: space.md }]}
+          >
+            Trouble connecting? Report a problem
+          </Text>
+        ) : null}
       </View>
     </Page>
   )

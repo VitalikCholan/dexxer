@@ -8,6 +8,7 @@ import { Animated, Easing, Text, View } from 'react-native'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
 import { useTheme } from '@/src/theme'
 import { useTextStyle, useToneColors, type Tone } from './styles'
+import { record } from '@/src/lib/diagnostics'
 
 interface ToastState {
   id: number
@@ -20,6 +21,9 @@ let counter = 0
 let hideTimer: ReturnType<typeof setTimeout> | null = null
 
 export function showToast({ tone, text }: { tone: Tone; text: string }) {
+  // Closed beta: problems the user was shown go into the diagnostics log.
+  // Success toasts do not — they name trades ("Opened Long …").
+  if (tone === 'danger' || tone === 'warning') record(tone === 'danger' ? 'error' : 'warn', 'toast', text)
   const toast: ToastState = { id: ++counter, tone, text }
   listener?.(toast)
   if (hideTimer) clearTimeout(hideTimer)
