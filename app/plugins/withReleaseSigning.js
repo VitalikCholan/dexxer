@@ -37,10 +37,22 @@ function apply(gradle) {
   return withRelease
 }
 
+/**
+ * Android `versionCode` = `EXPO_PUBLIC_BUILD_NUMBER` (a positive integer), so
+ * every beta build is newer than the last one and installs as an update.
+ * Unset (local dev builds): `app.json`'s value, as before.
+ */
+function versionCode(gradle, env = process.env) {
+  const n = Number(env.EXPO_PUBLIC_BUILD_NUMBER)
+  if (!Number.isInteger(n) || n < 1) return gradle
+  return gradle.replace(/versionCode\s+\d+/, `versionCode ${n}`)
+}
+
 module.exports = function withReleaseSigning(config) {
   return withAppBuildGradle(config, (c) => {
-    c.modResults.contents = apply(c.modResults.contents)
+    c.modResults.contents = versionCode(apply(c.modResults.contents))
     return c
   })
 }
 module.exports.apply = apply
+module.exports.versionCode = versionCode
