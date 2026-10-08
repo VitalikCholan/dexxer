@@ -395,6 +395,7 @@ app.use(
 let stopAlerts: (() => void) | null = null;
 if (process.env.ALERTS_ENABLED !== "false") {
   const fs = feedbackStore;
+  const startedAt = Date.now();
   stopAlerts = startAlerts({
     intervalMs: envNum("ALERT_INTERVAL_MS", 30_000, 5_000),
     env: cfg.net,
@@ -410,6 +411,7 @@ if (process.env.ALERTS_ENABLED !== "false") {
       const now = Date.now();
       return {
         now,
+        startedAt,
         health: await collectHealth(),
         crashesRecent: fs ? await fs.countSince("crash", now - CRASH_WINDOW_MS).catch(() => null) : null,
         sponsorBudgetSol: getSponsorHealthSnapshot ? sponsorDailyBudgetSol : null,

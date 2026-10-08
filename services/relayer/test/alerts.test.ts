@@ -2,7 +2,7 @@
 // conditions fire, that a notice goes out only on a change, and the Telegram call.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { DEFAULT_ALERT_THRESHOLDS, diffAlerts, evaluateAlerts, formatAlertDiff, telegramNotifier, type AlertInput } from "../src/alerts.js";
+import { DEFAULT_ALERT_THRESHOLDS, diffAlerts, evaluateAlerts, formatAlertDiff, notifyChanges, telegramNotifier, type AlertInput } from "../src/alerts.js";
 import { buildHealthPayload, type HealthPayload } from "../src/health.js";
 
 const NOW = 2_000_000_000_000;
@@ -24,7 +24,14 @@ function healthy(patch: Partial<HealthPayload> = {}): HealthPayload {
   return { ...h, ...patch };
 }
 
-const input = (health: HealthPayload, extra: Partial<AlertInput> = {}): AlertInput => ({ now: NOW, health, crashesRecent: 0, sponsorBudgetSol: 2, ...extra });
+const input = (health: HealthPayload, extra: Partial<AlertInput> = {}): AlertInput => ({
+  now: NOW,
+  startedAt: NOW - 60_000,
+  health,
+  crashesRecent: 0,
+  sponsorBudgetSol: 2,
+  ...extra,
+});
 
 test("a healthy relayer raises nothing", () => {
   assert.equal(evaluateAlerts(input(healthy())).size, 0);
@@ -52,6 +59,36 @@ test("each condition raises its own key", () => {
   assert.deepEqual(keys(healthy({ sponsor: { today_sol: 1.7, count_today: 90, maxCuPriceMicroLamports: 0 } }), { sponsorBudgetSol: null }), []);
   assert.deepEqual(keys(healthy(), { crashesRecent: DEFAULT_ALERT_THRESHOLDS.crashBurst }), ["app:crashes"]);
   assert.deepEqual(keys(healthy(), { crashesRecent: null }), []);
+});
+
+test("commit:overdue without a known last success counts from the process start, only with the crank on", () => {
+  const keys = (h: HealthPayload, extra: Partial<AlertInput> = {}) => [...evaluateAlerts(input(h, extra)).keys()];
+  const longAgo = NOW - 3 * 300_000 - 1;
+  assert.deepEqual(keys(healthy({ lastCommitAt: null }), { startedAt: longAgo }), ["commit:overdue"], "a commit that never succeeded after a restart");
+  assert.match(evaluateAlerts(input(healthy({ lastCommitAt: null }), { startedAt: longAgo })).get("commit:overdue") ?? "", /no success since the relayer started/);
+  assert.deepEqual(keys(healthy({ lastCommitAt: null })), [], "a freshly started relayer is not overdue yet");
+  assert.deepEqual(keys(healthy({ lastCommitAt: null, crankEnabled: false }), { startedAt: longAgo }), [], "no crank, no commit cycle to wait for");
+});
+
+test("notifyChanges: a failed send keeps the old set, so the same change goes out on the next check", async () => {
+  const next = new Map([["db", "Postgres unreachable"]]);
+  const sent: string[] = [];
+  let fail = true;
+  const notifier = {
+    async send(text: string) {
+      if (fail) throw new Error("telegram: HTTP 429");
+      sent.push(text);
+    },
+  };
+  let active = new Map<string, string>();
+  await assert.rejects(() => notifyChanges(active, next, "devnet", notifier), /429/);
+  fail = false;
+  active = await notifyChanges(active, next, "devnet", notifier);
+  assert.equal(sent.length, 1);
+  assert.match(sent[0], /🔴 Postgres unreachable/);
+  assert.equal(active, next);
+  await notifyChanges(active, next, "devnet", notifier);
+  assert.equal(sent.length, 1, "nothing changed, nothing sent");
 });
 
 test("thresholds are configurable", () => {

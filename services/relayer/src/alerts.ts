@@ -47,6 +47,8 @@ export const CRASH_WINDOW_MS = 10 * 60 * 1000;
 
 export interface AlertInput {
   now: number;
+  /** When this relayer process started — the reference for `commit:overdue` before any commit succeeded. */
+  startedAt: number;
   health: HealthPayload;
   /** Crash reports in the last `CRASH_WINDOW_MS`; `null` when feedback is off. */
   crashesRecent: number | null;
@@ -71,8 +73,19 @@ export function evaluateAlerts(input: AlertInput, t: AlertThresholds = DEFAULT_A
       out.set(`market:${sym}:oracle`, `${sym}: oracle price is stale (last publish ${ago(input.now - m.lastPublishTimeMs)})`);
     }
   }
-  if (h.lastCommitAt !== null && input.now - h.lastCommitAt > t.commitOverdueIntervals * h.commitIntervalMs) {
-    out.set("commit:overdue", `commit_aggregate overdue: last success ${ago(input.now - h.lastCommitAt)}`);
+  // Without a known last success (a restart with no persisted `lastCommitAt`:
+  // no Postgres or a fresh DB) count from the process start, so a commit that
+  // never succeeds — an empty `FeeEscrow` pays 200 000 lamports per commit —
+  // still raises the alert. Only while this relayer's crank runs: the commit
+  // cycle lives in it (crank.ts).
+  const commitSince = h.lastCommitAt ?? (h.crankEnabled ? input.startedAt : null);
+  if (commitSince !== null && input.now - commitSince > t.commitOverdueIntervals * h.commitIntervalMs) {
+    out.set(
+      "commit:overdue",
+      h.lastCommitAt !== null
+        ? `commit_aggregate overdue: last success ${ago(input.now - h.lastCommitAt)}`
+        : `commit_aggregate overdue: no success since the relayer started ${ago(input.now - input.startedAt)}`,
+    );
   }
   if (h.feePayerSol !== null && h.feePayerSol < t.minFeePayerSol) {
     out.set("balance:feePayer", `fee_payer balance ${h.feePayerSol.toFixed(3)} SOL < ${t.minFeePayerSol} SOL — top up (sponsored onboarding stops at 0)`);
@@ -111,7 +124,7 @@ export function formatAlertDiff(d: AlertDiff, env: string): string | null {
   return `[dexxer ${env}]\n${lines.join("\n")}`;
 }
 
-/** Telegram Bot API `sendMessage`. Errors are thrown to the caller (logged there), never retried — the next state change sends again. */
+/** Telegram Bot API `sendMessage`. Errors are thrown to the caller (logged there); the loop retries the same change on its next check (`notifyChanges`). */
 export function telegramNotifier(botToken: string, chatId: string, fetchImpl: typeof fetch = fetch): Notifier {
   return {
     async send(text) {
@@ -140,6 +153,17 @@ export interface AlertLoopDeps {
   thresholds?: AlertThresholds;
 }
 
+/**
+ * Send what changed between `active` and `next`, and return the set to remember. `next` becomes the
+ * remembered set only after the send went through: a failed send (Telegram 429, a timeout) throws and
+ * leaves `active` as it was, so the same change is sent again on the next check instead of being lost.
+ */
+export async function notifyChanges(active: Map<string, string>, next: Map<string, string>, env: string, notifier: Notifier): Promise<Map<string, string>> {
+  const text = formatAlertDiff(diffAlerts(active, next), env);
+  if (text) await notifier.send(text);
+  return next;
+}
+
 /** Evaluate every `intervalMs`; notify only on changes. Returns a stop function. The first evaluation runs after one interval, so a booting relayer's empty state does not page anyone. */
 export function startAlerts(deps: AlertLoopDeps): () => void {
   let active = new Map<string, string>();
@@ -150,9 +174,7 @@ export function startAlerts(deps: AlertLoopDeps): () => void {
     void (async () => {
       try {
         const next = evaluateAlerts(await deps.collect(), deps.thresholds);
-        const text = formatAlertDiff(diffAlerts(active, next), deps.env);
-        active = next;
-        if (text) await deps.notifier.send(text);
+        active = await notifyChanges(active, next, deps.env, deps.notifier);
       } catch (e) {
         console.error("alerts: evaluation or notification failed", String(e));
       } finally {
