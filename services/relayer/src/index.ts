@@ -35,7 +35,7 @@ import { Connection, PublicKey } from "@solana/web3.js";
 
 type PublicKeyT = InstanceType<typeof PublicKey>;
 import { createPool, getMeta, migrate, setMeta } from "./db.js";
-import { buildMarketsHealth, computeSchedulerActive, healthRouter } from "./health.js";
+import { buildMarketsHealth, computeSchedulerActive, createHealthCollector, healthRouter, type HealthDeps } from "./health.js";
 import { shutdown } from "./shutdown.js";
 import { envNum } from "./env.js";
 import type { RelayerConfig, RelayerState } from "./crank.js";
@@ -45,6 +45,10 @@ import { ORACLE_STALE_MS, isStale } from "./indexer/prices.js";
 import { DEFAULT_ASSETLINKS_PACKAGE, assetlinksRouter, parseFingerprintsEnv } from "./assetlinks.js";
 import { nonceRouter } from "./nonce.js";
 import { DEFAULT_SESSION_TTL_HOURS, authRouter, pgAuthStore } from "./auth.js";
+import { parseAllowlist } from "./betaAccess.js";
+import { feedbackRouter, pgFeedbackStore, type FeedbackStore, type Notifier } from "./feedback.js";
+import { CRASH_WINDOW_MS, DEFAULT_ALERT_THRESHOLDS, consoleNotifier, startAlerts, telegramNotifier } from "./alerts.js";
+import { metricsRouter } from "./metrics.js";
 import {
   DEFAULT_DAILY_BUDGET_SOL,
   DEFAULT_SPONSOR_MAX_CU_PRICE_MICROLAMPORTS,
@@ -132,6 +136,9 @@ if (pool) {
 }
 
 const app = express();
+// Railway's edge proxy is the one hop in front of us: `req.ip` is then the
+// client's address (X-Forwarded-For), which `/feedback` rate-limits on.
+app.set("trust proxy", 1);
 // Digital Asset Links for MWA identity verification (see assetlinks.ts).
 // Mounted first: static, key-free, must answer even if every loop below is off.
 app.use(
@@ -252,6 +259,36 @@ if (cfg.indexerEnabled && !pool) {
 
 const baseConn = new Connection(cfg.baseRpc, "confirmed");
 
+// Closed beta (06.10.2026): one notifier for alerts and new reports — Telegram
+// when ALERT_TELEGRAM_BOT_TOKEN/ALERT_TELEGRAM_CHAT_ID are set, the log
+// otherwise. BETA_ALLOWLIST limits relayer sessions (and with them sponsored
+// onboarding) to the invited wallets — see betaAccess.ts.
+const telegram =
+  process.env.ALERT_TELEGRAM_BOT_TOKEN && process.env.ALERT_TELEGRAM_CHAT_ID
+    ? telegramNotifier(process.env.ALERT_TELEGRAM_BOT_TOKEN, process.env.ALERT_TELEGRAM_CHAT_ID)
+    : null;
+const notifier: Notifier = telegram ?? consoleNotifier;
+const betaAllowlist = parseAllowlist(process.env.BETA_ALLOWLIST, (bad) => console.warn(`auth: BETA_ALLOWLIST entry is not a public key, skipped: ${bad}`));
+
+// In-app bug and crash reports (feedback.ts): needs Postgres. The admin read
+// API is mounted only with FEEDBACK_ADMIN_TOKEN.
+let feedbackStore: FeedbackStore | null = null;
+if (process.env.FEEDBACK_ENABLED !== "false" && pool) {
+  feedbackStore = pgFeedbackStore(pool);
+  app.use(
+    feedbackRouter({
+      store: feedbackStore,
+      authStore: pgAuthStore(pool),
+      notifier: telegram ?? undefined,
+      adminToken: process.env.FEEDBACK_ADMIN_TOKEN?.trim() || undefined,
+      ipSalt: process.env.FEEDBACK_IP_SALT || undefined,
+    }),
+  );
+  console.log(`feedback: POST /feedback enabled${process.env.FEEDBACK_ADMIN_TOKEN ? ", admin API on" : " (no FEEDBACK_ADMIN_TOKEN — admin API off)"}${telegram ? ", Telegram notices on" : ""}`);
+} else if (process.env.FEEDBACK_ENABLED !== "false") {
+  console.warn("feedback: no DATABASE_URL — /feedback disabled (needs Postgres)");
+}
+
 // Task 6: `/sponsor` — fee_payer co-signs whitelisted onboarding txs (see
 // sponsor.ts's header comment). Needs Postgres for the rate-limit/budget
 // store, same gating pattern as the indexer above.
@@ -263,7 +300,8 @@ if (cfg.sponsorEnabled && !pool) {
 } else if (cfg.sponsorEnabled && pool && siwsDomain) {
   const store = pgSponsorStore(pool);
   const authStore = pgAuthStore(pool);
-  app.use(authRouter({ store: authStore, domain: siwsDomain, sessionTtlMs: authSessionTtlMs }));
+  app.use(authRouter({ store: authStore, domain: siwsDomain, sessionTtlMs: authSessionTtlMs, allowlist: betaAllowlist }));
+  if (betaAllowlist) console.log(`auth: closed beta — sessions only for ${betaAllowlist.size} allowlisted wallet(s) (BETA_ALLOWLIST)`);
   // Week-5 final review M2: the only mint a sponsored ATA may be created for.
   // Read once at boot from the public base `Config` (no secret involved, same
   // source crank.ts uses for the `Pool` PDAs). If this read fails the endpoint
@@ -314,36 +352,74 @@ const stopMarketWatch = startMarketWatch(cfg.erRpc, marketPda, (now) => {
 });
 console.log(`marketWatch: watching ${marketPda.toBase58()} on ${cfg.erRpc} (unauthenticated, public read)`);
 
+const healthDeps: HealthDeps = {
+  getBackfillSnapshot: () => backfill?.snapshot() ?? { enabled: false, lastRunAt: null, lastOkAt: null, lastError: null, rows: 0, source: "hyperliquid" as const },
+  state,
+  baseConn,
+  crankPubkey: cfg.crank.publicKey,
+  feePayerPubkey: cfg.feePayer.publicKey,
+  db: pool,
+  crankEnabled,
+  getSchedulerActive: () => computeSchedulerActive(crankEnabled, lastMarketChangeAt, Date.now()),
+  getIndexerSnapshot: () => ({
+    ...indexerStats,
+    wsClients: wsHub?.clientCount() ?? 0,
+    // Week-5 Task 5: by the oracle's own publish time, not by when this
+    // process last received a notification — see indexer/prices.ts.
+    oracleStale: isStale(indexerStats.lastPublishTimeMs, Date.now(), ORACLE_STALE_MS),
+  }),
+  getSponsorSnapshot: getSponsorHealthSnapshot,
+  commitIntervalMs: COMMIT_INTERVAL_MS,
+  // The same view the crank ticks (`withSol`): SOL is listed even while the
+  // registry is empty or lacks it.
+  getMarketsHealth: () =>
+    buildMarketsHealth(
+      withSol(markets.list().map((m) => ({ symbol: m.symbol })), () => ({ symbol: "SOL" })).map((m) => m.symbol),
+      state.marketTicks,
+      indexerStats.feeds,
+      Date.now(),
+    ),
+};
+const collectHealth = createHealthCollector(healthDeps);
+app.use(healthRouter(healthDeps, collectHealth));
 app.use(
-  healthRouter({
-    getBackfillSnapshot: () => backfill?.snapshot() ?? { enabled: false, lastRunAt: null, lastOkAt: null, lastError: null, rows: 0, source: "hyperliquid" as const },
-    state,
-    baseConn,
-    crankPubkey: cfg.crank.publicKey,
-    feePayerPubkey: cfg.feePayer.publicKey,
-    db: pool,
-    crankEnabled,
-    getSchedulerActive: () => computeSchedulerActive(crankEnabled, lastMarketChangeAt, Date.now()),
-    getIndexerSnapshot: () => ({
-      ...indexerStats,
-      wsClients: wsHub?.clientCount() ?? 0,
-      // Week-5 Task 5: by the oracle's own publish time, not by when this
-      // process last received a notification — see indexer/prices.ts.
-      oracleStale: isStale(indexerStats.lastPublishTimeMs, Date.now(), ORACLE_STALE_MS),
-    }),
-    getSponsorSnapshot: getSponsorHealthSnapshot,
-    commitIntervalMs: COMMIT_INTERVAL_MS,
-    // The same view the crank ticks (`withSol`): SOL is listed even while the
-    // registry is empty or lacks it.
-    getMarketsHealth: () =>
-      buildMarketsHealth(
-        withSol(markets.list().map((m) => ({ symbol: m.symbol })), () => ({ symbol: "SOL" })).map((m) => m.symbol),
-        state.marketTicks,
-        indexerStats.feeds,
-        Date.now(),
-      ),
+  metricsRouter({
+    collect: collectHealth,
+    feedbackCounts: feedbackStore ? () => feedbackStore!.counts() : undefined,
+    token: process.env.METRICS_TOKEN?.trim() || undefined,
   }),
 );
+
+// Closed beta: alert on state changes (alerts.ts). On by default; the log is
+// the sink without Telegram.
+let stopAlerts: (() => void) | null = null;
+if (process.env.ALERTS_ENABLED !== "false") {
+  const fs = feedbackStore;
+  const startedAt = Date.now();
+  stopAlerts = startAlerts({
+    intervalMs: envNum("ALERT_INTERVAL_MS", 30_000, 5_000),
+    env: cfg.net,
+    notifier,
+    thresholds: {
+      ...DEFAULT_ALERT_THRESHOLDS,
+      minFeePayerSol: envNum("ALERT_MIN_FEE_PAYER_SOL", DEFAULT_ALERT_THRESHOLDS.minFeePayerSol, 0),
+      minCrankSol: envNum("ALERT_MIN_CRANK_SOL", DEFAULT_ALERT_THRESHOLDS.minCrankSol, 0),
+      marketTickAgeMs: envNum("ALERT_MARKET_TICK_AGE_MS", DEFAULT_ALERT_THRESHOLDS.marketTickAgeMs, 10_000),
+      crashBurst: envNum("ALERT_CRASH_BURST", DEFAULT_ALERT_THRESHOLDS.crashBurst, 1),
+    },
+    collect: async () => {
+      const now = Date.now();
+      return {
+        now,
+        startedAt,
+        health: await collectHealth(),
+        crashesRecent: fs ? await fs.countSince("crash", now - CRASH_WINDOW_MS).catch(() => null) : null,
+        sponsorBudgetSol: getSponsorHealthSnapshot ? sponsorDailyBudgetSol : null,
+      };
+    },
+  });
+  console.log(`alerts: on (${telegram ? "Telegram" : "log only — set ALERT_TELEGRAM_BOT_TOKEN/ALERT_TELEGRAM_CHAT_ID"})`);
+}
 
 // Task 7: `CRANK_ENABLED=false` skips the crank loop entirely — used only
 // to measure the scheduler as the sole source of `crank_tick`s (see
@@ -380,6 +456,7 @@ function handleSignal(signal: string): void {
   backfill?.stop();
   wsHub?.close();
   stopMarketWatch();
+  stopAlerts?.();
   markets.stop();
   void shutdown(signal, {
     requestStop,

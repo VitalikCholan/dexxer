@@ -22,6 +22,7 @@
 import { useEffect, useState } from 'react'
 import { useQuery, useQueryClient, type QueryClient, type UseQueryResult } from '@tanstack/react-query'
 import { RELAYER_URL } from './solana'
+import { record } from './diagnostics'
 import type { Tf } from '@/src/features/chart/timeframes'
 import {
   IndexerShapeError,
@@ -72,8 +73,17 @@ export interface PoolSnapshot {
 
 /** Fetch + validate: `parse` is one of `indexerCodec.ts`'s parsers, so a shape mismatch throws `IndexerShapeError` here (surfacing as the query's `error`), never later. */
 export async function getJson<T>(path: string, parse: (body: unknown) => T): Promise<T> {
-  const res = await fetch(`${RELAYER_URL}${path}`)
-  if (!res.ok) throw new Error(`${path}: HTTP ${res.status}`)
+  let res: Response
+  try {
+    res = await fetch(`${RELAYER_URL}${path}`)
+  } catch (e) {
+    record('warn', 'relayer', `${path.split('?')[0]}: unreachable (${e instanceof Error ? e.message : String(e)})`)
+    throw e
+  }
+  if (!res.ok) {
+    record('warn', 'relayer', `${path.split('?')[0]}: HTTP ${res.status}`)
+    throw new Error(`${path}: HTTP ${res.status}`)
+  }
   return parse(await res.json())
 }
 
@@ -225,6 +235,7 @@ export class IndexerWs {
     }
     this.socket = ws
     ws.onopen = () => {
+      if (this.attempt > 0) record('info', 'ws', 'reconnected')
       this.attempt = 0
       this.setState('open')
     }
@@ -243,6 +254,7 @@ export class IndexerWs {
       // RN's WebSocket fires `close` right after `error` — reconnect is scheduled there.
     }
     ws.onclose = () => {
+      if (this.state === 'open') record('warn', 'ws', 'connection closed')
       this.socket = null
       this.setState('closed')
       this.scheduleReconnect()

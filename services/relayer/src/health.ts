@@ -209,11 +209,14 @@ interface BalanceCache {
   feePayerSol: number | null;
 }
 
-export function healthRouter(deps: HealthDeps): Router {
-  const router = express.Router();
+/**
+ * The `/healthz` payload as a function, shared by the route, `/metrics` and
+ * the alert loop (alerts.ts) so all three see exactly the same numbers.
+ * Balances are cached for `BALANCE_CACHE_MS` across every caller.
+ */
+export function createHealthCollector(deps: HealthDeps): () => Promise<HealthPayload> {
   let cache: BalanceCache = { at: 0, crankSol: null, feePayerSol: null };
-
-  router.get("/healthz", async (_req, res) => {
+  return async () => {
     const now = Date.now();
     if (now - cache.at > BALANCE_CACHE_MS) {
       try {
@@ -241,7 +244,7 @@ export function healthRouter(deps: HealthDeps): Router {
     }
 
     const sponsor = deps.getSponsorSnapshot ? await deps.getSponsorSnapshot().catch(() => undefined) : undefined;
-    const payload = buildHealthPayload(
+    return buildHealthPayload(
       deps.state,
       now,
       cache.crankSol,
@@ -255,8 +258,14 @@ export function healthRouter(deps: HealthDeps): Router {
       deps.getMarketsHealth?.() ?? {},
       deps.getBackfillSnapshot?.() ?? null,
     );
+  };
+}
+
+export function healthRouter(deps: HealthDeps, collect: () => Promise<HealthPayload> = createHealthCollector(deps)): Router {
+  const router = express.Router();
+  router.get("/healthz", async (_req, res) => {
+    const payload = await collect();
     res.status(payload.ok ? 200 : 503).json(payload);
   });
-
   return router;
 }

@@ -12,14 +12,24 @@ import { AppSplashController } from '@/src/shell/AppSplashController'
 import { useAuth } from '@/src/shell/AuthProvider'
 import { ThemeProvider, colors } from '@/src/theme'
 import { ToastHost } from '@/src/ui/Toast'
+import { flushPendingCrash, installCrashReporter, setCurrentScreen } from '@/src/lib/crashReporter'
+import { record } from '@/src/lib/diagnostics'
 
 SplashScreen.preventAutoHideAsync()
+// Closed beta: catch JS crashes from the very start, and send the one the
+// previous run left behind (lib/crashReporter.ts).
+installCrashReporter()
+void flushPendingCrash()
 
 export default function RootLayout() {
   // Use this hook to track the locations for analytics or debugging.
   // Delete if you don't need it.
-  useTrackLocations((pathname, params) => {
-    console.log(`Track ${pathname}`, { params })
+  // Navigation goes into the diagnostics log (paths only — never params), and
+  // the current screen into crash and bug reports.
+  useTrackLocations((pathname) => {
+    if (__DEV__) console.log(`Track ${pathname}`)
+    record('info', 'nav', pathname)
+    if (pathname !== '/report') setCurrentScreen(pathname)
   })
   const [loaded] = useFonts({
     SpaceMono: require('../assets/fonts/SpaceMono-Regular.ttf'),
@@ -70,6 +80,8 @@ function RootNavigator() {
       <Stack.Protected guard={!isAuthenticated}>
         <Stack.Screen name="sign-in" />
       </Stack.Protected>
+      {/* Closed beta: reachable whether or not a wallet is connected. */}
+      <Stack.Screen name="report" options={{ presentation: 'modal', animation: 'slide_from_bottom' }} />
     </Stack>
   )
 }

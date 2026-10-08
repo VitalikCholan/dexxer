@@ -124,6 +124,28 @@ program id) і ролі ключів.
 бюджеті) виключається rotation/quarantine-механізмом і більше не блокує молодші черги — деталі,
 сигнатури й таблиця циклів у `docs/superpowers/plans/weeks0-5-history.md#week-5` §Task 7.0.
 
+### Закрита бета — деплой і змінні (06.10.2026, 18:46 за Києвом)
+
+Деплоймент **`f6b0de88`** (`railway up --service relayer --ci` з гілки `feat/beta-feedback-monitoring`, PR #24 ще не
+змерджено; попередній — `fda3b944`). Міграцію `011_feedback.sql` застосовано. Виставлено (значення — лише в
+`keys/beta-relayer.env` і в Railway): `FEEDBACK_ADMIN_TOKEN`, `FEEDBACK_IP_SALT`, `METRICS_TOKEN`,
+`ALERT_TELEGRAM_BOT_TOKEN` (бот @dexxerbetabot), `ALERT_TELEGRAM_CHAT_ID` (поки особистий чат, не група),
+`ASSETLINKS_SHA256_FINGERPRINTS` (debug + release `0A:1B:BF:…:99:95`), `SPONSOR_DAILY_SOL=2`. `BETA_ALLOWLIST` — ні
+(поставити, коли буде список адрес). Пороги алертів — дефолти.
+
+Перевірено одразу після деплою: `/healthz` `ok:true`; `/.well-known/assetlinks.json` віддає обидва відбитки;
+`/metrics` без токена 401, з токеном — метрики; `GET /feedback` без токена 401; тестовий `POST /feedback` → `#1`,
+у логах «Telegram notices on», «alerts: on (Telegram)», статус звіту виставлено `wontfix`. На момент деплою
+`fee_payer` 0.40 SOL < порога 0.5 — алерт про баланс очікуваний, доки не поповнено. Відкат: `railway up` з `main`
+(`cfd3d4b`) — `redeploy` деплойменту з `railway up` не працює (див. вище).
+
+**Перший beta-APK (06.10.2026, 19:11):** `app/dist/dexxer-beta-451.apk` (`app/scripts/build-release.sh`, JDK 21 —
+з JDK 25 нативні модули не збираються), `versionCode 451`, підпис release-ключем `0A:1B:BF:…:99:95` (перевірено
+`apksigner`), SHA-256 файлу `ba5234c9…65a8`, 161 МБ (усі чотири ABI). Smoke на чистому AVD `beta_check` (Android 35,
+без Metro): запуск → екран Connect → «Report a problem» → звіт `#2` дійшов на relayer з `build 451`, `channel beta`,
+`screen /sign-in`, журнал — лише навігація; позначено `wontfix`. Не перевірено: Connect з гаманцем на release-збірці,
+краш-репорт на пристрої.
+
 ### Ключі (ролі, не значення)
 
 Приватність-правило (CLAUDE.md): relayer тримає ЛИШЕ `crank`/`fee_payer` —

@@ -8,6 +8,7 @@ import { Animated, Easing, Text, View } from 'react-native'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
 import { useTheme } from '@/src/theme'
 import { useTextStyle, useToneColors, type Tone } from './styles'
+import { record, toastLogLine } from '@/src/lib/diagnostics'
 
 interface ToastState {
   id: number
@@ -19,7 +20,14 @@ let listener: ((toast: ToastState | null) => void) | null = null
 let counter = 0
 let hideTimer: ReturnType<typeof setTimeout> | null = null
 
-export function showToast({ tone, text }: { tone: Tone; text: string }) {
+/**
+ * `log`: a line for the diagnostics log that the caller knows is not private. Without it an error/warning
+ * toast is logged by its error code only (`toastLogLine`) — toast texts name trades. Success toasts are
+ * never logged.
+ */
+export function showToast({ tone, text, log }: { tone: Tone; text: string; log?: string }) {
+  if (tone === 'danger' || tone === 'warning')
+    record(tone === 'danger' ? 'error' : 'warn', 'toast', log ?? toastLogLine(text))
   const toast: ToastState = { id: ++counter, tone, text }
   listener?.(toast)
   if (hideTimer) clearTimeout(hideTimer)

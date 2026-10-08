@@ -403,6 +403,52 @@ slot isn't burned for a request that was never actually sponsored.
 reports the rolling 24h spend (finalized rows only) plus the currently
 enforced ComputeBudget `SetComputeUnitPrice` ceiling.
 
+## Closed beta: feedback, alerts, metrics, allowlist (06.10.2026)
+
+Tools for running a closed beta; the plan itself (who, how, what to watch) is
+`docs/beta-testing.md`. None of them reads or serves trader data.
+
+- **`POST /feedback`** (`src/feedback.ts`, migration `011_feedback.sql`, needs
+  Postgres): in-app bug, idea and crash reports. Body: `{ kind: bug|idea|crash,
+  category: trading|onboarding|funds|charts|other, message (≤ 4000), contact?,
+  app: { version, build?, channel?, platform, osVersion?, device? }, context: {
+  screen?, market? }, events: [{ t, level, tag, msg }] (≤ 200) }`, ≤ 64 KiB,
+  validated field by field → `201 { id }`. Unauthenticated on purpose (a tester
+  who cannot connect is who needs it). The wallet address is stored **only** from
+  a live relayer session (`Authorization: Bearer`, the tester's choice in the
+  app), never from the body; the IP only as a salted sha256
+  (`FEEDBACK_IP_SALT`, random per process if unset). Rate limit per IP hash and
+  per owner, in memory: 10 bugs / 10 ideas / 30 crashes per hour → 429.
+  The app builds the event log with a scrubber (no amounts, keys, tokens).
+- **Admin API** (only with `FEEDBACK_ADMIN_TOKEN`, bearer, constant-time
+  compare): `GET /feedback?limit=&before=&kind=&status=` (newest first,
+  `X-Next-Cursor`), `GET /feedback/:id`, `PATCH /feedback/:id {status:
+  new|triaged|fixed|wontfix|duplicate}`.
+  ```sh
+  curl -s -H "Authorization: Bearer $FEEDBACK_ADMIN_TOKEN" "$RELAYER/feedback?status=new" | jq '.[] | {id, kind, category, message}'
+  ```
+- **Alerts** (`src/alerts.ts`): every `ALERT_INTERVAL_MS` the `/healthz`
+  numbers and the crash-report rate are checked; a Telegram message goes out
+  when a condition **starts** and when it **clears** (not on every check):
+  SOL crank stale, a market's tick older than `ALERT_MARKET_TICK_AGE_MS` or its
+  oracle stale, `commit_aggregate` overdue (3 × `COMMIT_INTERVAL_MS`), crank /
+  fee-payer SOL under `ALERT_MIN_CRANK_SOL` / `ALERT_MIN_FEE_PAYER_SOL`,
+  Postgres down, sponsor 24 h spend ≥ 80 % of `SPONSOR_DAILY_SOL`,
+  `ALERT_CRASH_BURST` crash reports in 10 minutes. New reports are announced
+  in the same chat (description and build, never the owner). Without
+  `ALERT_TELEGRAM_BOT_TOKEN` + `ALERT_TELEGRAM_CHAT_ID` everything goes to the
+  log only.
+- **`GET /metrics`** (`src/metrics.ts`): the `/healthz` numbers plus report
+  totals and process memory/uptime in Prometheus text format, for Grafana
+  Cloud / Better Stack / any Prometheus scraper. Optional bearer
+  `METRICS_TOKEN`.
+- **`BETA_ALLOWLIST`** (`src/betaAccess.ts`): wallet addresses (comma /
+  whitespace separated). When set, `/auth/siws` issues sessions only to them
+  (403 `This wallet is not on the Dexxer beta list…` otherwise), so only invited
+  wallets get sponsored onboarding and durable nonces. Checked after the
+  signature. The program stays permissionless — this closes the app's
+  sponsored path, not the chain.
+
 ## Env vars
 
 | Var | Required | Notes |
@@ -425,6 +471,17 @@ enforced ComputeBudget `SetComputeUnitPrice` ceiling.
 | `SIWS_DOMAIN` | yes when `SPONSOR_ENABLED=true` | week 6: the app's MWA identity domain (today the relayer's own host). SIWS messages must name it as `domain` and as the `uri` host. Unset → `/auth/*`, `/sponsor`, `/nonce` are **not mounted** (fail-closed, logged) |
 | `AUTH_SESSION_TTL_HOURS` | no (default `168`) | week 6: relayer session lifetime; non-positive/unparseable → default |
 | `SPONSOR_MAX_CU_PRICE_MICROLAMPORTS` | no (default `500000`) | fix (Phantom smoke 24.09): ceiling on a wallet-prepended ComputeBudget `SetComputeUnitPrice` this endpoint will co-sign. At the 1.4M CU transaction max the default caps the sponsor-paid priority fee at 700 000 lamports ≈ 0.0007 SOL/tx. `SetComputeUnitLimit` has no such cap — it cannot cost `fee_payer` more than the tx's own CU budget. Reported by `/healthz`'s `sponsor.maxCuPriceMicroLamports` |
+| `FEEDBACK_ENABLED` | no (default on; needs `DATABASE_URL`) | `false` turns off `POST /feedback` |
+| `FEEDBACK_ADMIN_TOKEN` | no | bearer for the admin read/triage API; unset → admin routes not mounted. Generate: `openssl rand -base64 32` |
+| `FEEDBACK_IP_SALT` | no | salt for the stored IP hash; unset → random per process (hashes do not survive a restart) |
+| `ALERTS_ENABLED` | no (default on) | `false` stops the alert loop |
+| `ALERT_TELEGRAM_BOT_TOKEN` / `ALERT_TELEGRAM_CHAT_ID` | no | Telegram bot (@BotFather) and the team chat id; both set → alerts and new-report notices go there, else to the log |
+| `ALERT_INTERVAL_MS` | no (default `30000`, min `5000`) | how often alert conditions are evaluated |
+| `ALERT_MIN_FEE_PAYER_SOL` / `ALERT_MIN_CRANK_SOL` | no (default `0.5` / `0.1`) | balance floors that raise an alert |
+| `ALERT_MARKET_TICK_AGE_MS` | no (default `120000`, min `10000`) | a market's crank tick older than this raises an alert |
+| `ALERT_CRASH_BURST` | no (default `5`, min `1`) | crash reports within 10 minutes that raise an alert |
+| `METRICS_TOKEN` | no | bearer required by `GET /metrics`; unset → public like `/healthz` |
+| `BETA_ALLOWLIST` | no | closed beta: only these wallets get relayer sessions (and so sponsored onboarding / nonces) |
 | `ASSETS_ENABLED` | no (default on) | `false` turns off `GET /assets/:symbol` |
 | `ASSETS_CACHE_MS` | no (default `600000`, min `60000`) | CoinGecko cache TTL for `/assets/:symbol` |
 | `TICKERS_CACHE_MS` | no (default `30000`, min `5000`) | Lifetime of the in-memory `/tickers` answer (24h change for every market, from the 1h candles) |

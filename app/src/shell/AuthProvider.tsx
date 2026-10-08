@@ -5,7 +5,8 @@ import { AppConfig } from '@/constants/app-config'
 import { useMutation } from '@tanstack/react-query'
 import { disconnect as mwaDisconnect, ensureAuthorized } from '@/src/lib/mwa/session'
 import { pickSignature, toPublicKey } from '@/src/lib/mwa/accounts'
-import { exchangeSiws, fetchChallenge, siwsPayload } from '@/src/lib/relayerAuth'
+import { RelayerAuthError, exchangeSiws, fetchChallenge, siwsPayload } from '@/src/lib/relayerAuth'
+import { showToast } from '@/src/ui/Toast'
 
 export interface AuthState {
   isAuthenticated: boolean
@@ -61,6 +62,10 @@ function useSignInMutation() {
           await exchangeSiws(owner, out.signedMessage, pickSignature(out.signedMessage, out.signature, owner))
         } catch (e) {
           if (__DEV__) console.log(`[dexxer] relayer session not issued at Connect — ${String(e)}`)
+          // Closed beta (BETA_ALLOWLIST): say so now, not at the first sponsored step.
+          if (e instanceof RelayerAuthError && e.status === 403) {
+            showToast({ tone: 'warning', text: e.message, log: 'relayer session refused at Connect (HTTP 403)' })
+          }
         }
       }
       return out
