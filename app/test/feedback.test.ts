@@ -3,7 +3,7 @@
 // POST to /feedback, and the crash report.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { MAX_EVENTS, clearEvents, recentEvents, record, scrub } from '../src/lib/diagnostics'
+import { MAX_EVENTS, clearEvents, recentEvents, record, scrub, toastLogLine } from '../src/lib/diagnostics'
 import { appInfoFrom } from '../src/lib/appInfo'
 import { FeedbackError, buildReport, sendReport, validateDraft, type ReportDraft } from '../src/lib/feedback'
 import { crashReport } from '../src/lib/crashReporter'
@@ -21,6 +21,22 @@ test('scrub masks amounts, prices, raw integers, keys, tokens and queries; keeps
     'GET https://relayer.example/prices?<query> failed',
   )
   assert.ok(scrub('x'.repeat(2000)).length <= 500)
+})
+
+test('scrub masks every number, small integers included; only "(NNNN)" codes and "HTTP NNN" survive', () => {
+  assert.equal(scrub('need 250 dUSDC free margin'), 'need # dUSDC free margin')
+  assert.equal(scrub('leverage 5x, size 3'), 'leverage #x, size #')
+  assert.equal(scrub('250dUSDC at -12'), '#dUSDC at -#')
+  assert.equal(scrub('amount (250) too small (6015)'), 'amount (#) too small (6015)')
+  assert.equal(scrub('HTTP 4290 HTTP 503'), 'HTTP # HTTP 503')
+  assert.equal(scrub('/screen2 /info/42'), '/screen2 /info/#')
+})
+
+test('toastLogLine keeps the error code and HTTP status of a toast, never its text', () => {
+  assert.equal(toastLogLine('Position opened, but TakeProfit was not set: Slippage exceeded (6015)'), '(6015)')
+  assert.equal(toastLogLine('Not enough free margin: need 250 dUSDC'), 'no code')
+  assert.equal(toastLogLine('/prices: HTTP 429'), 'HTTP 429')
+  assert.equal(toastLogLine('Opened Long 0.1 SOL'), 'no code')
 })
 
 test('record keeps the newest events, scrubbed, oldest first', () => {

@@ -63,7 +63,9 @@ function useSignInMutation() {
         } catch (e) {
           if (__DEV__) console.log(`[dexxer] relayer session not issued at Connect — ${String(e)}`)
           // Closed beta (BETA_ALLOWLIST): say so now, not at the first sponsored step.
-          if (e instanceof RelayerAuthError && e.status === 403) showToast({ tone: 'warning', text: e.message })
+          if (e instanceof RelayerAuthError && e.status === 403) {
+            showToast({ tone: 'warning', text: e.message, log: 'relayer session refused at Connect (HTTP 403)' })
+          }
         }
       }
       return out
