@@ -66,6 +66,11 @@ export async function clearRelayerToken(owner: PublicKey): Promise<void> {
   await SecureStore.deleteItemAsync(storageKey(owner))
 }
 
+/** Whether this owner has a live relayer session (no network call). */
+export async function hasRelayerSession(owner: PublicKey): Promise<boolean> {
+  return (await getRelayerToken(owner)) !== null
+}
+
 /** `Authorization` header for the relayer's write endpoints — empty when there is no live session (the relayer then answers 401). */
 export async function relayerAuthHeaders(owner: PublicKey): Promise<Record<string, string>> {
   const token = await getRelayerToken(owner)
