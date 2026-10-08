@@ -6,7 +6,7 @@ import assert from 'node:assert/strict'
 import { MAX_EVENTS, clearEvents, recentEvents, record, scrub, toastLogLine } from '../src/lib/diagnostics'
 import { appInfoFrom } from '../src/lib/appInfo'
 import { FeedbackError, buildReport, sendReport, validateDraft, type ReportDraft } from '../src/lib/feedback'
-import { crashReport } from '../src/lib/crashReporter'
+import { afterSave, crashReport } from '../src/lib/crashReporter'
 
 test('scrub masks amounts, prices, raw integers, keys, tokens and queries; keeps error codes and statuses', () => {
   const key = '7xKXtg2CW87d97TXJSDpbD5jBkheTqA83TZRuJosgAsU'
@@ -150,6 +150,46 @@ test('sendReport posts JSON with the given headers and returns the id; maps 429 
     () => sendReport(body, {}, down),
     (e) => e instanceof FeedbackError && e.status === 0,
   )
+})
+
+test('afterSave: hands over after the save settles, or on a timeout, exactly once', async () => {
+  const run = (save: () => Promise<unknown>, timeoutMs: number) =>
+    new Promise<string[]>((done) => {
+      const calls: string[] = []
+      afterSave(
+        () => save().then(() => calls.push('saved')),
+        () => {
+          calls.push('then')
+          done(calls)
+        },
+        timeoutMs,
+      )
+    })
+  assert.deepEqual(await run(async () => undefined, 1000), ['saved', 'then'], 'waits for the write')
+  assert.deepEqual(
+    await run(() => Promise.reject(new Error('disk full')), 1000),
+    ['then'],
+    'a failed write still hands over',
+  )
+  assert.deepEqual(
+    await run(() => {
+      throw new Error('cannot serialize')
+    }, 1000),
+    ['then'],
+    'so does a save that throws',
+  )
+  const t0 = Date.now()
+  assert.deepEqual(await run(() => new Promise(() => undefined), 30), ['then'], 'a hung write is cut off')
+  assert.ok(Date.now() - t0 >= 25)
+
+  let handed = 0
+  afterSave(
+    () => new Promise((r) => setTimeout(r, 40)),
+    () => handed++,
+    10,
+  )
+  await new Promise((r) => setTimeout(r, 80))
+  assert.equal(handed, 1, 'a write that lands after the timeout does not hand over again')
 })
 
 test('crashReport: a scrubbed crash report with the screen and the event log', () => {

@@ -2,7 +2,9 @@
 //
 // Closed beta: a JavaScript crash kills the app before anything could be
 // sent, so the global error handler writes a pending crash report to
-// AsyncStorage and the next launch sends it (`flushPendingCrash`), if the
+// AsyncStorage — and lets the default handler kill the process only after
+// the write settled or 1.5 s passed (`afterSave`) — and the next launch
+// sends it (`flushPendingCrash`), if the
 // tester left "Send crash reports" on (Settings; on by default in beta
 // builds, off switch stored in AsyncStorage). Non-fatal errors and unhandled
 // promise rejections only go into the diagnostics log (`diagnostics.ts`).
@@ -18,6 +20,26 @@ import { buildReport, sendReport, type FeedbackBody } from './feedback'
 const PENDING_KEY = 'dexxer.pendingCrash'
 const CONSENT_KEY = 'dexxer.crashReports'
 const MAX_STACK = 1500
+const SAVE_TIMEOUT_MS = 1500
+
+/**
+ * Run `then` once `save` settled (resolved, rejected or threw), or after `timeoutMs` — whichever comes
+ * first, never twice. For a fatal crash `then` is React Native's default handler, which kills the
+ * process: called right away, it let the process die before AsyncStorage's asynchronous write reached
+ * the native side, and no crash report survived (review of PR #24). The timeout bounds how long a
+ * crashed app stays up when storage hangs.
+ */
+export function afterSave(save: () => Promise<unknown>, then: () => void, timeoutMs: number = SAVE_TIMEOUT_MS): void {
+  let done = false
+  const finish = () => {
+    if (done) return
+    done = true
+    clearTimeout(timer)
+    then()
+  }
+  const timer = setTimeout(finish, timeoutMs)
+  new Promise<unknown>((resolve) => resolve(save())).then(finish, finish)
+}
 
 export async function crashReportsEnabled(): Promise<boolean> {
   try {
@@ -79,10 +101,12 @@ export function installCrashReporter(): void {
         `${isFatal ? 'fatal' : 'error'}: ${error instanceof Error ? error.message : String(error)}`,
       )
       if (isFatal) {
-        // Best effort: the process may die before this lands.
-        void AsyncStorage.setItem(PENDING_KEY, JSON.stringify(crashReport(error, true, lastScreen))).catch(
-          () => undefined,
+        // The default handler kills the process: hand over only once the report is on disk (`afterSave`).
+        afterSave(
+          () => AsyncStorage.setItem(PENDING_KEY, JSON.stringify(crashReport(error, true, lastScreen))),
+          () => previous(error, isFatal),
         )
+        return
       }
       previous(error, isFatal)
     })

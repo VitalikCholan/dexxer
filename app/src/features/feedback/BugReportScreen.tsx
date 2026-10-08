@@ -7,11 +7,14 @@
 //   * "Include diagnostics" (on by default): build/device info is always sent;
 //     this adds the screen they came from, the selected market and the
 //     scrubbed event log (lib/diagnostics.ts).
-//   * "Attach my wallet address" (off by default, only when connected): sends
-//     the relayer session header, from which the relayer takes the address.
+//   * "Attach my wallet address" (off by default): sends the relayer session
+//     header, from which the relayer takes the address. Offered only with a
+//     live session; without one (the wallet is not on the beta list, or the
+//     sign-in expired) a note says the address cannot be attached, instead of
+//     an anonymous report going out while the preview promises the address.
 // "Show what will be sent" renders the exact JSON body. Positions, balances,
 // orders and keys are never part of it.
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { router } from 'expo-router'
 import { ScrollView, Switch, Text, View } from 'react-native'
 import { useMobileWallet } from '@wallet-ui/react-native-web3js'
@@ -25,7 +28,7 @@ import { showToast } from '@/src/ui/Toast'
 import { appInfo } from '@/src/lib/appInfo'
 import { recentEvents, record } from '@/src/lib/diagnostics'
 import { currentScreen } from '@/src/lib/crashReporter'
-import { relayerAuthHeaders } from '@/src/lib/relayerAuth'
+import { hasRelayerSession, relayerAuthHeaders } from '@/src/lib/relayerAuth'
 import { toPublicKey } from '@/src/lib/mwa/accounts'
 import { useSelectedMarket } from '@/src/lib/markets'
 import {
@@ -86,6 +89,25 @@ export function BugReportScreen() {
   const [attachWallet, setAttachWallet] = useState(false)
   const [preview, setPreview] = useState(false)
   const [busy, setBusy] = useState(false)
+  // Whether `owner` has a live relayer session, tagged with the owner it was read for, so a wallet
+  // switch never shows the previous wallet's answer.
+  const [session, setSession] = useState<{ owner: string; live: boolean } | null>(null)
+
+  const owner = account ? toPublicKey(account.address).toBase58() : null
+  useEffect(() => {
+    if (!owner) return
+    let current = true
+    hasRelayerSession(toPublicKey(owner)).then(
+      (live) => {
+        if (current) setSession({ owner, live })
+      },
+      () => undefined,
+    )
+    return () => {
+      current = false
+    }
+  }, [owner])
+  const canAttach = owner !== null && session?.owner === owner && session.live
 
   const screen = currentScreen()
   const problem = validateDraft({ message, contact })
@@ -103,7 +125,19 @@ export function BugReportScreen() {
     if (problem || busy) return
     setBusy(true)
     try {
-      const headers = attachWallet && account ? await relayerAuthHeaders(toPublicKey(account.address)) : {}
+      const attach = attachWallet && canAttach && owner !== null
+      const headers = attach ? await relayerAuthHeaders(toPublicKey(owner)) : {}
+      if (attach && !headers.authorization) {
+        // The sign-in expired while the screen was open: say so rather than send anonymously.
+        setSession({ owner, live: false })
+        setAttachWallet(false)
+        showToast({
+          tone: 'warning',
+          text: 'Your sign-in expired, so the wallet address cannot be attached. Send again to report without it.',
+          log: 'feedback: wallet not attached, no relayer session',
+        })
+        return
+      }
       const id = await sendReport(body, headers)
       record('info', 'feedback', `report sent #${id}`)
       showToast({ tone: 'success', text: `Thanks — report #${id} sent` })
@@ -173,13 +207,18 @@ export function BugReportScreen() {
           value={includeDiagnostics}
           onChange={setIncludeDiagnostics}
         />
-        {account ? (
+        {canAttach ? (
           <ToggleRow
             label="Attach my wallet address"
             hint="Helps us check your onboarding on-chain. Your positions stay private either way"
             value={attachWallet}
             onChange={setAttachWallet}
           />
+        ) : owner !== null ? (
+          <Text style={[caption, { color: colors.textTertiary }]}>
+            Your wallet address can&apos;t be attached: this wallet has no Dexxer sign-in (it is not on the beta list,
+            or the sign-in expired). The report is sent without it.
+          </Text>
         ) : null}
         <Text
           accessibilityRole="button"
@@ -192,7 +231,7 @@ export function BugReportScreen() {
           <View style={{ padding: space.sm, borderRadius: radius.md, backgroundColor: colors.surface }}>
             <Text selectable style={[mono, { color: colors.textSecondary }]}>
               {JSON.stringify(body, null, 2)}
-              {attachWallet && account ? '\n\n+ your wallet address (from your relayer sign-in)' : ''}
+              {attachWallet && canAttach ? '\n\n+ your wallet address (from your relayer sign-in)' : ''}
             </Text>
           </View>
         ) : null}
