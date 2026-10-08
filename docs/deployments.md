@@ -86,6 +86,11 @@ program id) і ролі ключів.
 - **`FeeEscrow`** `BdfNhXM9…w8vs`: 191 301 040 лам. в ER (18:04 UTC; поповнено 0.2 SOL на бутстрапі).
   При 200 000 лам. за коміт — ≈956 комітів, **≈3.3 доби** при `COMMIT_INTERVAL_MS=300000`. Поповнення —
   `scripts/admin/fund-fee-payer.ts`; порожній `FeeEscrow` зупиняє і коміти, і `open_position`.
+  **08.10.2026, 11:10 UTC — порожній:** 701 040 лам. = рівно мінімум ренти (10 B), до витрат 0; останній успішний
+  `commit_aggregate` — 05.10.2026 01:39:43 UTC (`/healthz` `lastCommitAt`), це й очікуваний кінець ≈3.3 доби від
+  01.10 18:04. Перевірка без ключів проєкту — `cd tests/er && npm run devnet:fee-escrow`
+  (`scripts/admin/fee-escrow-balance.ts`: баланс у rollup мінус мінімум ренти, скільки комітів лишилось; токен TEE
+  від одноразового ключа). Чи справді падав і `open_position` — не перевіряли.
 - **Політика рестарту — `ALWAYS`, healthcheck 180 с (застосовано 01.10.2026).** Значення виставлено **напряму в налаштуваннях сервісу** через Railway MCP `update-service` (01.10.2026, ≈21:30 за Києвом): `restartPolicyType = ALWAYS`, `healthcheckTimeout = 180` с (`get-service-config` після — `healthcheckTimeout: 180, restartPolicyType: "ALWAYS"`); набула сили з деплойментом `5a070a7c` (`railway up --service relayer --ci`, SUCCESS 21:30:23 за Києвом). Між `8b33d95d` і `5a070a7c` живою була `ON_FAILURE` × 10 / 30 с. Config-as-code (`railway.json`/`railway.toml`) Railway оголосив **застарілим** на користь Infrastructure-as-Code `.railway/railway.ts` (`update-service` з `railwayConfigFile` відхилено саме з цим повідомленням), тож `services/relayer/railway.json` Railway не застосує ніколи — він лишається в репо як документація намірених значень.
   Відкрито: перенести налаштування сервісу в `.railway/railway.ts`. `redeploy` через MCP (деплоймент `3d1ccce7`)
   упав на BUILD_IMAGE (`Railpack failed to prepare the build`): деплойменту з `railway up` нема з чого

@@ -6,6 +6,7 @@
     "q1": "tsx q1-deposit.ts",
     "q2": "tsx q2-permissions.ts",
     "devnet:bootstrap": "DEXXER_NET=devnet tsx ../../scripts/admin/devnet-bootstrap.ts",
+    "devnet:fee-escrow": "DEXXER_NET=devnet tsx ../../scripts/admin/fee-escrow-balance.ts",
     "devnet:measure": "DEXXER_NET=devnet tsx devnet/00-measure.ts",
     "devnet:onboard": "DEXXER_NET=devnet tsx devnet/01-onboard-private.ts",
     "devnet:leak": "DEXXER_NET=devnet tsx devnet/02-leak-test.ts",
